@@ -183,11 +183,16 @@ impl MetroDropdownMenu {
                 );
                 x += 28.0;
             }
-            // 文本
+            // 文本 —— 宽度 = 面板右缘（含右内边距 11）到当前笔位。
+            // 注意：panel_rect.size.width 是相对宽度，不能直接减 x（x 是绝对坐标）。
+            // 旧 bug：`panel_rect.size.width - x` 得到巨大负值 → engine.layout 触发
+            // CJK 单字硬断 → 菜单项变成字塔（每个字一行）。
+            let text_right = self.panel_rect.right() - 11.0;
+            let text_w = (text_right - x).max(0.0);
             let text_rect = Rect::new(
                 x,
                 y + (self.item_height - style.line_height) / 2.0,
-                self.panel_rect.size.width - x,
+                text_w,
                 style.line_height,
             );
             scene.text(
@@ -254,6 +259,7 @@ mod tests {
         for p in [
             "C:/Windows/Fonts/segoeui.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
         ] {
             if let Ok(e) = TextEngine::load(p) {
                 return Some(e);
@@ -314,5 +320,52 @@ mod tests {
         );
         // 遮罩 + 面板底 + 边框 + 项文本
         assert!(scene.commands.len() >= 4);
+    }
+
+    /// 回归 V1：文本 rect 宽度不可为负，且必须完全落在面板内。
+    /// 曾经 bug：`panel_rect.size.width - x`（x 绝对坐标）→ 巨大负值 →
+    /// `TextEngine::layout(max_width=负)` 触发 CJK 单字硬断 → 菜单碎字塔。
+    #[test]
+    fn item_text_rect_fits_panel() {
+        use kanesumi_canvas::SceneCommand;
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
+        let panel_at = Rect::new(600.0, 300.0, 140.0, 96.0);
+        let mut menu = MetroDropdownMenu::new(vec![
+            MenuItem::with_icon("新建", "★"),
+            MenuItem::with_icon("打开", "★"),
+        ]);
+        menu.open(panel_at);
+        menu.update(1.0);
+        let mut scene = Scene::default();
+        menu.render(
+            &theme,
+            &engine,
+            Rect::new(0.0, 0.0, 1024.0, 768.0),
+            &mut scene,
+        );
+        // 每条 Text 命令的 rect 必须宽度 > 0 且 (x + width) <= panel_rect.right()。
+        let text_rects: Vec<_> = scene
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                SceneCommand::Text { rect, .. } => Some(*rect),
+                _ => None,
+            })
+            .collect();
+        assert!(!text_rects.is_empty(), "菜单项应产出 Text 命令");
+        for r in &text_rects {
+            assert!(
+                r.size.width > 0.0,
+                "text_rect 宽必须正，实际 {}",
+                r.size.width
+            );
+            assert!(
+                r.right() <= panel_at.right() + 0.01,
+                "text_rect 右缘越出面板：right={} panel.right={}",
+                r.right(),
+                panel_at.right()
+            );
+        }
     }
 }
