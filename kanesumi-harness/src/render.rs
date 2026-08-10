@@ -697,11 +697,12 @@ impl Renderer {
                 }
                 let key = glyph_key(c, size_phys.round() as u32);
                 // 物理 metrics → 逻辑坐标（÷ scale）。
-                // fontdue: ymin = bitmap 底相对基线的偏移（负 = 底在基线上方）；
-                // 字形顶 = baseline + ymin - height。符号错了会把字形推错位。
+                // fontdue: ymin = 字形底相对基线的偏移，fontdue Y+ 向上（PostScript 惯例）。
+                //   descender 字母（y/p/g）ymin < 0（底在基线下方）；只有 ascender 的字母 ymin = 0。
+                // 屏幕 Y+ 向下：字形顶 y0 = baseline − ymin − height。
                 let inv = 1.0 / self.scale;
                 let x0 = pen + metrics.xmin as f32 * inv;
-                let y0 = baseline + metrics.ymin as f32 * inv - metrics.height as f32 * inv;
+                let y0 = baseline - metrics.ymin as f32 * inv - metrics.height as f32 * inv;
                 let (w, h) = (metrics.width as f32 * inv, metrics.height as f32 * inv);
                 let (x1, y1) = (x0 + w, y0 + h);
                 let start = verts.len() as u32;
