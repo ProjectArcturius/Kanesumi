@@ -7,14 +7,26 @@ pub const METRO_STANDARD_DURATION: f64 = 0.25;
 pub const DURATION_SHEET_APPEAR: f64 = 0.30;
 /// 面板 / 弹窗收起时长。短促收敛，避免拖尾。
 pub const DURATION_SHEET_DISMISS: f64 = 0.26;
-/// 快速切换（列表高亮、播放/暂停图标）。
-pub const DURATION_QUICK_SWITCH: f64 = 0.18;
+/// 快速切换（列表高亮、播放/暂停图标）。对齐 UWP ControlFastAnimationDuration 0.167s。
+pub const DURATION_QUICK_SWITCH: f64 = 0.167;
 /// 封面 / 大图淡入。
 pub const DURATION_COVER_FADE: f64 = 0.40;
 /// 颜色 / 主题过渡（accent transition）。
 pub const DURATION_COLOR_TRANSITION: f64 = 0.30;
-/// 开关滑动 / 短反馈（对齐 UWP toggle 220ms）。
-pub const DURATION_TOGGLE_FLIP: f64 = 0.22;
+/// 开关滑动。对齐 UWP RepositionThemeAnimation 0.15s（Cubic EaseOut）。参 CONTROL_SPEC §3。
+pub const DURATION_TOGGLE_FLIP: f64 = 0.15;
+/// ProgressBar/Ring 不确定模式循环周期。对齐 UWP 2.0s。参 CONTROL_SPEC §4/§5。
+pub const DURATION_INDETERMINATE: f64 = 2.0;
+/// 下拉面板遮罩淡入。对齐 UWP OverlayOpeningAnimation 0.383s。参 CONTROL_SPEC §8。
+pub const DURATION_OVERLAY_OPEN: f64 = 0.383;
+/// 下拉面板遮罩淡出。对齐 UWP OverlayClosingAnimation 0.216s。
+pub const DURATION_OVERLAY_CLOSE: f64 = 0.216;
+/// 对话框本体缩放。对齐 UWP ContentDialog 0.5s（spline 0.1,0.9,0.2,1）。参 CONTROL_SPEC §9。
+pub const DURATION_DIALOG_ENTER: f64 = 0.5;
+/// 对话框淡入（含遮罩）。UWP 0.167s 线性。
+pub const DURATION_DIALOG_FADE_IN: f64 = 0.167;
+/// 对话框淡出。UWP 0.083s 线性（opacity 先行熄灭）。
+pub const DURATION_DIALOG_FADE_OUT: f64 = 0.083;
 
 /// Metro 动画预设。参 PLAN.md §4-1/§4-2 动画三层：
 ///
@@ -96,6 +108,35 @@ impl MetroPresets {
     pub fn toggle_flip() -> MetroAnim {
         MetroAnim::new(DURATION_TOGGLE_FLIP, UwpEasing::Cubic, EasingMode::EaseOut)
     }
+
+    /// 不确定进度循环：2.0s Cubic/EaseInOut（对齐 UWP ProgressBar/Ring，参 CONTROL_SPEC §4/§5）。
+    pub fn progress_indeterminate() -> MetroAnim {
+        MetroAnim::new(
+            DURATION_INDETERMINATE,
+            UwpEasing::Cubic,
+            EasingMode::EaseInOut,
+        )
+    }
+
+    /// 下拉面板遮罩淡入：383ms Cubic/EaseOut（对齐 UWP OverlayOpeningAnimation，§8）。
+    pub fn overlay_open() -> MetroAnim {
+        MetroAnim::new(DURATION_OVERLAY_OPEN, UwpEasing::Cubic, EasingMode::EaseOut)
+    }
+
+    /// 下拉面板遮罩淡出：216ms Quadratic/EaseOut（对齐 UWP OverlayClosingAnimation，§8）。
+    pub fn overlay_close() -> MetroAnim {
+        MetroAnim::new(
+            DURATION_OVERLAY_CLOSE,
+            UwpEasing::Quadratic,
+            EasingMode::EaseOut,
+        )
+    }
+
+    /// 对话框缩放：500ms Cubic/EaseOut（对齐 UWP spline 0.1,0.9,0.2,1，§9）。
+    /// 淡入/淡出另用 `DURATION_DIALOG_FADE_IN/OUT` 常量 + 线性近似。
+    pub fn dialog_scale() -> MetroAnim {
+        MetroAnim::new(DURATION_DIALOG_ENTER, UwpEasing::Cubic, EasingMode::EaseOut)
+    }
 }
 
 #[cfg(test)]
@@ -139,5 +180,12 @@ mod tests {
     fn durations_are_distinct() {
         assert!(DURATION_SHEET_DISMISS < DURATION_SHEET_APPEAR);
         assert!(DURATION_QUICK_SWITCH < DURATION_COVER_FADE);
+    }
+
+    #[test]
+    fn toggle_flip_matches_uwp_reposition() {
+        // 参 CONTROL_SPEC §10：UWP RepositionThemeAnimation 0.15s；不确定进度循环 2.0s
+        assert_eq!(DURATION_TOGGLE_FLIP, 0.15);
+        assert_eq!(DURATION_INDETERMINATE, 2.0);
     }
 }

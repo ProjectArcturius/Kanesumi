@@ -48,6 +48,13 @@ kanesumi-core       (无依赖 — 设计 tokens / 主题 / MetroText / 交互�
 5. **无隐藏控件** —— reconciler 逻辑组件不产生额外原生控件。
 6. **纯色无渐变** —— 直角或极轻微圆角、强调色 + 半透明面板。
 
+## 控件实现规范
+
+**控件行为一律以 `docs/CONTROL_SPEC.md` 为准**（Metro/UWP 时代规格提取，2026-08-10）。
+来源为 Ether monorepo `reference/` 快照（microsoft-ui-xaml v2.8.7 + WinUI-Gallery winui2），
+提取后参考目录可安全丢弃。规格含：尺寸、视觉状态表、动画时长/缓动、主题色值、
+OS 闭源缺失项的处理（标注「未在快照中」）。新增/修改控件前先读对应章节。
+
 ## 约定
 
 - 注释使用中文 Vintage Words 风格，`参 <doc> §<chapter>` 交叉引用。参 Ether-main `CLAUDE.md`。

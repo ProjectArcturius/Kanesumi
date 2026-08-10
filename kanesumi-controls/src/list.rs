@@ -1,14 +1,14 @@
 use kanesumi_core::text::TextEngine;
 use kanesumi_core::{MetroTheme, Rect, Scene, TextAlign};
 
-/// MetroList —— 垂直列表。行高 = body 行高 + 上下 8px；视口外行裁剪。
+/// MetroList —— 垂直列表。行高下限 40（UWP ListViewItem MinHeight，参 CONTROL_SPEC §7）；视口外行裁剪。
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetroList {
     pub rows: Vec<String>,
     pub selected: Option<usize>,
     /// 滚动偏移（px，向上滚动为正值）。输入层接入后由滚轮驱动（Phase 3 后续）。
     pub scroll: f32,
-    /// 行内边距（水平）。默认 16。
+    /// 行内边距（水平）。UWP 为 12。
     pub padding_x: f32,
 }
 
@@ -18,7 +18,7 @@ impl MetroList {
             rows,
             selected: None,
             scroll: 0.0,
-            padding_x: 16.0,
+            padding_x: 12.0,
         }
     }
 
@@ -26,9 +26,9 @@ impl MetroList {
         self.selected = index.filter(|i| *i < self.rows.len());
     }
 
-    /// 行高：body 行高 + 上下 8px。
+    /// 行高：body 行高 + 上下 8px，下限 40（UWP MinHeight）。
     pub fn row_height(&self, theme: &MetroTheme) -> f32 {
-        theme.typography.body.line_height + 16.0
+        (theme.typography.body.line_height + 16.0).max(40.0)
     }
 
     /// 渲染到视口 `rect`。顺序：选中行高亮 → 行文字。
@@ -47,8 +47,9 @@ impl MetroList {
             let selected = self.selected == Some(i);
 
             if selected {
-                // Metro 选中高亮：强调色 15% 半透明底
-                scene.fill_rect(colors.primary.with_alpha(0.15), row_rect);
+                // 选中高亮：UWP ListViewItem Selected = 强调色 ~75%（ListAccentMediumLow）。
+                // Ether 深色空间桌面下调一档至 0.60（参 CONTROL_SPEC §7）。
+                scene.fill_rect(colors.primary.with_alpha(0.60), row_rect);
             }
 
             let fg = if selected {

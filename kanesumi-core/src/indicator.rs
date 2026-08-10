@@ -15,10 +15,14 @@ pub struct MetroIndication {
 }
 
 impl MetroIndication {
+    /// Ether 深色空间桌面默认。
+    ///
+    /// tint 强度对齐 UWP Metro 按钮悬停/按压白%（参 CONTROL_SPEC §1）：
+    /// PointerOver ≈ 白 10%，Pressed ≈ 白 22%。
     pub const fn ether() -> Self {
         Self {
-            hover_tint: Color::from_hex(0xFF_FF_FF_0A), // rgba(255,255,255,0.04)
-            press_tint: Color::from_hex(0xFF_FF_FF_1A), // rgba(255,255,255,0.10)
+            hover_tint: Color::from_hex(0xFF_FF_FF_1A), // rgba(255,255,255,0.10)
+            press_tint: Color::from_hex(0xFF_FF_FF_38), // rgba(255,255,255,0.22)
             disabled_opacity: 0.38,
             focus_stroke: Color::from_hex(0xFF_A6_26),
         }
