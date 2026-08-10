@@ -66,6 +66,8 @@ pub struct GalleryApp {
     decl_hits: Vec<kanesumi_controls::DeclHit>,
     /// 声明式 footer 区域。
     decl_rect: Rect,
+    /// retained 渲染器（增量：只重建变化元素命令，PLAN §4.1 不变量 1）。
+    decl_retained: kanesumi_controls::RetainedScene,
 }
 
 impl GalleryApp {
@@ -141,6 +143,7 @@ impl GalleryApp {
             decl_count: 0,
             decl_hits: Vec::new(),
             decl_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
+            decl_retained: kanesumi_controls::RetainedScene::new(),
         }
     }
 
@@ -479,15 +482,18 @@ impl App for GalleryApp {
         self.list
             .render(&self.theme, engine, self.list_rect(), &mut scene);
 
-        // ── 声明式 footer（view! + render_decl 驱动的真实 UI 区域） ──
+        // ── 声明式 footer（view! + RetainedScene 增量渲染的真实 UI 区域） ──
         {
             let footer = Rect::new(PAD, size.height - 48.0, size.width - PAD * 2.0, 32.0);
             self.decl_rect = footer;
             let tree = self.decl_footer();
-            let (decl_scene, hits) =
-                kanesumi_controls::render_decl(&self.theme, engine, &tree, footer);
-            self.decl_hits = hits;
-            scene.commands.extend(decl_scene.commands);
+            let commands = self
+                .decl_retained
+                .update(&self.theme, engine, &tree, footer)
+                .0
+                .to_vec();
+            self.decl_hits = self.decl_retained.hits().to_vec();
+            scene.commands.extend(commands);
         }
 
         // 弹层（Dropdown / Selector 触发器始终画）

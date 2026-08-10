@@ -272,20 +272,58 @@ impl Shell {
         if !self.configured {
             return;
         }
+        // 合成器时钟（PLAN §4.2）：frame callback 驱动，dt 限幅防卡顿后跳变。
+        // §4.1 不变量 2 —— 动画由合成器 vsync 时钟推进，不依赖逻辑帧。
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f64().min(0.05);
         self.last_frame = now;
 
-        self.app.update(dt);
-        let size = self.size();
-        let scene = self.app.render(&self.engine, size);
+        // 错误边界：App update/render panic 不杀进程，降级为跳过本帧（§4.1 鲁棒性）。
+        // &mut dyn App 非 UnwindSafe，用 AssertUnwindSafe 显式声明（App 是单线程消费）。
+        let update_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.app.update(dt);
+        }))
+        .is_ok();
+        if !update_ok {
+            log::error!("App::update panic，跳过本帧");
+            self.request_next_frame(qh);
+            return;
+        }
 
-        // 请求下一帧 callback（须在 present 之前，与本次提交对应）。
-        let s = self.surface.clone();
-        s.frame(qh, s.clone());
+        let size = self.size();
+        let scene_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.app.render(&self.engine, size)
+        }));
+        let scene = match scene_result {
+            Ok(s) => s,
+            Err(_) => {
+                log::error!("App::render panic，跳过本帧");
+                self.request_next_frame(qh);
+                return;
+            }
+        };
+
+        self.request_next_frame(qh);
 
         if let Some(r) = self.renderer.as_mut() {
             r.render(&self.engine, &scene);
+        }
+    }
+
+    /// 请求下一帧 callback（须在 present 之前，与本次提交对应）。
+    fn request_next_frame(&mut self, qh: &QueueHandle<Self>) {
+        let s = self.surface.clone();
+        s.frame(qh, s.clone());
+    }
+
+    /// 输入事件错误边界：App handle_input panic 不杀进程，仅记日志。
+    fn emit_input(&mut self, event: InputEvent) {
+        let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.app.handle_input(event);
+        }))
+        .is_ok();
+        if !ok {
+            log::error!("App::handle_input panic，已隔离");
         }
     }
 
@@ -535,17 +573,16 @@ impl PointerHandler for Shell {
             match &event.kind {
                 PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
                     self.pointer_pos = pos;
-                    self.app
-                        .handle_input(InputEvent::PointerMoved { x: pos.0, y: pos.1 });
+                    self.emit_input(InputEvent::PointerMoved { x: pos.0, y: pos.1 });
                 }
                 PointerEventKind::Leave { .. } => {
                     self.pointer_pos = (-1.0, -1.0);
-                    self.app.handle_input(InputEvent::PointerLeft);
+                    self.emit_input(InputEvent::PointerLeft);
                 }
                 PointerEventKind::Press { button, .. } => {
                     self.pointer_pos = pos;
                     let button = map_button(*button);
-                    self.app.handle_input(InputEvent::PointerPressed {
+                    self.emit_input(InputEvent::PointerPressed {
                         x: pos.0,
                         y: pos.1,
                         button,
@@ -554,7 +591,7 @@ impl PointerHandler for Shell {
                 PointerEventKind::Release { button, .. } => {
                     self.pointer_pos = pos;
                     let button = map_button(*button);
-                    self.app.handle_input(InputEvent::PointerReleased {
+                    self.emit_input(InputEvent::PointerReleased {
                         x: pos.0,
                         y: pos.1,
                         button,
@@ -580,7 +617,7 @@ impl PointerHandler for Shell {
                     };
                     if dx != 0.0 || dy != 0.0 {
                         self.pointer_pos = pos;
-                        self.app.handle_input(InputEvent::Scroll { x: dx, y: dy });
+                        self.emit_input(InputEvent::Scroll { x: dx, y: dy });
                     }
                 }
             }

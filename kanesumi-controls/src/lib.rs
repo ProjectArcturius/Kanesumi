@@ -13,6 +13,7 @@ pub mod icon_button;
 pub mod list;
 pub mod popup;
 pub mod progress;
+pub mod retained;
 pub mod selector_flyout;
 pub mod state;
 pub mod surface;
@@ -33,6 +34,7 @@ pub use popup::{
     render_overlay,
 };
 pub use progress::{MetroProgressBar, MetroProgressRing, ProgressMode};
+pub use retained::RetainedScene;
 pub use selector_flyout::MetroSelectorFlyout;
 pub use state::{ButtonState, ControlState};
 pub use surface::MetroSurface;
