@@ -56,6 +56,10 @@ pub enum InputEvent {
         y: f32,
         button: PointerButton,
     },
+    /// 滚轮 / 触摸板滚动。`dx`/`dy` 为逻辑像素增量；**正方向 = 表面坐标 +y（下）**，
+    /// 即向下滚为正。外壳把 Wayland Axis 的 `discrete`（整格 ~50px）或 `absolute`
+    /// （触摸板连续）转换为像素增量。
+    Scroll { x: f32, y: f32 },
     /// 指针离开表面。
     PointerLeft,
 }

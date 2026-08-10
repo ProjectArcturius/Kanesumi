@@ -53,6 +53,10 @@ pub struct GalleryApp {
     // 输入状态
     hovered: Option<Target>,
     pressed: Option<Target>,
+    /// 最近一次指针位置（滚轮路由需要，因为 Scroll 不带坐标）。
+    pointer: Point,
+    /// 最近一次对话框按钮动作（Primary/Secondary/Close），供应用响应。
+    dialog_result: Option<kanesumi_controls::DialogButton>,
 }
 
 impl GalleryApp {
@@ -87,10 +91,13 @@ impl GalleryApp {
                 MetroTab::new("人脉"),
             ]),
             list: MetroList::new(
-                ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"]
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect(),
+                [
+                    "Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta", "Iota",
+                    "Kappa",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             ),
             dropdown: MetroDropdownMenu::new(vec![
                 MenuItem::new("新建"),
@@ -115,6 +122,8 @@ impl GalleryApp {
             },
             hovered: None,
             pressed: None,
+            pointer: Point::ORIGIN,
+            dialog_result: None,
         }
     }
 
@@ -197,6 +206,7 @@ impl GalleryApp {
 
     /// 更新悬停态（Motion / Enter）。
     fn update_hover(&mut self, p: Point) {
+        self.pointer = p;
         // 弹层悬停优先
         let target = if self.dropdown.anim.is_visible() && self.dropdown.item_at(p).is_some() {
             Some(Target::Dropdown)
@@ -225,6 +235,11 @@ impl GalleryApp {
         }
     }
 
+    /// 最近一次指针位置（逻辑坐标）。
+    fn pointer_pos(&self) -> Point {
+        self.pointer
+    }
+
     fn clear_hover(&mut self) {
         self.hovered = None;
         self.button.set_state(ControlState::Normal);
@@ -238,7 +253,9 @@ impl GalleryApp {
     fn press(&mut self, p: Point) {
         // 弹层优先
         if self.dialog.is_visible() {
-            // 对话框遮罩点击不关闭（CONTROL_SPEC §9）；点击盒体/按钮即关闭（简化）。
+            // 按钮路由：命中按钮 → 记录身份并关闭；未命中（遮罩/空白）仅关闭（简化）。
+            let screen = Rect::new(0.0, 0.0, 960.0, 600.0);
+            self.dialog_result = self.dialog.hit_button(screen, p);
             self.dialog.hide();
             self.pressed = None;
             return;
@@ -371,6 +388,14 @@ impl App for GalleryApp {
             InputEvent::PointerReleased { x, y, button } => {
                 if button == PointerButton::Left {
                     self.release(Point::new(x, y));
+                }
+            }
+            InputEvent::Scroll { y, .. } => {
+                // 滚轮：指针在列表视口上时滚动列表；否则无操作
+                let p = self.pointer_pos();
+                if self.list_rect().contains(p) {
+                    self.list
+                        .scroll_by(&self.theme, self.list_rect().size.height, y);
                 }
             }
             InputEvent::PointerLeft => {
@@ -664,6 +689,66 @@ mod tests {
             .filter(|c| matches!(c, kanesumi_core::SceneCommand::Text { .. }))
             .count();
         assert!(texts >= 4, "标题 + 各控件文本");
+    }
+
+    #[test]
+    fn scroll_over_list_scrolls_it() {
+        let mut g = app();
+        let before = g.list.scroll;
+        // 指针移到列表视口内，向下滚动 2 格（100px）
+        let center = g.list_rect().center();
+        g.handle_input(InputEvent::PointerMoved {
+            x: center.x,
+            y: center.y,
+        });
+        g.handle_input(InputEvent::Scroll { x: 0.0, y: 100.0 });
+        assert!(
+            g.list.scroll > before,
+            "滚轮应滚动列表，before={before} after={}",
+            g.list.scroll
+        );
+    }
+
+    #[test]
+    fn scroll_outside_list_is_ignored() {
+        let mut g = app();
+        g.handle_input(InputEvent::Scroll { x: 0.0, y: 100.0 });
+        assert_eq!(g.list.scroll, 0.0, "指针不在列表上时滚动无效");
+    }
+
+    #[test]
+    fn dialog_button_press_records_result() {
+        let mut g = app();
+        // 打开对话框
+        let r = g.accent_rect();
+        click(&mut g, r);
+        g.update(1.0);
+        assert!(g.dialog.is_visible());
+        assert_eq!(g.dialog_result, None);
+
+        // 点击 Close 按钮（右下角）
+        let screen = Rect::new(0.0, 0.0, 960.0, 600.0);
+        let box_rect = g.dialog.box_rect(screen);
+        let right = box_rect.origin.x + box_rect.size.width - 24.0;
+        let button_y = box_rect.origin.y + box_rect.size.height - 24.0 - 32.0 + 16.0;
+        let close_pos = Point::new(right - 65.0, button_y);
+        g.handle_input(InputEvent::PointerPressed {
+            x: close_pos.x,
+            y: close_pos.y,
+            button: PointerButton::Left,
+        });
+        g.handle_input(InputEvent::PointerReleased {
+            x: close_pos.x,
+            y: close_pos.y,
+            button: PointerButton::Left,
+        });
+        assert_eq!(
+            g.dialog_result,
+            Some(kanesumi_controls::DialogButton::Close),
+            "点击 Close 按钮应记录身份"
+        );
+        g.update(1.0);
+        assert!(!g.dialog.is_visible(), "按钮点击后对话框关闭");
     }
 }
 

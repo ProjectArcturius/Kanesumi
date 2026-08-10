@@ -560,7 +560,29 @@ impl PointerHandler for Shell {
                         button,
                     });
                 }
-                PointerEventKind::Axis { .. } => {}
+                PointerEventKind::Axis {
+                    horizontal,
+                    vertical,
+                    ..
+                } => {
+                    // 滚轮：优先离散步（每格 ~50px），触摸板用连续像素。
+                    // 正方向 = +y（表面坐标，下为正，与 motion 一致）；向下滚为正。
+                    const WHEEL_STEP_PX: f32 = 50.0;
+                    let dy = if vertical.discrete != 0 {
+                        vertical.discrete as f32 * WHEEL_STEP_PX
+                    } else {
+                        vertical.absolute as f32
+                    };
+                    let dx = if horizontal.discrete != 0 {
+                        horizontal.discrete as f32 * WHEEL_STEP_PX
+                    } else {
+                        horizontal.absolute as f32
+                    };
+                    if dx != 0.0 || dy != 0.0 {
+                        self.pointer_pos = pos;
+                        self.app.handle_input(InputEvent::Scroll { x: dx, y: dy });
+                    }
+                }
             }
         }
     }

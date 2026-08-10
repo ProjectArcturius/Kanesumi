@@ -20,7 +20,7 @@ pub mod tab_row;
 pub mod text;
 
 pub use button::{ButtonKind, MetroButton};
-pub use dialog::{DialogButtons, DialogDefaultButton, DialogState, MetroDialog};
+pub use dialog::{DialogButton, DialogButtons, DialogDefaultButton, DialogState, MetroDialog};
 pub use dropdown_menu::{MenuItem, MetroDropdownMenu};
 pub use icon_button::MetroIconButton;
 pub use list::MetroList;

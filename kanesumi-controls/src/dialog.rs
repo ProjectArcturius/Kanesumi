@@ -23,6 +23,14 @@ pub enum DialogDefaultButton {
     Close,
 }
 
+/// 对话框按钮身份（命中测试 / 回调路由）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogButton {
+    Primary,
+    Secondary,
+    Close,
+}
+
 /// 对话框按钮组。
 #[derive(Debug, Clone, PartialEq)]
 pub struct DialogButtons {
@@ -166,6 +174,40 @@ impl MetroDialog {
             sw,
             sh,
         )
+    }
+
+    /// 命中测试：`p` 命中的对话框按钮（盒体内右下角按钮区）。
+    /// `None` = 未命中按钮（遮罩 / 盒体空白 / 内容区）。
+    pub fn hit_button(&self, screen: Rect, p: kanesumi_core::Point) -> Option<DialogButton> {
+        if !self.is_visible() {
+            return None;
+        }
+        let box_rect = self.box_rect(screen);
+        let pad = 24.0;
+        let button_w = 130.0_f32.min(202.0);
+        let button_y = box_rect.origin.y + box_rect.size.height - 24.0 - 32.0;
+        // 与 render 相同的布局：Close(最右) → Secondary → Primary
+        let mut x = box_rect.origin.x + box_rect.size.width - pad - button_w;
+        for slot in [
+            DialogButton::Close,
+            DialogButton::Secondary,
+            DialogButton::Primary,
+        ] {
+            let rect = Rect::new(x, button_y, button_w, 32.0);
+            if rect.contains(p) {
+                // 仅返回已配置的按钮
+                let configured = match slot {
+                    DialogButton::Primary => self.buttons.primary.is_some(),
+                    DialogButton::Secondary => self.buttons.secondary.is_some(),
+                    DialogButton::Close => self.buttons.close.is_some(),
+                };
+                if configured {
+                    return Some(slot);
+                }
+            }
+            x -= button_w + 2.0;
+        }
+        None
     }
 
     /// 渲染：遮罩 + 盒体（标题 / 内容 / 按钮区）。
@@ -380,6 +422,54 @@ mod tests {
         assert!(
             (r.origin.y + r.size.height / 2.0 - 300.0).abs() < 1.0,
             "垂直居中"
+        );
+    }
+
+    #[test]
+    fn hit_button_maps_configured_slots() {
+        let mut dlg = MetroDialog::new("Save your work?", "Do you want to save?");
+        dlg.buttons.primary = Some("Save".into());
+        dlg.buttons.secondary = Some("Don't Save".into());
+        dlg.buttons.close = Some("Cancel".into());
+        dlg.show();
+        dlg.update(1.0);
+        let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let box_rect = dlg.box_rect(screen);
+        let button_y = box_rect.origin.y + box_rect.size.height - 24.0 - 32.0 + 16.0;
+        let right = box_rect.origin.x + box_rect.size.width - 24.0;
+
+        // Close 最右
+        let close = dlg
+            .hit_button(screen, kanesumi_core::Point::new(right - 65.0, button_y))
+            .unwrap();
+        assert_eq!(close, DialogButton::Close);
+        // Secondary 居中
+        let sec = dlg
+            .hit_button(
+                screen,
+                kanesumi_core::Point::new(right - 130.0 - 67.0, button_y),
+            )
+            .unwrap();
+        assert_eq!(sec, DialogButton::Secondary);
+        // Primary 最左
+        let pri = dlg
+            .hit_button(
+                screen,
+                kanesumi_core::Point::new(right - 260.0 - 69.0, button_y),
+            )
+            .unwrap();
+        assert_eq!(pri, DialogButton::Primary);
+        // 遮罩区未命中
+        assert!(
+            dlg.hit_button(screen, kanesumi_core::Point::new(10.0, 10.0))
+                .is_none()
+        );
+        // 隐藏时未命中
+        dlg.hide();
+        dlg.update(1.0);
+        assert!(
+            dlg.hit_button(screen, kanesumi_core::Point::new(right - 65.0, button_y))
+                .is_none()
         );
     }
 }

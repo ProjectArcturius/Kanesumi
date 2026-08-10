@@ -83,6 +83,14 @@ impl Rect {
         self.origin.y + self.size.height
     }
 
+    /// 中心点。
+    pub fn center(self) -> Point {
+        Point::new(
+            self.origin.x + self.size.width / 2.0,
+            self.origin.y + self.size.height / 2.0,
+        )
+    }
+
     /// 半开区间包含判定：左/上闭，右/下开。
     pub fn contains(self, p: Point) -> bool {
         p.x >= self.origin.x && p.x < self.right() && p.y >= self.origin.y && p.y < self.bottom()

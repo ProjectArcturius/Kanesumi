@@ -6,7 +6,7 @@ use kanesumi_core::{MetroTheme, Rect, Scene, TextAlign};
 pub struct MetroList {
     pub rows: Vec<String>,
     pub selected: Option<usize>,
-    /// 滚动偏移（px，向上滚动为正值）。输入层接入后由滚轮驱动（Phase 3 后续）。
+    /// 滚动偏移（px）。正值 = 内容上移（显示更靠后行）。由滚轮驱动（`scroll_by`）。
     pub scroll: f32,
     /// 行内边距（水平）。UWP 为 12。
     pub padding_x: f32,
@@ -24,6 +24,26 @@ impl MetroList {
 
     pub fn select(&mut self, index: Option<usize>) {
         self.selected = index.filter(|i| *i < self.rows.len());
+    }
+
+    /// 内容总高（行数 × 行高）。
+    pub fn content_height(&self, theme: &MetroTheme) -> f32 {
+        self.rows.len() as f32 * self.row_height(theme)
+    }
+
+    /// 最大滚动偏移：内容总高 − 视口高（不小于 0）。
+    pub fn max_scroll(&self, theme: &MetroTheme, viewport_h: f32) -> f32 {
+        (self.content_height(theme) - viewport_h).max(0.0)
+    }
+
+    /// 按增量滚动（`dy` 正 = 向下，同 `InputEvent::Scroll`）。夹紧到 [0, max]。
+    pub fn scroll_by(&mut self, theme: &MetroTheme, viewport_h: f32, dy: f32) {
+        self.scroll = (self.scroll + dy).clamp(0.0, self.max_scroll(theme, viewport_h));
+    }
+
+    /// 滚动到指定偏移。夹紧到 [0, max]。
+    pub fn scroll_to(&mut self, theme: &MetroTheme, viewport_h: f32, offset: f32) {
+        self.scroll = offset.clamp(0.0, self.max_scroll(theme, viewport_h));
     }
 
     /// 行高：body 行高 + 上下 8px，下限 40（UWP MinHeight）。
@@ -166,5 +186,42 @@ mod tests {
         let mut list = MetroList::new(vec!["A".into()]);
         list.select(Some(5));
         assert_eq!(list.selected, None);
+    }
+
+    #[test]
+    fn scroll_by_clamps_to_content() {
+        let theme = MetroTheme::ether_dark();
+        let mut list = MetroList::new(vec!["A".into(), "B".into(), "C".into()]);
+        let viewport_h = 100.0;
+        let max = list.max_scroll(&theme, viewport_h);
+        // 3 行 × 40 = 120，视口 100 → max 20
+        assert_eq!(max, 20.0);
+
+        list.scroll_by(&theme, viewport_h, 10.0);
+        assert_eq!(list.scroll, 10.0);
+        // 向下滚超出 → 夹紧到 max
+        list.scroll_by(&theme, viewport_h, 100.0);
+        assert_eq!(list.scroll, max);
+        // 向上滚超出 → 夹紧到 0
+        list.scroll_by(&theme, viewport_h, -100.0);
+        assert_eq!(list.scroll, 0.0);
+    }
+
+    #[test]
+    fn scroll_to_clamps_negative() {
+        let theme = MetroTheme::ether_dark();
+        let mut list = MetroList::new(vec!["A".into(); 10]);
+        list.scroll_to(&theme, 200.0, -5.0);
+        assert_eq!(list.scroll, 0.0);
+        list.scroll_to(&theme, 200.0, 9999.0);
+        assert_eq!(list.scroll, list.max_scroll(&theme, 200.0));
+    }
+
+    #[test]
+    fn no_scroll_when_content_fits() {
+        let theme = MetroTheme::ether_dark();
+        let mut list = MetroList::new(vec!["A".into(), "B".into()]);
+        list.scroll_by(&theme, 300.0, 50.0);
+        assert_eq!(list.scroll, 0.0, "内容不足一屏不滚动");
     }
 }
