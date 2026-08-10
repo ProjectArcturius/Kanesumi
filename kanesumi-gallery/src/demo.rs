@@ -13,22 +13,27 @@ pub fn render_demo_scene(theme: &MetroTheme, engine: &TextEngine, size: Size) ->
 
     // Button（Accent）
     let accent = MetroButton::accent("确定");
-    accent.render(
-        theme,
-        engine,
-        Rect::new(16.0, 16.0, 96.0, 38.0),
-        &mut scene,
-    );
+    accent.render(theme, engine, Rect::new(16.0, 16.0, 96.0, 38.0), &mut scene);
 
     // IconButton（纯图标）
     let icon = MetroIconButton::new("\u{E72D}");
-    icon.render(theme, engine, Rect::new(128.0, 12.0, 48.0, 48.0), &mut scene);
+    icon.render(
+        theme,
+        engine,
+        Rect::new(128.0, 12.0, 48.0, 48.0),
+        &mut scene,
+    );
 
     // Switch（已开，动画跑完）
     let mut sw = MetroSwitch::with_label("飞行模式");
     sw.set_checked(true);
     sw.update(1.0);
-    sw.render(theme, engine, Rect::new(200.0, 16.0, 160.0, 40.0), &mut scene);
+    sw.render(
+        theme,
+        engine,
+        Rect::new(200.0, 16.0, 160.0, 40.0),
+        &mut scene,
+    );
 
     // ProgressBar（不确定，相位 0.5s）
     let mut bar = MetroProgressBar::indeterminate();
@@ -47,7 +52,12 @@ pub fn render_demo_scene(theme: &MetroTheme, engine: &TextEngine, size: Size) ->
         MetroTab::new("日历"),
         MetroTab::new("人脉"),
     ]);
-    tabs.render(theme, engine, Rect::new(16.0, 110.0, 320.0, 48.0), &mut scene);
+    tabs.render(
+        theme,
+        engine,
+        Rect::new(16.0, 110.0, 320.0, 48.0),
+        &mut scene,
+    );
 
     // List（选中行 2）
     let mut list = MetroList::new(
