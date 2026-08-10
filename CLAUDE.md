@@ -6,7 +6,7 @@
 
 ```bash
 cargo check          # 检查所有 crate
-cargo test           # 单元测试（当前 122 个）
+cargo test           # 单元测试（当前 129 个）
 cargo clippy
 cargo fmt
 ```
@@ -42,6 +42,16 @@ kanesumi-core       (无依赖 — 设计 tokens / 主题 / MetroText / 交互�
 > （`Scene`/`SceneCommand`/`TextAlign`）与字体度量（`TextEngine`/`Line`）驻 `kanesumi-canvas`
 > （对应 UWP Win2D）。core 回归纯运行时（tokens/主题/排版/几何）。依赖方向
 > `core ← canvas ← controls/harness/gallery`；controls 产出 Scene，harness 光栅化 Scene。
+
+### 图标管线（kanesumi-canvas，2026-08-10）
+
+- **`icon.rs`**：`rasterize_svg(path, size) -> Option<Icon>` —— resvg → tiny_skia → 直通 RGBA
+  （与 Ether monorepo 侧 `ether-assets` 同款管线，Kanesumi 自足）。`Icon` = RGBA + 尺寸。
+- **`scene.rs`**：`SceneCommand::Image { rgba, width, height, rect, tint }` + `Scene::image`。
+- **harness `render.rs`**：Image 管线 —— RGBA8 纹理缓存（FNV 内容去重）+ IMAGE_SHADER
+  （tint 白色=原色，其他=按 alpha 蒙版染色）+ 独立 draw pass。
+- **controls `MetroIconButton`**：`with_svg` / `set_svg_icon` —— SVG 位图优先，否则 font glyph 回退。
+- Gallery 的 Share 按钮用 SVG 图标演示全链路；资产 `kanesumi-gallery/assets/icons/`。
 
 ### 页面结构（kanesumi-structure，2026-08-10 填充）
 

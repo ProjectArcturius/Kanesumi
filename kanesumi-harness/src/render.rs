@@ -76,6 +76,33 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// 图标管线：RGBA8 纹理采样。`in.color` 承载 tint：白色 (1,1,1) = 原色；
+/// 其他 = 染色（以图标 alpha 为形状蒙版替换颜色）。输出预乘供混合。
+const IMAGE_SHADER: &str = r#"
+@group(0) @binding(0) var img_tex: texture_2d<f32>;
+@group(0) @binding(1) var samp: sampler;
+struct VsOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) color: vec4<f32>,
+};
+@vertex
+fn vs(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>) -> VsOut {
+    var out: VsOut;
+    out.pos = vec4<f32>(pos, 0.0, 1.0);
+    out.uv = uv;
+    out.color = color;
+    return out;
+}
+@fragment
+fn fs(in: VsOut) -> @location(0) vec4<f32> {
+    let src = textureSample(img_tex, samp, in.uv);
+    let is_tint = in.color.r != 1.0 || in.color.g != 1.0 || in.color.b != 1.0;
+    let rgb = select(src.rgb * src.a, in.color.rgb * src.a, is_tint);
+    return vec4<f32>(rgb, src.a);
+}
+"#;
+
 // ── 字形缓存 ─────────────────────────────────────────────────────────────
 
 /// 单个字形：R8 覆盖纹理 + 绑定组 + 度量。key = (char, 物理字号取整)。
@@ -101,9 +128,12 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     solid_pipeline: wgpu::RenderPipeline,
     text_pipeline: wgpu::RenderPipeline,
+    image_pipeline: wgpu::RenderPipeline,
     text_bgl: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     glyphs: HashMap<u32, GlyphEntry>,
+    /// 图标纹理缓存：key = (width,height) + rgba 内容 FNV 哈希。同一图标去重复用。
+    images: HashMap<u32, GlyphEntry>,
     /// 逻辑 → 物理缩放（整数，通常 1 或 2）。
     scale: f32,
     /// 逻辑尺寸。
@@ -307,6 +337,46 @@ impl Renderer {
             ..Default::default()
         });
 
+        // 图标管线（RGBA8 纹理 + tint，与文本共享同一顶点布局 / 绑定布局）
+        let image_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("kanesumi-image"),
+            source: wgpu::ShaderSource::Wgsl(IMAGE_SHADER.into()),
+        });
+        let image_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("kanesumi-image-layout"),
+            bind_group_layouts: &[&text_bgl],
+            push_constant_ranges: &[],
+        });
+        let image_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("kanesumi-image-pipeline"),
+            layout: Some(&image_layout),
+            vertex: wgpu::VertexState {
+                module: &image_shader,
+                entry_point: "vs",
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<TextVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &image_shader,
+                entry_point: "fs",
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
         Ok(Self {
             surface,
             device,
@@ -314,9 +384,11 @@ impl Renderer {
             config,
             solid_pipeline,
             text_pipeline,
+            image_pipeline,
             text_bgl,
             sampler,
             glyphs: HashMap::new(),
+            images: HashMap::new(),
             scale,
             width,
             height,
@@ -354,6 +426,9 @@ impl Renderer {
         let mut text: Vec<TextVertex> = Vec::new();
         let mut text_runs: Vec<TextRun> = Vec::new();
         let mut pending_glyphs: Vec<(u32, Vec<u8>, fontdue::Metrics)> = Vec::new();
+        let mut image: Vec<TextVertex> = Vec::new();
+        let mut image_runs: Vec<TextRun> = Vec::new();
+        let mut pending_images: Vec<(u32, Vec<u8>, u32, u32)> = Vec::new();
 
         for cmd in &scene.commands {
             match cmd {
@@ -405,12 +480,35 @@ impl Renderer {
                         *align,
                     );
                 }
+                SceneCommand::Image {
+                    rgba,
+                    width,
+                    height,
+                    rect,
+                    tint,
+                } => {
+                    emit_image(
+                        &ndc,
+                        &mut image,
+                        &mut image_runs,
+                        &mut pending_images,
+                        rgba,
+                        *width,
+                        *height,
+                        *rect,
+                        *tint,
+                    );
+                }
             }
         }
 
         // 先建字形纹理（借用分离）
         for (key, bitmap, metrics) in &pending_glyphs {
             self.ensure_glyph(*key, bitmap, metrics);
+        }
+        // 再建图标纹理（借用分离）
+        for (key, rgba, w, h) in &pending_images {
+            self.ensure_image(*key, rgba, *w, *h);
         }
 
         let surface_texture = match self.surface.get_current_texture() {
@@ -476,6 +574,26 @@ impl Renderer {
                         continue;
                     };
                     pass.set_bind_group(0, &glyph.bind_group, &[]);
+                    pass.draw(run.start..run.start + run.count, 0..1);
+                }
+            }
+
+            // 图标（逐纹理，独立绑定）
+            if !image.is_empty() {
+                let buf = self
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("kanesumi-image-verts"),
+                        contents: bytemuck::cast_slice(&image),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    });
+                pass.set_pipeline(&self.image_pipeline);
+                pass.set_vertex_buffer(0, buf.slice(..));
+                for run in &image_runs {
+                    let Some(tex) = self.images.get(&run.glyph_key) else {
+                        continue;
+                    };
+                    pass.set_bind_group(0, &tex.bind_group, &[]);
                     pass.draw(run.start..run.start + run.count, 0..1);
                 }
             }
@@ -607,6 +725,71 @@ impl Renderer {
             ],
         });
         self.glyphs.insert(
+            key,
+            GlyphEntry {
+                texture,
+                bind_group,
+            },
+        );
+    }
+
+    /// 上传图标纹理（直通 RGBA → RGBA8UnormSrgb）。key = rgba 内容 FNV 哈希。
+    fn ensure_image(&mut self, key: u32, rgba: &[u8], width: u32, height: u32) {
+        if self.images.contains_key(&key) {
+            return;
+        }
+        if width == 0 || height == 0 {
+            return;
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("kanesumi-image"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("kanesumi-image-bg"),
+            layout: &self.text_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+        self.images.insert(
             key,
             GlyphEntry {
                 texture,
@@ -890,4 +1073,49 @@ fn push_quad(
         uv: [uv0[0], uv1[1]],
         color: c,
     });
+}
+
+/// FNV-1a 32 位哈希 —— 图标纹理缓存键（内容去重）。
+fn fnv1a(data: &[u8]) -> u32 {
+    let mut h: u32 = 0x811c_9dc5;
+    for &b in data {
+        h ^= b as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    h
+}
+
+/// 为一条 Image 命令生成纹理 quad：`rgba` 直通像素 → `rect` 目标矩形。
+/// 无 tint（None）→ 白（原色）；有 tint → 染色。key = rgba 内容 FNV 哈希。
+/// 纹理上传去重由 `Renderer::ensure_image`（`contains_key`）负责，这里只排队。
+#[allow(clippy::too_many_arguments)]
+fn emit_image(
+    ndc: &dyn Fn(f32, f32) -> [f32; 2],
+    verts: &mut Vec<TextVertex>,
+    runs: &mut Vec<TextRun>,
+    pending: &mut Vec<(u32, Vec<u8>, u32, u32)>,
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    rect: Rect,
+    tint: Option<Color>,
+) {
+    let key = fnv1a(rgba);
+    let c = tint.unwrap_or(Color::WHITE);
+    let start = verts.len() as u32;
+    push_quad(
+        verts,
+        ndc,
+        [rect.origin.x, rect.origin.y],
+        [rect.right(), rect.bottom()],
+        [0.0, 0.0],
+        [1.0, 1.0],
+        c,
+    );
+    runs.push(TextRun {
+        glyph_key: key,
+        start,
+        count: 6,
+    });
+    pending.push((key, rgba.to_vec(), width, height));
 }

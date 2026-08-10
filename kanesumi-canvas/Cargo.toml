@@ -9,3 +9,5 @@ authors = ["Takahashi Rinta <mc1586182829@outlook.com>"]
 [dependencies]
 kanesumi-core = { path = "../kanesumi-core" }
 fontdue = "0.9"
+# SVG → RGBA 光栅化（图标管线，与 Ether monorepo 侧 ether-assets 同款管线，Kanesumi 自足）。
+resvg = "0.44"

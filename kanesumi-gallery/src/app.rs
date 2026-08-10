@@ -82,7 +82,12 @@ impl GalleryApp {
             ),
             button: MetroButton::new("Standard"),
             accent: MetroButton::accent("打开对话框"),
-            icon: MetroIconButton::with_label("\u{E72D}", "Share"),
+            icon: MetroIconButton::with_svg(
+                concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icons/share.svg"),
+                16,
+                "Share",
+            )
+            .unwrap_or_else(|| MetroIconButton::with_label("\u{E72D}", "Share")),
             switch: MetroSwitch::with_label("飞行模式"),
             bar: MetroProgressBar::indeterminate(),
             ring: MetroProgressRing::new(),
@@ -692,6 +697,13 @@ mod tests {
             .filter(|c| matches!(c, kanesumi_canvas::SceneCommand::Text { .. }))
             .count();
         assert!(texts >= 4, "标题 + 各控件文本");
+        // 图标按钮应产出 Image 命令（SVG 位图管线）
+        let images = scene
+            .commands
+            .iter()
+            .filter(|c| matches!(c, kanesumi_canvas::SceneCommand::Image { .. }))
+            .count();
+        assert_eq!(images, 1, "Share 图标应为 SVG 位图");
     }
 
     #[test]

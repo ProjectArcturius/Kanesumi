@@ -79,15 +79,16 @@ pub fn render_demo_scene(theme: &MetroTheme, engine: &TextEngine, size: Size) ->
 }
 
 /// 命令统计 —— 供 smoke 输出。
-pub fn command_summary(scene: &Scene) -> (usize, usize, usize, usize) {
-    let (mut fill, mut stroke, mut text, mut arc) = (0, 0, 0, 0);
+pub fn command_summary(scene: &Scene) -> (usize, usize, usize, usize, usize) {
+    let (mut fill, mut stroke, mut text, mut arc, mut image) = (0, 0, 0, 0, 0);
     for c in &scene.commands {
         match c {
             SceneCommand::FillRect { .. } => fill += 1,
             SceneCommand::StrokeRect { .. } => stroke += 1,
             SceneCommand::Text { .. } => text += 1,
             SceneCommand::Arc { .. } => arc += 1,
+            SceneCommand::Image { .. } => image += 1,
         }
     }
-    (fill, stroke, text, arc)
+    (fill, stroke, text, arc, image)
 }

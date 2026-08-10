@@ -44,6 +44,15 @@ pub enum SceneCommand {
         start_deg: f32,
         end_deg: f32,
     },
+    /// 位图（SVG 光栅化的图标等）。`rgba` 为直通 RGBA（非预乘），`width`/`height` 为像素；
+    /// `rect` 为绘制目标（逻辑坐标）；`tint` 为染色（None = 原色，Some = 用指定色替换非透明像素）。
+    Image {
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+        rect: Rect,
+        tint: Option<Color>,
+    },
 }
 
 /// 一帧场景 —— App / 控件的渲染产物，由 harness 外壳光栅化。
@@ -129,6 +138,18 @@ impl Scene {
         });
     }
 
+    /// 绘制位图（图标等）。`icon` 为已光栅化的直通 RGBA；`rect` 为逻辑目标矩形；
+    /// `tint` 为染色（None = 原色）。
+    pub fn image(&mut self, icon: &super::icon::Icon, rect: Rect, tint: Option<Color>) {
+        self.commands.push(SceneCommand::Image {
+            rgba: icon.rgba.clone(),
+            width: icon.width,
+            height: icon.height,
+            rect,
+            tint,
+        });
+    }
+
     pub fn is_empty(&self) -> bool {
         self.commands.is_empty()
     }
@@ -190,5 +211,27 @@ mod tests {
         assert_eq!(CornerRadius::Square.px(size), 0.0);
         assert_eq!(CornerRadius::Slight.px(size), 2.0);
         assert_eq!(CornerRadius::Capsule.px(size), 10.0, "胶囊 = 短边一半");
+    }
+
+    #[test]
+    fn image_appends_with_tint() {
+        use super::super::icon::Icon;
+        let mut scene = Scene::default();
+        let icon = Icon {
+            rgba: vec![0; 16],
+            width: 2,
+            height: 2,
+        };
+        scene.image(&icon, Rect::new(0.0, 0.0, 16.0, 16.0), Some(Color::WHITE));
+        assert!(matches!(
+            scene.commands[0],
+            SceneCommand::Image {
+                width: 2,
+                height: 2,
+                tint: Some(_),
+                ..
+            }
+        ));
+        assert_eq!(scene.commands.len(), 1);
     }
 }

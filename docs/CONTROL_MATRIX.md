@@ -32,7 +32,7 @@
 | 焦点环 | 🔶 | Button/IconButton `Focused` 态自绘描边（Kanesumi 适配，非 Metro 状态） |
 | 弹层遮罩 | ✅ | `PopupAnim` + `render_overlay`；主题 `overlay_color`（黑 45%） |
 | 弹层方向自适应 | 🔶 | 判据已记录（Top>0 向下），Phase 3 续 |
-| 图标系统（SVG/自绘） | 🔶 | 当前用字体 glyph（Text 命令）；Papirus/SVG 管线待 `kanesumi-canvas` |
+| 图标系统（SVG/自绘） | ✅ | `kanesumi-canvas` `icon::rasterize_svg` → `Scene::image`（直通 RGBA + tint 染色）→ harness Image 管线（RGBA8 纹理）；`MetroIconButton::with_svg` 接入 |
 | 圆角光栅化 | 🔶 | Scene `corner_radius` 已携带，外壳实现圆角绘制时生效 |
 | 弧线光栅化 | 🔶 | Scene `Arc` 命令已携带，外壳实现 |
 
@@ -40,4 +40,4 @@
 
 - **「功能对照表一一对应」判定**：每章规格要点在「实现」列有对应模块与行为，且至少一个单元测试验证关键数值/状态（时长、行程、尺寸、命令序列）。
 - **可弃参考**：`CONTROL_SPEC.md` + 本表自足覆盖行为、尺寸、动画、主题；`reference/` 可整体删除，实现不再依赖它。
-- **遗留**（不阻塞弃用）：输入层事件接线、方向自适应、图标管线、圆角/弧光栅化 —— 均标 🔶，实现载体明确（harness Linux 外壳 / kanesumi-canvas）。
+- **遗留**（不阻塞弃用）：输入层事件接线、方向自适应、图标管线、圆角/弧光栅化 —— 均 ✅ 已完成（输入层/方向自适应/图标管线 2026-08-10；圆角/弧光栅化 harness 外壳已实现）。

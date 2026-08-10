@@ -1,3 +1,4 @@
+use kanesumi_canvas::icon::Icon;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::{MetroTheme, Rect, Size};
@@ -10,8 +11,12 @@ use crate::state::ControlState;
 /// - 点击不夺焦点（`AllowFocusOnInteraction=false`）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetroIconButton {
-    /// 图标 glyph（字体字符，如 `\u{E72D}`）。
+    /// 图标 glyph（字体字符，如 `\u{E72D}`）。`icon_bitmap` 为 `Some` 时优先用位图。
     pub icon: String,
+    /// SVG 光栅化位图（可选）。`Some` 时替代字体 glyph 绘制。
+    pub icon_bitmap: Option<Icon>,
+    /// 图标染色（`Some` 时按 alpha 蒙版替换颜色；`None` = 原色）。
+    pub icon_tint: Option<kanesumi_core::Color>,
     /// 标签（可空 → 纯图标模式，48×48）。
     pub label: String,
     pub state: ControlState,
@@ -21,6 +26,8 @@ impl MetroIconButton {
     pub fn new(icon: impl Into<String>) -> Self {
         Self {
             icon: icon.into(),
+            icon_bitmap: None,
+            icon_tint: None,
             label: String::new(),
             state: ControlState::Normal,
         }
@@ -29,9 +36,33 @@ impl MetroIconButton {
     pub fn with_label(icon: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             icon: icon.into(),
+            icon_bitmap: None,
+            icon_tint: None,
             label: label.into(),
             state: ControlState::Normal,
         }
+    }
+
+    /// 用 SVG 图标构建（`rasterize_svg` 输出）。`target_size` 为图标最长边像素。
+    pub fn with_svg(
+        svg_path: impl AsRef<std::path::Path>,
+        target_size: u32,
+        label: impl Into<String>,
+    ) -> Option<Self> {
+        let icon = kanesumi_canvas::rasterize_svg(svg_path, target_size)?;
+        Some(Self {
+            icon: String::new(),
+            icon_bitmap: Some(icon),
+            icon_tint: None,
+            label: label.into(),
+            state: ControlState::Normal,
+        })
+    }
+
+    /// 设置 SVG 位图与染色。
+    pub fn set_svg_icon(&mut self, icon: Icon, tint: Option<kanesumi_core::Color>) {
+        self.icon_bitmap = Some(icon);
+        self.icon_tint = tint;
     }
 
     pub fn set_state(&mut self, state: ControlState) {
@@ -53,6 +84,7 @@ impl MetroIconButton {
     }
 
     /// 渲染到 `rect`。顺序：交互 tint 底 → 图标 → 标签。
+    /// 图标：`icon_bitmap` 优先（SVG），否则字体 glyph。
     pub fn render(&self, theme: &MetroTheme, _engine: &TextEngine, rect: Rect, scene: &mut Scene) {
         let colors = &theme.colors;
         let indication = &theme.indication;
@@ -82,13 +114,7 @@ impl MetroIconButton {
                 16.0,
                 16.0,
             );
-            scene.text(
-                self.icon.clone(),
-                icon_rect,
-                fg,
-                icon_style(),
-                TextAlign::Center,
-            );
+            self.draw_icon(fg, icon_rect, scene);
         } else {
             // 图标上置（16px），标签下置（12px）
             let icon_rect = Rect::new(
@@ -97,13 +123,7 @@ impl MetroIconButton {
                 16.0,
                 16.0,
             );
-            scene.text(
-                self.icon.clone(),
-                icon_rect,
-                fg,
-                icon_style(),
-                TextAlign::Center,
-            );
+            self.draw_icon(fg, icon_rect, scene);
             let label_style = label_style();
             let label_rect = Rect::new(
                 rect.origin.x + 2.0,
@@ -118,6 +138,16 @@ impl MetroIconButton {
                 label_style,
                 TextAlign::Center,
             );
+        }
+    }
+
+    /// 绘制图标：SVG 位图优先（tint 染色），否则字体 glyph。
+    fn draw_icon(&self, fg: kanesumi_core::Color, rect: Rect, scene: &mut Scene) {
+        if let Some(icon) = &self.icon_bitmap {
+            let tint = self.icon_tint.or(Some(fg));
+            scene.image(icon, rect, tint);
+        } else {
+            scene.text(self.icon.clone(), rect, fg, icon_style(), TextAlign::Center);
         }
     }
 }
@@ -218,5 +248,29 @@ mod tests {
             panic!("应画图标文本");
         };
         assert!(color.a < 1.0, "禁用态前景应降透明度");
+    }
+
+    #[test]
+    fn svg_bitmap_renders_image_command() {
+        // 最小 SVG → IconButton 位图
+        let dir = std::env::temp_dir();
+        let path = dir.join("kanesumi_iconbtn_test.svg");
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#fff"/></svg>"##;
+        std::fs::write(&path, svg).unwrap();
+        let Some(btn) = MetroIconButton::with_svg(&path, 16, "Share") else {
+            panic!("SVG 图标构建失败");
+        };
+        assert!(btn.icon_bitmap.is_some(), "位图已光栅化");
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
+        let mut scene = Scene::default();
+        btn.render(&theme, &engine, Rect::new(0.0, 0.0, 68.0, 56.0), &mut scene);
+        assert!(
+            scene
+                .commands
+                .iter()
+                .any(|c| matches!(c, SceneCommand::Image { .. })),
+            "SVG 图标应产出 Image 命令"
+        );
     }
 }
