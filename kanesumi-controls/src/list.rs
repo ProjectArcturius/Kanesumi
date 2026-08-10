@@ -7,6 +7,10 @@ use kanesumi_core::{MetroTheme, Rect};
 pub struct MetroList {
     pub rows: Vec<String>,
     pub selected: Option<usize>,
+    /// 悬停行（PointerOver 中性高亮，非强调色，参 CONTROL_SPEC §5 规律 5）。
+    pub hovered: Option<usize>,
+    /// 整表禁用：行降透明度（CONTROL_SPEC §7 禁用 = 整行 Opacity 0.55）。
+    pub disabled: bool,
     /// 滚动偏移（px）。正值 = 内容上移（显示更靠后行）。由滚轮驱动（`scroll_by`）。
     pub scroll: f32,
     /// 行内边距（水平）。UWP 为 12。
@@ -18,6 +22,8 @@ impl MetroList {
         Self {
             rows,
             selected: None,
+            hovered: None,
+            disabled: false,
             scroll: 0.0,
             padding_x: 12.0,
         }
@@ -52,12 +58,17 @@ impl MetroList {
         (theme.typography.body.line_height + 16.0).max(40.0)
     }
 
-    /// 渲染到视口 `rect`。顺序：选中行高亮 → 行文字。
+    /// 渲染到视口 `rect`。顺序：选中高亮 → 悬停高亮 → 行文字。
     /// `engine` 暂未用于行测量（行文本由外壳统一排版），保留签名以与其余控件一致。
     pub fn render(&self, theme: &MetroTheme, _engine: &TextEngine, rect: Rect, scene: &mut Scene) {
         let style = theme.typography.body;
         let row_height = self.row_height(theme);
         let colors = &theme.colors;
+        let alpha = if self.disabled {
+            0.55 // CONTROL_SPEC §7：禁用 = 整行 Opacity 0.55
+        } else {
+            1.0
+        };
 
         for (i, row) in self.rows.iter().enumerate() {
             let y = rect.origin.y - self.scroll + i as f32 * row_height;
@@ -66,18 +77,23 @@ impl MetroList {
             }
             let row_rect = Rect::new(rect.origin.x, y, rect.size.width, row_height);
             let selected = self.selected == Some(i);
+            let hovered = self.hovered == Some(i);
 
             if selected {
                 // 选中高亮：UWP ListViewItem Selected = 强调色 ~75%（ListAccentMediumLow）。
                 // Ether 深色空间桌面下调一档至 0.60（参 CONTROL_SPEC §7）。
-                scene.fill_rect(colors.primary.with_alpha(0.60), row_rect);
+                scene.fill_rect(colors.primary.with_alpha(0.60 * alpha), row_rect);
+            } else if hovered && !self.disabled {
+                // 悬停 = 中性高亮（HighlightListLow ≈30% 白），非强调色（CONTROL_SPEC §5 规律 5）。
+                scene.fill_rect(colors.on_surface.with_alpha(0.30), row_rect);
             }
 
-            let fg = if selected {
+            let base = if selected {
                 colors.on_surface
             } else {
                 colors.on_surface_variant
             };
+            let fg = base.with_alpha(base.a * alpha);
             let label_rect = Rect::new(
                 rect.origin.x + self.padding_x,
                 y + 8.0,
@@ -224,5 +240,55 @@ mod tests {
         let mut list = MetroList::new(vec!["A".into(), "B".into()]);
         list.scroll_by(&theme, 300.0, 50.0);
         assert_eq!(list.scroll, 0.0, "内容不足一屏不滚动");
+    }
+
+    #[test]
+    fn hover_highlights_neutral_not_accent() {
+        if !font_available() {
+            return;
+        }
+        let engine = TextEngine::load(find_font().unwrap()).unwrap();
+        let theme = MetroTheme::ether_dark();
+        let mut list = MetroList::new(vec!["Alpha".into(), "Beta".into()]);
+        list.hovered = Some(1);
+        let mut scene = Scene::default();
+        list.render(
+            &theme,
+            &engine,
+            Rect::new(0.0, 0.0, 200.0, 200.0),
+            &mut scene,
+        );
+        // 悬停行用中性高亮（on_surface 白 30%），不用强调色
+        let hover_fills = scene
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                SceneCommand::FillRect { color, .. } if color.r > 0.0 => Some(color),
+                _ => None,
+            })
+            .count();
+        assert_eq!(hover_fills, 1, "只有悬停行有中性高亮");
+    }
+
+    #[test]
+    fn disabled_lowers_row_alpha() {
+        if !font_available() {
+            return;
+        }
+        let engine = TextEngine::load(find_font().unwrap()).unwrap();
+        let theme = MetroTheme::ether_dark();
+        let mut list = MetroList::new(vec!["Alpha".into()]);
+        list.disabled = true;
+        let mut scene = Scene::default();
+        list.render(
+            &theme,
+            &engine,
+            Rect::new(0.0, 0.0, 200.0, 200.0),
+            &mut scene,
+        );
+        let Some(SceneCommand::Text { color, .. }) = scene.commands.first() else {
+            panic!("首命令应为行文本");
+        };
+        assert!(color.a < 1.0, "禁用态行文字应降透明度，实际 a={}", color.a);
     }
 }

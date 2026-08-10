@@ -222,6 +222,11 @@ impl GalleryApp {
             Some(Target::Button) => self.button.set_state(ControlState::Hovered),
             Some(Target::Accent) => self.accent.set_state(ControlState::Hovered),
             Some(Target::Icon) => self.icon.set_state(ControlState::Hovered),
+            Some(Target::List) => {
+                let rh = self.list.row_height(&self.theme);
+                let idx = ((p.y - self.list_rect().origin.y + self.list.scroll) / rh) as usize;
+                self.list.hovered = Some(idx).filter(|i| *i < self.list.rows.len());
+            }
             Some(Target::Dropdown) => {
                 self.dropdown.hovered = self.dropdown.item_at(p);
             }
@@ -242,6 +247,7 @@ impl GalleryApp {
         self.button.set_state(ControlState::Normal);
         self.accent.set_state(ControlState::Normal);
         self.icon.set_state(ControlState::Normal);
+        self.list.hovered = None;
         self.dropdown.hovered = None;
         self.selector.hovered = None;
     }
@@ -704,6 +710,21 @@ mod tests {
             "滚轮应滚动列表，before={before} after={}",
             g.list.scroll
         );
+    }
+
+    #[test]
+    fn list_hover_tracks_row() {
+        let mut g = app();
+        let (origin, rh) = (g.list_rect().origin, g.list.row_height(&g.theme));
+        // 悬停第 2 行
+        g.handle_input(InputEvent::PointerMoved {
+            x: origin.x + 20.0,
+            y: origin.y + 1.5 * rh,
+        });
+        assert_eq!(g.list.hovered, Some(1), "悬停应命中第 2 行");
+        // 移到列表外 → 清除
+        g.handle_input(InputEvent::PointerMoved { x: 5.0, y: 5.0 });
+        assert_eq!(g.list.hovered, None, "离开列表应清除悬停");
     }
 
     #[test]
