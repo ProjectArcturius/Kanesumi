@@ -64,6 +64,25 @@ impl TextEngine {
             .unwrap_or(size * 1.2)
     }
 
+    /// 字体 ascent（基线以上高度，逻辑像素）。光栅化定位基线用。
+    pub fn ascent(&self, size: f32) -> f32 {
+        self.font
+            .horizontal_line_metrics(size)
+            .map(|m| m.ascent)
+            .unwrap_or(size * 0.8)
+    }
+
+    /// 单字符度量（advance/xmin/ymin/width/height）。光栅化定位字形用。
+    pub fn glyph_metrics(&self, c: char, size: f32) -> fontdue::Metrics {
+        self.font.metrics(c, size)
+    }
+
+    /// 光栅化单字符为 alpha 覆盖位图（`len == width * height`）。
+    /// 外壳用它生成字形纹理（参 HANDOVER §1 Scene Text 光栅化）。
+    pub fn rasterize(&self, c: char, size: f32) -> (fontdue::Metrics, Vec<u8>) {
+        self.font.rasterize(c, size)
+    }
+
     /// 贪心换行布局。
     ///
     /// - 优先在空白断行；

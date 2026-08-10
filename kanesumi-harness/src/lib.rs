@@ -10,7 +10,10 @@ pub mod role;
 #[cfg(target_os = "linux")]
 pub mod platform;
 
-pub use app::{App, AppConfig};
+#[cfg(target_os = "linux")]
+pub mod render;
+
+pub use app::{App, AppConfig, InputEvent, PointerButton};
 pub use role::{EtherRole, RoleParseError, SurfaceKind};
 
 // Scene 下沉到 kanesumi-core（控件 → Scene 依赖方向）。此处重导出供应用使用。

@@ -6,10 +6,22 @@
 
 ```bash
 cargo check          # 检查所有 crate
-cargo test           # 单元测试（Phase 2 起每 crate 自带）
+cargo test           # 单元测试（Phase 2 起每 crate 自带；当前 94 个）
 cargo clippy
 cargo fmt
 ```
+
+### Gallery（daily driver，Linux）
+
+```bash
+# 需要在 Plasma（或任意支持 xdg-shell/layer-shell 的合成器）中运行
+cargo run -p kanesumi-gallery                # xdg-shell 窗口（Browser 角色）
+ETHER_ROLE=topbar cargo run -p kanesumi-gallery   # layer-shell TOP（测试 role 分派）
+KANESUMI_TEST_FONT=/path/to/font.ttf cargo run -p kanesumi-gallery  # 指定字体
+```
+
+> 网络提示：`kanesumi-anim` 以 git 依赖拉取 sokuou。若环境代理导致 cargo 直连 git 失败，
+> 在 `.cargo/config.toml` 设 `git-fetch-with-cli = true`（本仓已配置）。
 
 ## 架构
 
@@ -20,10 +32,23 @@ kanesumi-core       (无依赖 — 设计 tokens / 主题 / MetroText / 交互�
     ├── kanesumi-anim      (dep: sokuou(git) — Metro 动画预设，消费 Sokuou)
     ├── kanesumi-structure (dep: kanesumi-core — 页面结构)
     ├── kanesumi-controls  (dep: kanesumi-core, kanesumi-anim — Metro 控件库)
-    ├── kanesumi-harness   (dep: core+anim+structure+controls — 应用壳：App trait / 角色解析 / Scene；
-    │                        Wayland+wgpu 外壳 Linux-only，Phase 3 实现)
-    └── kanesumi-gallery   (dep: core+anim+structure+controls — Gallery 应用)
+    ├── kanesumi-harness   (dep: core+anim+structure+controls — 应用壳：App trait / 角色解析 / Scene /
+    │                        Linux Wayland+wgpu 外壳：platform.rs + render.rs)
+    └── kanesumi-gallery   (dep: core+anim+structure+controls+harness — Gallery 应用，daily driver)
 ```
+
+### Linux 外壳（kanesumi-harness，Phase 3 续完成 2026-08-10）
+
+- **`platform.rs`**：sctk 主循环。`EtherRole::surface_kind()` 分派 xdg-shell（Browser/Desktop）/
+  layer-shell（TopBar/Dock/Launcher）；frame callback 驱动 `App::update(dt)` / `App::render(engine, size)`
+  → `Renderer::render`；指针事件 → `App::handle_input`。
+- **`render.rs`**：wgpu Scene 光栅化。形状 CPU 三角化（FillRect/StrokeRect 圆角、Arc 环形扇形）；
+  文本 `TextEngine.rasterize` → R8 字形纹理 → textured quad；**非 sRGB 表面格式**（避免双伽马提亮）。
+- **`app.rs` App trait 契约**：
+  - `render(&mut self, engine: &TextEngine, size)` —— 外壳注入 TextEngine（排版唯一真源），App 用它量测、外壳用它光栅化；
+  - `handle_input(InputEvent)` —— 指针事件（Moved/Pressed/Released/Left），控件命中测试由 App 负责；
+  - `font_path()` —— 默认 `None` → 外壳按 KANESUMI_TEST_FONT → 系统字体查找。
+- **App 接口测试**：`kanesumi-gallery/src/app.rs` 9 个交互测试覆盖 switch/tab/list/dialog/dropdown/selector 状态切换。
 
 ### 与 Ether monorepo 的关系
 

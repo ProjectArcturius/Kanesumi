@@ -11,6 +11,20 @@ kanesumi-core = { path = "../kanesumi-core" }
 kanesumi-anim = { path = "../kanesumi-anim" }
 kanesumi-structure = { path = "../kanesumi-structure" }
 kanesumi-controls = { path = "../kanesumi-controls" }
+fontdue = "0.9"
+log = "0.4"
+env_logger = "0.11"
 
 # Wayland+wgpu 外壳仅 Linux（参 Ether-main PLAN.md §4.2 三层握手 / §4.4 测试阶梯）。
-# Phase 3 在 Linux 上实现时再挂 sctk / wgpu 等 target 依赖。
+# Phase 3 续（Linux 端交接）在 Linux 上挂 sctk / wgpu 等 target 依赖实现。
+[target.'cfg(target_os = "linux")'.dependencies]
+smithay-client-toolkit = { version = "0.19", default-features = false, features = [
+    "calloop",
+    "calloop-wayland-source",
+] }
+wayland-client  = { version = "0.31", features = ["system"] }
+wayland-backend = { version = "0.3", features = ["client_system"] }
+raw-window-handle = "0.6"
+wgpu = { version = "22", features = ["vulkan-portability"] }
+pollster = "0.3"
+bytemuck = { version = "1", features = ["derive"] }
