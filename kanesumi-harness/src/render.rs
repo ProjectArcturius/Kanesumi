@@ -884,6 +884,10 @@ fn glyph_key(c: char, size_px: u32) -> u32 {
 // ── 形状三角化（逻辑坐标 → 已转 NDC 的顶点）────────────────────────────
 
 /// 圆角矩形边界点（逆时针，含所有角弧）。`segs` 每角弧段数。
+///
+/// **总是**输出 `segs × 4` 个点（即使 r=0），以便 emit_stroke 里的外 / 内多边形
+/// 点数一致（V10 修复：过去 r ≤ 0.5 时每角只 1 点，与 r=2 的 6 点/角不匹配 →
+/// n = min(4, 24) = 4 → 4 大三角形跨越整个矩形，把 stroke 变成 fill）。
 fn rounded_rect_polygon(rect: Rect, radius: f32, segs: usize) -> Vec<(f32, f32)> {
     let r = radius.clamp(0.0, rect.size.width.min(rect.size.height) / 2.0);
     let (x0, y0) = (rect.origin.x, rect.origin.y);
@@ -896,8 +900,11 @@ fn rounded_rect_polygon(rect: Rect, radius: f32, segs: usize) -> Vec<(f32, f32)>
         (x1 - r, y1 - r, 0.0),
         (x0 + r, y1 - r, 90.0),
     ] {
+        // 即便 r ≤ 0.5 也发 segs 点（都聚在 (cx,cy)），保持点数一致。
         if r <= 0.5 {
-            pts.push((cx, cy));
+            for _ in 0..segs {
+                pts.push((cx, cy));
+            }
             continue;
         }
         for i in 0..segs {

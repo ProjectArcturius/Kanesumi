@@ -80,10 +80,12 @@ impl MetroButton {
         }
 
         if self.state == ControlState::Focused {
+            // 2px 描边 —— 1px 在 HiDPI (2× buffer × 分数缩放) 下退化到亚像素几乎不可见。
+            // 参 docs/VISUAL_ISSUES.md V10。
             scene.stroke_rounded_rect(
                 indication.focus_stroke,
                 rect,
-                1.0,
+                2.0,
                 theme.tokens.corner_radius,
             );
         }

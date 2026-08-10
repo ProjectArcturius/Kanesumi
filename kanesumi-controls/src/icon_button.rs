@@ -95,7 +95,8 @@ impl MetroIconButton {
             _ => {}
         }
         if self.state == ControlState::Focused {
-            scene.stroke_rect(indication.focus_stroke, rect, 1.0);
+            // 2px 描边（V10：1px 在 HiDPI 下退化到亚像素）
+            scene.stroke_rect(indication.focus_stroke, rect, 2.0);
         }
 
         let fg = if self.state == ControlState::Disabled {

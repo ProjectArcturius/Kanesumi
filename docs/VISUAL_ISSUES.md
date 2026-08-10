@@ -117,7 +117,7 @@ Menu items 用 `\u{E8E5}` `\u{E74E}` `\u{E792}` `\u{E7E8}`，Selector 触发器�
 `kanesumi-core/src/theme.rs:27` `overlay_color = Color::BLACK.with_alpha(0.45)`。在 #1E1E1E 深底上只暗 10%，遮罩形同虚设。Metro 原版 dark 主题也用**白色遮罩**（`ContentDialogDimmingThemeBrush = #99FFFFFF`）—— dark 底加白遮罩才有"上一层"的观感。
 **修法：** 深色主题遮罩换 `Color::WHITE.with_alpha(0.15)` 附近的值（对齐 UWP 白 60% 的观感，Ether 空间桌面调低一档避免刺眼），或黑 0.7+。
 
-### V10 · Focus 描边看不见 ⬜
+### V10 · Focus 描边看不见 ✅ 本 commit
 `indication.focus_stroke = 0xFFA626`（橙）但 `emit_stroke` 在 thickness=1 + 圆角 2 时环带面积退化到亚像素。1 逻辑 px 在 2× buffer 上只有 2 物理 px，抗锯齿再一模糊就没了。
 **修法：** focus_stroke thickness ≥ 2；或按 UWP 惯例焦点框在控件**外侧** 3 px（FocusVisualMargin=-3）+ 2 px 宽双色（黑 + accent）。
 
@@ -191,4 +191,5 @@ DropdownMenu / SelectorFlyout / Dialog 全部合成到主 surface，`place_popup
 | V3 | ✅ | `9d909e0` | jump_to 保 value 后再 set_target；default scale=1.05 |
 | V4 | ✅ | `92df519` | 删 Gallery 侧手工触发器绘制，selector.render 独占 |
 | V7 | ✅ | `5746c60` | Metro 自绘 chevron（Scene::triangle + canvas glyph 模块），移除 5 处 MDL2 codepoint |
-| V9 | ✅ | 本 commit | overlay_color BLACK 0.45→0.7；补 alpha ≥ 0.6 断言；恢复 KANESUMI_DEMO_STATE 视觉审计钩子 |
+| V9 | ✅ | `a27f90e` | overlay_color BLACK 0.45→0.7；补 alpha ≥ 0.6 断言；恢复 KANESUMI_DEMO_STATE 视觉审计钩子 |
+| V10 | ✅ | 本 commit | focus stroke 1→2px + 修 rounded_rect_polygon 点数一致（原本 r=2/inner_r=0 时 stroke 变 fill） |
