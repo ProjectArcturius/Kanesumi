@@ -16,8 +16,8 @@ pub fn render_demo_scene(theme: &MetroTheme, engine: &TextEngine, size: Size) ->
     let accent = MetroButton::accent("确定");
     accent.render(theme, engine, Rect::new(16.0, 16.0, 96.0, 38.0), &mut scene);
 
-    // IconButton（纯图标）
-    let icon = MetroIconButton::new("\u{E72D}");
+    // IconButton（纯图标 —— 用普通 CJK 字形做占位，避免依赖 MDL2 codepoint）
+    let icon = MetroIconButton::new("共");
     icon.render(
         theme,
         engine,
@@ -88,7 +88,7 @@ pub fn command_summary(scene: &Scene) -> (usize, usize, usize, usize, usize) {
             SceneCommand::Text { .. } => text += 1,
             SceneCommand::Arc { .. } => arc += 1,
             SceneCommand::Image { .. } => image += 1,
-            SceneCommand::ClipRect { .. } => {}
+            SceneCommand::ClipRect { .. } | SceneCommand::Triangle { .. } => {}
         }
     }
     (fill, stroke, text, arc, image)

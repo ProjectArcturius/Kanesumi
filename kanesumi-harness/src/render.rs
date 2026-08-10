@@ -552,6 +552,23 @@ impl Renderer {
                         );
                     }
                 }
+                SceneCommand::Triangle { p0, p1, p2, color } => {
+                    // 自绘几何 glyph（Metro chevron/箭头/收合指示等）——三顶点直接入 solid。
+                    // 不做 clip：几何 glyph 本身很小，不易越出容器；若真需要可后续加。
+                    let c = [color.r, color.g, color.b, color.a];
+                    solid.push(SolidVertex {
+                        pos: ndc(p0.x, p0.y),
+                        color: c,
+                    });
+                    solid.push(SolidVertex {
+                        pos: ndc(p1.x, p1.y),
+                        color: c,
+                    });
+                    solid.push(SolidVertex {
+                        pos: ndc(p2.x, p2.y),
+                        color: c,
+                    });
+                }
             }
         }
 

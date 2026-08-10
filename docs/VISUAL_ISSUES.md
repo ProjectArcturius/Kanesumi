@@ -104,7 +104,7 @@ Gallery 手绘一遍 (fill + 文本 `"选择 ▾"`)，然后 `selector.render(tr
 按钮 130 px 宽，`measure("打开对话框", 15)` 在思源黑体下约 90-100 px，本身能装下；但截图里文字左缘伸出到按钮外——原因是 `label_rect.origin.x = accent_rect.x + (130 - label_width) / 2` 允许负偏移。CONTROL_SPEC §1 明确"无 MinWidth，尺寸 = 内容 + Padding"，所以按钮宽度本应由内容驱动，而不是硬编码 130。
 **位置：** `kanesumi-controls/src/button.rs:92-100` + Gallery `accent_rect()`。
 
-### V7 · Menu / Selector 图标 glyph 全是方框 ⬜
+### V7 · Menu / Selector 图标 glyph 全是方框 ✅ 本 commit
 Menu items 用 `\u{E8E5}` `\u{E74E}` `\u{E792}` `\u{E7E8}`，Selector 触发器用 `\u{E70D}`。这些是 Segoe MDL2 / Fluent Icons 私有区编码，思源黑体没有 → 全 `.notdef` 方框。
 **Metro 定位下这是致命选择**：Metro 时代（Win8-10 早期）UI 图标是 Segoe UI Symbol + Segoe MDL2；Ether 既然选思源黑体作正体，就必须自带图标资产（SVG 位图，走 Gallery 里 `share.svg` 同款 `MetroIconButton::with_svg` 管线），或至少 fallback 到 ASCII 几何符号（"▼" "▲" "+" "×"）。
 **修法：** (a) Kanesumi 内置最小图标集（chevron_down / chevron_up / plus / close / file_open / …），走 SVG；(b) 移除代码里所有 Segoe MDL2 codepoint。
@@ -189,4 +189,5 @@ DropdownMenu / SelectorFlyout / Dialog 全部合成到主 surface，`place_popup
 | V1 | ✅ | `e6f65e0` | dropdown 文字 rect 用 panel.right() 而非 panel.width - x |
 | V2 | ✅ | `c7d8b1e` | content_rect.y 加 title.line_height |
 | V3 | ✅ | `9d909e0` | jump_to 保 value 后再 set_target；default scale=1.05 |
-| V4 | ✅ | 本 commit | 删 Gallery 侧手工触发器绘制，selector.render 独占 |
+| V4 | ✅ | `92df519` | 删 Gallery 侧手工触发器绘制，selector.render 独占 |
+| V7 | ✅ | 本 commit | Metro 自绘 chevron（Scene::triangle + canvas glyph 模块），移除 5 处 MDL2 codepoint |

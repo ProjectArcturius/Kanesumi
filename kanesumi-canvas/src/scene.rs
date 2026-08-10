@@ -58,6 +58,15 @@ pub enum SceneCommand {
         rect: Rect,
         tint: Option<Color>,
     },
+    /// 填充三角形 —— Metro 自绘几何 glyph 的最小原语（chevron/箭头/收合指示等）。
+    /// 参 docs/VISUAL_ISSUES.md V7：Kanesumi 不假设 Fluent/Segoe MDL2 字体存在，
+    /// 常用几何 glyph（▼/▶/×/+）由 canvas 侧自绘，不占 codepoint。
+    Triangle {
+        p0: Point,
+        p1: Point,
+        p2: Point,
+        color: Color,
+    },
 }
 
 /// 一帧场景 —— App / 控件的渲染产物，由 harness 外壳光栅化。
@@ -158,6 +167,11 @@ impl Scene {
     /// 设置裁剪矩形（None 清除）。内容裁剪到盒内（box 语义）。
     pub fn clip(&mut self, rect: Option<Rect>) {
         self.commands.push(SceneCommand::ClipRect { rect });
+    }
+
+    /// 填充三角形。三点按任意顺序（外壳不做正面/背面区分）。
+    pub fn triangle(&mut self, p0: Point, p1: Point, p2: Point, color: Color) {
+        self.commands.push(SceneCommand::Triangle { p0, p1, p2, color });
     }
 
     pub fn is_empty(&self) -> bool {

@@ -5,6 +5,7 @@
 // （tokens / 主题 / 排版 / 几何）；本 crate 消费 core 并产出绘制命令。
 // 依赖方向：core ← canvas ← controls/harness/gallery。
 
+pub mod glyph;
 pub mod icon;
 pub mod scene;
 pub mod text;

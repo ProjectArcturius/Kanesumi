@@ -97,7 +97,8 @@ impl GalleryApp {
                 16,
                 "Share",
             )
-            .unwrap_or_else(|| MetroIconButton::with_label("\u{E72D}", "Share")),
+            // SVG 缺失时回退为纯标签（避免依赖 MDL2 codepoint 存在，参 V7）
+            .unwrap_or_else(|| MetroIconButton::with_label("", "Share")),
             switch: MetroSwitch::with_label("飞行模式"),
             bar: MetroProgressBar::indeterminate(),
             ring: MetroProgressRing::new(),
@@ -116,11 +117,13 @@ impl GalleryApp {
                 .collect(),
             ),
             dropdown: MetroDropdownMenu::new(vec![
+                // Metro 时代 MenuFlyout 项常无图标（Fluent 时代才普遍带 MDL2 图标）；
+                // 我们既然选思源黑体而非 Segoe MDL2，就不假设 MDL2 codepoint 存在。参 V7。
                 MenuItem::new("新建"),
-                MenuItem::with_icon("打开", "\u{E8E5}"),
-                MenuItem::with_icon("保存", "\u{E74E}"),
-                MenuItem::with_icon("另存为...", "\u{E792}").separator(),
-                MenuItem::with_icon("退出", "\u{E7E8}"),
+                MenuItem::new("打开"),
+                MenuItem::new("保存"),
+                MenuItem::new("另存为...").separator(),
+                MenuItem::new("退出"),
             ]),
             selector: {
                 let mut s = MetroSelectorFlyout::new(
@@ -505,17 +508,29 @@ impl App for GalleryApp {
         let dt = self.dropdown_trigger();
         scene.fill_rounded_rect(colors.surface, dt, self.theme.tokens.corner_radius);
         let style = TextStyle::new(14.0, 20.0, kanesumi_core::FontWeight::Normal);
+        // 标签 "菜单"（原本带 " ▾" 但 U+25BE 在部分字体缺字，改用自绘 chevron 表达）
         scene.text(
-            "菜单 ▾".into(),
+            "菜单".into(),
             Rect::new(
                 dt.origin.x + 12.0,
                 dt.origin.y + (dt.size.height - style.line_height) / 2.0,
-                dt.size.width - 24.0,
+                dt.size.width - 24.0 - 22.0,
                 style.line_height,
             ),
             colors.on_surface,
             style,
             TextAlign::Left,
+        );
+        // 自绘 chevron 与 Selector 触发器同款位置约定。
+        kanesumi_canvas::glyph::chevron_down(
+            &mut scene,
+            Rect::new(
+                dt.origin.x + dt.size.width - 22.0,
+                dt.origin.y + (dt.size.height - 12.0) / 2.0,
+                12.0,
+                12.0,
+            ),
+            colors.on_surface,
         );
         self.dropdown.render(
             &self.theme,

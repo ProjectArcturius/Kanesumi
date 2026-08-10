@@ -1,3 +1,4 @@
+use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::{MetroTheme, Point, Rect, TextStyle};
@@ -132,20 +133,14 @@ impl MetroSelectorFlyout {
         };
         scene.text(text, text_rect, fg, style, TextAlign::Left);
 
-        // 箭头（E70D ChevronDown）
+        // 箭头 —— Metro 自绘 chevron（不依赖 Fluent codepoint，参 V7）。
         let arrow_rect = Rect::new(
             trigger.origin.x + trigger.size.width - 22.0,
             trigger.origin.y + (trigger.size.height - 12.0) / 2.0,
             12.0,
             12.0,
         );
-        scene.text(
-            "\u{E70D}".into(),
-            arrow_rect,
-            colors.on_surface,
-            TextStyle::new(12.0, 12.0, kanesumi_core::FontWeight::Normal),
-            TextAlign::Center,
-        );
+        glyph::chevron_down(scene, arrow_rect, colors.on_surface);
 
         // 弹层
         if !self.anim.is_visible() {
@@ -260,12 +255,18 @@ mod tests {
             Rect::new(0.0, 0.0, 800.0, 600.0),
             &mut scene,
         );
-        // 触发器底 + 文本 + 箭头（关闭时无遮罩）
+        // 触发器底 + 选中文本 + 自绘 chevron（关闭时无遮罩，无 Text 箭头）
         let texts = scene
             .commands
             .iter()
             .filter(|c| matches!(c, SceneCommand::Text { .. }))
             .count();
-        assert_eq!(texts, 2, "选中文本 + 箭头");
+        let triangles = scene
+            .commands
+            .iter()
+            .filter(|c| matches!(c, SceneCommand::Triangle { .. }))
+            .count();
+        assert_eq!(texts, 1, "只有选中文本，箭头改自绘");
+        assert_eq!(triangles, 1, "chevron 是 Triangle");
     }
 }
