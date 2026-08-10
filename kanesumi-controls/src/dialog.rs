@@ -237,9 +237,14 @@ impl MetroDialog {
             box_rect.size.height - 18.0 - 24.0,
         );
 
-        // 标题（20px，最多 2 行）
+        // 标题（20px，最多 2 行）——CONTROL_SPEC §9 Title FontSize 20 / Normal，MaxLines 2。
+        let title_style = TextStyle::new(20.0, 26.0, kanesumi_core::FontWeight::Normal);
+        let title_h = if self.title.is_empty() {
+            0.0
+        } else {
+            title_style.line_height
+        };
         if !self.title.is_empty() {
-            let title_style = TextStyle::new(20.0, 26.0, kanesumi_core::FontWeight::Normal);
             let title_rect = Rect::new(
                 inner.origin.x,
                 inner.origin.y,
@@ -255,15 +260,17 @@ impl MetroDialog {
             );
         }
 
-        // 内容
+        // 内容 —— 起点 = 标题下沿 + TitleMargin(12)。
+        // 旧 bug：只加 title_gap 没加 title_h → 正文与标题重叠 26px。参 CONTROL_SPEC §9。
         if !self.content.is_empty() {
             let content_style = TextStyle::new(14.0, 20.0, kanesumi_core::FontWeight::Normal);
-            let title_gap = if self.title.is_empty() { 0.0 } else { 12.0 };
+            let title_margin = if self.title.is_empty() { 0.0 } else { 12.0 };
+            let y_off = title_h + title_margin;
             let content_rect = Rect::new(
                 inner.origin.x,
-                inner.origin.y + title_gap,
+                inner.origin.y + y_off,
                 inner.size.width,
-                inner.size.height - 32.0 - title_gap,
+                (inner.size.height - 32.0 - y_off).max(0.0),
             );
             scene.text(
                 self.content.clone(),
@@ -322,6 +329,7 @@ mod tests {
         for p in [
             "C:/Windows/Fonts/segoeui.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
         ] {
             if let Ok(e) = TextEngine::load(p) {
                 return Some(e);
@@ -471,6 +479,48 @@ mod tests {
         assert!(
             dlg.hit_button(screen, kanesumi_core::Point::new(right - 65.0, button_y))
                 .is_none()
+        );
+    }
+
+    /// 回归 V2：内容 rect 的 y 必须落在标题 rect 下方，不重叠。
+    /// 曾经 bug：`inner.y + title_gap(12)` 忘了加 title 的 line_height(26) →
+    /// 正文 y 只比标题下移 12，实际压在标题上，视觉塌成一坨。
+    #[test]
+    fn content_does_not_overlap_title() {
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
+        let mut dlg = MetroDialog::new("保存工作？", "是否保存对当前文件的更改？");
+        dlg.show();
+        dlg.update(1.0);
+        let mut scene = Scene::default();
+        dlg.render(
+            &theme,
+            &engine,
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+            &mut scene,
+        );
+        let text_rects: Vec<_> = scene
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                SceneCommand::Text { rect, content, .. } => Some((*rect, content.clone())),
+                _ => None,
+            })
+            .collect();
+        // 找到标题和正文
+        let title = text_rects
+            .iter()
+            .find(|(_, c)| c == "保存工作？")
+            .expect("标题应产出 Text 命令");
+        let content = text_rects
+            .iter()
+            .find(|(_, c)| c == "是否保存对当前文件的更改？")
+            .expect("正文应产出 Text 命令");
+        assert!(
+            content.0.origin.y >= title.0.bottom(),
+            "正文 y({}) 必须在标题下沿({})之下",
+            content.0.origin.y,
+            title.0.bottom()
         );
     }
 }
