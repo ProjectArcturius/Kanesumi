@@ -99,7 +99,8 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
     Ok(())
 }
 
-/// 查找字体：KANESUMI_TEST_FONT → 常见系统字体。
+/// 查找字体：KANESUMI_TEST_FONT → Ether 正体（思源黑体）→ CJK → 常见拉丁。
+/// 中文/日文/韩文须 CJK 字体（DejaVu/Liberation 无 CJK 字形，会渲染为方框）。
 pub fn find_font() -> Option<std::path::PathBuf> {
     if let Ok(p) = std::env::var("KANESUMI_TEST_FONT") {
         let p = std::path::PathBuf::from(p);
@@ -108,6 +109,13 @@ pub fn find_font() -> Option<std::path::PathBuf> {
         }
     }
     for p in [
+        // Ether 正体字体：思源黑体 SC（合成器同款，SD §IX 唯一字体）。
+        "/usr/local/share/fonts/s/SourceHanSansSC_Bold.otf",
+        "/usr/local/share/fonts/s/SourceHanSansSC-Regular.otf",
+        // 系统 CJK（含中文）。
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        // 回退：拉丁（无中文，仅保运行）。
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/TTF/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",

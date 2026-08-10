@@ -12,7 +12,7 @@ use kanesumi_canvas::{Scene, SceneCommand, TextAlign};
 use kanesumi_core::{Color, Point, Rect, TextStyle};
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{Connection, Proxy};
-use wgpu::util::DeviceExt;
+// 顶点持久化使用 write_buffer；无 create_buffer_init（DeviceExt 不再需要）。
 
 // ── 顶点类型 ─────────────────────────────────────────────────────────────
 
@@ -134,6 +134,14 @@ pub struct Renderer {
     glyphs: HashMap<u32, GlyphEntry>,
     /// 图标纹理缓存：key = (width,height) + rgba 内容 FNV 哈希。同一图标去重复用。
     images: HashMap<u32, GlyphEntry>,
+    /// 持久顶点缓冲（避免每帧 create_buffer 的 GPU 分配开销，§4.1 保留视觉树）。
+    solid_buf: wgpu::Buffer,
+    text_buf: wgpu::Buffer,
+    image_buf: wgpu::Buffer,
+    /// 缓冲容量（顶点数），不足时翻倍重建。
+    solid_cap: u32,
+    text_cap: u32,
+    image_cap: u32,
     /// 逻辑 → 物理缩放（整数，通常 1 或 2）。
     scale: f32,
     /// 逻辑尺寸。
@@ -377,6 +385,20 @@ impl Renderer {
             cache: None,
         });
 
+        // 持久顶点缓冲（初始容量，不足时翻倍）。§4.1 不变量 1：静态内容保留，避免每帧重建。
+        let mk_vert_buf = |label: &str, cap: u64| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: cap * std::mem::size_of::<TextVertex>() as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        let (solid_cap, text_cap, image_cap) = (1024u32, 1024u32, 128u32);
+        let solid_buf = mk_vert_buf("kanesumi-solid-buf", 1024);
+        let text_buf = mk_vert_buf("kanesumi-text-buf", 1024);
+        let image_buf = mk_vert_buf("kanesumi-image-buf", 128);
+
         Ok(Self {
             surface,
             device,
@@ -389,6 +411,12 @@ impl Renderer {
             sampler,
             glyphs: HashMap::new(),
             images: HashMap::new(),
+            solid_buf,
+            text_buf,
+            image_buf,
+            solid_cap,
+            text_cap,
+            image_cap,
             scale,
             width,
             height,
@@ -404,11 +432,6 @@ impl Renderer {
         self.config.width = pw.max(1.0) as u32;
         self.config.height = ph.max(1.0) as u32;
         self.surface.configure(&self.device, &self.config);
-    }
-
-    /// 逻辑尺寸。
-    pub fn size(&self) -> (f32, f32) {
-        (self.width, self.height)
     }
 
     /// 把一帧 Scene 光栅化到当前表面并提交。
@@ -544,29 +567,29 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            // 形状（单次 draw）
+            // 形状（单次 draw，持久缓冲）
             if !solid.is_empty() {
-                let buf = self
-                    .device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("kanesumi-solid-verts"),
-                        contents: bytemuck::cast_slice(&solid),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    });
+                let buf = upload_vertices_solid(
+                    &self.device,
+                    &self.queue,
+                    &mut self.solid_buf,
+                    &mut self.solid_cap,
+                    &solid,
+                );
                 pass.set_pipeline(&self.solid_pipeline);
                 pass.set_vertex_buffer(0, buf.slice(..));
                 pass.draw(0..solid.len() as u32, 0..1);
             }
 
-            // 文本（逐字形，独立绑定纹理）
+            // 文本（逐字形，独立绑定纹理；持久缓冲）
             if !text.is_empty() {
-                let buf = self
-                    .device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("kanesumi-text-verts"),
-                        contents: bytemuck::cast_slice(&text),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    });
+                let buf = upload_vertices(
+                    &self.device,
+                    &self.queue,
+                    &mut self.text_buf,
+                    &mut self.text_cap,
+                    &text,
+                );
                 pass.set_pipeline(&self.text_pipeline);
                 pass.set_vertex_buffer(0, buf.slice(..));
                 for run in &text_runs {
@@ -578,15 +601,15 @@ impl Renderer {
                 }
             }
 
-            // 图标（逐纹理，独立绑定）
+            // 图标（逐纹理，独立绑定；持久缓冲）
             if !image.is_empty() {
-                let buf = self
-                    .device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("kanesumi-image-verts"),
-                        contents: bytemuck::cast_slice(&image),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    });
+                let buf = upload_vertices(
+                    &self.device,
+                    &self.queue,
+                    &mut self.image_buf,
+                    &mut self.image_cap,
+                    &image,
+                );
                 pass.set_pipeline(&self.image_pipeline);
                 pass.set_vertex_buffer(0, buf.slice(..));
                 for run in &image_runs {
@@ -618,12 +641,14 @@ impl Renderer {
         style: TextStyle,
         align: TextAlign,
     ) {
+        // 光栅化用物理字号（保字形清晰），quad 坐标用逻辑（与 fill_rect 同坐标系）。
+        // 修复：scale>1 时若混用物理坐标进逻辑 NDC，文字会放大错位。
         let size_phys = style.size * self.scale;
         let lines = engine.layout(content, style.size, rect.size.width);
-        let line_advance = style.line_height * self.scale;
-        let ascent_phys = engine.ascent(size_phys);
+        let line_advance = style.line_height;
+        let ascent_log = engine.ascent(size_phys) / self.scale;
 
-        let mut line_y = rect.origin.y * self.scale;
+        let mut line_y = rect.origin.y;
         for line in &lines {
             // 对齐决定行首 x（逻辑）
             let line_w = line.width;
@@ -632,18 +657,22 @@ impl Renderer {
                 TextAlign::Center => rect.origin.x + (rect.size.width - line_w) / 2.0,
                 TextAlign::Right => rect.origin.x + rect.size.width - line_w,
             };
-            let baseline = line_y + ascent_phys;
-            let mut pen = x_log * self.scale;
+            let baseline = line_y + ascent_log;
+            let mut pen = x_log;
             for c in line.content.chars() {
                 let (metrics, bitmap) = engine.rasterize(c, size_phys);
                 if metrics.width == 0 || metrics.height == 0 {
-                    pen += metrics.advance_width;
+                    pen += metrics.advance_width / self.scale;
                     continue;
                 }
                 let key = glyph_key(c, size_phys.round() as u32);
-                let x0 = pen + metrics.xmin as f32;
-                let y0 = baseline - metrics.ymin as f32 - metrics.height as f32;
-                let (w, h) = (metrics.width as f32, metrics.height as f32);
+                // 物理 metrics → 逻辑坐标（÷ scale）。
+                // fontdue: ymin = bitmap 底相对基线的偏移（负 = 底在基线上方）；
+                // 字形顶 = baseline + ymin - height。符号错了会把字形推错位。
+                let inv = 1.0 / self.scale;
+                let x0 = pen + metrics.xmin as f32 * inv;
+                let y0 = baseline + metrics.ymin as f32 * inv - metrics.height as f32 * inv;
+                let (w, h) = (metrics.width as f32 * inv, metrics.height as f32 * inv);
                 let (x1, y1) = (x0 + w, y0 + h);
                 let start = verts.len() as u32;
                 push_quad(
@@ -661,7 +690,7 @@ impl Renderer {
                     count: 6,
                 });
                 pending.push((key, bitmap, metrics));
-                pen += metrics.advance_width;
+                pen += metrics.advance_width * inv;
             }
             line_y += line_advance;
         }
@@ -1028,6 +1057,59 @@ fn emit_arc(
         prev_o = Some((ox, oy));
         prev_i = Some((ix, iy));
     }
+}
+
+/// 把顶点数据写入持久缓冲（容量不足时重建并翻倍）。
+/// 返回缓冲引用。避免每帧 create_buffer 的 GPU 分配（§4.1 不变量 1）。
+fn upload_vertices<'a>(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    buf: &'a mut wgpu::Buffer,
+    cap: &mut u32,
+    verts: &[TextVertex],
+) -> &'a wgpu::Buffer {
+    let needed = verts.len() as u32;
+    if *cap < needed {
+        while *cap < needed {
+            *cap = (*cap * 2).max(1024);
+        }
+        *buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("kanesumi-vert-buf"),
+            size: *cap as u64 * std::mem::size_of::<TextVertex>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+    }
+    if !verts.is_empty() {
+        queue.write_buffer(buf, 0, bytemuck::cast_slice(verts));
+    }
+    buf
+}
+
+/// 把形状顶点数据写入持久缓冲（SolidVertex 大小同 TextVertex 布局，通用）。
+fn upload_vertices_solid<'a>(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    buf: &'a mut wgpu::Buffer,
+    cap: &mut u32,
+    verts: &[SolidVertex],
+) -> &'a wgpu::Buffer {
+    let needed = verts.len() as u32;
+    if *cap < needed {
+        while *cap < needed {
+            *cap = (*cap * 2).max(1024);
+        }
+        *buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("kanesumi-solid-buf"),
+            size: *cap as u64 * std::mem::size_of::<SolidVertex>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+    }
+    if !verts.is_empty() {
+        queue.write_buffer(buf, 0, bytemuck::cast_slice(verts));
+    }
+    buf
 }
 
 /// 推入一个 quad（两三角形）。
