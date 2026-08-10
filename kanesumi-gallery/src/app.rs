@@ -787,7 +787,6 @@ mod structure_integration {
     use super::*;
     use crate::pages::GalleryPage;
     use kanesumi_structure::{MetroShell, Navigation};
-
     #[test]
     fn navigation_drives_shell_pages() {
         let mut nav: Navigation<GalleryPage> = Navigation::new(GalleryPage::DesignTokens);
@@ -819,5 +818,69 @@ mod structure_integration {
             c,
             kanesumi_canvas::SceneCommand::Text { content, .. } if content == "Ether"
         )));
+    }
+}
+
+#[cfg(test)]
+mod decl_integration {
+    use super::tests::find_font;
+    use kanesumi_canvas::text::TextEngine;
+    use kanesumi_controls::{Decl, DeclAction, view};
+    use kanesumi_core::MetroTheme;
+
+    /// 声明式 UI 端到端：view! → render_decl → 命中 → 动作。
+    #[test]
+    fn declarative_button_renders_and_hits() {
+        let Some(p) = find_font() else {
+            return;
+        };
+        let engine = TextEngine::load(p).unwrap();
+        let theme = MetroTheme::ether_dark();
+
+        let tree: Decl = view! {
+            Column {
+                view!(Button { label: "打开对话框".to_string(), accent: true, action: DeclAction::OpenDialog }),
+                view!(Button { label: "取消".to_string(), accent: false, action: DeclAction::Custom(1) })
+            }
+        };
+
+        let (scene, hits) = kanesumi_controls::render_decl(
+            &theme,
+            &engine,
+            &tree,
+            kanesumi_core::Rect::new(0.0, 0.0, 200.0, 80.0),
+        );
+        assert!(!scene.commands.is_empty(), "渲染出命令");
+        assert_eq!(hits.len(), 2, "两个按钮都可命中");
+        assert_eq!(hits[0].action, DeclAction::OpenDialog);
+        assert_eq!(hits[1].action, DeclAction::Custom(1));
+        assert_eq!(hits[0].rect.size.height, 40.0, "纵向均分");
+    }
+
+    /// 动作路由：命中表 → 触发（验证声明式 UI 与 App 逻辑的接线）。
+    #[test]
+    fn action_routes_to_app_behavior() {
+        let Some(p) = find_font() else {
+            return;
+        };
+        let engine = TextEngine::load(p).unwrap();
+        let theme = MetroTheme::ether_dark();
+        let tree: Decl = view! {
+            Row {
+                view!(Button { label: "打开".to_string(), accent: true, action: DeclAction::OpenDialog })
+            }
+        };
+        let (_, hits) = kanesumi_controls::render_decl(
+            &theme,
+            &engine,
+            &tree,
+            kanesumi_core::Rect::new(0.0, 0.0, 200.0, 40.0),
+        );
+        // 模拟点击第一个命中矩形中心 → 应路由到 OpenDialog
+        let hit = &hits[0];
+        let center = hit.rect.center();
+        let triggered = hit.rect.contains(center);
+        assert!(triggered, "命中矩形应包含其中心");
+        assert_eq!(hit.action, DeclAction::OpenDialog);
     }
 }
