@@ -97,7 +97,7 @@ Gallery 手绘一遍 (fill + 文本 `"选择 ▾"`)，然后 `selector.render(tr
 
 ## 🟠 高优
 
-### V5 · Gallery 标题压到按钮 ⬜
+### V5 · Gallery 标题压到按钮 ✅ 本 commit
 `kanesumi-gallery/src/app.rs:19-20`。CTRL_Y0=44，但标题从 y=20、高 42 到 y=62。重叠 18 px。**根本解**是引入 box 布局器（V22），本条只是"当前 Gallery 硬编码常量错"。
 
 ### V6 · Accent 按钮 "打开对话框" 文字溢出 ⬜
@@ -192,4 +192,5 @@ DropdownMenu / SelectorFlyout / Dialog 全部合成到主 surface，`place_popup
 | V4 | ✅ | `92df519` | 删 Gallery 侧手工触发器绘制，selector.render 独占 |
 | V7 | ✅ | `5746c60` | Metro 自绘 chevron（Scene::triangle + canvas glyph 模块），移除 5 处 MDL2 codepoint |
 | V9 | ✅ | `a27f90e` | overlay_color BLACK 0.45→0.7；补 alpha ≥ 0.6 断言；恢复 KANESUMI_DEMO_STATE 视觉审计钩子 |
-| V10 | ✅ | 本 commit | focus stroke 1→2px + 修 rounded_rect_polygon 点数一致（原本 r=2/inner_r=0 时 stroke 变 fill） |
+| V10 | ✅ | `66c0dc5` | focus stroke 1→2px + 修 rounded_rect_polygon 点数一致（原本 r=2/inner_r=0 时 stroke 变 fill） |
+| V5 | ✅ | 本 commit | Gallery TITLE_H 36→42 对齐 line_height；CTRL_Y0 从常量 44 改为派生 = TITLE_Y+TITLE_H+12 |

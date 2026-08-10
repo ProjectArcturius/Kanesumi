@@ -16,8 +16,13 @@ use kanesumi_harness::{App, AppConfig, EtherRole, InputEvent, PointerButton};
 
 /// 布局常量（逻辑像素）。
 const PAD: f32 = 16.0;
-const TITLE_H: f32 = 36.0;
-const CTRL_Y0: f32 = 44.0;
+/// 标题 y 起点。
+const TITLE_Y: f32 = 20.0;
+/// 标题 rect 高度 —— page_heading (34/42) 行高，与 emit_text 实际排版一致
+/// （原本用 36 与 line_height 42 不一致，视觉上标题会溢出 rect 6px）。
+const TITLE_H: f32 = 42.0;
+/// 控件区起点 = 标题下沿 + 12 gap（V5：原本 44，与标题 y∈[20,62] 重叠 18px）。
+const CTRL_Y0: f32 = TITLE_Y + TITLE_H + 12.0;
 
 /// 交互目标 —— 常规控件命中标识。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -511,7 +516,7 @@ impl App for GalleryApp {
         let title_style = self.theme.typography.page_heading;
         scene.text(
             "Kanesumi Gallery".into(),
-            Rect::new(PAD, 20.0, size.width - PAD * 2.0, TITLE_H),
+            Rect::new(PAD, TITLE_Y, size.width - PAD * 2.0, TITLE_H),
             colors.on_background,
             title_style,
             TextAlign::Left,
