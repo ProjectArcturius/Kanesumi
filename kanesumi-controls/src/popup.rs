@@ -1,5 +1,62 @@
 use kanesumi_anim::{MetroAnim, MetroPresets};
-use kanesumi_core::{MetroTheme, Rect, Scene};
+use kanesumi_core::{MetroTheme, Rect, Scene, Size};
+
+/// 弹层展开方向。参 CONTROL_SPEC §8（ComboBoxHelper 判据：弹出容器相对触发器 Top>0 即向下）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PopupDirection {
+    Down,
+    Up,
+}
+
+/// 弹层定位结果 —— 方向 + 面板矩形。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PopupPlacement {
+    pub direction: PopupDirection,
+    pub rect: Rect,
+}
+
+/// 弹层与触发器间的固定间隙（px）。
+pub const POPUP_GAP: f32 = 4.0;
+
+/// 弹层间隙访问器（供外部与 `place_popup` 对齐）。
+pub const fn popup_gap() -> f32 {
+    POPUP_GAP
+}
+
+/// 计算面板位置：优先向下（触发器下方空间足够）；不足则向上翻转。
+///
+/// 判据（ComboBoxHelper）：触发器下缘到屏幕底的空间 ≥ 面板高 + 间隙 → Down；否则 Up。
+/// 水平方向：面板与触发器左缘对齐（右缘超出屏幕时收拢）。
+#[must_use]
+pub fn place_popup(trigger: Rect, panel_size: Size, screen: Rect, gap: f32) -> PopupPlacement {
+    let below = screen.bottom() - trigger.bottom();
+    let panel_h = panel_size.height;
+    let direction = if below >= panel_h + gap {
+        PopupDirection::Down
+    } else {
+        PopupDirection::Up
+    };
+    let x = match direction {
+        PopupDirection::Down => trigger.origin.x,
+        PopupDirection::Up => {
+            let w = panel_size.width.min(screen.size.width);
+            let left = trigger.origin.x;
+            if left + w > screen.right() {
+                (screen.right() - w).max(screen.origin.x)
+            } else {
+                left
+            }
+        }
+    };
+    let y = match direction {
+        PopupDirection::Down => trigger.bottom() + gap,
+        PopupDirection::Up => trigger.origin.y - panel_h - gap,
+    };
+    PopupPlacement {
+        direction,
+        rect: Rect::new(x, y, panel_size.width, panel_size.height),
+    }
+}
 
 /// 弹层状态机。参 CONTROL_SPEC §8/§9：
 /// - 遮罩淡入 0.383s / 淡出 0.216s（OverlayOpening/ClosingAnimation）；
@@ -131,6 +188,7 @@ pub fn render_panel_base(theme: &MetroTheme, rect: Rect, progress: f64, scene: &
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kanesumi_core::Point;
 
     #[test]
     fn open_reaches_open() {
@@ -172,5 +230,39 @@ mod tests {
         let color = MetroTheme::ether_dark().overlay_color;
         assert!(color.a > 0.0 && color.a < 1.0, "遮罩半透明");
         assert_eq!(color.r, 0.0, "深色遮罩");
+    }
+
+    #[test]
+    fn place_popup_down_when_space() {
+        let trigger = Rect::new(100.0, 200.0, 200.0, 32.0);
+        let size = Size::new(200.0, 160.0);
+        let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let p = place_popup(trigger, size, screen, 4.0);
+        assert_eq!(p.direction, PopupDirection::Down);
+        assert_eq!(p.rect.origin, Point::new(100.0, 236.0));
+    }
+
+    #[test]
+    fn place_popup_up_when_no_space_below() {
+        // 触发器贴近屏幕底，下方只有 20px < 160 + 4
+        let trigger = Rect::new(100.0, 540.0, 200.0, 32.0);
+        let size = Size::new(200.0, 160.0);
+        let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let p = place_popup(trigger, size, screen, 4.0);
+        assert_eq!(p.direction, PopupDirection::Up);
+        assert_eq!(p.rect.origin.y, 540.0 - 160.0 - 4.0, "面板上翻");
+    }
+
+    #[test]
+    fn place_popup_up_clamps_right_edge() {
+        let trigger = Rect::new(700.0, 540.0, 200.0, 32.0);
+        let size = Size::new(200.0, 160.0);
+        let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let p = place_popup(trigger, size, screen, 4.0);
+        assert_eq!(p.direction, PopupDirection::Up);
+        assert!(
+            p.rect.origin.x + p.rect.size.width <= screen.right() + 0.01,
+            "面板右缘不超出屏幕"
+        );
     }
 }

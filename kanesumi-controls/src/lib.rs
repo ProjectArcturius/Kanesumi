@@ -24,7 +24,10 @@ pub use dialog::{DialogButton, DialogButtons, DialogDefaultButton, DialogState, 
 pub use dropdown_menu::{MenuItem, MetroDropdownMenu};
 pub use icon_button::MetroIconButton;
 pub use list::MetroList;
-pub use popup::{PopupAnim, PopupState, render_overlay};
+pub use popup::{
+    POPUP_GAP, PopupAnim, PopupDirection, PopupPlacement, PopupState, place_popup, popup_gap,
+    render_overlay,
+};
 pub use progress::{MetroProgressBar, MetroProgressRing, ProgressMode};
 pub use selector_flyout::MetroSelectorFlyout;
 pub use state::{ButtonState, ControlState};

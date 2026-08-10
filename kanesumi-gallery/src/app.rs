@@ -160,25 +160,21 @@ impl GalleryApp {
         Rect::new(PAD + 280.0, CTRL_Y0 + 214.0, 180.0, 32.0)
     }
 
-    /// 弹层面板锚点（触发器下方）。
+    /// 弹层面板锚点（方向自适应：下方空间不足时上翻，参 CONTROL_SPEC §8）。
     fn dropdown_panel(&self) -> Rect {
         let t = self.dropdown_trigger();
         let size = self.dropdown.panel_size(&self.engine);
-        Rect::new(
-            t.origin.x,
-            t.origin.y + t.size.height + 4.0,
-            size.width,
-            size.height,
-        )
+        kanesumi_controls::place_popup(t, size, self.screen(), kanesumi_controls::popup_gap()).rect
     }
     fn selector_panel(&self) -> Rect {
         let t = self.selector_trigger();
-        Rect::new(
-            t.origin.x,
-            t.origin.y + t.size.height + 4.0,
-            t.size.width,
-            self.selector.panel_height(),
-        )
+        let size = kanesumi_core::Size::new(t.size.width, self.selector.panel_height());
+        kanesumi_controls::place_popup(t, size, self.screen(), kanesumi_controls::popup_gap()).rect
+    }
+
+    /// Gallery 全屏窗口（供弹层方向自适应用）。
+    fn screen(&self) -> Rect {
+        Rect::new(0.0, 0.0, self.config.width, self.config.height)
     }
 
     /// 命中常规控件（弹层优先，由调用方处理）。
