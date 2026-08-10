@@ -1,4 +1,4 @@
-// Kanesumi（矩隅）· Metro 标准控件库
+// Kanesumi（矩隅）· 标准控件库
 //
 // 对应 Kanesumi-sec-a 的 `:kanesumi-controls`。Phase 3 首套控件已完成（参 CONTROL_SPEC）：
 // MetroText / MetroButton / MetroIconButton / MetroSwitch / MetroProgressBar / MetroProgressRing /

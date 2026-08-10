@@ -185,7 +185,7 @@
 | **Selected** | **强调色 75% 不透明整行填充**（`ListAccentMediumLow`） |
 | SelectedPointerOver | 强调色低档；SelectedPressed 强调色 90% |
 
-> Kanesumi 修正：现实现 selected = `primary.with_alpha(0.15)` **明显偏轻**，不达 Metro。改为 **0.60**（UWP 为 0.75，Ether 深色桌面调低一档），`padding_x` 16→**12**，行高下限 **40**（现 38）。
+> Kanesumi 修正：现实现 selected = `primary.with_alpha(0.15)` **明显偏轻**，不达 UWP 规格。改为 **0.60**（UWP 为 0.75，Ether 深色桌面调低一档），`padding_x` 16→**12**，行高下限 **40**（现 38）。
 
 ### 多选（备） | 网格（备）
 - 多选：左侧 20×20、2px 边框勾选框，出现动画 X 位移 0↔−32，**0.333s**，spline `0.1,0.9,0.2,1`

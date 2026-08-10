@@ -1,6 +1,6 @@
 [package]
 name = "kanesumi-controls"
-description = "Kanesumi（矩隅）· Metro 标准控件库：MetroSurface / Button / List …"
+description = "Kanesumi（矩隅）· 标准控件库：MetroSurface / Button / List …"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"

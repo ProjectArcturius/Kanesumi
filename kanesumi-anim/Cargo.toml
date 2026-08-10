@@ -1,6 +1,6 @@
 [package]
 name = "kanesumi-anim"
-description = "Kanesumi（矩隅）· 动画层：消费 Sokuou（即応エンジン）的 Metro 动画预设"
+description = "Kanesumi（矩隅）· 动画层：消费 Sokuou（即応エンジン）的 Kanesumi 动画预设"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"

@@ -29,10 +29,10 @@ KANESUMI_TEST_FONT=/path/to/font.ttf cargo run -p kanesumi-gallery  # 指定字�
 
 ```
 kanesumi-core       (无依赖 — 设计 tokens / 主题 / MetroText / 交互指示 / 几何原语)
-    ├── kanesumi-anim      (dep: sokuou(git) — Metro 动画预设，消费 Sokuou)
+    ├── kanesumi-anim      (dep: sokuou(git) — Kanesumi 动画预设，消费 Sokuou)
     ├── kanesumi-canvas    (dep: kanesumi-core — 2D 图形：Scene 渲染命令 + TextEngine 排版)
     ├── kanesumi-structure (dep: kanesumi-core + canvas — 导航状态机 + 壳布局)
-    ├── kanesumi-controls  (dep: core+canvas+anim — Metro 控件库)
+    ├── kanesumi-controls  (dep: core+canvas+anim — Kanesumi 控件库)
     ├── kanesumi-harness   (dep: core+canvas+anim+structure+controls — 应用壳：App trait / 角色解析 /
     │                        Linux Wayland+wgpu 外壳：platform.rs + render.rs)
     └── kanesumi-gallery   (dep: core+canvas+anim+structure+controls+harness — Gallery 应用，daily driver)
@@ -118,7 +118,7 @@ panic 不杀进程（记日志 + 跳过本帧）。合成器时钟 dt 限幅 50m
 
 ## 设计铁律
 
-1. **Metro 而非 Fluent** —— 轻盈短促、0.25s、Quadratic/EaseOut。Win11 Fluent 仅作反面教材。
+1. **Kanesumi Design，而非 Fluent** —— 轻盈短促、0.25s、Quadratic/EaseOut。参考 UWP/Metro 时代；Win11 Fluent 仅作反面教材。
 2. **Sokuou 动画唯一真源** —— 动画一律走 `kanesumi-anim`（消费 sokuou），禁止自造动画原语。
 3. **状态驱动渲染** —— `state → progress → resolved spatial state → render`。
 4. **动画只动视觉属性，不动布局** —— 位移/缩放/透明走快速路径，绝不触发 Measure/Arrange。
@@ -140,3 +140,7 @@ OS 闭源缺失项的处理（标注「未在快照中」）。新增/修改控�
 - 颜色为 `kanesumi_core::Color`（SRGBA f32）；尺寸为逻辑像素。
 - 所有 crate 为纯 Rust、无 `unsafe`、跨平台（`#[cfg(target_os)]` 仅限渲染/输入外壳）。
 - 新增控件前先读 `kanesumi-sec-a` 同名实现 + `microsoft-ui-xaml` 控件源码。
+
+## 术语约定（Kanesumi Design 定名）
+
+本仓实现的设计语言为 **Kanesumi Design**（正典：Ether monorepo 仓根 `KANESUMI_DESIGN.md`，取代「Metro Design / 改良 Metro」）。**`Metro*` 标识符**（MetroText/MetroTheme/MetroIndication/MetroShell…）是代码/组件名，**保留不重命名**。写文档/注释：用「Kanesumi 风格 / Kanesumi 铁律 / Kanesumi 控件库」，不写「Metro 风格 / Metro 铁律」；缓动族称「UWP 缓动」（`UwpEasing`）；「Metro 时代」仅作历史指称。完整映射见 `KANESUMI_DESIGN.md` §Ⅴ。

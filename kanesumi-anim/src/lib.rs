@@ -1,6 +1,6 @@
 // Kanesumi（矩隅）· 动画层
 //
-// 消费 Sokuou（即応エンジン），提供 Metro 动画预设与命名缓动。
+// 消费 Sokuou（即応エンジン），提供 Kanesumi 动画预设与命名缓动。
 // 参 PLAN.md §2.1（Sokuou 为动画唯一真源）与 §4（动画三层：弹簧主运动 / 时长驱动次要属性 / 过渡组）。
 
 pub mod easings;

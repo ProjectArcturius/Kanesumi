@@ -1,8 +1,8 @@
 use sokuou::{EasingMode, UwpEasing, apply_uwp};
 
-/// 默认 Metro 缓动：Quadratic / EaseOut。0.25s 标准时长搭配。
+/// 默认 UWP 缓动：Quadratic / EaseOut。0.25s 标准时长搭配。
 ///
-/// 命名缓动族 —— Metro 短时、克制的过渡。参 Sokuou `uwp.rs`（UWP EasingFunctionBase 全量移植）。
+/// 命名缓动族 —— Kanesumi 短时、克制的过渡。参 Sokuou `uwp.rs`（UWP EasingFunctionBase 全量移植）。
 /// 用法：把归一化进度 t ∈ [0,1] 映射为缓动后的进度。
 ///
 /// ```

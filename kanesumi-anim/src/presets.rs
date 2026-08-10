@@ -1,6 +1,6 @@
 use sokuou::{EasingMode, MetroAnim, SpringAnim, UwpEasing};
 
-/// Metro 标准动画时长：0.25s。轻盈短促、60Hz 友好。参 PLAN.md §2。
+/// Kanesumi 标准动画时长：0.25s。轻盈短促、60Hz 友好。参 PLAN.md §2。
 pub const METRO_STANDARD_DURATION: f64 = 0.25;
 
 /// 面板 / 弹窗入场时长。
@@ -28,13 +28,13 @@ pub const DURATION_DIALOG_FADE_IN: f64 = 0.167;
 /// 对话框淡出。UWP 0.083s 线性（opacity 先行熄灭）。
 pub const DURATION_DIALOG_FADE_OUT: f64 = 0.083;
 
-/// Metro 动画预设。参 PLAN.md §4-1/§4-2 动画三层：
+/// Kanesumi 动画预设。参 PLAN.md §4-1/§4-2 动画三层：
 ///
 /// - **主运动**（位移 / 缩放 / 面板滑入）→ `SpringAnim` 解析解弹簧，帧率无关、可中断。
 /// - **次要属性**（透明度 / 颜色）→ `MetroAnim` 时长驱动 + UWP 缓动。
 ///
 /// 弹簧参数来源：SOKUOU_ENGINE.md §6.3 Apple 风格典型值表；
-/// 时长 / 曲线来源：真实 Metro / UWP 组件观测聚类。
+/// 时长 / 曲线来源：真实 UWP（Metro 时代）组件观测聚类。
 pub struct MetroPresets;
 
 impl MetroPresets {

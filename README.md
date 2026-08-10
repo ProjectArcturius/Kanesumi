@@ -1,6 +1,6 @@
 # Kanesumi（矩隅）—— 以直角丈量边缘
 
-**Ether 扇区·主仓（mainline）**：用 Rust 编写的原生应用 Runtime，统一 Metro 设计语言 + Sokuou（即応エンジン）动画。
+**Ether 扇区·主仓（mainline）**：用 Rust 编写的原生应用 Runtime，统一 Kanesumi Design 设计语言 + Sokuou（即応エンジン）动画。
 
 > "以直角丈量边缘"是设计语言级陈述，与平台无关。各平台为**扇区 Sector**，共享同一圆心（设计语言 + Sokuou 动画）。
 
@@ -20,12 +20,13 @@
 | `kanesumi-canvas` | 2D 图形：Scene 渲染命令 + TextEngine 排版（对应 Win2D） | ✅ 拆分完成（2026-08-10） |
 | `kanesumi-harness` | 应用壳：App trait / ETHER_ROLE 角色解析 / Scene 场景 + Linux Wayland+wgpu 外壳 | 🆕 核心完成，外壳 Phase 3 |
 | `kanesumi-structure` | 页面结构（Navigation 状态机 / ShellLayout / AppBar / Scaffold） | ✅ 导航+壳布局（2026-08-10） |
-| `kanesumi-controls` | Metro 标准控件库（MetroSurface / Button / List…） | ✅ 12 控件全量 + 输入层 |
+| `kanesumi-controls` | Kanesumi 标准控件库（MetroSurface / Button / List…） | ✅ 12 控件全量 + 输入层 |
 | `kanesumi-gallery` | Gallery 应用 —— 三层测试阶梯的 daily driver | ✅ 全交互 + 滚轮/弹层方向 |
 
 ## 设计原则
 
-- **Metro，而非 Fluent**：轻盈、短促、0.25s、60Hz 友好、Quadratic/EaseOut。WinUI 3 / Win11 的 Fluent 动画仅作反面教材。
+- **设计语言正典**：Kanesumi Design（`KANESUMI_DESIGN.md`，Ether monorepo 仓根）——取代历史称谓「Metro Design」。
+- **Kanesumi Design，而非 Fluent**：轻盈、短促、0.25s、60Hz 友好、Quadratic/EaseOut。参考 UWP/Metro 时代；WinUI 3 / Win11 的 Fluent 动画仅作反面教材。
 - **Sokuou 是动画唯一真源**：`kanesumi-anim` 直接消费 `sokuou`（git 依赖，Ether monorepo 侧以 `[patch]` 收敛到本地 submodule）。
 - **状态驱动渲染**：`state → progress → resolved spatial state → render`，不做 timeline 播放。
 - **无隐藏控件**：reconciler 逻辑组件不产生额外原生控件。
