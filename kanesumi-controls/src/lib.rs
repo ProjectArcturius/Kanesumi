@@ -1,20 +1,39 @@
 // Kanesumi（矩隅）· Metro 标准控件库
 //
-// 对应 Kanesumi-sec-a 的 `:kanesumi-controls`。Phase 3 首套控件：Text / Button / List / Surface。
+// 对应 Kanesumi-sec-a 的 `:kanesumi-controls`。Phase 3 首套控件已完成（参 CONTROL_SPEC）：
+// MetroText / MetroButton / MetroIconButton / MetroSwitch / MetroProgressBar / MetroProgressRing /
+// MetroTabRow / MetroList / MetroSelectorFlyout / MetroDropdownMenu / MetroDialog / MetroSurface。
 // 状态驱动渲染：控件持有状态，`render(theme, engine, rect, scene)` 把当前状态解析为 Scene 命令。
-// 逐一对照 microsoft-ui-xaml 控件实现与 WinUI-Gallery 交互（参 PLAN.md §5 Phase 3）。
 
 pub mod button;
+pub mod dialog;
+pub mod dropdown_menu;
+pub mod icon_button;
 pub mod list;
+pub mod popup;
+pub mod progress;
+pub mod selector_flyout;
+pub mod state;
 pub mod surface;
+pub mod switch;
+pub mod tab_row;
 pub mod text;
 
-pub use button::{ButtonKind, ButtonState, MetroButton};
+pub use button::{ButtonKind, MetroButton};
+pub use dialog::{DialogButtons, DialogDefaultButton, DialogState, MetroDialog};
+pub use dropdown_menu::{MenuItem, MetroDropdownMenu};
+pub use icon_button::MetroIconButton;
 pub use list::MetroList;
+pub use popup::{PopupAnim, PopupState, render_overlay};
+pub use progress::{MetroProgressBar, MetroProgressRing, ProgressMode};
+pub use selector_flyout::MetroSelectorFlyout;
+pub use state::{ButtonState, ControlState};
 pub use surface::MetroSurface;
+pub use switch::MetroSwitch;
+pub use tab_row::{MetroTab, MetroTabRow};
 pub use text::MetroText;
 
-/// Phase 3 后续控件清单（对照 Kanesumi-sec-a 同名控件 + WinUI-Gallery）。
+/// Phase 3 后续控件（对照 Kanesumi-sec-a + WinUI-Gallery）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlKind {
     MetroSurface,

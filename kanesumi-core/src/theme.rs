@@ -1,3 +1,4 @@
+use crate::color::Color;
 use crate::colors::MetroColors;
 use crate::indicator::MetroIndication;
 use crate::tokens::Tokens;
@@ -10,6 +11,9 @@ pub struct MetroTheme {
     pub typography: MetroTypography,
     pub tokens: Tokens,
     pub indication: MetroIndication,
+    /// 弹层遮罩色（对话框 / 下拉）。UWP 经典为白 60%（#99FFFFFF），
+    /// Ether 深色空间桌面改黑 45% 半透明（参 CONTROL_SPEC §9 + LP_DIM 惯例）。
+    pub overlay_color: Color,
 }
 
 impl MetroTheme {
@@ -20,6 +24,7 @@ impl MetroTheme {
             typography: MetroTypography::metro(),
             tokens: Tokens::ether(),
             indication: MetroIndication::ether(),
+            overlay_color: Color::BLACK.with_alpha(0.45),
         }
     }
 }

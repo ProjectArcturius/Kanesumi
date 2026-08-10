@@ -2,6 +2,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FontWeight {
     Normal,
+    Semilight,
     Medium,
     Semibold,
     Bold,

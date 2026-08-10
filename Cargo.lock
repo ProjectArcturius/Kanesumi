@@ -108,7 +108,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 [[package]]
 name = "sokuou"
 version = "0.1.0"
-source = "git+https://github.com/GuitaristRin/Sokuou#b732a090132a114606f04bffd5917f7f0874dc21"
+source = "git+https://github.com/GuitaristRin/Sokuou#e5ad06a44aef2f75b583fa0f6201ebd5e3714c80"
 
 [[package]]
 name = "ttf-parser"

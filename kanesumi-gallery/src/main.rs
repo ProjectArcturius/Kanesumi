@@ -48,6 +48,8 @@ fn main() {
     };
     let engine = TextEngine::load(font_path).expect("加载字体失败");
     let scene = render_demo_scene(&theme, &engine, Size::new(800.0, 600.0));
-    let (fill, stroke, text) = command_summary(&scene);
-    println!("\n控件演示 Scene —— FillRect: {fill}, StrokeRect: {stroke}, Text: {text}");
+    let (fill, stroke, text, arc) = command_summary(&scene);
+    println!(
+        "\n控件演示 Scene —— FillRect: {fill}, StrokeRect: {stroke}, Text: {text}, Arc: {arc}"
+    );
 }
