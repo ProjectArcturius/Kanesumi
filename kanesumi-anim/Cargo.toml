@@ -1,10 +1,10 @@
 [package]
 name = "kanesumi-anim"
 description = "Kanesumi（矩隅）· 动画层：消费 Sokuou（即応エンジン）的 Metro 动画预设"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-authors.workspace = true
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["Takahashi Rinta <mc1586182829@outlook.com>"]
 
 [dependencies]
 # Sokuou（即応エンジン）是动画唯一真源（参 Ether-main PLAN.md §2.1/§6.3）。

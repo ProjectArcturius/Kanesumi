@@ -8,11 +8,8 @@ members = [
 ]
 resolver = "2"
 
-[workspace.package]
-version = "0.1.0"
-edition = "2024"
-license = "Apache-2.0"
-authors = ["Takahashi Rinta <mc1586182829@outlook.com>"]
+# 各 crate manifest 自包含（显式 version/edition/license/authors），
+# 便于被 Ether monorepo 以 [patch] 作为 path 依赖消费（跨 workspace 时 X.workspace = true 解析失败）。
 
 # kanesumi-anim 以 git 依赖声明 sokuou（GuitaristRin/Sokuou）——Kanesumi 仓独立可建。
 # Ether monorepo 侧在根 Cargo.toml 用 [patch."https://github.com/GuitaristRin/Sokuou"]
