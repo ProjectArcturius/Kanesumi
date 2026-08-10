@@ -6,7 +6,7 @@
 
 ```bash
 cargo check          # 检查所有 crate
-cargo test           # 单元测试（当前 145 个）
+cargo test           # 单元测试（当前 150 个）
 cargo clippy
 cargo fmt
 ```
@@ -70,7 +70,15 @@ kanesumi-core       (无依赖 — 设计 tokens / 主题 / MetroText / 交互�
   命中表（`DeclHit`）。App 消费命中表路由动作（`DeclAction`），无隐藏控件。
 - **`diff_decl`**：按树位置路径匹配两帧声明式树，输出 `DeclChange`（Added/Removed/
   Changed/Replaced）——「保留视觉树 + damage 重绘」（PLAN §4.1 不变量 1/4）的逻辑基础。
+- **`RetainedScene`**（retained.rs）：声明式树增量渲染 —— 首帧全量，后续 diff 驱动只
+  重建变化元素命令段；输出命令序列 + 变化报告（damage hint）。为 harness 侧「只重绘
+  变化区域」打基础。
 - 状态驱动：App 每帧从状态产出 `Decl` 树，reconciler 展开为 Scene。增量 diff 已实现（`diff_decl`）。
+
+### 错误边界（harness，2026-08-10）
+
+`platform.rs`：`App::update`/`render`/`handle_input` 均用 `catch_unwind` 隔离 —— App
+panic 不杀进程（记日志 + 跳过本帧）。合成器时钟 dt 限幅 50ms（§4.1 不变量 2）。
 
 ### 输入层（2026-08-10 完成）
 
