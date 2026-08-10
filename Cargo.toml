@@ -1,0 +1,19 @@
+[workspace]
+members = [
+    "kanesumi-core",
+    "kanesumi-anim",
+    "kanesumi-structure",
+    "kanesumi-controls",
+    "kanesumi-gallery",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["Takahashi Rinta <mc1586182829@outlook.com>"]
+
+# kanesumi-anim 以 git 依赖声明 sokuou（GuitaristRin/Sokuou）——Kanesumi 仓独立可建。
+# Ether monorepo 侧在根 Cargo.toml 用 [patch."https://github.com/GuitaristRin/Sokuou"]
+# 将 sokuou 统一收敛到本地 submodule（shared/sokuou）。参 Ether-main PLAN.md §6.3。

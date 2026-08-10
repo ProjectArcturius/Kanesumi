@@ -1,0 +1,10 @@
+[package]
+name = "kanesumi-structure"
+description = "Kanesumi（矩隅）· 页面结构：MetroShell / AppBar / Scaffold"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+kanesumi-core = { path = "../kanesumi-core" }

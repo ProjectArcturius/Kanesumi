@@ -1,0 +1,13 @@
+[package]
+name = "kanesumi-gallery"
+description = "Kanesumi（矩隅）· Gallery 应用 —— 三层测试阶梯的 daily driver（参 Ether-main PLAN.md §4.4）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+kanesumi-core = { path = "../kanesumi-core" }
+kanesumi-anim = { path = "../kanesumi-anim" }
+kanesumi-structure = { path = "../kanesumi-structure" }
+kanesumi-controls = { path = "../kanesumi-controls" }

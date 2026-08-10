@@ -1,0 +1,11 @@
+[package]
+name = "kanesumi-controls"
+description = "Kanesumi（矩隅）· Metro 标准控件库：MetroSurface / Button / List …"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+kanesumi-core = { path = "../kanesumi-core" }
+kanesumi-anim = { path = "../kanesumi-anim" }

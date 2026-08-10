@@ -1,0 +1,12 @@
+[package]
+name = "kanesumi-anim"
+description = "Kanesumi（矩隅）· 动画层：消费 Sokuou（即応エンジン）的 Metro 动画预设"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Sokuou（即応エンジン）是动画唯一真源（参 Ether-main PLAN.md §2.1/§6.3）。
+# Ether monorepo 侧以 [patch."https://github.com/GuitaristRin/Sokuou"] 收敛到本地 submodule。
+sokuou = { git = "https://github.com/GuitaristRin/Sokuou", version = "0.1" }

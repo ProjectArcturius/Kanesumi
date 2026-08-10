@@ -1,0 +1,14 @@
+/target
+*.rs.bk
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Agent session data
+.claude/
