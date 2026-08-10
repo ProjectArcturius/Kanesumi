@@ -29,7 +29,7 @@
 
 ## 🔴 阻塞级
 
-### V1 · DropdownMenu 面板文字逐字换行 ⬜
+### V1 · DropdownMenu 面板文字逐字换行 ✅ `e6f65e0`
 **位置：** `kanesumi-controls/src/dropdown_menu.rs:190`
 
 ```rust
@@ -49,7 +49,7 @@ let text_rect = Rect::new(
 
 ---
 
-### V2 · Dialog 标题与正文上下重叠 ⬜
+### V2 · Dialog 标题与正文上下重叠 ✅ `c7d8b1e`
 **位置：** `kanesumi-controls/src/dialog.rs:262-266`
 
 ```rust
@@ -69,7 +69,7 @@ CONTROL_SPEC §9 「TitleMargin 下 12」= 标题下**沿**再向下 12。
 
 ---
 
-### V3 · Dialog 缩放从 0 起而不是 1.05 ⬜
+### V3 · Dialog 缩放从 0 起而不是 1.05 ✅ `9d909e0`
 **位置：** `kanesumi-controls/src/dialog.rs:78, 111, 123`
 
 ```rust
@@ -86,7 +86,7 @@ CONTROL_SPEC §9 要求 `1.05→1.0`（轻微收缩，让 opacity 淡入承担�
 
 ---
 
-### V4 · SelectorFlyout 触发器双画（右侧幽灵箭头方框） ⬜
+### V4 · SelectorFlyout 触发器双画（右侧幽灵箭头方框） ✅ 本 commit
 **位置：** `kanesumi-gallery/src/app.rs:522-546` + `kanesumi-controls/src/selector_flyout.rs::render`
 
 Gallery 手绘一遍 (fill + 文本 `"选择 ▾"`)，然后 `selector.render(trigger=st, ...)` 内部又画一遍 (fill + selected/placeholder + arrow glyph)。两个 chevron glyph 位置不同，都是缺字导致的方框，就变成两个方框。
@@ -186,7 +186,7 @@ DropdownMenu / SelectorFlyout / Dialog 全部合成到主 surface，`place_popup
 | 编号 | 状态 | Commit | 备注 |
 |---|---|---|---|
 | ymin sign fix | ✅ | `922eaf7` | descender 上顶（本会话首个修）|
-| V1 | ⬜ | — | |
-| V2 | ⬜ | — | |
-| V3 | ⬜ | — | |
-| V4 | ⬜ | — | |
+| V1 | ✅ | `e6f65e0` | dropdown 文字 rect 用 panel.right() 而非 panel.width - x |
+| V2 | ✅ | `c7d8b1e` | content_rect.y 加 title.line_height |
+| V3 | ✅ | `9d909e0` | jump_to 保 value 后再 set_target；default scale=1.05 |
+| V4 | ✅ | 本 commit | 删 Gallery 侧手工触发器绘制，selector.render 独占 |

@@ -122,12 +122,17 @@ impl GalleryApp {
                 MenuItem::with_icon("另存为...", "\u{E792}").separator(),
                 MenuItem::with_icon("退出", "\u{E7E8}"),
             ]),
-            selector: MetroSelectorFlyout::new(
-                ["紧凑", "舒适", "宽松"]
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect(),
-            ),
+            selector: {
+                let mut s = MetroSelectorFlyout::new(
+                    ["紧凑", "舒适", "宽松"]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                );
+                // selector.render 内部会绘触发器；placeholder 是未选时的占位文字。
+                s.placeholder = "选择".into();
+                s
+            },
             dialog: {
                 let mut d = MetroDialog::new("保存工作？", "是否保存对当前文件的更改？");
                 d.buttons.primary = Some("保存".into());
@@ -519,35 +524,12 @@ impl App for GalleryApp {
             &mut scene,
         );
 
-        let st = self.selector_trigger();
-        scene.fill_rounded_rect(colors.surface, st, self.theme.tokens.corner_radius);
-        let sel_text = self
-            .selector
-            .selected
-            .and_then(|i| self.selector.items.get(i))
-            .cloned()
-            .unwrap_or_else(|| self.selector.placeholder.clone());
-        let sel_text = if sel_text.is_empty() {
-            "选择 ▾".into()
-        } else {
-            sel_text
-        };
-        scene.text(
-            sel_text,
-            Rect::new(
-                st.origin.x + 12.0,
-                st.origin.y + (st.size.height - style.line_height) / 2.0,
-                st.size.width - 24.0,
-                style.line_height,
-            ),
-            colors.on_surface,
-            style,
-            TextAlign::Left,
-        );
+        // Selector：触发器 + 弹层完全由 selector.render 拥有（原来 App 又画一遍
+        // 触发器 BG + "选择 ▾" 文本，与 selector 内部的箭头 glyph 位置错开 → 双方框）。
         self.selector.render(
             &self.theme,
             engine,
-            st,
+            self.selector_trigger(),
             Rect::new(0.0, 0.0, size.width, size.height),
             &mut scene,
         );
