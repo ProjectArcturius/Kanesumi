@@ -71,12 +71,18 @@ pub struct MetroDialog {
     scale: MetroAnim,
 }
 
+/// 出现前的初始缩放（略微放大，配 opacity 淡入完成"从远处收进"的观感）。
+const SCALE_INITIAL: f64 = 1.05;
+/// 稳态缩放。
+const SCALE_STEADY: f64 = 1.0;
+
 impl Default for MetroDialog {
     fn default() -> Self {
         let mut opacity = MetroAnim::new(0.167, UwpEasing::Quadratic, EasingMode::EaseOut);
         opacity.jump_to(0.0);
+        // 初始 scale = 1.05（预备态）；show 从此值收缩到 1.0，参 CONTROL_SPEC §9。
         let mut scale = MetroAnim::new(0.5, UwpEasing::Cubic, EasingMode::EaseOut);
-        scale.jump_to(0.0);
+        scale.jump_to(SCALE_INITIAL);
         Self {
             title: String::new(),
             content: String::new(),
@@ -100,28 +106,42 @@ impl MetroDialog {
         }
     }
 
-    /// 显示：遮罩 0.167s 淡入 + 盒体 1.05→1.0 @0.5s。
+    /// 显示：遮罩 0.167s 淡入 + 盒体 1.05→1.0 @0.5s（CONTROL_SPEC §9）。
+    /// 关键：sokuou 的 MetroAnim 不支持原地改时长/缓动，重建后必须 jump_to 保留
+    /// 当前 value（否则新建即 value=0，盒体会从零"长"出来而不是 1.05→1.0 收缩）。
     pub fn show(&mut self) {
         if matches!(self.state, DialogState::Showing | DialogState::Open) {
             return;
         }
+        // 从 Closed 起：opacity 0 / scale 1.05（预备态）。从 Hiding 中断：保当前值。
+        let (from_o, from_s) = if self.state == DialogState::Closed {
+            (0.0, SCALE_INITIAL)
+        } else {
+            (self.opacity.value(), self.scale.value())
+        };
         self.state = DialogState::Showing;
         self.opacity = MetroAnim::new(0.167, UwpEasing::Quadratic, EasingMode::EaseOut);
+        self.opacity.jump_to(from_o);
         self.opacity.set_target(1.0);
         self.scale = MetroAnim::new(0.5, UwpEasing::Cubic, EasingMode::EaseOut);
-        self.scale.set_target(1.0);
+        self.scale.jump_to(from_s);
+        self.scale.set_target(SCALE_STEADY);
     }
 
-    /// 隐藏（Esc / 按钮）：opacity 0.083s 先行熄灭，缩放随后。
+    /// 隐藏（Esc / 按钮）：opacity 0.083s 先行熄灭，盒体缩放 1.0→1.05 随后。
+    /// 同样必须 jump_to 保当前 value —— 从 Open 起 scale=1.0，从 Showing 中断则任意。
     pub fn hide(&mut self) {
         if matches!(self.state, DialogState::Hiding | DialogState::Closed) {
             return;
         }
+        let (from_o, from_s) = (self.opacity.value(), self.scale.value());
         self.state = DialogState::Hiding;
         self.opacity = MetroAnim::new(0.083, UwpEasing::Quadratic, EasingMode::EaseIn);
+        self.opacity.jump_to(from_o);
         self.opacity.set_target(0.0);
         self.scale = MetroAnim::new(0.5, UwpEasing::Cubic, EasingMode::EaseOut);
-        self.scale.set_target(1.05);
+        self.scale.jump_to(from_s);
+        self.scale.set_target(SCALE_INITIAL);
     }
 
     /// 每帧推进；轨道稳态后转 Open/Closed。
@@ -357,13 +377,56 @@ mod tests {
     #[test]
     fn scale_animates_1_05_to_1() {
         let mut dlg = MetroDialog::new("T", "C");
+        // 关键：show 前应从 SCALE_INITIAL=1.05 起（预备态），而不是 0。
+        // 老 bug：MetroAnim::new 重建后 value=0，动画变成 0→1.0（盒体从零"长"出来）。
+        // 新版：default() jump_to(1.05) + show() jump_to(1.05) + set_target(1.0)。
+        assert!(
+            (dlg.scale_value() - 1.05).abs() < 1e-6,
+            "default scale 应为 1.05，实际 {}",
+            dlg.scale_value()
+        );
         dlg.show();
-        dlg.update(0.01);
-        assert!(dlg.scale_value() < 1.05, "初期接近 1.05");
+        // 首帧后仍在 1.05 附近（尚未 tick）
+        assert!(
+            dlg.scale_value() > 1.0 && dlg.scale_value() <= 1.05,
+            "show 首刻 scale 应 ∈ (1.0, 1.05]，实际 {}",
+            dlg.scale_value()
+        );
+        // 走一小段，应向 1.0 收缩，且不应低于 1.0（不越过目标）
+        dlg.update(0.05);
+        let mid = dlg.scale_value();
+        assert!(
+            mid < 1.05 && mid >= 1.0,
+            "中期 scale 应 ∈ [1.0, 1.05)，实际 {mid}"
+        );
+        // 走满，稳态 1.0
+        for _ in 0..120 {
+            dlg.update(1.0 / 60.0);
+        }
+        assert!(
+            (dlg.scale_value() - 1.0).abs() < 1e-3,
+            "终态 scale ≈ 1.0，实际 {}",
+            dlg.scale_value()
+        );
+    }
+
+    /// 回归 V3：hide 时 scale 从当前 1.0 起飘到 1.05，中途 opacity 不应突变。
+    #[test]
+    fn hide_scale_starts_from_steady_not_zero() {
+        let mut dlg = MetroDialog::new("T", "C");
+        dlg.show();
+        // 走满进入 Open
         for _ in 0..120 {
             dlg.update(1.0 / 60.0);
         }
         assert!((dlg.scale_value() - 1.0).abs() < 1e-3);
+        dlg.hide();
+        // hide 首刻 scale 仍应 ≈ 1.0（从稳态起飘，不能被重置到 0）
+        let s = dlg.scale_value();
+        assert!(
+            s >= 0.99 && s <= 1.06,
+            "hide 首刻 scale 应从 1.0 起，实际 {s}"
+        );
     }
 
     #[test]
