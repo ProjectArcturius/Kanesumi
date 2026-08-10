@@ -58,6 +58,14 @@ pub struct GalleryApp {
     pointer: Point,
     /// 最近一次对话框按钮动作（Primary/Secondary/Close），供应用响应。
     dialog_result: Option<kanesumi_controls::DialogButton>,
+
+    // 声明式 footer（view! + render_decl 驱动的真实 UI 区域，参 decl.rs）
+    /// 声明式按钮点击计数（演示 DSL 驱动状态）。
+    decl_count: u32,
+    /// 上一帧声明式命中表（输入路由用）。
+    decl_hits: Vec<kanesumi_controls::DeclHit>,
+    /// 声明式 footer 区域。
+    decl_rect: Rect,
 }
 
 impl GalleryApp {
@@ -130,6 +138,9 @@ impl GalleryApp {
             pressed: None,
             pointer: Point::ORIGIN,
             dialog_result: None,
+            decl_count: 0,
+            decl_hits: Vec::new(),
+            decl_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
         }
     }
 
@@ -181,6 +192,15 @@ impl GalleryApp {
     /// Gallery 全屏窗口（供弹层方向自适应用）。
     fn screen(&self) -> Rect {
         Rect::new(0.0, 0.0, self.config.width, self.config.height)
+    }
+
+    /// 声明式 footer 元素树 —— 状态文本 + 计数按钮（演示 view! 驱动真实 UI）。
+    fn decl_footer(&self) -> kanesumi_controls::Decl {
+        use kanesumi_controls::{Decl, DeclAction};
+        Decl::row(vec![
+            Decl::text(format!("声明式区域 · 计数 {}", self.decl_count)),
+            Decl::button("点我 +1", DeclAction::Custom(9001)),
+        ])
     }
 
     /// 命中常规控件（弹层优先，由调用方处理）。
@@ -285,6 +305,15 @@ impl GalleryApp {
             } else {
                 self.selector.close();
             }
+            return;
+        }
+
+        // 声明式 footer 命中路由（render_decl 产出的命中表）
+        if let Some(hit) = self.decl_hits.iter().find(|h| h.rect.contains(p)) {
+            if hit.action == kanesumi_controls::DeclAction::Custom(9001) {
+                self.decl_count += 1;
+            }
+            self.pressed = None;
             return;
         }
 
@@ -449,6 +478,17 @@ impl App for GalleryApp {
             .render(&self.theme, engine, self.tabs_rect(), &mut scene);
         self.list
             .render(&self.theme, engine, self.list_rect(), &mut scene);
+
+        // ── 声明式 footer（view! + render_decl 驱动的真实 UI 区域） ──
+        {
+            let footer = Rect::new(PAD, size.height - 48.0, size.width - PAD * 2.0, 32.0);
+            self.decl_rect = footer;
+            let tree = self.decl_footer();
+            let (decl_scene, hits) =
+                kanesumi_controls::render_decl(&self.theme, engine, &tree, footer);
+            self.decl_hits = hits;
+            scene.commands.extend(decl_scene.commands);
+        }
 
         // 弹层（Dropdown / Selector 触发器始终画）
         let dt = self.dropdown_trigger();
@@ -744,6 +784,34 @@ mod tests {
         let mut g = app();
         g.handle_input(InputEvent::Scroll { x: 0.0, y: 100.0 });
         assert_eq!(g.list.scroll, 0.0, "指针不在列表上时滚动无效");
+    }
+
+    #[test]
+    fn declarative_footer_routes_click() {
+        let mut g = app();
+        // 渲染一帧 → 填充命中表
+        let engine = g.engine.clone();
+        let _ = g.render(&engine, Size::new(960.0, 600.0));
+        assert!(!g.decl_hits.is_empty(), "声明式 footer 应有命中项");
+        // 找到计数按钮（Custom(9001)）
+        let hit = g
+            .decl_hits
+            .iter()
+            .find(|h| h.action == kanesumi_controls::DeclAction::Custom(9001))
+            .expect("应有点我+1 按钮");
+        let center = hit.rect.center();
+        let before = g.decl_count;
+        g.handle_input(InputEvent::PointerPressed {
+            x: center.x,
+            y: center.y,
+            button: PointerButton::Left,
+        });
+        g.handle_input(InputEvent::PointerReleased {
+            x: center.x,
+            y: center.y,
+            button: PointerButton::Left,
+        });
+        assert_eq!(g.decl_count, before + 1, "声明式按钮点击应计数");
     }
 
     #[test]
