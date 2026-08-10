@@ -6,11 +6,12 @@
 
 pub mod app;
 pub mod role;
-pub mod scene;
 
 #[cfg(target_os = "linux")]
 pub mod platform;
 
 pub use app::{App, AppConfig};
 pub use role::{EtherRole, RoleParseError, SurfaceKind};
-pub use scene::{Scene, SceneCommand};
+
+// Scene 下沉到 kanesumi-core（控件 → Scene 依赖方向）。此处重导出供应用使用。
+pub use kanesumi_core::{Scene, SceneCommand, TextAlign};

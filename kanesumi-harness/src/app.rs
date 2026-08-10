@@ -1,7 +1,6 @@
-use kanesumi_core::{MetroTheme, Size};
+use kanesumi_core::{MetroTheme, Scene, Size};
 
 use crate::role::EtherRole;
-use crate::scene::Scene;
 
 /// 应用配置 —— 身份 + 启动尺寸。app_id 命名空间 `org.ether.*`（ENCS §XI）。
 #[derive(Debug, Clone, Copy, PartialEq)]

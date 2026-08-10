@@ -1,69 +1,20 @@
-// Kanesumi（矩隅）· Metro 标准控件库（骨架）
+// Kanesumi（矩隅）· Metro 标准控件库
 //
-// 对应 Kanesumi-sec-a 的 `:kanesumi-controls`。Phase 3 填充控件实现，参 PLAN.md §5。
-// 此阶段仅固定控件形态数据模型（直角 / 极轻微圆角 / 无渐变纯色），供 Gallery 页树引用。
+// 对应 Kanesumi-sec-a 的 `:kanesumi-controls`。Phase 3 首套控件：Text / Button / List / Surface。
+// 状态驱动渲染：控件持有状态，`render(theme, engine, rect, scene)` 把当前状态解析为 Scene 命令。
+// 逐一对照 microsoft-ui-xaml 控件实现与 WinUI-Gallery 交互（参 PLAN.md §5 Phase 3）。
 
-use kanesumi_core::{Color, MetroTheme};
+pub mod button;
+pub mod list;
+pub mod surface;
+pub mod text;
 
-/// 控件形态 tokens —— 参 PLAN.md §4-5（Metro 形态：直角/极轻微圆角、无渐变纯色、内容优先）。
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ControlShape {
-    pub corner_radius: f32,
-    pub background: Color,
-}
+pub use button::{ButtonKind, ButtonState, MetroButton};
+pub use list::MetroList;
+pub use surface::MetroSurface;
+pub use text::MetroText;
 
-impl ControlShape {
-    pub const fn new(corner_radius: f32, background: Color) -> Self {
-        Self {
-            corner_radius,
-            background,
-        }
-    }
-}
-
-/// MetroSurface —— 面板基底。骨架占位。
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MetroSurface {
-    pub shape: ControlShape,
-}
-
-impl MetroSurface {
-    pub const fn new(shape: ControlShape) -> Self {
-        Self { shape }
-    }
-}
-
-/// MetroButton —— 命令按钮。骨架占位。
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MetroButton {
-    pub label: &'static str,
-    pub background: Color,
-    pub foreground: Color,
-}
-
-impl MetroButton {
-    pub const fn new(label: &'static str, background: Color, foreground: Color) -> Self {
-        Self {
-            label,
-            background,
-            foreground,
-        }
-    }
-}
-
-/// MetroList —— 列表。骨架占位（行控件 Phase 3）。
-#[derive(Debug, Clone, PartialEq)]
-pub struct MetroList {
-    pub rows: Vec<&'static str>,
-}
-
-impl MetroList {
-    pub fn new(rows: Vec<&'static str>) -> Self {
-        Self { rows }
-    }
-}
-
-/// Phase 3 待实现的控件清单（对照 Kanesumi-sec-a 同名控件 + WinUI-Gallery）。
+/// Phase 3 后续控件清单（对照 Kanesumi-sec-a 同名控件 + WinUI-Gallery）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlKind {
     MetroSurface,
@@ -81,7 +32,7 @@ pub enum ControlKind {
 }
 
 impl ControlKind {
-    /// 全部计划控件。
+    /// 已实现 + 计划控件。
     pub const ALL: [ControlKind; 12] = [
         ControlKind::MetroSurface,
         ControlKind::MetroButton,
@@ -96,13 +47,4 @@ impl ControlKind {
         ControlKind::MetroDivider,
         ControlKind::MetroBottomSheet,
     ];
-}
-
-impl From<MetroTheme> for ControlShape {
-    fn from(t: MetroTheme) -> Self {
-        Self {
-            corner_radius: t.tokens.corner_radius,
-            background: t.colors.surface,
-        }
-    }
 }

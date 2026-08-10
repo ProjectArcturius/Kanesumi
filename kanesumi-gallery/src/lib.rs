@@ -4,6 +4,8 @@
 // 对照 WinUI-Gallery：每页 = 控件展示 + 交互示例。
 // 三层阶梯：日常开发（Plasma）→ 集成（Ether 嵌套 winit）→ 验证（TTY/DRM）。
 
+pub mod demo;
 pub mod pages;
 
+pub use demo::{command_summary, render_demo_scene};
 pub use pages::{GalleryPage, PaletteEntry, page_tree, palette};
