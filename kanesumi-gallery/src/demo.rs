@@ -88,6 +88,7 @@ pub fn command_summary(scene: &Scene) -> (usize, usize, usize, usize, usize) {
             SceneCommand::Text { .. } => text += 1,
             SceneCommand::Arc { .. } => arc += 1,
             SceneCommand::Image { .. } => image += 1,
+            SceneCommand::ClipRect { .. } => {}
         }
     }
     (fill, stroke, text, arc, image)

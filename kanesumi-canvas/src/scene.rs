@@ -44,6 +44,11 @@ pub enum SceneCommand {
         start_deg: f32,
         end_deg: f32,
     },
+    /// 设置裁剪矩形（`None` 清除）。后续绘制命令裁剪到该矩形内（box 语义）。
+    /// 参 PLAN.md §4-5 —— 控件内容须在自身边界盒内，禁止溢出（如进度条指示条滑出轨道）。
+    ClipRect {
+        rect: Option<Rect>,
+    },
     /// 位图（SVG 光栅化的图标等）。`rgba` 为直通 RGBA（非预乘），`width`/`height` 为像素；
     /// `rect` 为绘制目标（逻辑坐标）；`tint` 为染色（None = 原色，Some = 用指定色替换非透明像素）。
     Image {
@@ -148,6 +153,11 @@ impl Scene {
             rect,
             tint,
         });
+    }
+
+    /// 设置裁剪矩形（None 清除）。内容裁剪到盒内（box 语义）。
+    pub fn clip(&mut self, rect: Option<Rect>) {
+        self.commands.push(SceneCommand::ClipRect { rect });
     }
 
     pub fn is_empty(&self) -> bool {

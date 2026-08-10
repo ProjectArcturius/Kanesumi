@@ -95,6 +95,10 @@ impl MetroProgressBar {
             CornerRadius::Capsule,
         );
 
+        // 指示条裁剪到轨道内（box 语义，参 scene.rs ClipRect）—— 不确定模式指示条
+        // 从轨道外滑入，必须裁剪到轨道边界，禁止溢出到控件外。
+        scene.clip(Some(bar_rect));
+
         let indicator_color = if self.error {
             ERROR_COLOR
         } else {
@@ -112,11 +116,13 @@ impl MetroProgressBar {
                 }
             }
             ProgressMode::Indeterminate => {
-                // 两波脉冲：40%（0→1.5s 从 −W 到 +3W）+ 60%（0.75→2.0s 从 −1.5W 到 +1.66W）
+                // 两波脉冲在轨道内往返滑动（始终部分可见，不滑出轨道）。
+                // 对齐 Metro 观感：40% 块左→右（0→1.0s），60% 块相位 +0.5s。
+                // 参 CONTROL_SPEC §4（KeySpline Cubic/EaseInOut，2.0s 循环）。
                 let phase = self.phase / DURATION_INDETERMINATE; // [0,1)
                 let w = bar_rect.size.width;
-                let (w1, x1) = pulse(phase, 0.40, 0.75, -1.0, 3.0);
-                let (w2, x2) = pulse(phase, 0.60, 0.375, -1.5, 1.66);
+                let (w1, x1) = pulse_in_track(phase, 0.40, 0.0);
+                let (w2, x2) = pulse_in_track(phase, 0.60, 0.5);
                 for (pw, px) in [(w1, x1), (w2, x2)] {
                     if pw <= 0.0 {
                         continue;
@@ -131,16 +137,25 @@ impl MetroProgressBar {
                 }
             }
         }
+        // 清除裁剪
+        scene.clip(None);
     }
 }
 
-/// 不确定脉冲：宽度 `width_frac`，在 [start, end] 相位区间内从 x=from 滑到 x=to（Cubic EaseInOut），
-/// 区间外保持端点。`phase ∈ [0,1)`，归一化到 2.0s 循环。
-fn pulse(phase: f64, width_frac: f32, motion_start: f64, from: f32, to: f32) -> (f32, f32) {
-    let t = ((phase - motion_start) / (1.0 - motion_start)).clamp(0.0, 1.0);
-    let e = cubic_ease_in_out(t);
-    let x = from + (to - from) * e as f32;
-    (width_frac, x)
+/// 轨道内脉冲：指示条始终在轨道内，按相位滑动（往返）。
+/// `width_frac` = 指示条宽（轨道宽比例）；`phase_shift` = 相位偏移 [0,1)。
+/// 返回 (宽度比例, 轨道内起点比例 [0, 1-width])。
+/// 用三角波在 [0, 1-width] 往返，Cubic EaseInOut 平滑。
+fn pulse_in_track(phase: f64, width_frac: f32, phase_shift: f64) -> (f32, f32) {
+    let t = (phase + phase_shift).fract();
+    // 往返：前半 [0,0.5) 左→右，后半 [0.5,1) 右→左
+    let e = if t < 0.5 {
+        cubic_ease_in_out(t * 2.0) // 0→1
+    } else {
+        1.0 - cubic_ease_in_out((t - 0.5) * 2.0) // 1→0
+    };
+    let max_x = 1.0 - width_frac;
+    (width_frac, e as f32 * max_x)
 }
 
 /// Cubic EaseInOut（KeySpline 0.4,0,0.6,1 近似）。
@@ -282,10 +297,19 @@ mod tests {
         }
         let mut scene = Scene::default();
         bar.render(&theme, &engine, Rect::new(0.0, 0.0, 200.0, 4.0), &mut scene);
-        // 轨道 + 指示条
-        assert_eq!(scene.commands.len(), 2);
-        let Some(SceneCommand::FillRect { rect: ind, .. }) = scene.commands.last() else {
-            panic!("末命令应为指示条");
+        // 轨道 + 指示条（+ clip 进出）
+        let fills = scene
+            .commands
+            .iter()
+            .filter(|c| matches!(c, SceneCommand::FillRect { .. }))
+            .count();
+        assert_eq!(fills, 2, "轨道 + 指示条");
+        let Some(SceneCommand::FillRect { rect: ind, .. }) = scene
+            .commands
+            .iter()
+            .find(|c| matches!(c, SceneCommand::FillRect { color, .. } if (color.r - theme.colors.primary.r).abs() < 0.1))
+        else {
+            panic!("应有指示条");
         };
         assert!(
             (ind.size.width - 100.0).abs() < 0.5,
@@ -299,7 +323,7 @@ mod tests {
         let Some(engine) = find_engine() else { return };
         let theme = MetroTheme::ether_dark();
         let mut bar = MetroProgressBar::indeterminate();
-        bar.update(1.5); // phase = 1.5s：pulse1 已到 +3W，pulse2 运动中
+        bar.update(1.5); // phase = 1.5s
         let mut scene = Scene::default();
         bar.render(&theme, &engine, Rect::new(0.0, 0.0, 200.0, 4.0), &mut scene);
         let fills = scene
@@ -308,6 +332,37 @@ mod tests {
             .filter(|c| matches!(c, SceneCommand::FillRect { .. }))
             .count();
         assert_eq!(fills, 3, "轨道 + 两波脉冲");
+    }
+
+    #[test]
+    fn indeterminate_indicators_stay_in_track() {
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
+        let track = Rect::new(0.0, 0.0, 200.0, 4.0);
+        // 多个相位：指示条必须始终在轨道内（不溢出）
+        for t in [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 1.9] {
+            let mut bar = MetroProgressBar::indeterminate();
+            bar.phase = t;
+            let mut scene = Scene::default();
+            bar.render(&theme, &engine, track, &mut scene);
+            for c in &scene.commands {
+                if let SceneCommand::FillRect { rect, color, .. } = c {
+                    // 只检查指示条（primary 色）
+                    if (color.r - theme.colors.primary.r).abs() < 0.1 {
+                        assert!(
+                            rect.origin.x >= track.origin.x - 0.01,
+                            "t={t} 指示条左越界 x={}",
+                            rect.origin.x
+                        );
+                        assert!(
+                            rect.right() <= track.right() + 0.01,
+                            "t={t} 指示条右越界 right={}",
+                            rect.right()
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -452,15 +452,25 @@ impl Renderer {
         let mut image: Vec<TextVertex> = Vec::new();
         let mut image_runs: Vec<TextRun> = Vec::new();
         let mut pending_images: Vec<(u32, Vec<u8>, u32, u32)> = Vec::new();
+        // 当前裁剪矩形（box 语义）：None = 不裁剪。
+        let mut clip: Option<Rect> = None;
 
         for cmd in &scene.commands {
             match cmd {
+                SceneCommand::ClipRect { rect } => {
+                    clip = *rect;
+                }
                 SceneCommand::FillRect {
                     color,
                     rect,
                     corner_radius,
                 } => {
-                    emit_fill(&mut solid, &ndc, *rect, *corner_radius, *color);
+                    if let Some(c) = &clip {
+                        let Some(r) = intersect(*rect, *c) else { continue };
+                        emit_fill(&mut solid, &ndc, r, *corner_radius, *color);
+                    } else {
+                        emit_fill(&mut solid, &ndc, *rect, *corner_radius, *color);
+                    }
                 }
                 SceneCommand::StrokeRect {
                     color,
@@ -468,7 +478,12 @@ impl Renderer {
                     thickness,
                     corner_radius,
                 } => {
-                    emit_stroke(&mut solid, &ndc, *rect, *corner_radius, *thickness, *color);
+                    if let Some(c) = &clip {
+                        let Some(r) = intersect(*rect, *c) else { continue };
+                        emit_stroke(&mut solid, &ndc, r, *corner_radius, *thickness, *color);
+                    } else {
+                        emit_stroke(&mut solid, &ndc, *rect, *corner_radius, *thickness, *color);
+                    }
                 }
                 SceneCommand::Arc {
                     center,
@@ -510,17 +525,32 @@ impl Renderer {
                     rect,
                     tint,
                 } => {
-                    emit_image(
-                        &ndc,
-                        &mut image,
-                        &mut image_runs,
-                        &mut pending_images,
-                        rgba,
-                        *width,
-                        *height,
-                        *rect,
-                        *tint,
-                    );
+                    if let Some(c) = &clip {
+                        let Some(r) = intersect(*rect, *c) else { continue };
+                        emit_image(
+                            &ndc,
+                            &mut image,
+                            &mut image_runs,
+                            &mut pending_images,
+                            rgba,
+                            *width,
+                            *height,
+                            r,
+                            *tint,
+                        );
+                    } else {
+                        emit_image(
+                            &ndc,
+                            &mut image,
+                            &mut image_runs,
+                            &mut pending_images,
+                            rgba,
+                            *width,
+                            *height,
+                            *rect,
+                            *tint,
+                        );
+                    }
                 }
             }
         }
@@ -1110,6 +1140,19 @@ fn upload_vertices_solid<'a>(
         queue.write_buffer(buf, 0, bytemuck::cast_slice(verts));
     }
     buf
+}
+
+/// 矩形求交（box 语义：内容裁剪到盒内）。不相交返回 None。
+fn intersect(a: Rect, b: Rect) -> Option<Rect> {
+    let x0 = a.origin.x.max(b.origin.x);
+    let y0 = a.origin.y.max(b.origin.y);
+    let x1 = a.right().min(b.right());
+    let y1 = a.bottom().min(b.bottom());
+    if x1 <= x0 || y1 <= y0 {
+        None
+    } else {
+        Some(Rect::new(x0, y0, x1 - x0, y1 - y0))
+    }
 }
 
 /// 推入一个 quad（两三角形）。
