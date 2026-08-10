@@ -294,6 +294,123 @@ fn render_in(
     }
 }
 
+// ── reconciler 增量 diff ────────────────────────────────────────────────
+//
+// `diff_decl` 比较两帧的声明式树（旧 vs 新），按**树位置路径**匹配元素，
+// 输出变化列表。这是「保留视觉树 + damage 重绘」（PLAN §4.1 不变量 1/4）的逻辑基础：
+// App 保留上一帧 `Decl`，diff 后只重发变化元素的命令，静态内容复用。
+
+/// 元素路径：自根向下，每层一个容器子索引。`[0, 1]` = 根容器第 1 个子元素。
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DeclPath(pub Vec<usize>);
+
+/// 元素种类（用于区分「同一位置的按钮变成文本」等跨类变化）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeclKind {
+    Row,
+    Column,
+    Button,
+    Text,
+    Box,
+}
+
+fn kind_of(node: &Decl) -> DeclKind {
+    match node {
+        Decl::Row { .. } => DeclKind::Row,
+        Decl::Column { .. } => DeclKind::Column,
+        Decl::Button { .. } => DeclKind::Button,
+        Decl::Text { .. } => DeclKind::Text,
+        Decl::Box { .. } => DeclKind::Box,
+    }
+}
+
+/// 单个元素的变更。
+#[derive(Debug, Clone, PartialEq)]
+pub enum DeclChange {
+    /// 元素新增（旧树无此路径）。
+    Added(DeclPath),
+    /// 元素移除（新树无此路径）。
+    Removed(DeclPath),
+    /// 元素内容变化（同路径同种类，但 label/content 等变了）。
+    Changed(DeclPath),
+    /// 元素种类变化（同路径，按钮→文本）。
+    Replaced(DeclPath),
+}
+
+/// 比较两帧声明式树，返回按路径排序的变化列表。
+///
+/// 匹配规则：**按树位置路径**（同索引容器内，第 i 个子元素互相对齐）。
+/// 简化模型（不做 keyed reconciliation）—— 列表增删会导致后续元素整体
+/// 被标记 Changed/Replaced，但这在保留视觉树原型下可接受（后续可加 key）。
+#[must_use]
+pub fn diff_decl(old: &Decl, new: &Decl) -> Vec<DeclChange> {
+    let mut changes = Vec::new();
+    diff_node(old, new, DeclPath(vec![]), &mut changes);
+    changes
+}
+
+fn diff_node(old: &Decl, new: &Decl, path: DeclPath, out: &mut Vec<DeclChange>) {
+    // 种类不同 → Replaced（不再深入比较子元素）
+    if kind_of(old) != kind_of(new) {
+        out.push(DeclChange::Replaced(path.clone()));
+        return;
+    }
+    // 内容不同 → Changed（仅对叶子内容类型；容器继续比较子元素）
+    match (old, new) {
+        (
+            Decl::Button {
+                label: o,
+                accent: oa,
+                action: oact,
+            },
+            Decl::Button {
+                label: n,
+                accent: na,
+                action: nact,
+            },
+        ) if o != n || oa != na || oact != nact => {
+            out.push(DeclChange::Changed(path.clone()));
+            return;
+        }
+        (Decl::Text { content: o }, Decl::Text { content: n }) if o != n => {
+            out.push(DeclChange::Changed(path.clone()));
+            return;
+        }
+        (
+            Decl::Box {
+                width: ow,
+                height: oh,
+            },
+            Decl::Box {
+                width: nw,
+                height: nh,
+            },
+        ) if ow != nw || oh != nh => {
+            out.push(DeclChange::Changed(path.clone()));
+            return;
+        }
+        _ => {}
+    }
+    // 容器：比较子元素数量与逐子内容
+    let (o_children, n_children): (&[Decl], &[Decl]) = match (old, new) {
+        (Decl::Row { children: o, .. }, Decl::Row { children: n, .. })
+        | (Decl::Column { children: o, .. }, Decl::Column { children: n, .. }) => (o, n),
+        // 叶子且内容相同 → 无变化
+        _ => return,
+    };
+    let max = o_children.len().max(n_children.len());
+    for i in 0..max {
+        let mut child_path = path.clone();
+        child_path.0.push(i);
+        match (o_children.get(i), n_children.get(i)) {
+            (None, Some(_)) => out.push(DeclChange::Added(child_path)),
+            (Some(_), None) => out.push(DeclChange::Removed(child_path)),
+            (Some(o), Some(n)) => diff_node(o, n, child_path, out),
+            (None, None) => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,5 +526,92 @@ mod tests {
             }
         }
         None
+    }
+
+    // ── diff_decl 测试 ──
+
+    #[test]
+    fn diff_identical_trees_is_empty() {
+        let a = Decl::row(vec![
+            Decl::button("A", DeclAction::Custom(1)),
+            Decl::text("hi"),
+        ]);
+        let b = a.clone();
+        assert!(diff_decl(&a, &b).is_empty());
+    }
+
+    #[test]
+    fn diff_text_change_reports_changed() {
+        let a = Decl::text("old");
+        let b = Decl::text("new");
+        assert_eq!(
+            diff_decl(&a, &b),
+            vec![DeclChange::Changed(DeclPath(vec![]))]
+        );
+    }
+
+    #[test]
+    fn diff_kind_change_reports_replaced() {
+        let a = Decl::button("x", DeclAction::None);
+        let b = Decl::text("x");
+        assert_eq!(
+            diff_decl(&a, &b),
+            vec![DeclChange::Replaced(DeclPath(vec![]))]
+        );
+    }
+
+    #[test]
+    fn diff_added_and_removed_children() {
+        let old = Decl::row(vec![
+            Decl::button("A", DeclAction::Custom(1)),
+            Decl::button("B", DeclAction::Custom(2)),
+        ]);
+        let new = Decl::row(vec![
+            Decl::button("A", DeclAction::Custom(1)),
+            Decl::button("B", DeclAction::Custom(2)),
+            Decl::text("C"),
+        ]);
+        assert_eq!(
+            diff_decl(&old, &new),
+            vec![DeclChange::Added(DeclPath(vec![2]))]
+        );
+    }
+
+    #[test]
+    fn diff_nested_change_uses_path() {
+        let old = Decl::row(vec![
+            Decl::text("label"),
+            Decl::column(vec![
+                Decl::button("open", DeclAction::OpenDialog),
+                Decl::button("save", DeclAction::Custom(7)),
+            ]),
+        ]);
+        let new = Decl::row(vec![
+            Decl::text("label"),
+            Decl::column(vec![
+                Decl::button("open", DeclAction::OpenDialog),
+                Decl::button("save-as", DeclAction::Custom(8)),
+            ]),
+        ]);
+        assert_eq!(
+            diff_decl(&old, &new),
+            vec![DeclChange::Changed(DeclPath(vec![1, 1]))],
+            "路径 [1,1] = 列容器第 2 子元素"
+        );
+    }
+
+    #[test]
+    fn diff_animation_friendly_visual_change() {
+        // 动画只动视觉属性（如按钮 accent 切换）→ Changed 而非 Replaced
+        let old = Decl::button("save", DeclAction::Custom(1));
+        let mut new = old.clone();
+        if let Decl::Button { accent, .. } = &mut new {
+            *accent = true;
+        }
+        assert_eq!(
+            diff_decl(&old, &new),
+            vec![DeclChange::Changed(DeclPath(vec![]))],
+            "视觉属性变化 = Changed（供 retained 视觉树只更新此元素）"
+        );
     }
 }

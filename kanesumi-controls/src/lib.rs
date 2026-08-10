@@ -21,7 +21,9 @@ pub mod tab_row;
 pub mod text;
 
 pub use button::{ButtonKind, MetroButton};
-pub use decl::{Decl, DeclAction, DeclHit, collect_hits, render_decl};
+pub use decl::{
+    Decl, DeclAction, DeclChange, DeclHit, DeclPath, collect_hits, diff_decl, render_decl,
+};
 pub use dialog::{DialogButton, DialogButtons, DialogDefaultButton, DialogState, MetroDialog};
 pub use dropdown_menu::{MenuItem, MetroDropdownMenu};
 pub use icon_button::MetroIconButton;
