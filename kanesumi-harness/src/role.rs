@@ -1,0 +1,119 @@
+use std::str::FromStr;
+
+/// 应用角色 —— `ETHER_ROLE` 环境变量约定。参 Ether-main PLAN.md §4.3。
+/// 系统应用由合成器以 `Command(find_bin(harness)) + ETHER_ROLE=<role>` 启动。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EtherRole {
+    /// 桌面投影（Layer 1，无 SSD）。如 Librarian 桌面模式。
+    Desktop,
+    /// 普通窗口（Layer 2）。默认角色。
+    Browser,
+    /// 顶栏（layer-shell TOP）。如 Settings TopBar。
+    TopBar,
+    /// Dock（layer-shell BOTTOM）。
+    Dock,
+    /// 启动器（layer-shell OVERLAY）。
+    Launcher,
+}
+
+/// 角色解析失败。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoleParseError;
+
+impl FromStr for EtherRole {
+    type Err = RoleParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "desktop" => Ok(EtherRole::Desktop),
+            "browser" => Ok(EtherRole::Browser),
+            "topbar" => Ok(EtherRole::TopBar),
+            "dock" => Ok(EtherRole::Dock),
+            "launcher" => Ok(EtherRole::Launcher),
+            _ => Err(RoleParseError),
+        }
+    }
+}
+
+/// 表面类型 —— Linux 外壳据此选择 Wayland 协议。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceKind {
+    /// xdg-shell 普通窗口。
+    XdgShell,
+    /// layer-shell TOP（排他工作区上界）。
+    LayerTop,
+    /// layer-shell BOTTOM。
+    LayerBottom,
+    /// layer-shell OVERLAY。
+    LayerOverlay,
+}
+
+impl EtherRole {
+    /// 从 `ETHER_ROLE` 环境变量读取角色；未设置或非法时回退为 Browser。
+    pub fn from_env() -> Self {
+        std::env::var("ETHER_ROLE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(EtherRole::Browser)
+    }
+
+    /// 角色 → 表面类型。参 PLAN.md §4.3 表。
+    /// Desktop 现为 xdg-shell（Layer 1 固定），Phase 4 规划迁移 layer-shell Background。
+    pub fn surface_kind(self) -> SurfaceKind {
+        match self {
+            EtherRole::Desktop => SurfaceKind::XdgShell,
+            EtherRole::Browser => SurfaceKind::XdgShell,
+            EtherRole::TopBar => SurfaceKind::LayerTop,
+            EtherRole::Dock => SurfaceKind::LayerBottom,
+            EtherRole::Launcher => SurfaceKind::LayerOverlay,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_all_roles() {
+        assert_eq!("desktop".parse(), Ok(EtherRole::Desktop));
+        assert_eq!("browser".parse(), Ok(EtherRole::Browser));
+        assert_eq!("topbar".parse(), Ok(EtherRole::TopBar));
+        assert_eq!("dock".parse(), Ok(EtherRole::Dock));
+        assert_eq!("launcher".parse(), Ok(EtherRole::Launcher));
+    }
+
+    #[test]
+    fn parse_error_on_unknown() {
+        assert_eq!("settings".parse::<EtherRole>(), Err(RoleParseError));
+        assert_eq!("".parse::<EtherRole>(), Err(RoleParseError));
+    }
+
+    #[test]
+    fn from_env_falls_back_to_browser() {
+        unsafe {
+            std::env::remove_var("ETHER_ROLE");
+        }
+        assert_eq!(EtherRole::from_env(), EtherRole::Browser);
+        unsafe {
+            std::env::set_var("ETHER_ROLE", "topbar");
+        }
+        assert_eq!(EtherRole::from_env(), EtherRole::TopBar);
+        unsafe {
+            std::env::set_var("ETHER_ROLE", "nonsense");
+        }
+        assert_eq!(EtherRole::from_env(), EtherRole::Browser);
+    }
+
+    #[test]
+    fn surface_kind_mapping() {
+        assert_eq!(EtherRole::TopBar.surface_kind(), SurfaceKind::LayerTop);
+        assert_eq!(EtherRole::Dock.surface_kind(), SurfaceKind::LayerBottom);
+        assert_eq!(
+            EtherRole::Launcher.surface_kind(),
+            SurfaceKind::LayerOverlay
+        );
+        assert_eq!(EtherRole::Browser.surface_kind(), SurfaceKind::XdgShell);
+        assert_eq!(EtherRole::Desktop.surface_kind(), SurfaceKind::XdgShell);
+    }
+}

@@ -13,13 +13,15 @@ cargo fmt
 
 ## 架构
 
-本仓是 **Ether 扇区·主仓（mainline）**，Rust workspace，5 个 crate：
+本仓是 **Ether 扇区·主仓（mainline）**，Rust workspace，6 个 crate：
 
 ```
-kanesumi-core       (无依赖 — 设计 tokens / 主题 / MetroText / 交互指示)
+kanesumi-core       (无依赖 — 设计 tokens / 主题 / MetroText / 交互指示 / 几何原语)
     ├── kanesumi-anim      (dep: sokuou(git) — Metro 动画预设，消费 Sokuou)
     ├── kanesumi-structure (dep: kanesumi-core — 页面结构)
     ├── kanesumi-controls  (dep: kanesumi-core, kanesumi-anim — Metro 控件库)
+    ├── kanesumi-harness   (dep: core+anim+structure+controls — 应用壳：App trait / 角色解析 / Scene；
+    │                        Wayland+wgpu 外壳 Linux-only，Phase 3 实现)
     └── kanesumi-gallery   (dep: core+anim+structure+controls — Gallery 应用)
 ```
 

@@ -32,6 +32,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kanesumi-harness"
+version = "0.1.0"
+dependencies = [
+ "kanesumi-anim",
+ "kanesumi-controls",
+ "kanesumi-core",
+ "kanesumi-structure",
+]
+
+[[package]]
 name = "kanesumi-structure"
 version = "0.1.0"
 dependencies = [

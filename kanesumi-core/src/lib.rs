@@ -5,6 +5,7 @@
 
 pub mod color;
 pub mod colors;
+pub mod geometry;
 pub mod indicator;
 pub mod theme;
 pub mod tokens;
@@ -12,6 +13,7 @@ pub mod typography;
 
 pub use color::Color;
 pub use colors::MetroColors;
+pub use geometry::{Point, Rect, Size};
 pub use indicator::MetroIndication;
 pub use theme::MetroTheme;
 pub use tokens::{Spacing, Tokens};

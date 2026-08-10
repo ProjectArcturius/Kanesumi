@@ -1,0 +1,16 @@
+[package]
+name = "kanesumi-harness"
+description = "Kanesumi（矩隅）· 应用壳：ETHER_ROLE 解析 / App trait / Scene 场景 + Linux Wayland+wgpu 外壳"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["Takahashi Rinta <mc1586182829@outlook.com>"]
+
+[dependencies]
+kanesumi-core = { path = "../kanesumi-core" }
+kanesumi-anim = { path = "../kanesumi-anim" }
+kanesumi-structure = { path = "../kanesumi-structure" }
+kanesumi-controls = { path = "../kanesumi-controls" }
+
+# Wayland+wgpu 外壳仅 Linux（参 Ether-main PLAN.md §4.2 三层握手 / §4.4 测试阶梯）。
+# Phase 3 在 Linux 上实现时再挂 sctk / wgpu 等 target 依赖。

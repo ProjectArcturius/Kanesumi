@@ -4,6 +4,7 @@ members = [
     "kanesumi-anim",
     "kanesumi-structure",
     "kanesumi-controls",
+    "kanesumi-harness",
     "kanesumi-gallery",
 ]
 resolver = "2"
