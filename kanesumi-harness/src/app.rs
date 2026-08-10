@@ -1,5 +1,6 @@
-use kanesumi_core::text::TextEngine;
-use kanesumi_core::{MetroTheme, Scene, Size};
+use kanesumi_canvas::Scene;
+use kanesumi_canvas::text::TextEngine;
+use kanesumi_core::{MetroTheme, Size};
 
 use crate::role::EtherRole;
 

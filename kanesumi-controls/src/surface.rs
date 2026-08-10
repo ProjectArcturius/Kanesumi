@@ -1,4 +1,5 @@
-use kanesumi_core::{Color, CornerRadius, MetroTheme, Rect, Scene};
+use kanesumi_canvas::Scene;
+use kanesumi_core::{Color, CornerRadius, MetroTheme, Rect};
 
 /// 控件形态 tokens —— 参 PLAN.md §4-5（Metro 形态：直角/极轻微圆角、无渐变纯色、内容优先）。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -55,7 +56,7 @@ impl MetroSurface {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kanesumi_core::SceneCommand;
+    use kanesumi_canvas::SceneCommand;
 
     #[test]
     fn renders_background() {

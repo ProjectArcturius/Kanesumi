@@ -1,5 +1,6 @@
-use kanesumi_core::text::TextEngine;
-use kanesumi_core::{MetroTheme, Rect, Scene, TextAlign};
+use kanesumi_canvas::text::TextEngine;
+use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::{MetroTheme, Rect};
 
 /// MetroList —— 垂直列表。行高下限 40（UWP ListViewItem MinHeight，参 CONTROL_SPEC §7）；视口外行裁剪。
 #[derive(Debug, Clone, PartialEq)]
@@ -91,7 +92,7 @@ impl MetroList {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kanesumi_core::{Scene, SceneCommand};
+    use kanesumi_canvas::{Scene, SceneCommand};
 
     fn find_font() -> Option<std::path::PathBuf> {
         if let Ok(p) = std::env::var("KANESUMI_TEST_FONT") {

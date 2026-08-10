@@ -707,25 +707,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "kanesumi-canvas"
+version = "0.1.0"
+dependencies = [
+ "fontdue",
+ "kanesumi-core",
+]
+
+[[package]]
 name = "kanesumi-controls"
 version = "0.1.0"
 dependencies = [
  "kanesumi-anim",
+ "kanesumi-canvas",
  "kanesumi-core",
 ]
 
 [[package]]
 name = "kanesumi-core"
 version = "0.1.0"
-dependencies = [
- "fontdue",
-]
 
 [[package]]
 name = "kanesumi-gallery"
 version = "0.1.0"
 dependencies = [
  "kanesumi-anim",
+ "kanesumi-canvas",
  "kanesumi-controls",
  "kanesumi-core",
  "kanesumi-harness",
@@ -740,6 +747,7 @@ dependencies = [
  "env_logger",
  "fontdue",
  "kanesumi-anim",
+ "kanesumi-canvas",
  "kanesumi-controls",
  "kanesumi-core",
  "kanesumi-structure",
@@ -756,6 +764,7 @@ dependencies = [
 name = "kanesumi-structure"
 version = "0.1.0"
 dependencies = [
+ "kanesumi-canvas",
  "kanesumi-core",
 ]
 

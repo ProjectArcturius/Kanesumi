@@ -1,9 +1,10 @@
+use kanesumi_canvas::text::TextEngine;
+use kanesumi_canvas::{Scene, SceneCommand};
 use kanesumi_controls::{
     MetroButton, MetroIconButton, MetroList, MetroProgressBar, MetroProgressRing, MetroSwitch,
     MetroTab, MetroTabRow,
 };
-use kanesumi_core::text::TextEngine;
-use kanesumi_core::{MetroTheme, Rect, Scene, SceneCommand, Size};
+use kanesumi_core::{MetroTheme, Rect, Size};
 
 /// 控件集成演示 —— 把首套控件渲染进一个 Scene（App::render 的产物形态）。
 /// 验证 controls → Scene 管线端到端成立；GPU 光栅化由 harness 外壳承担。

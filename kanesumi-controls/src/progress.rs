@@ -1,6 +1,7 @@
 use kanesumi_anim::{DURATION_INDETERMINATE, EasingMode, MetroAnim, UwpEasing};
-use kanesumi_core::text::TextEngine;
-use kanesumi_core::{Color, CornerRadius, MetroTheme, Point, Rect, Scene};
+use kanesumi_canvas::Scene;
+use kanesumi_canvas::text::TextEngine;
+use kanesumi_core::{Color, CornerRadius, MetroTheme, Point, Rect};
 
 /// 进度指示模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,7 +241,7 @@ impl MetroProgressRing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kanesumi_core::SceneCommand;
+    use kanesumi_canvas::SceneCommand;
 
     fn find_engine() -> Option<TextEngine> {
         if let Ok(p) = std::env::var("KANESUMI_TEST_FONT") {

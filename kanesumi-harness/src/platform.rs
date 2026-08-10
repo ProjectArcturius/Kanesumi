@@ -7,8 +7,8 @@
 
 use std::time::Instant;
 
+use kanesumi_canvas::text::TextEngine;
 use kanesumi_core::Size;
-use kanesumi_core::text::TextEngine;
 use smithay_client_toolkit::reexports::{
     calloop::EventLoop, calloop_wayland_source::WaylandSource,
 };

@@ -16,5 +16,5 @@ pub mod render;
 pub use app::{App, AppConfig, InputEvent, PointerButton};
 pub use role::{EtherRole, RoleParseError, SurfaceKind};
 
-// Scene 下沉到 kanesumi-core（控件 → Scene 依赖方向）。此处重导出供应用使用。
-pub use kanesumi_core::{Scene, SceneCommand, TextAlign};
+// Scene 属 kanesumi-canvas（渲染命令层）。此处重导出供应用使用。
+pub use kanesumi_canvas::{Scene, SceneCommand, TextAlign};

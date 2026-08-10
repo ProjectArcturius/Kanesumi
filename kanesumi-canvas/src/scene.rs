@@ -1,6 +1,6 @@
-use crate::color::Color;
-use crate::geometry::{CornerRadius, Point, Rect};
-use crate::typography::TextStyle;
+use kanesumi_core::color::Color;
+use kanesumi_core::geometry::{CornerRadius, Point, Rect};
+use kanesumi_core::typography::TextStyle;
 
 /// 文本对齐。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,7 +159,7 @@ mod tests {
             "Ether".into(),
             Rect::new(0.0, 0.0, 40.0, 16.0),
             Color::WHITE,
-            TextStyle::new(15.0, 22.0, crate::FontWeight::Normal),
+            TextStyle::new(15.0, 22.0, kanesumi_core::FontWeight::Normal),
             TextAlign::Left,
         );
         assert_eq!(scene.commands.len(), 2);
@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn corner_radius_px_resolves_spec_values() {
-        let size = crate::geometry::Size::new(40.0, 20.0);
+        let size = kanesumi_core::geometry::Size::new(40.0, 20.0);
         assert_eq!(CornerRadius::Square.px(size), 0.0);
         assert_eq!(CornerRadius::Slight.px(size), 2.0);
         assert_eq!(CornerRadius::Capsule.px(size), 10.0, "胶囊 = 短边一半");

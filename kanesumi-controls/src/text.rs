@@ -1,6 +1,7 @@
-use kanesumi_core::text::TextEngine;
+use kanesumi_canvas::text::TextEngine;
+use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::typography::TextStyle;
-use kanesumi_core::{Color, MetroTheme, Rect, Scene, Size, TextAlign};
+use kanesumi_core::{Color, MetroTheme, Rect, Size};
 
 /// MetroText —— 文本控件。内容 + 样式 + 对齐。
 #[derive(Debug, Clone, PartialEq)]
@@ -115,7 +116,7 @@ mod tests {
         text.render(&engine, Rect::new(0.0, 0.0, 200.0, 22.0), &mut scene);
         assert!(matches!(
             scene.commands[0],
-            kanesumi_core::SceneCommand::Text { .. }
+            kanesumi_canvas::SceneCommand::Text { .. }
         ));
     }
 }

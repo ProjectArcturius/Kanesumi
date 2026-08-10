@@ -1,11 +1,7 @@
 [package]
 name = "kanesumi-core"
-description = "Kanesumi（矩隅）· Ether 扇区核心：设计 tokens / 主题 / MetroText / 交互指示 / 几何 / 场景"
+description = "Kanesumi（矩隅）· Ether 扇区核心：设计 tokens / 主题 / 排版 / 几何（Scene 迁出至 kanesumi-canvas）"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["Takahashi Rinta <mc1586182829@outlook.com>"]
-
-[dependencies]
-# 文本度量/排版引擎。合成器文本管线同款（参 ether-settings/topbar.rs）。纯 Rust，跨平台。
-fontdue = "0.9"

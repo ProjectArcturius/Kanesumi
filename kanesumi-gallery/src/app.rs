@@ -4,13 +4,14 @@
 // 事件路由：顶层弹层优先（Dialog/DropdownMenu/SelectorFlyout）→ 常规控件。
 // 控件状态切换：set_state / set_checked / hovered / show / hide / toggle。
 
+use kanesumi_canvas::text::TextEngine;
+use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_controls::{
     ControlState, MenuItem, MetroButton, MetroDialog, MetroDropdownMenu, MetroIconButton,
     MetroList, MetroProgressBar, MetroProgressRing, MetroSelectorFlyout, MetroSwitch, MetroTab,
     MetroTabRow,
 };
-use kanesumi_core::text::TextEngine;
-use kanesumi_core::{MetroTheme, Point, Rect, Scene, Size, TextAlign, TextStyle};
+use kanesumi_core::{MetroTheme, Point, Rect, Size, TextStyle};
 use kanesumi_harness::{App, AppConfig, EtherRole, InputEvent, PointerButton};
 
 /// 布局常量（逻辑像素）。
@@ -682,7 +683,7 @@ mod tests {
         let texts = scene
             .commands
             .iter()
-            .filter(|c| matches!(c, kanesumi_core::SceneCommand::Text { .. }))
+            .filter(|c| matches!(c, kanesumi_canvas::SceneCommand::Text { .. }))
             .count();
         assert!(texts >= 4, "标题 + 各控件文本");
     }
@@ -783,7 +784,7 @@ mod structure_integration {
         assert!(content.size.width > 0.0 && content.size.height > 0.0);
         assert!(scene.commands.iter().any(|c| matches!(
             c,
-            kanesumi_core::SceneCommand::Text { content, .. } if content == "Ether"
+            kanesumi_canvas::SceneCommand::Text { content, .. } if content == "Ether"
         )));
     }
 }

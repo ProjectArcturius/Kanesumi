@@ -1,5 +1,6 @@
 use kanesumi_anim::{MetroAnim, MetroPresets};
-use kanesumi_core::{MetroTheme, Rect, Scene, Size};
+use kanesumi_canvas::Scene;
+use kanesumi_core::{MetroTheme, Rect, Size};
 
 /// 弹层展开方向。参 CONTROL_SPEC §8（ComboBoxHelper 判据：弹出容器相对触发器 Top>0 即向下）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

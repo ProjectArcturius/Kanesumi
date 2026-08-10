@@ -10,8 +10,9 @@ pub mod navigation;
 pub use layout::{APP_BAR_HEIGHT, ShellLayout};
 pub use navigation::{DURATION_PAGE_TRANSITION, Navigation};
 
-use kanesumi_core::text::TextEngine;
-use kanesumi_core::{Color, MetroTheme, Rect, Scene, TextAlign};
+use kanesumi_canvas::text::TextEngine;
+use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::{Color, MetroTheme, Rect};
 
 /// 应用主壳 —— 主题 + 导航 + AppBar 的宿主。
 /// `PageId` 为应用自定义页标识（与 `Navigation` 同型）。
@@ -166,7 +167,7 @@ mod tests {
             &mut scene,
         );
         assert!(scene.commands.iter().any(
-            |c| matches!(c, kanesumi_core::SceneCommand::Text { content, .. } if content == "Ether")
+            |c| matches!(c, kanesumi_canvas::SceneCommand::Text { content, .. } if content == "Ether")
         ));
     }
 

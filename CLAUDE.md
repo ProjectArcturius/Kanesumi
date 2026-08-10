@@ -6,7 +6,7 @@
 
 ```bash
 cargo check          # 检查所有 crate
-cargo test           # 单元测试（当前 101 个）
+cargo test           # 单元测试（当前 122 个）
 cargo clippy
 cargo fmt
 ```
@@ -25,17 +25,23 @@ KANESUMI_TEST_FONT=/path/to/font.ttf cargo run -p kanesumi-gallery  # 指定字�
 
 ## 架构
 
-本仓是 **Ether 扇区·主仓（mainline）**，Rust workspace，6 个 crate：
+本仓是 **Ether 扇区·主仓（mainline）**，Rust workspace，7 个 crate：
 
 ```
 kanesumi-core       (无依赖 — 设计 tokens / 主题 / MetroText / 交互指示 / 几何原语)
     ├── kanesumi-anim      (dep: sokuou(git) — Metro 动画预设，消费 Sokuou)
-    ├── kanesumi-structure (dep: kanesumi-core — 导航状态机 + 壳布局)
-    ├── kanesumi-controls  (dep: kanesumi-core, kanesumi-anim — Metro 控件库)
-    ├── kanesumi-harness   (dep: core+anim+structure+controls — 应用壳：App trait / 角色解析 / Scene /
+    ├── kanesumi-canvas    (dep: kanesumi-core — 2D 图形：Scene 渲染命令 + TextEngine 排版)
+    ├── kanesumi-structure (dep: kanesumi-core + canvas — 导航状态机 + 壳布局)
+    ├── kanesumi-controls  (dep: core+canvas+anim — Metro 控件库)
+    ├── kanesumi-harness   (dep: core+canvas+anim+structure+controls — 应用壳：App trait / 角色解析 /
     │                        Linux Wayland+wgpu 外壳：platform.rs + render.rs)
-    └── kanesumi-gallery   (dep: core+anim+structure+controls+harness — Gallery 应用，daily driver)
+    └── kanesumi-gallery   (dep: core+canvas+anim+structure+controls+harness — Gallery 应用，daily driver)
 ```
+
+> **Scene/TextEngine 归属（2026-08-10 拆分完成，参 Ether-main PLAN.md §6.1）**：渲染命令模型
+> （`Scene`/`SceneCommand`/`TextAlign`）与字体度量（`TextEngine`/`Line`）驻 `kanesumi-canvas`
+> （对应 UWP Win2D）。core 回归纯运行时（tokens/主题/排版/几何）。依赖方向
+> `core ← canvas ← controls/harness/gallery`；controls 产出 Scene，harness 光栅化 Scene。
 
 ### 页面结构（kanesumi-structure，2026-08-10 填充）
 
@@ -45,6 +51,15 @@ kanesumi-core       (无依赖 — 设计 tokens / 主题 / MetroText / 交互�
 - **`layout.rs`**：`ShellLayout` —— `MetroShell::layout(window)` 一次划分 AppBar / 内容区（可选左侧导航栏）。
 - **`lib.rs`**：`MetroShell<PageId>`（主题 + 导航 + AppBar 宿主）、`MetroAppBar`（标题 + 高度）、
   `MetroScaffold`（内容容器 + 内边距）。`render(engine, window)` 渲染背景 + AppBar，返回内容矩形。
+
+### 输入层（2026-08-10 完成）
+
+- `InputEvent`（harness app.rs）增 `Scroll { x, y }` 变体；`platform.rs` 接线 Wayland Axis
+  （离散步 50px/格 + 触摸板连续像素，+y 为正）。
+- `MetroList` 增 `scroll_by`/`scroll_to`/`max_scroll` + 夹紧；`MetroDialog` 增 `hit_button`
+  （Primary/Secondary/Close 身份命中）。
+- 弹层方向自适应：`popup.rs` 的 `place_popup(trigger, size, screen, gap)` —— 下方空间不足时
+  面板上翻（ComboBoxHelper 判据），上翻时右缘超出屏幕自动收拢。
 
 ### Linux 外壳（kanesumi-harness，Phase 3 续完成 2026-08-10）
 

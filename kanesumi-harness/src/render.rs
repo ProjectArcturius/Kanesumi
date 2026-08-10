@@ -7,8 +7,9 @@
 
 use std::collections::HashMap;
 
-use kanesumi_core::text::TextEngine;
-use kanesumi_core::{Color, Point, Rect, Scene, SceneCommand, TextAlign, TextStyle};
+use kanesumi_canvas::text::TextEngine;
+use kanesumi_canvas::{Scene, SceneCommand, TextAlign};
+use kanesumi_core::{Color, Point, Rect, TextStyle};
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{Connection, Proxy};
 use wgpu::util::DeviceExt;

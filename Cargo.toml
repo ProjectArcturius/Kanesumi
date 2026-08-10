@@ -2,6 +2,7 @@
 members = [
     "kanesumi-core",
     "kanesumi-anim",
+    "kanesumi-canvas",
     "kanesumi-structure",
     "kanesumi-controls",
     "kanesumi-harness",

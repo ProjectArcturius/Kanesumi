@@ -1,5 +1,6 @@
-use kanesumi_core::text::TextEngine;
-use kanesumi_core::{FontWeight, MetroTheme, Rect, Scene, TextAlign, TextStyle};
+use kanesumi_canvas::text::TextEngine;
+use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::{FontWeight, MetroTheme, Rect, TextStyle};
 
 /// MetroTabRow —— 标签行（Pivot 参考）。参 CONTROL_SPEC §6：
 /// - Header 高 48、Padding `12,0,12,0`；头字 24 SemiLight、字距 −2.5%；
@@ -179,7 +180,7 @@ mod tests {
         let pipes = scene
             .commands
             .iter()
-            .filter(|c| matches!(c, kanesumi_core::SceneCommand::FillRect { .. }))
+            .filter(|c| matches!(c, kanesumi_canvas::SceneCommand::FillRect { .. }))
             .count();
         assert_eq!(pipes, 1, "只有选中 tab 有管道");
     }

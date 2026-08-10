@@ -35,7 +35,7 @@ fn main() {
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
-    use kanesumi_core::text::TextEngine;
+    use kanesumi_canvas::text::TextEngine;
     use kanesumi_core::{MetroTheme, Size};
     use kanesumi_gallery::{command_summary, page_tree, palette, render_demo_scene};
 

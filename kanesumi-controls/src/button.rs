@@ -1,6 +1,7 @@
-use kanesumi_core::text::TextEngine;
+use kanesumi_canvas::text::TextEngine;
+use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::typography::TextStyle;
-use kanesumi_core::{MetroTheme, Rect, Scene, Size, TextAlign};
+use kanesumi_core::{MetroTheme, Rect, Size};
 
 use crate::state::ControlState;
 
@@ -102,7 +103,7 @@ impl MetroButton {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kanesumi_core::SceneCommand;
+    use kanesumi_canvas::SceneCommand;
 
     fn find_font() -> Option<std::path::PathBuf> {
         if let Ok(p) = std::env::var("KANESUMI_TEST_FONT") {

@@ -8,6 +8,7 @@ authors = ["Takahashi Rinta <mc1586182829@outlook.com>"]
 
 [dependencies]
 kanesumi-core = { path = "../kanesumi-core" }
+kanesumi-canvas = { path = "../kanesumi-canvas" }
 kanesumi-anim = { path = "../kanesumi-anim" }
 kanesumi-structure = { path = "../kanesumi-structure" }
 kanesumi-controls = { path = "../kanesumi-controls" }

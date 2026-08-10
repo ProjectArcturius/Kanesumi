@@ -1,5 +1,6 @@
-use kanesumi_core::text::TextEngine;
-use kanesumi_core::{MetroTheme, Rect, Scene, Size, TextAlign};
+use kanesumi_canvas::text::TextEngine;
+use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::{MetroTheme, Rect, Size};
 
 use crate::state::ControlState;
 
@@ -134,7 +135,7 @@ fn label_style() -> kanesumi_core::TextStyle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kanesumi_core::SceneCommand;
+    use kanesumi_canvas::SceneCommand;
 
     fn find_engine() -> Option<TextEngine> {
         if let Ok(p) = std::env::var("KANESUMI_TEST_FONT") {

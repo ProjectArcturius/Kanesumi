@@ -1,5 +1,6 @@
-use kanesumi_core::text::TextEngine;
-use kanesumi_core::{MetroTheme, Point, Rect, Scene, TextAlign, TextStyle};
+use kanesumi_canvas::text::TextEngine;
+use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::{MetroTheme, Point, Rect, TextStyle};
 
 use crate::popup::{PopupAnim, PopupState, render_overlay};
 

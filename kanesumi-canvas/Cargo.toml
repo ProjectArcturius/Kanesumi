@@ -1,6 +1,6 @@
 [package]
-name = "kanesumi-structure"
-description = "Kanesumi（矩隅）· 页面结构：MetroShell / AppBar / Scaffold"
+name = "kanesumi-canvas"
+description = "Kanesumi（矩隅）· 2D 图形：Scene 渲染命令 + TextEngine 排版（对应 Win2D）"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
@@ -8,4 +8,4 @@ authors = ["Takahashi Rinta <mc1586182829@outlook.com>"]
 
 [dependencies]
 kanesumi-core = { path = "../kanesumi-core" }
-kanesumi-canvas = { path = "../kanesumi-canvas" }
+fontdue = "0.9"
