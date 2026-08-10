@@ -6,7 +6,7 @@
 
 ```bash
 cargo check          # 检查所有 crate
-cargo test           # 单元测试（当前 138 个）
+cargo test           # 单元测试（当前 145 个）
 cargo clippy
 cargo fmt
 ```
@@ -68,7 +68,9 @@ kanesumi-core       (无依赖 — 设计 tokens / 主题 / MetroText / 交互�
 - **`view!` 宏**：Rust 原生声明式语法糖 → `Decl` 树（编译期检查，非字符串 DSL）。
 - **`render_decl`**（reconciler）：声明式树 → 布局均分展开 → 现有控件渲染 → `Scene` +
   命中表（`DeclHit`）。App 消费命中表路由动作（`DeclAction`），无隐藏控件。
-- 状态驱动：App 每帧从状态产出 `Decl` 树，reconciler 展开为 Scene。增量 diff 待后续优化。
+- **`diff_decl`**：按树位置路径匹配两帧声明式树，输出 `DeclChange`（Added/Removed/
+  Changed/Replaced）——「保留视觉树 + damage 重绘」（PLAN §4.1 不变量 1/4）的逻辑基础。
+- 状态驱动：App 每帧从状态产出 `Decl` 树，reconciler 展开为 Scene。增量 diff 已实现（`diff_decl`）。
 
 ### 输入层（2026-08-10 完成）
 
