@@ -1,6 +1,6 @@
 use kanesumi_anim::{EasingMode, MetroAnim, UwpEasing};
 use kanesumi_core::text::TextEngine;
-use kanesumi_core::{Color, MetroTheme, Rect, Scene, TextAlign};
+use kanesumi_core::{Color, CornerRadius, MetroTheme, Rect, Scene, TextAlign};
 
 use crate::state::ControlState;
 
@@ -98,7 +98,6 @@ impl MetroSwitch {
             self.track_width,
             self.track_height,
         );
-        let radius = self.track_height / 2.0;
         let knob_diameter = self.track_height;
 
         let (track_fill, track_stroke, knob_color) = if self.checked {
@@ -122,16 +121,16 @@ impl MetroSwitch {
         };
 
         if track_fill.a > 0.0 {
-            scene.fill_rounded_rect(track_fill, track_rect, radius);
+            scene.fill_rounded_rect(track_fill, track_rect, CornerRadius::Capsule);
         }
         if track_stroke.a > 0.0 {
-            scene.stroke_rounded_rect(track_stroke, track_rect, 1.0, radius);
+            scene.stroke_rounded_rect(track_stroke, track_rect, 1.0, CornerRadius::Capsule);
         }
 
         // Knob（白圆，位置 = 行程 × 进度）
         let knob_x = track_rect.origin.x + self.knob_offset();
         let knob_rect = Rect::new(knob_x, track_rect.origin.y, knob_diameter, knob_diameter);
-        scene.fill_rounded_rect(knob_color, knob_rect, radius);
+        scene.fill_rounded_rect(knob_color, knob_rect, CornerRadius::Capsule);
     }
 }
 

@@ -1,6 +1,6 @@
 use kanesumi_anim::{DURATION_INDETERMINATE, EasingMode, MetroAnim, UwpEasing};
 use kanesumi_core::text::TextEngine;
-use kanesumi_core::{Color, MetroTheme, Point, Rect, Scene};
+use kanesumi_core::{Color, CornerRadius, MetroTheme, Point, Rect, Scene};
 
 /// 进度指示模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +91,7 @@ impl MetroProgressBar {
         scene.fill_rounded_rect(
             colors.surface_variant.with_alpha(0.6),
             bar_rect,
-            height / 2.0,
+            CornerRadius::Capsule,
         );
 
         let indicator_color = if self.error {
@@ -107,7 +107,7 @@ impl MetroProgressBar {
                 let w = self.display_value() * bar_rect.size.width;
                 if w > 0.0 {
                     let ind_rect = Rect::new(bar_rect.origin.x, bar_rect.origin.y, w, height);
-                    scene.fill_rounded_rect(color, ind_rect, height / 2.0);
+                    scene.fill_rounded_rect(color, ind_rect, CornerRadius::Capsule);
                 }
             }
             ProgressMode::Indeterminate => {
@@ -126,7 +126,7 @@ impl MetroProgressBar {
                         pw * w,
                         height,
                     );
-                    scene.fill_rounded_rect(color, ind_rect, height / 2.0);
+                    scene.fill_rounded_rect(color, ind_rect, CornerRadius::Capsule);
                 }
             }
         }

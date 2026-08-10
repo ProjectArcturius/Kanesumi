@@ -1,3 +1,5 @@
+use crate::geometry::CornerRadius;
+
 /// 间距网格：4px 基数。参 UWP 布局惯例。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Spacing {
@@ -31,8 +33,8 @@ impl Default for Spacing {
 /// 全局设计 tokens。参 PLAN.md §4-5 —— Metro 形态：直角或极轻微圆角、无渐变纯色。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tokens {
-    /// 圆角：直角优先，仅保留极轻微 2px 防锯齿。
-    pub corner_radius: f32,
+    /// 圆角：直角优先，仅保留极轻微 2px 防锯齿（类型级约束，禁止 Fluent 大圆角）。
+    pub corner_radius: CornerRadius,
     pub spacing: Spacing,
     /// 字体族。Ether 唯一字体，禁止静默回退（SD §IX）。
     pub font_family: &'static str,
@@ -41,7 +43,7 @@ pub struct Tokens {
 impl Tokens {
     pub const fn ether() -> Self {
         Self {
-            corner_radius: 2.0,
+            corner_radius: CornerRadius::Slight,
             spacing: Spacing::base4(),
             font_family: "Source Han Sans SC",
         }

@@ -1,5 +1,5 @@
 use crate::color::Color;
-use crate::geometry::{Point, Rect};
+use crate::geometry::{CornerRadius, Point, Rect};
 use crate::typography::TextStyle;
 
 /// 文本对齐。
@@ -61,11 +61,11 @@ impl Scene {
         });
     }
 
-    pub fn fill_rounded_rect(&mut self, color: Color, rect: Rect, corner_radius: f32) {
+    pub fn fill_rounded_rect(&mut self, color: Color, rect: Rect, corner: CornerRadius) {
         self.commands.push(SceneCommand::FillRect {
             color,
             rect,
-            corner_radius,
+            corner_radius: corner.px(rect.size),
         });
     }
 
@@ -83,13 +83,13 @@ impl Scene {
         color: Color,
         rect: Rect,
         thickness: f32,
-        corner_radius: f32,
+        corner: CornerRadius,
     ) {
         self.commands.push(SceneCommand::StrokeRect {
             color,
             rect,
             thickness,
-            corner_radius,
+            corner_radius: corner.px(rect.size),
         });
     }
 
@@ -168,7 +168,11 @@ mod tests {
     #[test]
     fn rounded_and_arc_append() {
         let mut scene = Scene::default();
-        scene.fill_rounded_rect(Color::BLACK, Rect::new(0.0, 0.0, 40.0, 20.0), 10.0);
+        scene.fill_rounded_rect(
+            Color::BLACK,
+            Rect::new(0.0, 0.0, 40.0, 20.0),
+            CornerRadius::Capsule,
+        );
         scene.arc(Point::new(16.0, 16.0), 14.0, 4.0, Color::WHITE, 0.0, 270.0);
         assert!(matches!(
             scene.commands[0],
@@ -178,5 +182,13 @@ mod tests {
             scene.commands[1],
             SceneCommand::Arc { end_deg, .. } if end_deg == 270.0
         ));
+    }
+
+    #[test]
+    fn corner_radius_px_resolves_spec_values() {
+        let size = crate::geometry::Size::new(40.0, 20.0);
+        assert_eq!(CornerRadius::Square.px(size), 0.0);
+        assert_eq!(CornerRadius::Slight.px(size), 2.0);
+        assert_eq!(CornerRadius::Capsule.px(size), 10.0, "胶囊 = 短边一半");
     }
 }

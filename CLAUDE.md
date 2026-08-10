@@ -6,7 +6,7 @@
 
 ```bash
 cargo check          # 检查所有 crate
-cargo test           # 单元测试（Phase 2 起每 crate 自带；当前 94 个）
+cargo test           # 单元测试（当前 101 个）
 cargo clippy
 cargo fmt
 ```
@@ -30,12 +30,21 @@ KANESUMI_TEST_FONT=/path/to/font.ttf cargo run -p kanesumi-gallery  # 指定字�
 ```
 kanesumi-core       (无依赖 — 设计 tokens / 主题 / MetroText / 交互指示 / 几何原语)
     ├── kanesumi-anim      (dep: sokuou(git) — Metro 动画预设，消费 Sokuou)
-    ├── kanesumi-structure (dep: kanesumi-core — 页面结构)
+    ├── kanesumi-structure (dep: kanesumi-core — 导航状态机 + 壳布局)
     ├── kanesumi-controls  (dep: kanesumi-core, kanesumi-anim — Metro 控件库)
     ├── kanesumi-harness   (dep: core+anim+structure+controls — 应用壳：App trait / 角色解析 / Scene /
     │                        Linux Wayland+wgpu 外壳：platform.rs + render.rs)
     └── kanesumi-gallery   (dep: core+anim+structure+controls+harness — Gallery 应用，daily driver)
 ```
+
+### 页面结构（kanesumi-structure，2026-08-10 填充）
+
+- **`navigation.rs`**：`Navigation<PageId>` —— 对应 UWP `Frame.Navigate` 的状态驱动实现（无保留视觉树）。
+  页栈 + 过渡进度（`navigate_to` / `go_back` / `can_go_back` / `is_transitioning` / `leaving_page`）。
+  过渡进度可由应用层 Sokuou 动画驱动（`set_transition_progress`），本层不依赖 kanesumi-anim。
+- **`layout.rs`**：`ShellLayout` —— `MetroShell::layout(window)` 一次划分 AppBar / 内容区（可选左侧导航栏）。
+- **`lib.rs`**：`MetroShell<PageId>`（主题 + 导航 + AppBar 宿主）、`MetroAppBar`（标题 + 高度）、
+  `MetroScaffold`（内容容器 + 内边距）。`render(engine, window)` 渲染背景 + AppBar，返回内容矩形。
 
 ### Linux 外壳（kanesumi-harness，Phase 3 续完成 2026-08-10）
 
@@ -71,7 +80,9 @@ kanesumi-core       (无依赖 — 设计 tokens / 主题 / MetroText / 交互�
 3. **状态驱动渲染** —— `state → progress → resolved spatial state → render`。
 4. **动画只动视觉属性，不动布局** —— 位移/缩放/透明走快速路径，绝不触发 Measure/Arrange。
 5. **无隐藏控件** —— reconciler 逻辑组件不产生额外原生控件。
-6. **纯色无渐变** —— 直角或极轻微圆角、强调色 + 半透明面板。
+6. **纯色无渐变** —— 直角或极轻微圆角、强调色 + 半透明面板。圆角以 `CornerRadius` 枚举
+   （`Square`/`Slight`/`Capsule`）类型级约束，**禁止 Fluent 式大圆角（4px/8px）**；`Capsule` 仅限
+   全圆角形态（Switch 轨道/Knob、ProgressBar 指示条）。
 
 ## 控件实现规范
 

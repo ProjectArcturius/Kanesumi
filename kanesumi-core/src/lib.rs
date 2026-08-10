@@ -15,7 +15,7 @@ pub mod typography;
 
 pub use color::Color;
 pub use colors::MetroColors;
-pub use geometry::{Point, Rect, Size};
+pub use geometry::{CornerRadius, Point, Rect, Size};
 pub use indicator::MetroIndication;
 pub use scene::{Scene, SceneCommand, TextAlign};
 pub use text::{Line, TextEngine, TextLoadError};

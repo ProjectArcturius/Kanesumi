@@ -489,7 +489,7 @@ impl App for GalleryApp {
 mod tests {
     use super::*;
 
-    fn find_font() -> Option<std::path::PathBuf> {
+    pub(super) fn find_font() -> Option<std::path::PathBuf> {
         if let Ok(p) = std::env::var("KANESUMI_TEST_FONT") {
             let p = std::path::PathBuf::from(p);
             if p.exists() {
@@ -664,5 +664,45 @@ mod tests {
             .filter(|c| matches!(c, kanesumi_core::SceneCommand::Text { .. }))
             .count();
         assert!(texts >= 4, "标题 + 各控件文本");
+    }
+}
+
+#[cfg(test)]
+mod structure_integration {
+    use super::*;
+    use crate::pages::GalleryPage;
+    use kanesumi_structure::{MetroShell, Navigation};
+
+    #[test]
+    fn navigation_drives_shell_pages() {
+        let mut nav: Navigation<GalleryPage> = Navigation::new(GalleryPage::DesignTokens);
+        assert_eq!(*nav.current(), GalleryPage::DesignTokens);
+
+        nav.navigate_to(GalleryPage::Controls);
+        assert!(nav.is_transitioning());
+        nav.set_transition_progress(1.0);
+        assert_eq!(*nav.current(), GalleryPage::Controls);
+        assert!(!nav.is_transitioning());
+
+        assert!(nav.go_back());
+        nav.set_transition_progress(1.0);
+        assert_eq!(*nav.current(), GalleryPage::DesignTokens);
+    }
+
+    #[test]
+    fn metro_shell_renders_chrome_with_theme() {
+        let Some(p) = super::tests::find_font() else {
+            return;
+        };
+        let engine = TextEngine::load(p).unwrap();
+        let shell: MetroShell<GalleryPage> = MetroShell::new(GalleryPage::DesignTokens, "Ether");
+        let mut scene = Scene::default();
+        let content = shell.render(&engine, Rect::new(0.0, 0.0, 960.0, 600.0), &mut scene);
+        assert_eq!(content.origin.x, 0.0);
+        assert!(content.size.width > 0.0 && content.size.height > 0.0);
+        assert!(scene.commands.iter().any(|c| matches!(
+            c,
+            kanesumi_core::SceneCommand::Text { content, .. } if content == "Ether"
+        )));
     }
 }

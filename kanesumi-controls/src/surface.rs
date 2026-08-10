@@ -1,14 +1,14 @@
-use kanesumi_core::{Color, MetroTheme, Rect, Scene};
+use kanesumi_core::{Color, CornerRadius, MetroTheme, Rect, Scene};
 
 /// 控件形态 tokens —— 参 PLAN.md §4-5（Metro 形态：直角/极轻微圆角、无渐变纯色、内容优先）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ControlShape {
-    pub corner_radius: f32,
+    pub corner_radius: CornerRadius,
     pub background: Color,
 }
 
 impl ControlShape {
-    pub const fn new(corner_radius: f32, background: Color) -> Self {
+    pub const fn new(corner_radius: CornerRadius, background: Color) -> Self {
         Self {
             corner_radius,
             background,

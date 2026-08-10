@@ -18,7 +18,7 @@
 | `kanesumi-core` | 设计 tokens / 主题 / MetroText / 交互指示 / 几何原语 | ✅ 骨架（Phase 2） |
 | `kanesumi-anim` | 动画层，消费 Sokuou（即応エンジン） | ✅ 骨架（Phase 2） |
 | `kanesumi-harness` | 应用壳：App trait / ETHER_ROLE 角色解析 / Scene 场景 + Linux Wayland+wgpu 外壳 | 🆕 核心完成，外壳 Phase 3 |
-| `kanesumi-structure` | 页面结构（MetroShell / AppBar / Scaffold） | 🆕 占位（Phase 3） |
+| `kanesumi-structure` | 页面结构（Navigation 状态机 / ShellLayout / AppBar / Scaffold） | ✅ 导航+壳布局（2026-08-10） |
 | `kanesumi-controls` | Metro 标准控件库（MetroSurface / Button / List…） | 🆕 占位（Phase 3） |
 | `kanesumi-gallery` | Gallery 应用 —— 三层测试阶梯的 daily driver | 🔧 纯逻辑骨架（Phase 2） |
 
