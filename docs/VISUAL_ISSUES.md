@@ -113,7 +113,7 @@ Menu items 用 `\u{E8E5}` `\u{E74E}` `\u{E792}` `\u{E7E8}`，Selector 触发器�
 `kanesumi-controls/src/decl.rs:174-194`。`spacing` 字段声明了但 `let _ = spacing;` 直接扔。Gallery footer `Row(Text, Button)` 两个子都拿 464 px，导致"点我 +1" 按钮撑到半屏。
 **修法：** 加 `Decl::Spacer{ grow: f32 }` + `Sized{ width, child }`，或让 `Text` / `Button` 有"自然宽度模式"、Row 只均分标 flex 的子。
 
-### V9 · 深色主题下 Dialog 遮罩几乎不可见 ⬜
+### V9 · 深色主题下 Dialog 遮罩几乎不可见 ✅ 本 commit
 `kanesumi-core/src/theme.rs:27` `overlay_color = Color::BLACK.with_alpha(0.45)`。在 #1E1E1E 深底上只暗 10%，遮罩形同虚设。Metro 原版 dark 主题也用**白色遮罩**（`ContentDialogDimmingThemeBrush = #99FFFFFF`）—— dark 底加白遮罩才有"上一层"的观感。
 **修法：** 深色主题遮罩换 `Color::WHITE.with_alpha(0.15)` 附近的值（对齐 UWP 白 60% 的观感，Ether 空间桌面调低一档避免刺眼），或黑 0.7+。
 
@@ -190,4 +190,5 @@ DropdownMenu / SelectorFlyout / Dialog 全部合成到主 surface，`place_popup
 | V2 | ✅ | `c7d8b1e` | content_rect.y 加 title.line_height |
 | V3 | ✅ | `9d909e0` | jump_to 保 value 后再 set_target；default scale=1.05 |
 | V4 | ✅ | `92df519` | 删 Gallery 侧手工触发器绘制，selector.render 独占 |
-| V7 | ✅ | 本 commit | Metro 自绘 chevron（Scene::triangle + canvas glyph 模块），移除 5 处 MDL2 codepoint |
+| V7 | ✅ | `5746c60` | Metro 自绘 chevron（Scene::triangle + canvas glyph 模块），移除 5 处 MDL2 codepoint |
+| V9 | ✅ | 本 commit | overlay_color BLACK 0.45→0.7；补 alpha ≥ 0.6 断言；恢复 KANESUMI_DEMO_STATE 视觉审计钩子 |

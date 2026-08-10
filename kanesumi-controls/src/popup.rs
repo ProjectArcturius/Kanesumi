@@ -231,6 +231,12 @@ mod tests {
         let color = MetroTheme::ether_dark().overlay_color;
         assert!(color.a > 0.0 && color.a < 1.0, "遮罩半透明");
         assert_eq!(color.r, 0.0, "深色遮罩");
+        // 深色主题上遮罩必须足够强才能视觉可见（参 V9：0.45 在 #1E1E1E 上只暗 10%）
+        assert!(
+            color.a >= 0.6,
+            "遮罩 alpha 应 ≥ 0.6 才在深色底上可见，实际 {}",
+            color.a
+        );
     }
 
     #[test]

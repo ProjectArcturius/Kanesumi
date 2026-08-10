@@ -153,6 +153,50 @@ impl GalleryApp {
             decl_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             decl_retained: kanesumi_controls::RetainedScene::new(),
         }
+        .apply_visual_audit_state()
+    }
+
+    /// 视觉审计工具 —— 读 `KANESUMI_DEMO_STATE` 环境变量把 App 打到指定初态，
+    /// 供 `docs/VISUAL_ISSUES.md` 逐项截图核对（无输入自动化环境的替代）。
+    /// 支持：dialog / dropdown / selector / list-selected / switch-on /
+    /// hover-button / focused / tab-1 / disabled。未设或值不匹配 → 默认初态。
+    fn apply_visual_audit_state(mut self) -> Self {
+        let Ok(state) = std::env::var("KANESUMI_DEMO_STATE") else {
+            return self;
+        };
+        match state.as_str() {
+            "dialog" => self.dialog.show(),
+            "dropdown" => self.dropdown.toggle(self.dropdown_panel()),
+            "selector" => self.selector.toggle(self.selector_panel()),
+            "list-selected" => {
+                self.list.selected = Some(2);
+                self.list.hovered = Some(5);
+            }
+            "switch-on" => {
+                self.switch.set_checked(true);
+                for _ in 0..30 {
+                    self.switch.update(1.0 / 60.0);
+                }
+            }
+            "hover-button" => {
+                self.button.set_state(ControlState::Hovered);
+                self.accent.set_state(ControlState::Pressed);
+                self.icon.set_state(ControlState::Hovered);
+            }
+            "focused" => {
+                self.button.set_state(ControlState::Focused);
+            }
+            "tab-1" => {
+                self.tabs.select(1);
+            }
+            "disabled" => {
+                self.button.set_state(ControlState::Disabled);
+                self.switch.state = ControlState::Disabled;
+                self.list.disabled = true;
+            }
+            _ => {}
+        }
+        self
     }
 
     // ── 布局矩形 ────────────────────────────────────────────────────────

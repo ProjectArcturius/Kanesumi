@@ -11,8 +11,13 @@ pub struct MetroTheme {
     pub typography: MetroTypography,
     pub tokens: Tokens,
     pub indication: MetroIndication,
-    /// 弹层遮罩色（对话框 / 下拉）。UWP 经典为白 60%（#99FFFFFF），
-    /// Ether 深色空间桌面改黑 45% 半透明（参 CONTROL_SPEC §9 + LP_DIM 惯例）。
+    /// 弹层遮罩色（对话框 / 下拉）。
+    ///
+    /// UWP Metro dark 用白 60% (#99FFFFFF) 淡淡"洗亮"背景以突出对话框，Ether
+    /// 深色空间桌面选择相反方向：黑 70% 强压背景，因为 Ether 的 `surface`
+    /// (#242424) 只比 `background` (#1A1A1A) 亮一档，白洗会让背景反而比对话框
+    /// 更亮，视觉层次倒挂。参 CONTROL_SPEC §9 + VISUAL_ISSUES V9。
+    /// 原值 0.45 太弱（在 #1E1E1E 上只暗 10%，视觉几乎无差），提升到 0.7。
     pub overlay_color: Color,
 }
 
@@ -24,7 +29,7 @@ impl MetroTheme {
             typography: MetroTypography::metro(),
             tokens: Tokens::ether(),
             indication: MetroIndication::ether(),
-            overlay_color: Color::BLACK.with_alpha(0.45),
+            overlay_color: Color::BLACK.with_alpha(0.7),
         }
     }
 }
