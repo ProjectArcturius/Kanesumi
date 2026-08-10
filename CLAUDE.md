@@ -6,7 +6,7 @@
 
 ```bash
 cargo check          # 检查所有 crate
-cargo test           # 单元测试（当前 129 个）
+cargo test           # 单元测试（当前 138 个）
 cargo clippy
 cargo fmt
 ```
@@ -61,6 +61,14 @@ kanesumi-core       (无依赖 — 设计 tokens / 主题 / MetroText / 交互�
 - **`layout.rs`**：`ShellLayout` —— `MetroShell::layout(window)` 一次划分 AppBar / 内容区（可选左侧导航栏）。
 - **`lib.rs`**：`MetroShell<PageId>`（主题 + 导航 + AppBar 宿主）、`MetroAppBar`（标题 + 高度）、
   `MetroScaffold`（内容容器 + 内边距）。`render(engine, window)` 渲染背景 + AppBar，返回内容矩形。
+
+### 声明式 DSL（kanesumi-controls/src/decl.rs，2026-08-10）
+
+- **`Decl`** 元素树（纯数据、跨平台）：`Row`/`Column`（布局容器）/`Button`/`Text`/`Box`。
+- **`view!` 宏**：Rust 原生声明式语法糖 → `Decl` 树（编译期检查，非字符串 DSL）。
+- **`render_decl`**（reconciler）：声明式树 → 布局均分展开 → 现有控件渲染 → `Scene` +
+  命中表（`DeclHit`）。App 消费命中表路由动作（`DeclAction`），无隐藏控件。
+- 状态驱动：App 每帧从状态产出 `Decl` 树，reconciler 展开为 Scene。增量 diff 待后续优化。
 
 ### 输入层（2026-08-10 完成）
 
