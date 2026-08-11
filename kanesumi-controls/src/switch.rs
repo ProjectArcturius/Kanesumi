@@ -27,28 +27,32 @@ pub enum SwitchShape {
 
 impl SwitchShape {
     /// 轨道宽/高（逻辑像素）。
-    /// 数据源：`reference/microsoft-ui-xaml/dev/CommonStyles/ToggleSwitch_themeresources_v1.xaml`
-    /// —— `OuterBorder Width="40" Height="20"`（WinUI 2 v1 = Metro/Lumia 规格）。
+    /// 数据源：
+    /// - Capsule = `reference/microsoft-ui-xaml/dev/CommonStyles/ToggleSwitch_themeresources_v1.xaml`
+    ///   `OuterBorder Width="40" Height="20"`（WinUI 2 v1 = Metro/Lumia 规格）。
+    /// - Square = Windows 8 Modern UI ToggleSwitch 真机截图（`11~2.jpg`）——
+    ///   同 40×20 底盘，只是 0 圆角 + 瘦长 knob。
     fn track_size(self) -> (f32, f32) {
         match self {
             SwitchShape::Capsule => (40.0, 20.0),
-            // WP7 直角版尺寸待用户提供真实截图 —— 先与 Capsule 同尺寸做占位。
             SwitchShape::Square => (40.0, 20.0),
         }
     }
-    /// Knob 宽/高（Ellipse）。
-    /// 数据源同上：`SwitchKnobOn/Off Width="10" Height="10"`。
+    /// Knob 宽/高。
+    /// - Capsule：10×10 圆（UWP v1 SwitchKnobOn/Off `Width="10" Height="10"`）
+    /// - Square：**10×20 瘦长矩形**（Win8 观感 —— knob 与轨道等高、瘦竖块）
     fn knob_size(self) -> (f32, f32) {
         match self {
             SwitchShape::Capsule => (10.0, 10.0),
-            SwitchShape::Square => (10.0, 10.0),
+            SwitchShape::Square => (10.0, 20.0),
         }
     }
-    /// Knob 距轨道边缘留白（上下 / 左右对称）= (track_h − knob_h) / 2 = 5。
+    /// Knob 距轨道边缘留白（上下 / 左右对称）。
+    /// Capsule = (20−10)/2 = 5；Square = 0（贴满高度）。
     fn knob_margin(self) -> f32 {
         match self {
             SwitchShape::Capsule => 5.0,
-            SwitchShape::Square => 5.0,
+            SwitchShape::Square => 0.0,
         }
     }
     fn corner(self) -> CornerRadius {
@@ -397,6 +401,35 @@ mod tests {
         assert_eq!(s.shape.knob_size(), (10.0, 10.0));
         assert_eq!(s.shape.knob_margin(), 5.0);
         assert!((s.travel() - 20.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn square_dimensions_match_win8_style() {
+        // 数据源：Windows 8 Modern UI ToggleSwitch 真机截图（11~2.jpg）
+        // 同 40×20 底盘；knob = 10×20 瘦长矩形；margin=0；travel=30
+        let s = MetroSwitch::new().with_shape(SwitchShape::Square);
+        assert_eq!(s.shape.track_size(), (40.0, 20.0));
+        assert_eq!(s.shape.knob_size(), (10.0, 20.0));
+        assert_eq!(s.shape.knob_margin(), 0.0);
+        assert!((s.travel() - 30.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn square_renders_with_zero_radius() {
+        let Some(p) = find_font() else { return };
+        let engine = TextEngine::load(p).unwrap();
+        let theme = MetroTheme::ether_dark();
+        let mut s = MetroSwitch::new().with_shape(SwitchShape::Square);
+        s.set_checked(true);
+        s.update(1.0);
+        let mut scene = Scene::default();
+        s.render(&theme, &engine, Rect::new(0.0, 0.0, 100.0, 40.0), &mut scene);
+        // Square: 所有 FillRect 的 corner_radius = 0（track + knob）
+        for c in &scene.commands {
+            if let SceneCommand::FillRect { corner_radius, .. } = c {
+                assert_eq!(*corner_radius, 0.0, "Square 变体所有 fill 应为 0 圆角");
+            }
+        }
     }
 
     #[test]
