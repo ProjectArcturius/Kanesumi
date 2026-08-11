@@ -138,8 +138,9 @@ Menu items 用 `\u{E8E5}` `\u{E74E}` `\u{E792}` `\u{E7E8}`，Selector 触发器�
 `progress.rs:83` `min_height.max(rect.size.height.min(4.0))` 恒 = 4。表达冗余。
 **修法：** 改 `rect.size.height.max(self.min_height)` —— 取传入高度，但不低于规格 MinHeight。
 
-### V14 · Text layout `split_ascii_whitespace` 对 CJK 标点切分粗暴 ⬜
+### V14 · Text layout `split_ascii_whitespace` 对 CJK 标点切分粗暴 ✅ 本 commit
 `text.rs:97`。全角空格 U+3000、CJK 标点未识别为断行点，只靠硬断兜底。egui 用允许换行字符集是更合理的做法。
+**修法：** 引入 `unicode-linebreak = "0.1"` crate（UAX #14）。`layout()` 用 `linebreaks(text)` 拿 (byte_idx, Allowed/Mandatory) 序列，贪心累加段宽超限即换行；单段本身超宽走原硬断兜底；`Mandatory`（`\n`）强制换行；Line.content 剥尾空白。CJK 行首禁则（"，" "。" "）" 等 CL 类）由 UAX #14 自动保证。
 
 ### V15 · ProgressRing 不确定态弧长呼吸公式错 ✅ 本 commit
 `progress.rs:232-238` 后半段 sweep 恒 180°，只有旋转没有 TrimStart 前推 → 视觉是匀速转半圆，不是 Metro 呼吸感。
@@ -207,4 +208,5 @@ DropdownMenu / SelectorFlyout / Dialog 全部合成到主 surface，`place_popup
 | V15 | ✅ | `3d38504` | Ring 不确定态 sweep 后半段改 `180 − 90*ease` 完整呼吸 90↔180；rotation 保持 900°/2s |
 | A1 · Switch 重做 | ✅ | `32078c9` | 40×20 track + 10×10 knob（对齐 microsoft-ui-xaml v1 官方规格）；SwitchShape 枚举（Capsule / Square 占位）；Header 上 + State text 右；拖动 press/drag_to/release/cancel；Pressed 灰调（仅拖动中）—— 消解 V11 |
 | A1 · Square 变体 | ✅ | `0a9eacb` | SwitchShape::Square 落到 Win8 真机规格 —— 10×20 瘦长 knob、margin 0、travel 30 |
-| V17 | ✅ | 本 commit | ProgressBar `paused_fade`/`error_blend` MetroAnim（0.25s）；update 幂等 set_target；alpha 与 primary.lerp(ERROR_COLOR) 由 anim 值驱动 |
+| V17 | ✅ | `10b076e` | ProgressBar `paused_fade`/`error_blend` MetroAnim（0.25s）；update 幂等 set_target；alpha 与 primary.lerp(ERROR_COLOR) 由 anim 值驱动 |
+| V14 | ✅ | 本 commit | 引入 `unicode-linebreak` (UAX #14)；`layout` 用 (byte_idx, Allowed/Mandatory) 序列贪心；CJK 行首禁则自动生效；单段超宽走硬断兜底 |

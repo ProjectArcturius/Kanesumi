@@ -11,3 +11,5 @@ kanesumi-core = { path = "../kanesumi-core" }
 fontdue = "0.9"
 # SVG → RGBA 光栅化（图标管线，与 Ether monorepo 侧 ether-assets 同款管线，Kanesumi 自足）。
 resvg = "0.44"
+# UAX #14 断行 —— 为 CJK/混合文本提供正确的允许断行点集合（禁则规则）。参 V14。
+unicode-linebreak = "0.1"

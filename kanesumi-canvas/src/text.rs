@@ -83,67 +83,124 @@ impl TextEngine {
         self.font.rasterize(c, size)
     }
 
-    /// 贪心换行布局。
+    /// 贪心换行布局。参 V14：用 UAX #14 断行机会（`unicode_linebreak`）替代 ASCII 空白，
+    /// 让 CJK 文本 / 混合文本在正确位置断行（不会把 "，" "。" 推到行首等禁则）。
     ///
-    /// - 优先在空白断行；
-    /// - 单个词超宽时按字符硬断（覆盖中文等无空格文本）。
-    /// - 连续空白折叠为单个空格。
+    /// 步骤：
+    /// 1. `unicode_linebreak::linebreaks(text)` → (byte_idx_after_segment, BreakOpportunity)
+    /// 2. 段间贪心累加宽度，超宽即换行；
+    /// 3. 单段本身超宽 → 按字符硬断（兜底）；
+    /// 4. `Mandatory`（如 `\n`）强制换行；
+    /// 5. Line.content 剥尾部空白（避免"the quick  brown" 双空格）。
     pub fn layout(&self, text: &str, size: f32, max_width: f32) -> Vec<Line> {
         let mut lines = Vec::new();
+        if text.is_empty() || max_width <= 0.0 {
+            return lines;
+        }
+
         let mut current = String::new();
         let mut current_width = 0.0;
-        let space_width = self.char_width(' ', size);
+        let mut prev_end = 0usize;
 
-        for token in text.split_ascii_whitespace() {
-            let token_width = self.measure(token, size);
-            let separator = if current.is_empty() { 0.0 } else { space_width };
+        let opportunities: Vec<(usize, unicode_linebreak::BreakOpportunity)> =
+            unicode_linebreak::linebreaks(text).collect();
 
-            if current_width + separator + token_width <= max_width {
-                if !current.is_empty() {
-                    current.push(' ');
-                    current_width += separator;
-                }
-                current.push_str(token);
-                current_width += token_width;
-            } else if current.is_empty() {
-                // 单个词超宽：按字符硬断
-                let mut seg = String::new();
-                let mut seg_width = 0.0;
-                for c in token.chars() {
-                    let cw = self.char_width(c, size);
-                    if seg_width + cw > max_width && !seg.is_empty() {
-                        lines.push(Line {
-                            content: std::mem::take(&mut seg),
-                            width: seg_width,
-                        });
-                        seg_width = 0.0;
-                    }
-                    seg.push(c);
-                    seg_width += cw;
-                }
-                if !seg.is_empty() {
-                    lines.push(Line {
-                        content: seg,
-                        width: seg_width,
-                    });
-                }
+        for (byte_idx, opp) in opportunities {
+            let segment = &text[prev_end..byte_idx];
+            prev_end = byte_idx;
+            if segment.is_empty() {
+                continue;
+            }
+            let is_mandatory =
+                matches!(opp, unicode_linebreak::BreakOpportunity::Mandatory);
+            // 强制断行前先剥掉段末的换行符（\n / \r），它们不进入渲染。
+            let render_segment = if is_mandatory {
+                segment.trim_end_matches(['\n', '\r'])
             } else {
-                lines.push(Line {
-                    content: std::mem::take(&mut current),
-                    width: current_width,
-                });
-                current.push_str(token);
-                current_width = token_width;
+                segment
+            };
+            let seg_width = self.measure(render_segment, size);
+
+            if current_width + seg_width <= max_width {
+                current.push_str(render_segment);
+                current_width += seg_width;
+            } else if current.is_empty() {
+                // 单段超宽 —— 按字符硬断（保底）
+                self.hard_break_into_lines(render_segment, size, max_width, &mut lines);
+            } else {
+                // 换行：先 flush 当前，再放新段（新段仍超宽再硬断）
+                Self::push_trimmed(&mut lines, &mut current, current_width, size, self);
+                current_width = 0.0;
+                if seg_width <= max_width {
+                    current.push_str(render_segment);
+                    current_width = seg_width;
+                } else {
+                    self.hard_break_into_lines(render_segment, size, max_width, &mut lines);
+                }
+            }
+
+            if is_mandatory && !current.is_empty() {
+                Self::push_trimmed(&mut lines, &mut current, current_width, size, self);
+                current_width = 0.0;
             }
         }
 
         if !current.is_empty() {
-            lines.push(Line {
-                content: current,
-                width: current_width,
-            });
+            Self::push_trimmed(&mut lines, &mut current, current_width, size, self);
         }
         lines
+    }
+
+    /// 单段（无法在其内部找到 UAX #14 断行点）超宽时按字符硬断。
+    fn hard_break_into_lines(
+        &self,
+        seg: &str,
+        size: f32,
+        max_width: f32,
+        out: &mut Vec<Line>,
+    ) {
+        let mut buf = String::new();
+        let mut buf_w = 0.0;
+        for c in seg.chars() {
+            let cw = self.char_width(c, size);
+            if buf_w + cw > max_width && !buf.is_empty() {
+                let trimmed = buf.trim_end();
+                let w = self.measure(trimmed, size);
+                out.push(Line {
+                    content: trimmed.to_string(),
+                    width: w,
+                });
+                buf.clear();
+                buf_w = 0.0;
+            }
+            buf.push(c);
+            buf_w += cw;
+        }
+        if !buf.is_empty() {
+            let trimmed = buf.trim_end();
+            let w = self.measure(trimmed, size);
+            out.push(Line {
+                content: trimmed.to_string(),
+                width: w,
+            });
+        }
+    }
+
+    /// 把 current 剥尾空白后压入 lines，清空 current。
+    fn push_trimmed(
+        lines: &mut Vec<Line>,
+        current: &mut String,
+        _current_width: f32,
+        size: f32,
+        engine: &TextEngine,
+    ) {
+        let trimmed = current.trim_end();
+        let w = engine.measure(trimmed, size);
+        lines.push(Line {
+            content: trimmed.to_string(),
+            width: w,
+        });
+        current.clear();
     }
 }
 
@@ -223,5 +280,55 @@ mod tests {
     #[test]
     fn load_missing_font_errors() {
         assert!(TextEngine::load("C:/no/such/font.ttf").is_err());
+    }
+
+    #[test]
+    fn layout_respects_cjk_line_start_prohibition() {
+        // V14: 中文标点（如「，」「。」）不应出现在行首（UAX #14 CL 类禁则）。
+        let Some(p) = find_font() else { return };
+        let engine = TextEngine::load(p).unwrap();
+        // 构造：让"，"处刚好在某行末尾/开头附近
+        let text = "你好世界你好世界，世界你好";
+        let lines = engine.layout(text, 15.0, 90.0);
+        for l in &lines {
+            let first_char = l.content.chars().next();
+            // "，" "。" "！" "？" 等中文标点不应在行首
+            let prohibited = ['，', '。', '！', '？', '：', '；', '、', '）', '】', '」', '』'];
+            assert!(
+                first_char.map(|c| !prohibited.contains(&c)).unwrap_or(true),
+                "行首不应是禁则字符：{:?}",
+                l.content
+            );
+        }
+    }
+
+    #[test]
+    fn layout_handles_mandatory_break_from_newline() {
+        // \n 强制断行
+        let Some(p) = find_font() else { return };
+        let engine = TextEngine::load(p).unwrap();
+        let text = "line1\nline2\nline3";
+        let lines = engine.layout(text, 15.0, 500.0);
+        assert_eq!(lines.len(), 3, "3 行");
+        assert_eq!(lines[0].content, "line1");
+        assert_eq!(lines[1].content, "line2");
+        assert_eq!(lines[2].content, "line3");
+    }
+
+    #[test]
+    fn layout_trims_trailing_whitespace() {
+        // V14 副作用：不能有尾空白（旧代码在段末拼空格，join 后双空格）
+        let Some(p) = find_font() else { return };
+        let engine = TextEngine::load(p).unwrap();
+        let text = "hello world foo bar baz";
+        let lines = engine.layout(text, 15.0, 60.0);
+        for l in &lines {
+            assert_eq!(
+                l.content.trim_end(),
+                l.content.as_str(),
+                "Line.content 不应有尾空白：{:?}",
+                l.content
+            );
+        }
     }
 }
