@@ -44,11 +44,12 @@ impl MetroSurface {
         self
     }
 
-    /// 渲染到 `rect`。顺序：底色 → tint。
+    /// 渲染到 `rect`。顺序：底色 → tint。使用 `shape.corner_radius`（参 V12：
+    /// 原本 `fill_rect` 忽略 corner_radius，Slight/Capsule 面板全被拍直角）。
     pub fn render(&self, rect: Rect, scene: &mut Scene) {
-        scene.fill_rect(self.shape.background, rect);
+        scene.fill_rounded_rect(self.shape.background, rect, self.shape.corner_radius);
         if let Some(tint) = self.tint {
-            scene.fill_rect(tint, rect);
+            scene.fill_rounded_rect(tint, rect, self.shape.corner_radius);
         }
     }
 }
