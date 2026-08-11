@@ -644,3 +644,33 @@
 ### 交互
 - 点数字按钮 → `Select(page)`（0 基返回）。
 - First/Prev/Next/Last → 分页动作；首/末边缘对应按钮隐藏。
+
+---
+
+## 21 · RadioButtons（RadioButtons 参考）
+
+> 数据源：`microsoft-ui-xaml/dev/RadioButtons/`（RadioButtons.cpp + RadioButtons.xaml +
+> RadioButtons_themeresources.xaml）。单个 RadioButton 闭源，Kanesumi 自绘单选圆（Metro 时代观感）。
+
+### 结构与尺寸
+
+```
+Header（可选，Margin 0,0,0,8）
+○  选项 A
+○  选项 B          ← RowSpacing 8
+●  选项 C          ← 选中：圆内强调色圆点
+```
+
+| 项 | 值 |
+|---|---|
+| 单选圆 | **20×20**、描边 2px（`on_surface_variant`）、透明底 |
+| 选中 | 圆心 **10px 强调色**圆点（Metro 8 观感：外圈 + 圆点） |
+| 悬停 | 描边转 `on_surface` |
+| 圆 → 标签 gap | **6px** |
+| ColumnSpacing / RowSpacing | **7 / 8** |
+| MaxColumns | 容器列数（默认 **1** = 纵向堆叠；网格按列宽自适应） |
+| Header | Margin `0,0,0,8`；前景 `on_surface` |
+
+### 交互
+- 点任意项 → 选中（单选框语义，`selected_index` 更新）。
+- 点已选中项 → 保持选中（不取消）。
