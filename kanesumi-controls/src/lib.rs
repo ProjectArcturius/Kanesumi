@@ -5,6 +5,7 @@
 // MetroTabRow / MetroList / MetroSelectorFlyout / MetroDropdownMenu / MetroDialog / MetroSurface。
 // 状态驱动渲染：控件持有状态，`render(theme, engine, rect, scene)` 把当前状态解析为 Scene 命令。
 
+pub mod breadcrumb_bar;
 pub mod button;
 pub mod decl;
 pub mod dialog;
@@ -29,6 +30,7 @@ pub mod switch;
 pub mod tab_row;
 pub mod text;
 
+pub use breadcrumb_bar::{BreadcrumbClick, MetroBreadcrumbBar};
 pub use button::{ButtonKind, MetroButton};
 pub use decl::{
     Decl, DeclAction, DeclChange, DeclHit, DeclPath, collect_hits, diff_decl, render_decl,

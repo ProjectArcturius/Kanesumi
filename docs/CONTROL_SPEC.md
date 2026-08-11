@@ -536,3 +536,39 @@
 - 点击 → toggle 关联 flyout（`MetroDropdownMenu`）。
 - Flyout 打开时按钮呈 Pressed 亮度（对齐 MenuBar 的 Selected 语义）。
 - 点 flyout 项 → 关闭并返回 `(item_idx)`；点外部 → 关闭。
+
+---
+
+## 18 · BreadcrumbBar（BreadcrumbBar 参考）
+
+> 数据源：`microsoft-ui-xaml/dev/Breadcrumb/`（BreadcrumbBar.cpp + BreadcrumbBar.xaml + BreadcrumbBar_themeresources.xaml）。
+
+### 结构与尺寸
+
+```
+[首页]  ›  [文件夹]  ›  [子目录]  ›  当前页
+```
+
+| 项 | 值 |
+|---|---|
+| Item 字号 | **14**（ControlContentThemeFontSize）/ Normal；LineHeight 20；Padding `1,3` |
+| Chevron | `E974`（右）→ Kanesumi 自绘 `chevron_right`；FontSize **12**、Padding `2,0`（每 chevron 占 ~16px） |
+| Ellipsis | `E712`（…）→ 文本 `…`；FontSize 14、Padding 3 |
+| 当前项（末项） | 非按钮（无 hover）、无尾部 chevron、前景 `on_surface` |
+
+### 前景色（TextFillColor 映射）
+
+| 态 | 值 |
+|---|---|
+| 正常 | `on_surface`（TextFillColorPrimary） |
+| PointerOver | `on_surface` 强（上游 Secondary 转暗；Kanesumi 取 hover 变亮） |
+| 当前项 | `on_surface`（同 Primary） |
+
+### 折叠（BreadcrumbLayout 语义）
+- 总宽 ≤ 可用宽 → 全部展示；
+- 超宽 → 前缀折叠：隐藏前 `k` 项，换成 `…`（Ellipsis），至少保留末项；
+- 点 `…` → 弹出隐藏项下拉（Flyout MinHeight 40）；点隐藏项 → 返回其索引。
+
+### 交互
+- 点非当前项 → 返回索引（宿主导航）。
+- 当前项（末项）不可点。

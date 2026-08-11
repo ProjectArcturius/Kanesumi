@@ -47,7 +47,7 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 
 ---
 
-## §Ⅲ 已移植（20 个 + 2 部分）
+## §Ⅲ 已移植（21 个 + 2 部分）
 
 见 `CONTROL_MATRIX.md` 详表。此处仅摘录源类归属：
 
@@ -73,8 +73,9 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | MetroPipsPager | PipsPager (WinUI 2) | **开源** |
 | MetroPersonPicture | PersonPicture (WinUI 2) | **开源** |
 | MetroDropDownButton | DropDownButton (WinUI 2) | **开源** |
+| MetroBreadcrumbBar | BreadcrumbBar (WinUI 2) | **开源** |
 
-**已移植开源占比 9/20 ≈ 45%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
+**已移植开源占比 10/21 ≈ 48%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
 自足小型控件推进，开源占比显著提升。PagerControl（Num 型分页）未实现，仍列 §Ⅳ。
 
 ### 已移植但部分能力未完（Phase 3 续做）
@@ -98,7 +99,6 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | **NavigationView** | 19 | Settings 左侧导航、Librarian 侧栏 | **P1** | 现有 MetroTabRow ≈ NavigationView Top 模式的简化；侧栏 Left 模式 + Header/Pane/Content 分离全都没做。19 个 cpp 是移植量最大的一档 |
 | **TabView** | 5 | Ether 浏览器 / 文档编辑类应用（Kanesumi Gallery 页导航不算） | **P1** | Chrome 式标签页：Add/Close/Drag/Reorder。区别于 Pivot（不能关闭、拖拽） |
 | **TreeView** | 15 | Librarian 文件夹树、Settings 层级选项 | **P2** | 项展开动画 + 缩进层级 + 键盘 Right/Left 展开 |
-| **Breadcrumb** | 9 | Librarian 路径栏、Settings 层级返回 | **P1** | 相对小，很实用 |
 | **Repeater** | 59 | List / TabView / TreeView 底层虚拟化 | **P1** | 最大工程量；先做上层控件、共用一份 Repeater |
 | **ScrollView / ScrollPresenter** | 5 + 31 | 上述所有滚动容器 | **P1** | Repeater 前置。ScrollPresenter 30 个 cpp 是内核 |
 | **NumberBox** | 3 | Settings 数字项（音量、屏幕缩放…） | **P1** | TextBox + 上下步进 + 校验（依赖闭源 TextBox） |
@@ -119,7 +119,7 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | **ParallaxView** | 2 | 视差滚动 | **P3** | |
 | **WebView2** | 2 | Web 嵌入 | **—** | 依赖 Chromium runtime，另立方案 |
 
-**小计**：开源可移植 ~22 个，工程量最大三档：Repeater(59) / ScrollPresenter(31) / NavigationView(19)。
+**小计**：开源可移植 ~21 个，工程量最大三档：Repeater(59) / ScrollPresenter(31) / NavigationView(19)。
 
 ---
 
@@ -236,7 +236,7 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 11. **Image** —— 应用内图片
 12. **TitleBar** —— 应用窗口 SSD 标题（Ether Issue #8）
 13. **Repeater + ScrollPresenter + ScrollView** —— List 虚拟化前置
-14. ~~**InfoBar / Expander**~~ ✅ 已完成；**NumberBox / Breadcrumb** —— 开源可读、小工程量
+14. ~~**InfoBar / Expander / Breadcrumb**~~ ✅ 已完成；**NumberBox** —— 开源可读、小工程量
 15. **AutoSuggestBox（Helper 开源，TextBox 依赖 P0-1）** —— 搜索框
 16. **NumberBox** —— 数字步进
 17. **MenuBar 键盘遍历 + MenuFlyoutSubItem** —— 补齐 MenuBar 二级级联与键盘（本次已埋钩子）
