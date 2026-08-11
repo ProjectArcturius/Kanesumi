@@ -744,3 +744,37 @@ else → SinglePane（PanePriority 指定单面板）
 ### 交互
 - Back 点击 → 返回 `Back`（宿主导航）。
 - 无其它交互（图标/标题不可点）。
+
+---
+
+## 24 · RatingControl（RatingControl 参考）
+
+> 数据源：`microsoft-ui-xaml/dev/RatingControl/`（RatingControl.cpp + RatingControl.xaml +
+> RatingControl_themeresources.xaml）。上游用 MDL2 `E735`（实星）/`E734`（空星）；
+> Kanesumi 用标准 Unicode `★`/`☆`（思源黑体包含，V7 不依赖私有区字形）。
+
+### 结构与尺寸
+
+```
+★ ★ ★ ☆ ☆        ← MaxRating 5，值 3（整星）；支持小数（半星 = 裁剪）
+```
+
+| 项 | 值 |
+|---|---|
+| 控件 Height | **32**；star cell ≈ **24×24**（FontSize 32 + Margin −8 补偿） |
+| MaxRating | 默认 **5** |
+| 实星（Selected） | **强调色**（AccentFillColorDefault → `primary`） |
+| 空星（Unselected） | `on_surface_variant`（TextFillColorSecondary） |
+| Placeholder | `on_surface` |
+| PointerOver 实/空星 | 强调色 / `on_surface` |
+| Disabled | `on_surface_variant` 低透（TextFillColorDisabled） |
+
+### 行为
+- `Value` 可为小数（部分星：前景星按比例裁剪）。
+- **PointerOver 预览**：悬停到某星 → `hover_value`（释放时提交）。
+- **Clear**：`IsClearEnabled` 时点当前值所在星 → 值清零。
+- `IsReadOnly`：只读（无 hover/点击）。
+
+### 交互
+- 点击第 k 星 → `Value = k`；`IsClearEnabled` 且点当前值星 → `Value = 0`。
+- 返回 `Option<f64>` 新值（None = 未变化）。

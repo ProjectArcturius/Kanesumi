@@ -24,6 +24,7 @@ pub mod pips_pager;
 pub mod popup;
 pub mod progress;
 pub mod radio_buttons;
+pub mod rating_control;
 pub mod retained;
 pub mod selector_flyout;
 pub mod split_button;
@@ -59,6 +60,7 @@ pub use popup::{
 };
 pub use progress::{MetroProgressBar, MetroProgressRing, ProgressMode};
 pub use radio_buttons::MetroRadioButtons;
+pub use rating_control::MetroRatingControl;
 pub use retained::RetainedScene;
 pub use selector_flyout::MetroSelectorFlyout;
 pub use split_button::{MetroSplitButton, SplitButtonClick, SplitButtonPart};

@@ -79,8 +79,9 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | MetroRadioButtons | RadioButtons (WinUI 2) | **开源**（单项自绘） |
 | MetroTwoPaneView | TwoPaneView (WinUI 2) | **开源**（纯布局） |
 | MetroTitleBar | TitleBar (WinUI 2) | **开源** |
+| MetroRatingControl | RatingControl (WinUI 2) | **开源** |
 
-**已移植开源占比 15/22 ≈ 68%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
+**已移植开源占比 16/22 ≈ 73%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
 自足小型控件推进，开源占比显著提升。PagerControl 仅 NumberPanel 模式；RadioButtons 单项
 自绘；TwoPaneView 单区域判据（折叠屏 hinge 逻辑未移植）。
 
@@ -109,7 +110,6 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | **ScrollView / ScrollPresenter** | 5 + 31 | 上述所有滚动容器 | **P1** | Repeater 前置。ScrollPresenter 30 个 cpp 是内核 |
 | **NumberBox** | 3 | Settings 数字项（音量、屏幕缩放…） | **P1** | TextBox + 上下步进 + 校验（依赖闭源 TextBox） |
 | **RadioMenuFlyoutItem** | 1 | 菜单内单选（View → Zoom Level） | **P2** | 依赖 MenuFlyout 级联完善 |
-| **RatingControl** | 5 | Librarian 文件评分（非核心） | **P3** | |
 | **ColorPicker** | 8 | Settings 主题色（Ether 暂无用户可选主题） | **P3** | |
 | **CommandBarFlyout** | 5 | 选中文本弹出 Cut/Copy/Paste 浮出 | **P2** | 需 TextBox / 选区 |
 | **AutoSuggestBox Helper** | 1 (Helper) | 搜索框建议下拉 | **P1** | 主体 TextBox 闭源；Helper 只处理键盘导航 |
