@@ -3,6 +3,11 @@
 // Linux：加载字体 → GalleryApp → harness Wayland+wgpu 外壳（daily driver，参 PLAN.md §4.4）。
 // 非 Linux：纯逻辑 smoke（页树 + tokens + 控件 Scene 统计），保持跨平台可测。
 
+/// 非 Linux 平台的字体查找（Windows / macOS smoke test 用）。
+/// Linux 侧一律走 `kanesumi_harness::platform::find_font`，避免
+/// Gallery 预加载字体与外壳实际加载字体不同源（V18 直接根因：
+/// Gallery 用 DejaVu 量按钮宽度、外壳用 SourceHan 光栅化 → CJK 溢出 box）。
+#[cfg(not(target_os = "linux"))]
 fn find_font() -> Option<std::path::PathBuf> {
     if let Ok(p) = std::env::var("KANESUMI_TEST_FONT") {
         let p = std::path::PathBuf::from(p);
@@ -25,8 +30,11 @@ fn find_font() -> Option<std::path::PathBuf> {
 
 #[cfg(target_os = "linux")]
 fn main() {
-    let font_path = find_font()
-        .or_else(kanesumi_harness::platform::find_font)
+    // V18：Gallery 预加载字体必须与 harness 外壳同源。旧代码 main.rs 自己
+    // find_font 只查 DejaVu，harness 优先查 SourceHan —— 两处不一致时按钮
+    // 用 DejaVu 量宽（CJK 走 .notdef 极窄）、harness 用 SourceHan 光栅化（CJK 正常宽），
+    // 结果 "打开对话框" 溢出 box。此处直接委派 harness 的查找顺序。
+    let font_path = kanesumi_harness::platform::find_font()
         .expect("未找到字体：设 KANESUMI_TEST_FONT");
     let app = kanesumi_gallery::GalleryApp::new(font_path);
     // Box::leak → &'static mut GalleryApp → &mut dyn App（run 永不返回，生命周期合法）。
