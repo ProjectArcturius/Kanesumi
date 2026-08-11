@@ -983,6 +983,9 @@ impl App for GalleryApp {
         self.dropdown.update(dt);
         self.selector.update(dt);
         self.dialog.update(dt);
+        // V17：TabRow 选中管道滑行 + 文字色 crossfade 需每帧推进
+        self.nav.update(dt);
+        self.tabs.update(dt);
     }
 
     fn handle_input(&mut self, event: InputEvent) {

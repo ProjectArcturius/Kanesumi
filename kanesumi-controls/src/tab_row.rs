@@ -1,11 +1,17 @@
+use kanesumi_anim::{EasingMode, MetroAnim, UwpEasing};
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::{FontWeight, MetroTheme, Point, Rect, TextStyle};
+use kanesumi_core::{Color, FontWeight, MetroTheme, Point, Rect, TextStyle};
 
 /// MetroTabRow —— 标签行（Pivot 参考）。参 CONTROL_SPEC §6：
 /// - Header 高 48、Padding `12,0,12,0`；头字 24 SemiLight、字距 −2.5%；
-/// - 选中 = 文字最深 + 底部 2px 强调色管道（各 Header 独立，切换瞬时）；
+/// - 选中 = 文字最深 + 底部 2px 强调色管道；
 /// - 无头背景高亮（选中只靠文字色 + 管道）。
+///
+/// V17：切换从"瞬时"改为"管道时长驱动滑行 + 文字色 crossfade"，
+/// 参 UWP TabView / Fluent NavigationView Top 的 SelectionIndicator 动画。
+/// 用 `MetroAnim` 而非 `SpringAnim`：管道是次要属性过渡（非位移主运动），
+/// UWP 时代约定 0.25s Quadratic/EaseOut。
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetroTab {
     pub label: String,
@@ -19,6 +25,9 @@ impl MetroTab {
     }
 }
 
+/// 管道滑行时长（秒）。UWP TabView SelectionIndicator = 250ms。
+const PIPE_DURATION: f64 = 0.25;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetroTabRow {
     pub tabs: Vec<MetroTab>,
@@ -26,15 +35,24 @@ pub struct MetroTabRow {
     pub hovered: Option<usize>,
     /// Header 高（UWP 48）。
     pub header_height: f32,
+    /// 上一次选中（切换动画起点）。首次 select 前 = selected 自身（无动画）。
+    prev_selected: usize,
+    /// 管道位置动画（value ∈ [0, 1]，0 = prev、1 = current）。
+    /// 稳态在 1（画在 current 上）；`select` 时 jump_to(0) + set_target(1) 重启滑行。
+    select_anim: MetroAnim,
 }
 
 impl Default for MetroTabRow {
     fn default() -> Self {
+        let mut anim = MetroAnim::new(PIPE_DURATION, UwpEasing::Quadratic, EasingMode::EaseOut);
+        anim.jump_to(1.0);
         Self {
             tabs: Vec::new(),
             selected: 0,
             hovered: None,
             header_height: 48.0,
+            prev_selected: 0,
+            select_anim: anim,
         }
     }
 }
@@ -47,10 +65,28 @@ impl MetroTabRow {
         }
     }
 
+    /// 选中指定 tab。若与当前不同，启动管道滑行 + 文字色 crossfade。
+    /// 同一 tab 重复 select 幂等，不重启动画。
     pub fn select(&mut self, index: usize) {
-        if index < self.tabs.len() {
-            self.selected = index;
+        if index >= self.tabs.len() || index == self.selected {
+            return;
         }
+        self.prev_selected = self.selected;
+        self.selected = index;
+        // 归零重启：value 直接落到 0（老 bug 参 dialog.rs L110 —— 不 jump_to
+        // 则 set_target 会从残余 value 继续，看起来管道会往回蹦一下）。
+        self.select_anim.jump_to(0.0);
+        self.select_anim.set_target(1.0);
+    }
+
+    /// 每帧推进管道动画。GalleryApp / 宿主须调用；未调用则管道停在 prev（旧退化行为）。
+    pub fn update(&mut self, dt: f64) {
+        self.select_anim.update(dt);
+    }
+
+    /// 管道当前进度 [0, 1]，仅用于测试 / 调试。
+    pub fn selection_progress(&self) -> f32 {
+        self.select_anim.value() as f32
     }
 
     /// Header 文字样式：24 SemiLight，字距 −2.5%（UWP CharacterSpacing=−25）。
@@ -102,41 +138,69 @@ impl MetroTabRow {
         None
     }
 
+    /// 单个 tab 的（label_x, label_w），x 相对 `rect.origin.x` 展开。
+    fn label_geoms(&self, engine: &TextEngine, rect: Rect) -> Vec<(f32, f32)> {
+        let style = Self::header_style();
+        let mut cursor = rect.origin.x;
+        let mut out = Vec::with_capacity(self.tabs.len());
+        for tab in &self.tabs {
+            let label_w =
+                engine.measure_with_spacing(&tab.label, style.size, style.letter_spacing_em);
+            out.push((cursor + 12.0, label_w));
+            cursor += label_w + 24.0;
+        }
+        out
+    }
+
     /// 渲染到 `rect`（横向排列，垂直到顶）。
+    /// V17：管道从 prev tab 到 current tab 用 SpringAnim 滑行；两者的文字色按同一
+    /// 进度做 crossfade（prev 淡出到 variant、current 淡入到 on_surface）。
     pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
         let colors = &theme.colors;
         let style = Self::header_style();
-        let mut cursor = rect.origin.x;
+        let geoms = self.label_geoms(engine, rect);
+        let progress = self.select_anim.value().clamp(0.0, 1.0) as f32;
 
         for (i, tab) in self.tabs.iter().enumerate() {
-            let label_w =
-                engine.measure_with_spacing(&tab.label, style.size, style.letter_spacing_em);
-            let header_w = label_w + 24.0;
-            let selected = i == self.selected;
+            let (label_x, label_w) = geoms[i];
 
-            // 文字色：选中或悬停 = 最深（on_surface），未选中 = 次级（on_surface_variant）
-            let fg = if selected || self.hovered == Some(i) {
+            // 文字色：切换中两个头 crossfade；其它按普通规则（hover=on_surface，否则 variant）
+            let base = if self.hovered == Some(i) {
                 colors.on_surface
             } else {
                 colors.on_surface_variant
             };
+            let fg = if i == self.selected {
+                // current：progress 0 → variant，progress 1 → on_surface
+                Color::lerp(base, colors.on_surface, progress as f64)
+            } else if i == self.prev_selected && self.prev_selected != self.selected {
+                // prev：progress 0 → on_surface，progress 1 → variant
+                Color::lerp(colors.on_surface, base, progress as f64)
+            } else {
+                base
+            };
 
-            let text_rect = Rect::new(cursor + 12.0, rect.origin.y, label_w, self.header_height);
+            let text_rect =
+                Rect::new(label_x, rect.origin.y, label_w, self.header_height);
             scene.text(tab.label.clone(), text_rect, fg, style, TextAlign::Left);
-
-            // 选中管道：高 2、贴底 2px、宽 = 文字宽、强调色
-            if selected {
-                let pipe_rect = Rect::new(
-                    cursor + 12.0,
-                    rect.origin.y + self.header_height - 2.0 - 2.0,
-                    label_w,
-                    2.0,
-                );
-                scene.fill_rect(colors.primary, pipe_rect);
-            }
-
-            cursor += header_w;
         }
+
+        // 选中管道：SpringAnim 从 prev 到 current 插值 x / w，强调色。
+        // 稳态或首启（prev == current）时直接画在 current 下。
+        let (cur_x, cur_w) = geoms[self.selected];
+        let (pipe_x, pipe_w) = if self.prev_selected == self.selected {
+            (cur_x, cur_w)
+        } else {
+            let (prev_x, prev_w) = geoms[self.prev_selected];
+            (
+                prev_x + (cur_x - prev_x) * progress,
+                prev_w + (cur_w - prev_w) * progress,
+            )
+        };
+        scene.fill_rect(
+            colors.primary,
+            Rect::new(pipe_x, rect.origin.y + self.header_height - 4.0, pipe_w, 2.0),
+        );
     }
 }
 
@@ -202,6 +266,11 @@ mod tests {
         let theme = MetroTheme::ether_dark();
         let mut row = MetroTabRow::new(vec![MetroTab::new("Mail"), MetroTab::new("Calendar")]);
         row.select(1);
+        // V17：动画驱动后管道始终画（滑行插值），不再分"选中才画"；
+        // 稳态推进后位置落在 current。
+        for _ in 0..120 {
+            row.update(1.0 / 60.0);
+        }
         let mut scene = Scene::default();
         row.render(
             &theme,
@@ -214,7 +283,7 @@ mod tests {
             .iter()
             .filter(|c| matches!(c, kanesumi_canvas::SceneCommand::FillRect { .. }))
             .count();
-        assert_eq!(pipes, 1, "只有选中 tab 有管道");
+        assert_eq!(pipes, 1, "画且只画一条管道");
     }
 
     #[test]
@@ -222,6 +291,71 @@ mod tests {
         let mut row = MetroTabRow::new(vec![MetroTab::new("A")]);
         row.select(5);
         assert_eq!(row.selected, 0);
+    }
+
+    #[test]
+    fn select_starts_pipe_slide_from_prev_to_current() {
+        // V17：select 启动动画 —— 第一次 render 时管道在 prev tab 位（progress=0），
+        // 若干 update 后落到 current tab 位（progress→1）。
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
+        let mut row = MetroTabRow::new(vec![
+            MetroTab::new("Mail"),
+            MetroTab::new("Calendar"),
+            MetroTab::new("People"),
+        ]);
+        assert!((row.selection_progress() - 0.0).abs() < 1e-6);
+        row.select(2);
+        // 刚 select，progress = 0，管道应在 prev（0）位。
+        assert_eq!(row.prev_selected, 0);
+        assert!((row.selection_progress() - 0.0).abs() < 1e-6);
+        let mut scene0 = Scene::default();
+        row.render(
+            &theme,
+            &engine,
+            Rect::new(0.0, 0.0, 600.0, 48.0),
+            &mut scene0,
+        );
+        // 稳态推进
+        for _ in 0..120 {
+            row.update(1.0 / 60.0);
+        }
+        assert!((row.selection_progress() - 1.0).abs() < 0.01);
+        let mut scene1 = Scene::default();
+        row.render(
+            &theme,
+            &engine,
+            Rect::new(0.0, 0.0, 600.0, 48.0),
+            &mut scene1,
+        );
+        // 从两次 render 提取 pipe x（最后一个 FillRect）
+        let pipe_x = |s: &Scene| {
+            s.commands
+                .iter()
+                .rev()
+                .find_map(|c| match c {
+                    kanesumi_canvas::SceneCommand::FillRect { rect, .. } => Some(rect.origin.x),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let x_start = pipe_x(&scene0);
+        let x_end = pipe_x(&scene1);
+        assert!(
+            x_end > x_start,
+            "管道应从 prev tab（0）滑到 current tab（2）：x_start={x_start}, x_end={x_end}"
+        );
+    }
+
+    #[test]
+    fn select_same_index_is_noop() {
+        let mut row = MetroTabRow::new(vec![MetroTab::new("A"), MetroTab::new("B")]);
+        row.select(1);
+        row.update(1.0);
+        assert!((row.selection_progress() - 1.0).abs() < 0.01);
+        // 再 select 1 —— 幂等，不应重启动画
+        row.select(1);
+        assert!((row.selection_progress() - 1.0).abs() < 0.01);
     }
 
     #[test]
