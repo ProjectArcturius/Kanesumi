@@ -295,8 +295,9 @@ mod tests {
 
     #[test]
     fn select_starts_pipe_slide_from_prev_to_current() {
-        // V17：select 启动动画 —— 第一次 render 时管道在 prev tab 位（progress=0），
-        // 若干 update 后落到 current tab 位（progress→1）。
+        // V17：Default 时无动画，progress 稳态在 1.0（管道贴 current 上，因 prev==cur
+        // render 分支不看 progress）。select(new) 才 jump_to(0.0) + set_target(1.0) 起滑，
+        // 首帧 progress=0（管道在 prev），若干 update 后 progress→1（管道到 current）。
         let Some(engine) = find_engine() else { return };
         let theme = MetroTheme::ether_dark();
         let mut row = MetroTabRow::new(vec![
@@ -304,7 +305,7 @@ mod tests {
             MetroTab::new("Calendar"),
             MetroTab::new("People"),
         ]);
-        assert!((row.selection_progress() - 0.0).abs() < 1e-6);
+        assert!((row.selection_progress() - 1.0).abs() < 1e-6, "Default 稳态 progress=1");
         row.select(2);
         // 刚 select，progress = 0，管道应在 prev（0）位。
         assert_eq!(row.prev_selected, 0);

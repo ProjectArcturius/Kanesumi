@@ -501,6 +501,61 @@ impl Renderer {
         // 当前裁剪矩形（box 语义）：None = 不裁剪。
         let mut clip: Option<Rect> = None;
 
+        // V18：按 Scene 命令原始顺序记录绘制步（保 painter's algorithm 跨类型）。
+        // 旧代码把所有 FillRect 汇入一次 solid draw、所有 Text 汇入一次 text draw、
+        // 所有 Image 汇入一次 image draw；顺序仅在同类内保持 → 底层控件文本会画在
+        // 后来的对话框/下拉菜单面板之上（用户视觉：面板"透视"、文字浮顶）。
+        //
+        // 新方案：同类型连续命令合成一个 Step，异类之间切 Step；draw 阶段按 Step
+        // 顺序切 pipeline + 画对应区间。多几次 set_pipeline，换来正确 z-order。
+        enum Step {
+            Solid { start: u32, count: u32 },
+            Text { run_start: u32, run_end: u32 },
+            Image { run_start: u32, run_end: u32 },
+        }
+        let mut steps: Vec<Step> = Vec::new();
+
+        // 追加或延长同类型末尾 Step。类型不同 → 结算旧 Step、开新 Step。
+        fn push_solid(steps: &mut Vec<Step>, before: u32, after: u32) {
+            if after == before {
+                return;
+            }
+            if let Some(Step::Solid { count, .. }) = steps.last_mut() {
+                *count += after - before;
+            } else {
+                steps.push(Step::Solid {
+                    start: before,
+                    count: after - before,
+                });
+            }
+        }
+        fn push_text(steps: &mut Vec<Step>, before: u32, after: u32) {
+            if after == before {
+                return;
+            }
+            if let Some(Step::Text { run_end, .. }) = steps.last_mut() {
+                *run_end = after;
+            } else {
+                steps.push(Step::Text {
+                    run_start: before,
+                    run_end: after,
+                });
+            }
+        }
+        fn push_image(steps: &mut Vec<Step>, before: u32, after: u32) {
+            if after == before {
+                return;
+            }
+            if let Some(Step::Image { run_end, .. }) = steps.last_mut() {
+                *run_end = after;
+            } else {
+                steps.push(Step::Image {
+                    run_start: before,
+                    run_end: after,
+                });
+            }
+        }
+
         for cmd in &scene.commands {
             match cmd {
                 SceneCommand::ClipRect { rect } => {
@@ -511,12 +566,14 @@ impl Renderer {
                     rect,
                     corner_radius,
                 } => {
+                    let before = solid.len() as u32;
                     if let Some(c) = &clip {
                         let Some(r) = intersect(*rect, *c) else { continue };
                         emit_fill(&mut solid, &ndc, r, *corner_radius, *color);
                     } else {
                         emit_fill(&mut solid, &ndc, *rect, *corner_radius, *color);
                     }
+                    push_solid(&mut steps, before, solid.len() as u32);
                 }
                 SceneCommand::StrokeRect {
                     color,
@@ -524,12 +581,14 @@ impl Renderer {
                     thickness,
                     corner_radius,
                 } => {
+                    let before = solid.len() as u32;
                     if let Some(c) = &clip {
                         let Some(r) = intersect(*rect, *c) else { continue };
                         emit_stroke(&mut solid, &ndc, r, *corner_radius, *thickness, *color);
                     } else {
                         emit_stroke(&mut solid, &ndc, *rect, *corner_radius, *thickness, *color);
                     }
+                    push_solid(&mut steps, before, solid.len() as u32);
                 }
                 SceneCommand::Arc {
                     center,
@@ -539,10 +598,12 @@ impl Renderer {
                     start_deg,
                     end_deg,
                 } => {
+                    let before = solid.len() as u32;
                     emit_arc(
                         &mut solid, &ndc, *center, *radius, *thickness, *color, *start_deg,
                         *end_deg,
                     );
+                    push_solid(&mut steps, before, solid.len() as u32);
                 }
                 SceneCommand::Text {
                     content,
@@ -551,6 +612,7 @@ impl Renderer {
                     style,
                     align,
                 } => {
+                    let before = text_runs.len() as u32;
                     self.emit_text(
                         engine,
                         &ndc,
@@ -563,6 +625,7 @@ impl Renderer {
                         *style,
                         *align,
                     );
+                    push_text(&mut steps, before, text_runs.len() as u32);
                 }
                 SceneCommand::Image {
                     rgba,
@@ -571,6 +634,7 @@ impl Renderer {
                     rect,
                     tint,
                 } => {
+                    let before = image_runs.len() as u32;
                     if let Some(c) = &clip {
                         let Some(r) = intersect(*rect, *c) else { continue };
                         emit_image(
@@ -597,10 +661,12 @@ impl Renderer {
                             *tint,
                         );
                     }
+                    push_image(&mut steps, before, image_runs.len() as u32);
                 }
                 SceneCommand::Triangle { p0, p1, p2, color } => {
                     // 自绘几何 glyph（Metro chevron/箭头/收合指示等）——三顶点直接入 solid。
                     // 不做 clip：几何 glyph 本身很小，不易越出容器；若真需要可后续加。
+                    let before = solid.len() as u32;
                     let c = [color.r, color.g, color.b, color.a];
                     solid.push(SolidVertex {
                         pos: ndc(p0.x, p0.y),
@@ -614,6 +680,7 @@ impl Renderer {
                         pos: ndc(p2.x, p2.y),
                         color: c,
                     });
+                    push_solid(&mut steps, before, solid.len() as u32);
                 }
             }
         }
@@ -663,57 +730,76 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            // 形状（单次 draw，持久缓冲）
-            if !solid.is_empty() {
-                let buf = upload_vertices_solid(
+            // V18：按 Scene 命令原始顺序走 Step，逐步 set_pipeline + 画对应区间。
+            // 三个持久顶点缓冲一次性上传全量顶点（避免每步反复 upload）；draw 区间
+            // 由 Step 携带。painter's algorithm 跨类型正确 —— 对话框/下拉菜单面板
+            // 之后的命令不再被之前控件的文本盖住。
+            let solid_buf = if !solid.is_empty() {
+                Some(upload_vertices_solid(
                     &self.device,
                     &self.queue,
                     &mut self.solid_buf,
                     &mut self.solid_cap,
                     &solid,
-                );
-                pass.set_pipeline(&self.solid_pipeline);
-                pass.set_vertex_buffer(0, buf.slice(..));
-                pass.draw(0..solid.len() as u32, 0..1);
-            }
-
-            // 文本（逐字形，独立绑定纹理；持久缓冲）
-            if !text.is_empty() {
-                let buf = upload_vertices(
+                ))
+            } else {
+                None
+            };
+            let text_buf = if !text.is_empty() {
+                Some(upload_vertices(
                     &self.device,
                     &self.queue,
                     &mut self.text_buf,
                     &mut self.text_cap,
                     &text,
-                );
-                pass.set_pipeline(&self.text_pipeline);
-                pass.set_vertex_buffer(0, buf.slice(..));
-                for run in &text_runs {
-                    let Some(glyph) = self.glyphs.get(&run.glyph_key) else {
-                        continue;
-                    };
-                    pass.set_bind_group(0, &glyph.bind_group, &[]);
-                    pass.draw(run.start..run.start + run.count, 0..1);
-                }
-            }
-
-            // 图标（逐纹理，独立绑定；持久缓冲）
-            if !image.is_empty() {
-                let buf = upload_vertices(
+                ))
+            } else {
+                None
+            };
+            let image_buf = if !image.is_empty() {
+                Some(upload_vertices(
                     &self.device,
                     &self.queue,
                     &mut self.image_buf,
                     &mut self.image_cap,
                     &image,
-                );
-                pass.set_pipeline(&self.image_pipeline);
-                pass.set_vertex_buffer(0, buf.slice(..));
-                for run in &image_runs {
-                    let Some(tex) = self.images.get(&run.glyph_key) else {
-                        continue;
-                    };
-                    pass.set_bind_group(0, &tex.bind_group, &[]);
-                    pass.draw(run.start..run.start + run.count, 0..1);
+                ))
+            } else {
+                None
+            };
+
+            for step in &steps {
+                match step {
+                    Step::Solid { start, count } => {
+                        let Some(buf) = solid_buf.as_ref() else { continue };
+                        pass.set_pipeline(&self.solid_pipeline);
+                        pass.set_vertex_buffer(0, buf.slice(..));
+                        pass.draw(*start..*start + *count, 0..1);
+                    }
+                    Step::Text { run_start, run_end } => {
+                        let Some(buf) = text_buf.as_ref() else { continue };
+                        pass.set_pipeline(&self.text_pipeline);
+                        pass.set_vertex_buffer(0, buf.slice(..));
+                        for run in &text_runs[*run_start as usize..*run_end as usize] {
+                            let Some(glyph) = self.glyphs.get(&run.glyph_key) else {
+                                continue;
+                            };
+                            pass.set_bind_group(0, &glyph.bind_group, &[]);
+                            pass.draw(run.start..run.start + run.count, 0..1);
+                        }
+                    }
+                    Step::Image { run_start, run_end } => {
+                        let Some(buf) = image_buf.as_ref() else { continue };
+                        pass.set_pipeline(&self.image_pipeline);
+                        pass.set_vertex_buffer(0, buf.slice(..));
+                        for run in &image_runs[*run_start as usize..*run_end as usize] {
+                            let Some(tex) = self.images.get(&run.glyph_key) else {
+                                continue;
+                            };
+                            pass.set_bind_group(0, &tex.bind_group, &[]);
+                            pass.draw(run.start..run.start + run.count, 0..1);
+                        }
+                    }
                 }
             }
         }
