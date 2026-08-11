@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::{MetroTheme, Point, Rect, TextStyle};
@@ -48,15 +50,21 @@ impl MenuItem {
 /// MetroDropdownMenu —— 下拉菜单（MenuFlyout 参考）。参 CONTROL_SPEC §8：
 /// - 弹出 = 遮罩淡入 0.383s + 面板 0.30s 展开；
 /// - 项高 32、图标 16、快捷键右对齐；PointerOver 中性高亮。
-#[derive(Debug, Clone, PartialEq)]
+///
+/// **V21 缓存**：`panel_size` 遍历 items 逐条 `engine.measure` —— items 稳定时可缓存。
+/// 外部修改 `items` / `item_height` 后需调 [`Self::invalidate_layout`]（Rust 无法拦截
+/// pub 字段写）。缓存不区分 engine 实例，隐含约定：应用生命周期内 TextEngine 单例。
+#[derive(Debug, Clone)]
 pub struct MetroDropdownMenu {
     pub items: Vec<MenuItem>,
     pub hovered: Option<usize>,
-    /// 项高（UWP 32）。
+    /// 项高（UWP 32）。修改后调 `invalidate_layout`。
     pub item_height: f32,
     pub anim: PopupAnim,
     /// 锚点（面板相对触发器的弹出位置，Phase 3 续做方向自适应）。
     pub panel_rect: Rect,
+    /// `panel_size` 结果缓存（Size: Copy，直接 Cell）。None = 需重算。
+    panel_size_cache: Cell<Option<kanesumi_core::Size>>,
 }
 
 impl MetroDropdownMenu {
@@ -67,7 +75,13 @@ impl MetroDropdownMenu {
             item_height: 32.0,
             anim: PopupAnim::new(),
             panel_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
+            panel_size_cache: Cell::new(None),
         }
+    }
+
+    /// 清空 `panel_size` 缓存 —— 修改 `items` / `item_height` / 字体大小后必须调。
+    pub fn invalidate_layout(&self) {
+        self.panel_size_cache.set(None);
     }
 
     pub fn open(&mut self, at: Rect) {
@@ -96,7 +110,13 @@ impl MetroDropdownMenu {
     }
 
     /// 面板尺寸：宽 = 最宽项（含图标/快捷键占位）+ 边距，高 = 项数 × 项高 + 分隔线。
+    ///
+    /// **V21 缓存**：结果按 `items` / `item_height` 稳定，首次计算后走 `panel_size_cache`。
+    /// 外部修改字段后需 [`Self::invalidate_layout`]（Cell 无法拦截 pub 字段写入）。
     pub fn panel_size(&self, engine: &TextEngine) -> kanesumi_core::Size {
+        if let Some(cached) = self.panel_size_cache.get() {
+            return cached;
+        }
         let style = menu_item_style();
         let text_w = self
             .items
@@ -117,7 +137,9 @@ impl MetroDropdownMenu {
         let separators = self.items.iter().filter(|i| i.separator_after).count() as f32;
         let width = (icon_w + text_w + shortcut_w + 22.0 + 24.0).max(120.0);
         let height = self.items.len() as f32 * self.item_height + separators * 2.0;
-        kanesumi_core::Size::new(width, height)
+        let size = kanesumi_core::Size::new(width, height);
+        self.panel_size_cache.set(Some(size));
+        size
     }
 
     /// 项命中测试（相对面板原点，面板以 `panel_rect.origin` 起排）。
@@ -301,6 +323,27 @@ mod tests {
         assert!(
             two.panel_size(&engine).height > one.panel_size(&engine).height,
             "项越多越高"
+        );
+    }
+
+    /// V21：panel_size 结果缓存到 Cell，重复调用命中缓存；invalidate 后重算。
+    #[test]
+    fn panel_size_is_cached_until_invalidate() {
+        let Some(engine) = find_engine() else { return };
+        let mut menu = MetroDropdownMenu::new(vec![MenuItem::new("A")]);
+        let a = menu.panel_size(&engine);
+        // 直接修改 items，不 invalidate → 缓存命中，返回旧尺寸。
+        menu.items.push(MenuItem::new("BB longer"));
+        let b_cached = menu.panel_size(&engine);
+        assert_eq!(a, b_cached, "未 invalidate 时应命中缓存返回旧值");
+        // invalidate 后重算 → 新尺寸更高（多一项）。
+        menu.invalidate_layout();
+        let b_fresh = menu.panel_size(&engine);
+        assert!(
+            b_fresh.height > a.height,
+            "invalidate 后应重算，高度增加，实际 {} vs {}",
+            b_fresh.height,
+            a.height
         );
     }
 

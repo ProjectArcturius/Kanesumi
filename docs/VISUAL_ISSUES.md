@@ -170,7 +170,8 @@ CONTROL_SPEC §4 要 0.25s 淡出到 0.6 / 0.25s 换错误色。当前布尔直�
 `popup.rs:83-86`。open() 立即又新建 overlay_open 覆盖，default 那次构造纯浪费。
 **修法：** `Default` 用零时长 `MetroAnim::new(0.0, ...)` 占位（`open()`/`close()` 必替换），删掉两次 `default_metro()` + `jump_to(0.0)` 冗余构造。
 
-### V21 · Gallery `dropdown_panel()` 每帧重复计算 panel_size / place_popup ⬜
+### V21 · Gallery `dropdown_panel()` 每帧重复计算 panel_size / place_popup ✅ 本 commit
+补记：实际排查后 `dropdown_panel()` 只在用户交互（toggle/click）时调，**非每帧**（SESSION_HANDOVER §4.1 措辞不准）。但 `panel_size` 本身仍是 O(items × engine.measure)，加缓存对交互延迟与将来更大菜单都有意义。`MetroDropdownMenu` 内加 `Cell<Option<Size>>` + `invalidate_layout()` 显式失效。
 `panel_size` 遍历所有 items × `engine.measure`。retained 层没利用。
 
 ### V22 · **无布局器**（SESSION_HANDOVER §1 核心） ⬜
@@ -222,4 +223,5 @@ Switch 胶囊在 Plasma 2× 下边缘 staircase 明显。根因：`kanesumi-harn
 | V14 | ✅ | `a973df7` | 引入 `unicode-linebreak` (UAX #14)；`layout` 用 (byte_idx, Allowed/Mandatory) 序列贪心；CJK 行首禁则自动生效；单段超宽走硬断兜底 |
 | V16 | ✅ | `09da24f` | `TextStyle.letter_spacing_em` 字段 + builder + `measure_with_spacing`；harness render 每字符 pen 推进加字距；TabRow 挂 −0.025em；`header_spacing: f32` 冗余删除 |
 | V18/V19/V20 | ✅ | `cc2d83a` | Dialog hide opacity 换 Power(1.0)=线性；Color::from_rgba(u32) 显式方法；PopupAnim::default 用零时长占位（省两次 default_metro） |
-| V25 | ✅ | 本 commit | wgpu 三条 pipeline 开 4× MSAA + `create_msaa_view` + resize 重建；rounded_rect_polygon segs 6→12 —— 消除 Capsule/圆角矩形斜边锯齿 |
+| V25 | ✅ | `c539b4e` | wgpu 三条 pipeline 开 4× MSAA + `create_msaa_view` + resize 重建；rounded_rect_polygon segs 6→12 —— 消除 Capsule/圆角矩形斜边锯齿 |
+| V21 | ✅ | 本 commit | `MetroDropdownMenu` 加 `panel_size_cache: Cell<Option<Size>>` + `invalidate_layout()`；`PartialEq` derive 移除（未被使用）；补 `panel_size_is_cached_until_invalidate` 测试 |
