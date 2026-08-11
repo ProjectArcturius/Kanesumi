@@ -140,8 +140,9 @@ Menu items 用 `\u{E8E5}` `\u{E74E}` `\u{E792}` `\u{E7E8}`，Selector 触发器�
 ### V14 · Text layout `split_ascii_whitespace` 对 CJK 标点切分粗暴 ⬜
 `text.rs:97`。全角空格 U+3000、CJK 标点未识别为断行点，只靠硬断兜底。egui 用允许换行字符集是更合理的做法。
 
-### V15 · ProgressRing 不确定态弧长呼吸公式错 ⬜
+### V15 · ProgressRing 不确定态弧长呼吸公式错 ✅ 本 commit
 `progress.rs:232-238` 后半段 sweep 恒 180°，只有旋转没有 TrimStart 前推 → 视觉是匀速转半圆，不是 Metro 呼吸感。
+**修法：** 后半段 sweep `180 - 90 * ease((t-0.5)*2)` —— 90 ↔ 180 完整呼吸；rotation 保持 900°/2s（tail 前进即 TrimStart 效果）。
 
 ### V16 · TabRow 字距 −2.5% 未实现 ⬜
 `tab_row.rs:30` `header_spacing: 0.0` + 注释 "简单起见留空"。CONTROL_SPEC §6 明确 CharacterSpacing −25。
@@ -200,4 +201,5 @@ DropdownMenu / SelectorFlyout / Dialog 全部合成到主 surface，`place_popup
 | V6 | ✅ | `dcdc9fd` | button_rect/accent_rect 用 `button.measure().width`（内在宽驱动），icon 位置右推；button.rs `x_offset` 加 `.max(0.0)` 防负偏移双保险 |
 | V8 | ✅ | `507282c` | `Decl::Spacer{grow}` 变体 + `layout_children`（内在尺寸 + spacing + Spacer 分配剩余）；Gallery footer 插入 `spacer(1.0)` |
 | V12 | ✅ | `125e1ff` | Surface `render` 从 `fill_rect` 改 `fill_rounded_rect(..., shape.corner_radius)` |
-| V13 | ✅ | 本 commit | ProgressBar height 从 `min_height.max(rect.h.min(4))` 改 `rect.h.max(min_height)` |
+| V13 | ✅ | `1794720` | ProgressBar height 从 `min_height.max(rect.h.min(4))` 改 `rect.h.max(min_height)` |
+| V15 | ✅ | 本 commit | Ring 不确定态 sweep 后半段改 `180 − 90*ease` 完整呼吸 90↔180；rotation 保持 900°/2s |

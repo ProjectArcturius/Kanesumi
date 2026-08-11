@@ -228,16 +228,17 @@ impl MetroProgressRing {
         let color = theme.colors.primary;
 
         if self.indeterminate {
-            // 旋转 0°→900°（2.5 圈）@2s，双段平滑；弧 90°→180° 呼吸
+            // 旋转 0°→900°（2.5 圈）@2s；弧 90°↔180° 呼吸。
+            // 前半：TrimEnd 释放（sweep 90→180，head 追出去）；
+            // 后半：TrimStart 收拢（sweep 180→90，tail 追上来）。
+            // 参 V15：原本后半 sweep 恒 180°，视觉只有旋转无呼吸。
             let t = (self.phase / DURATION_INDETERMINATE) as f32; // [0,1)
             let rotation = 900.0 * t;
-            let sweep = 90.0
-                + 90.0
-                    * if t < 0.5 {
-                        cubic_ease_in_out(t as f64 * 2.0) as f32
-                    } else {
-                        1.0
-                    };
+            let sweep = if t < 0.5 {
+                90.0 + 90.0 * cubic_ease_in_out((t as f64) * 2.0) as f32
+            } else {
+                180.0 - 90.0 * cubic_ease_in_out(((t - 0.5) as f64) * 2.0) as f32
+            };
             scene.arc(
                 center,
                 radius,
