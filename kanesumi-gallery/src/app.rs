@@ -104,7 +104,8 @@ impl GalleryApp {
             )
             // SVG 缺失时回退为纯标签（避免依赖 MDL2 codepoint 存在，参 V7）
             .unwrap_or_else(|| MetroIconButton::with_label("", "Share")),
-            switch: MetroSwitch::with_label("飞行模式"),
+            // A1 重做：Switch 用 header + state text（Lumia 布局），不再是左 label
+            switch: MetroSwitch::with_header("飞行模式").with_state_text("开", "关"),
             bar: MetroProgressBar::indeterminate(),
             ring: MetroProgressRing::new(),
             tabs: MetroTabRow::new(vec![
@@ -221,26 +222,28 @@ impl GalleryApp {
         let x = self.accent_rect().right() + 16.0;
         Rect::new(x, CTRL_Y0 - 4.0, 68.0, 56.0)
     }
+    /// Switch 需装下 Header（body.line_height 22）+ 8 gap + Track 行高 22 = 52，
+    /// 上下各 4px 边距 → 60 —— 参 A1 重做（switch.rs 新布局）。
     fn switch_rect(&self) -> Rect {
-        Rect::new(PAD, CTRL_Y0 + 44.0, 200.0, 40.0)
+        Rect::new(PAD, CTRL_Y0 + 44.0, 200.0, 60.0)
     }
     fn bar_rect(&self) -> Rect {
-        Rect::new(PAD, CTRL_Y0 + 92.0, 300.0, 4.0)
+        Rect::new(PAD, CTRL_Y0 + 112.0, 300.0, 4.0)
     }
     fn ring_rect(&self) -> Rect {
-        Rect::new(PAD + 320.0, CTRL_Y0 + 84.0, 32.0, 32.0)
+        Rect::new(PAD + 320.0, CTRL_Y0 + 104.0, 32.0, 32.0)
     }
     fn tabs_rect(&self) -> Rect {
-        Rect::new(PAD, CTRL_Y0 + 108.0, 420.0, 48.0)
+        Rect::new(PAD, CTRL_Y0 + 128.0, 420.0, 48.0)
     }
     fn list_rect(&self) -> Rect {
-        Rect::new(PAD, CTRL_Y0 + 168.0, 260.0, 280.0)
+        Rect::new(PAD, CTRL_Y0 + 188.0, 260.0, 280.0)
     }
     fn dropdown_trigger(&self) -> Rect {
-        Rect::new(PAD + 280.0, CTRL_Y0 + 168.0, 130.0, 32.0)
+        Rect::new(PAD + 280.0, CTRL_Y0 + 188.0, 130.0, 32.0)
     }
     fn selector_trigger(&self) -> Rect {
-        Rect::new(PAD + 280.0, CTRL_Y0 + 214.0, 180.0, 32.0)
+        Rect::new(PAD + 280.0, CTRL_Y0 + 234.0, 180.0, 32.0)
     }
 
     /// 弹层面板锚点（方向自适应：下方空间不足时上翻，参 CONTROL_SPEC §8）。
@@ -298,6 +301,13 @@ impl GalleryApp {
     /// 更新悬停态（Motion / Enter）。
     fn update_hover(&mut self, p: Point) {
         self.pointer = p;
+
+        // A1：Switch 拖动 —— pressed 在 switch 上时，motion 直接喂 drag_to（不走 hover）
+        if self.pressed == Some(Target::Switch) {
+            self.switch.drag_to(p);
+            return;
+        }
+
         // 弹层悬停优先
         let target = if self.dropdown.anim.is_visible() && self.dropdown.item_at(p).is_some() {
             Some(Target::Dropdown)
@@ -399,6 +409,11 @@ impl GalleryApp {
                     self.icon.set_state(state);
                 }
             }
+            Some(Target::Switch) => {
+                // A1：Switch 支持拖动 —— press 记录起点，motion → drag_to，release → 提交
+                let rect = self.switch_rect();
+                self.switch.press(rect, &self.theme, p);
+            }
             _ => {}
         }
     }
@@ -421,6 +436,10 @@ impl GalleryApp {
             Target::Selector => self.selector_trigger().contains(p),
         };
         if !hit_now {
+            // A1：Switch 释放到轨道外 = 取消拖动（不 commit）
+            if t == Target::Switch {
+                self.switch.cancel();
+            }
             self.update_hover(p);
             return;
         }
@@ -435,7 +454,8 @@ impl GalleryApp {
                 }
             }
             Target::Switch => {
-                self.switch.set_checked(!self.switch.checked);
+                // A1：release 提交拖动结果（未拖动 = 点动 toggle；拖动 = 按 knob 过半判）
+                let _ = self.switch.release();
             }
             Target::Tabs => {
                 if let Some(i) = self.tabs.tab_at(&self.engine, p.x) {
@@ -505,6 +525,10 @@ impl App for GalleryApp {
                 }
             }
             InputEvent::PointerLeft => {
+                // A1：指针离开窗口时若 Switch 正被拖动，取消（避免 knob 悬在中间）
+                if self.pressed == Some(Target::Switch) {
+                    self.switch.cancel();
+                }
                 self.clear_hover();
                 self.pressed = None;
             }
@@ -668,11 +692,13 @@ mod tests {
     fn switch_toggles_on_click() {
         let mut g = app();
         assert!(!g.switch.checked);
-        let r = g.switch_rect();
-        click(&mut g, r);
+        // A1：Switch 有 header 后 track 位于宿主 rect 顶部偏下，center 已不在 track 上
+        // → 点击 track 的实际中心（switch.track_rect）
+        let track = g.switch.track_rect(g.switch_rect(), &g.theme);
+        click(&mut g, track);
         assert!(g.switch.checked, "点击开关应切换");
-        let r = g.switch_rect();
-        click(&mut g, r);
+        let track = g.switch.track_rect(g.switch_rect(), &g.theme);
+        click(&mut g, track);
         assert!(!g.switch.checked);
     }
 

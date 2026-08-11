@@ -71,29 +71,61 @@
 
 ## 3 · Switch（ToggleSwitch 参考）
 
-### 结构尺寸
+> 数据源：`microsoft-ui-xaml/dev/CommonStyles/ToggleSwitch_themeresources_v1.xaml`
+> （winui2/main 分支 = Metro/Lumia 时代规格）。真机对照：Lumia 950 显示器设置界面
+> （`wp_ss_20250619_0002.png`，A1 重做参考图）。
 
-| 项 | 值 |
-|---|---|
-| 控件 MinWidth | 154 |
-| 轨道 | **40 × 20**，全圆角胶囊（Radius 10），StrokeThickness 1 |
-| Knob | 20 × 20（轨道宽一半），内含两个 10×10 圆 |
-| Knob 行程 | **20px**（On 态 X=20） |
-| 内容列 | 轨道与文字间 gap 12px；`Margin=0,5` 命中区 |
-| 支持拖动 | ManipulationMode=System,TranslateX |
+### 结构 & 布局
+
+```
+┌ Header（可选，body 字号）
+│
+├──────────────────┐          ← Track 行（含 State text）
+│  ⚪──────────────│  On/Off  ← 轨道 40×20 + 右侧 12px + 状态文本
+└──────────────────┘
+```
+
+- **控件形状 = `SwitchShape { Capsule, Square }`**（Kanesumi 扩展）
+- Capsule = UWP/Lumia 复刻本轮做的形态；Square = WP7 直角变体（占位，待完善）
+
+### 尺寸（Capsule）
+
+| 项 | 值 | 来源 |
+|---|---|---|
+| 控件 MinWidth | 154 | `ToggleSwitchThemeMinWidth` |
+| 轨道 | **40 × 20**，全圆角胶囊 | `OuterBorder Width="40" Height="20"` |
+| Knob（Ellipse） | **10 × 10** 圆 | `SwitchKnobOn Width="10" Height="10"` |
+| Knob 上下留白 | **5px**（对称）= (20−10)/2 | `SwitchKnobBounds` 20×20 承载 10 knob |
+| Knob 左右留白 | **5px**（对称） | 同上 |
+| Knob 行程 | **20px** = 40 − 5 − 5 − 10 | 由上派生 |
+| Track 右→State text | **12px** gap | `ColumnDefinition Width="12" MaxWidth="12"` |
+| Header → Track 间距 | 8px（body.line_height + 8） | 排版一致 |
+| Track 描边 | **2px**（OFF 态） | Kanesumi 修：v1 用 1px 在 HiDPI 亚像素消失，参 V10 同理 |
 
 ### 视觉状态
 
-| 状态 | 轨道 | Knob |
-|---|---|---|
-| Off | fill Transparent / stroke 中性（≈#FFC7C7C7） | 白 |
-| On | fill **强调色**（Win10 默认 #FF0078D7）/ stroke 不透明基色 | 白 |
-| PointerOver | fill 强调色提亮 / stroke 加深 | — |
-| Pressed | fill 强调色压暗 | — |
-| Disabled | fill/stroke 灰（#FF525252 / #FF9E9E9E） | 灰 |
+| 状态 | 轨道 fill | 轨道 stroke | Knob |
+|---|---|---|---|
+| Off Normal | Transparent | `on_surface_variant` 2px | 白 |
+| Off Hovered | Transparent | `on_surface` 2px（加深） | 白 |
+| Off Pressed | `on_surface_variant` 实心 | none | 白 |
+| On Normal | **强调色**实心 | none | 白 |
+| On Hovered | 强调色 lerp 白 15% | none | 白 |
+| On Pressed | 强调色 lerp `on_surface_variant` 55%（dim 灰调，Lumia 观感） | none | 白 |
+| Disabled | 上述任一 × `disabled_opacity` | 同上 × alpha | 白 × alpha |
+
+> Kanesumi 决策：Pressed 灰调只在**真拖动**（moved=true）时呈现，避免点动闪灰。
+
+### 交互（Kanesumi 扩展 A1）
+
+- **点动**：press → release，位移 <3px → toggle
+- **拖动**：press → drag_to（位移 ≥3px 触发）→ release：按 knob 中心过半判 on/off
+- **取消**：press 后指针移出轨道再 release → `cancel()`，knob 回原位不 commit
+- 命中区 = 整个 Track 矩形（不限于 Knob 圆内），方便触摸/鼠标
 
 ### 动画
 - **切换滑动 = 150ms Cubic EaseOut**（`RepositionThemeAnimation`，行程 20px）
+- 拖动过程中动画暂停（knob 由指针 `jump_to` 直接决定），release 后恢复 set_target 滑动
 - 轨道/Knob 换色**瞬时**（无 crossfade）
 - v1 模板无拖拽放大（Win8.1 遗产已删）
 

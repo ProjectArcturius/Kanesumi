@@ -12,3 +12,6 @@ Thumbs.db
 
 # Agent session data
 .claude/
+
+# 外部参考仓库 —— 只克隆不入版本控制（对照 CONTROL_SPEC 数据源，参 A1）
+/reference

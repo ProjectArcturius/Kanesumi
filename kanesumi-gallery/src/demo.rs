@@ -25,14 +25,14 @@ pub fn render_demo_scene(theme: &MetroTheme, engine: &TextEngine, size: Size) ->
         &mut scene,
     );
 
-    // Switch（已开，动画跑完）
-    let mut sw = MetroSwitch::with_label("飞行模式");
+    // Switch（已开，动画跑完）—— A1 重做：header 上 + state text 右
+    let mut sw = MetroSwitch::with_header("飞行模式").with_state_text("开", "关");
     sw.set_checked(true);
     sw.update(1.0);
     sw.render(
         theme,
         engine,
-        Rect::new(200.0, 16.0, 160.0, 40.0),
+        Rect::new(200.0, 16.0, 160.0, 60.0),
         &mut scene,
     );
 

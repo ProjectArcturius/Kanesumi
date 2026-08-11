@@ -126,8 +126,9 @@ Menu items 用 `\u{E8E5}` `\u{E74E}` `\u{E792}` `\u{E7E8}`，Selector 触发器�
 
 ## 🟡 中优
 
-### V11 · Switch 标签视觉重心与轨道中心不齐 ⬜
+### V11 · Switch 标签视觉重心与轨道中心不齐 ✅ 本 commit（A1 重做副产品）
 `switch.rs:83-92`。label 用 line_height 居中在 40 高的宿主矩形里，轨道也居中，但 label 的视觉重心在 line_height 内偏上，视觉上比 knob 中心略高。
+**A1 重做已消解**：Switch 结构重构为 Header（上）+ Track + State text（右）。旧的"label 居左对齐轨道"格局不再存在。新布局中 State text 与 Track 同基线（track_row_h = max(track_h, body.line_height)），从设计上不会再有基线漂移。
 
 ### V12 · MetroSurface `shape.corner_radius` 从未使用 ✅ 本 commit
 `surface.rs:49` 只 `fill_rect`，忽略 corner_radius。
@@ -202,4 +203,5 @@ DropdownMenu / SelectorFlyout / Dialog 全部合成到主 surface，`place_popup
 | V8 | ✅ | `507282c` | `Decl::Spacer{grow}` 变体 + `layout_children`（内在尺寸 + spacing + Spacer 分配剩余）；Gallery footer 插入 `spacer(1.0)` |
 | V12 | ✅ | `125e1ff` | Surface `render` 从 `fill_rect` 改 `fill_rounded_rect(..., shape.corner_radius)` |
 | V13 | ✅ | `1794720` | ProgressBar height 从 `min_height.max(rect.h.min(4))` 改 `rect.h.max(min_height)` |
-| V15 | ✅ | 本 commit | Ring 不确定态 sweep 后半段改 `180 − 90*ease` 完整呼吸 90↔180；rotation 保持 900°/2s |
+| V15 | ✅ | `3d38504` | Ring 不确定态 sweep 后半段改 `180 − 90*ease` 完整呼吸 90↔180；rotation 保持 900°/2s |
+| A1 · Switch 重做 | ✅ | 本 commit | 40×20 track + 10×10 knob（对齐 microsoft-ui-xaml v1 官方规格）；SwitchShape 枚举（Capsule / Square 占位）；Header 上 + State text 右；拖动 press/drag_to/release/cancel；Pressed 灰调（仅拖动中）—— 消解 V11 |
