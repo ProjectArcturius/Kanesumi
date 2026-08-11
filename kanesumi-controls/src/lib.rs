@@ -32,6 +32,7 @@ pub mod state;
 pub mod surface;
 pub mod switch;
 pub mod tab_row;
+pub mod tab_view;
 pub mod text;
 pub mod title_bar;
 pub mod two_pane_view;
@@ -68,6 +69,7 @@ pub use state::{ButtonState, ControlState};
 pub use surface::MetroSurface;
 pub use switch::MetroSwitch;
 pub use tab_row::{MetroTab, MetroTabRow};
+pub use tab_view::{MetroTabView, TabHover, TabViewAction};
 pub use text::MetroText;
 pub use title_bar::{MetroTitleBar, TitleBarClick};
 pub use two_pane_view::{

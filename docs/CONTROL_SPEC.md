@@ -778,3 +778,43 @@ else → SinglePane（PanePriority 指定单面板）
 ### 交互
 - 点击第 k 星 → `Value = k`；`IsClearEnabled` 且点当前值星 → `Value = 0`。
 - 返回 `Option<f64>` 新值（None = 未变化）。
+
+---
+
+## 25 · TabView（TabView 参考）
+
+> 数据源：`microsoft-ui-xaml/dev/TabView/`（TabView.cpp + TabView_themeresources.xaml）。
+> Chrome 式标签页（区别于 Pivot：可关闭、可拖拽排序）。Kanesumi 实现 tab strip
+> （Add/Close/Select + 滚动），拖拽 Reorder 暂略（Phase 3 续）。
+
+### 结构与尺寸
+
+```
+┌ Header（Padding 0,8,0,0）─────────────────────────────┐
+│ [ Tab1  ×] [ Tab2  ×] [Tab3] [＋]                     │
+└───────────────────────────────────────────────────────┘
+```
+
+| 项 | 值 |
+|---|---|
+| Item | MinHeight **32**、MinWidth **100**、MaxWidth **240** |
+| Header Padding | `8,3,4,3`（Selected `9,3,5,4`） |
+| 字号 | **12**；Icon 16（Margin 0,0,10,0） |
+| Close 按钮 | **32×24**、glyph 16、Margin `4,0,0,0` |
+| Add 按钮 | **32×24**、+（FontSize 12）、Padding `3,0,0,3` |
+| 等宽分配 | `tab_w = clamp(avail/len, 100, 240)`；总宽超可用 → 滚动 |
+| 分隔线 | `divider`（DividerStrokeColorDefault，`ShowTabsSeparator` 时） |
+
+### 视觉状态
+
+| 态 | 底 | 前景 |
+|---|---|---|
+| 未选中 | Transparent | `on_surface_variant` |
+| PointerOver | `on_surface` 8% | `on_surface_variant` |
+| **Selected** | `surface_variant`（SolidBackgroundFillColorTertiary） | `on_surface` |
+| Close 按钮 | hover 白 15% / press 白 25% | — |
+
+### 行为
+- 点 tab → `Select`；点 Close（hovered/selected 显示）→ `Close`；点 ＋ → `Add`。
+- `IsClosable` 隐藏 Close；`AddButtonEnabled` 隐藏 ＋。
+- 滚动：`scroll_by(delta)` 夹紧 `[0, total−avail]`。
