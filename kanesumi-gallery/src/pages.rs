@@ -11,6 +11,8 @@ pub enum GalleryPage {
     Controls,
     /// 页面结构（Shell / AppBar / Scaffold）
     Structure,
+    /// 磁贴（MetroTile + TileWall，TILES_DESIGN）
+    Tiles,
 }
 
 impl GalleryPage {
@@ -20,17 +22,19 @@ impl GalleryPage {
             GalleryPage::Animation => "Animation",
             GalleryPage::Controls => "Controls",
             GalleryPage::Structure => "Structure",
+            GalleryPage::Tiles => "Tiles",
         }
     }
 }
 
 /// 页树 —— 对照 WinUI-Gallery 的分组。Phase 3 扩展为嵌套页。
-pub fn page_tree() -> [GalleryPage; 4] {
+pub fn page_tree() -> [GalleryPage; 5] {
     [
         GalleryPage::DesignTokens,
         GalleryPage::Animation,
         GalleryPage::Controls,
         GalleryPage::Structure,
+        GalleryPage::Tiles,
     ]
 }
 
@@ -79,7 +83,8 @@ mod tests {
 
     #[test]
     fn page_tree_is_complete() {
-        assert_eq!(page_tree().len(), 4);
+        assert_eq!(page_tree().len(), 5);
+        assert!(page_tree().contains(&GalleryPage::Tiles));
     }
 
     #[test]

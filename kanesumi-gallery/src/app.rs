@@ -4,15 +4,17 @@
 // 事件路由：顶层弹层优先（Dialog/DropdownMenu/SelectorFlyout）→ 常规控件。
 // 控件状态切换：set_state / set_checked / hovered / show / hide / toggle。
 
+use kanesumi_canvas::icon::Icon;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_controls::{
     ControlState, MenuItem, MetroButton, MetroDialog, MetroDropdownMenu, MetroIconButton,
     MetroList, MetroProgressBar, MetroProgressRing, MetroSelectorFlyout, MetroSwitch, MetroTab,
-    MetroTabRow,
+    MetroTabRow, MetroTile, TileSize,
 };
-use kanesumi_core::{MetroTheme, Point, Rect, Size, TextStyle};
+use kanesumi_core::{Color, MetroTheme, Point, Rect, Size, TextStyle};
 use kanesumi_harness::{App, AppConfig, EtherRole, InputEvent, PointerButton};
+use kanesumi_structure::TileWall;
 
 use crate::pages::{GalleryPage, page_tree, palette};
 
@@ -30,6 +32,60 @@ const NAV_H: f32 = 48.0;
 const CTRL_Y0: f32 = NAV_Y + NAV_H + 12.0;
 /// footer（声明式区）高度。
 const FOOTER_H: f32 = 48.0;
+
+// ── Tiles 页常量（TILES_DESIGN §2/§3） ───────────────────────────────────
+
+/// 磁贴单元边长。
+const TILE_CELL: f32 = 64.0;
+/// 磁贴单元间隔。
+const TILE_GAP: f32 = 8.0;
+/// 磁贴墙每页列数。
+const TILE_COLS: usize = 8;
+
+/// 磁贴墙页数上限。
+const TILE_MAX_PAGE: usize = 1;
+
+/// 演示磁贴（三档尺寸 + Live 内容，TILES_DESIGN §4）。
+fn demo_tiles() -> Vec<MetroTile> {
+    use kanesumi_controls::TileLive;
+    let share = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icons/share.svg");
+    let mut tiles = vec![
+        MetroTile::new("音乐", TileSize::Mini, Color::from_hex(0xFF_4C_A0_5E)),
+        MetroTile::new("日历", TileSize::Mini, Color::from_hex(0xFF_D2_A1_3B)),
+        MetroTile::new("邮件", TileSize::Standard, Color::from_hex(0xFF_C8_42_3B)),
+        MetroTile::new("相册", TileSize::Large, Color::from_hex(0xFF_3B_8F_C8)),
+        MetroTile::new("笔记", TileSize::Mini, Color::from_hex(0xFF_7A_4C_A8)),
+        MetroTile::new("天气", TileSize::Standard, Color::from_hex(0xFF_3B_A8_A8)),
+        MetroTile::new("时钟", TileSize::Mini, Color::from_hex(0xFF_6E_7A_8A)),
+        MetroTile::new("设置", TileSize::Mini, Color::from_hex(0xFF_3A_4A_6B)),
+    ];
+    tiles[0].live = TileLive::Badge(3);
+    tiles[2].live = TileLive::Preview("季度账单已生成".into());
+    tiles[2].icon = Icon::load_svg(share, 40);
+    tiles[3].live = TileLive::Lines(vec![
+        "海边黄昏".into(),
+        "城市夜景".into(),
+        "周末野餐".into(),
+    ]);
+    tiles[3].icon = Icon::load_svg(share, 48);
+    tiles[5].live = TileLive::Preview("多云 24°".into());
+    tiles
+}
+
+/// 磁贴布局槽位：(page, row, col)，与 `demo_tiles()` 索引一一对应。
+/// 页 0 展示三档 + 填充；页 1 演示翻页。
+fn demo_tile_slots() -> Vec<(usize, usize, usize)> {
+    vec![
+        (0, 0, 0), // 音乐 Mini
+        (0, 1, 0), // 日历 Mini
+        (0, 0, 1), // 邮件 Standard（2×2 → 行 0-1 列 1-2）
+        (0, 0, 3), // 相册 Large（4×2 → 行 0-1 列 3-6）
+        (0, 1, 7), // 笔记 Mini
+        (1, 0, 0), // 天气 Standard
+        (1, 0, 2), // 时钟 Mini
+        (1, 1, 2), // 设置 Mini
+    ]
+}
 
 /// `GalleryPage` → `page_tree()` 索引。用于 nav.select 同步。
 fn page_index(p: GalleryPage) -> usize {
@@ -87,6 +143,21 @@ pub struct GalleryApp {
     pointer: Point,
     /// 最近一次对话框按钮动作（Primary/Secondary/Close），供应用响应。
     dialog_result: Option<kanesumi_controls::DialogButton>,
+
+    // ── Tiles 页（MetroTile + TileWall 演示） ──
+    /// 磁贴集合（TILES_DESIGN 三档尺寸 + Live 内容）。
+    tiles: Vec<MetroTile>,
+    /// 磁贴布局槽位：(page, row, col)，与 `tiles` 索引一一对应。
+    tile_slots: Vec<(usize, usize, usize)>,
+    /// 当前磁贴页（0 起）。
+    tile_page: usize,
+    /// 上一帧当前页磁贴矩形（输入路由用）。
+    tile_rects: Vec<Rect>,
+    /// 磁贴 hover / pressed 索引。
+    tile_hovered: Option<usize>,
+    tile_pressed: Option<usize>,
+    /// 页导航按钮 pressed（None=无，Some(true)=上一页，Some(false)=下一页）。
+    tile_nav_pressed: Option<bool>,
 
     // 声明式 footer（view! + render_decl 驱动的真实 UI 区域，参 decl.rs）
     /// 声明式按钮点击计数（演示 DSL 驱动状态）。
@@ -191,6 +262,13 @@ impl GalleryApp {
             pressed: None,
             pointer: Point::ORIGIN,
             dialog_result: None,
+            tiles: demo_tiles(),
+            tile_slots: demo_tile_slots(),
+            tile_page: 0,
+            tile_rects: Vec::new(),
+            tile_hovered: None,
+            tile_pressed: None,
+            tile_nav_pressed: None,
             decl_count: 0,
             decl_hits: Vec::new(),
             decl_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
@@ -309,6 +387,55 @@ impl GalleryApp {
         Rect::new(0.0, 0.0, self.config.width, self.config.height)
     }
 
+    // ── Tiles 页布局（TileWall 演示） ───────────────────────────────────
+
+    fn tile_wall(&self) -> TileWall {
+        TileWall::new(TILE_CELL, TILE_GAP).with_columns_per_page(TILE_COLS)
+    }
+
+    /// 当前页磁贴矩形列表（顺序 = 页内槽位顺序）。
+    fn tile_rects_for_page(&self, page: usize, origin: Rect) -> Vec<Rect> {
+        let wall = self.tile_wall();
+        self.tile_slots
+            .iter()
+            .enumerate()
+            .filter(|(_, (p, _, _))| *p == page)
+            .map(|(i, (_, row, col))| {
+                wall.tile_rect(origin, 0, *row, *col, self.tiles[i].size.cells())
+            })
+            .collect()
+    }
+
+    /// 命中当前页磁贴：返回 tiles 索引。
+    fn tile_at(&self, p: Point) -> Option<usize> {
+        self.tile_rects
+            .iter()
+            .position(|r| r.contains(p))
+    }
+
+    /// 上一页按钮矩形。
+    fn tile_nav_prev_rect(&self, content: Rect) -> Rect {
+        Rect::new(content.origin.x, content.origin.y + self.tile_wall().page_height() + 16.0, 96.0, 32.0)
+    }
+
+    /// 下一页按钮矩形。
+    fn tile_nav_next_rect(&self, content: Rect) -> Rect {
+        Rect::new(content.origin.x + 104.0, content.origin.y + self.tile_wall().page_height() + 16.0, 96.0, 32.0)
+    }
+
+    /// 每帧同步磁贴状态（hover/pressed → Normal）。
+    fn sync_tile_states(&mut self) {
+        for (i, t) in self.tiles.iter_mut().enumerate() {
+            t.state = if self.tile_pressed == Some(i) {
+                ControlState::Pressed
+            } else if self.tile_hovered == Some(i) {
+                ControlState::Hovered
+            } else {
+                ControlState::Normal
+            };
+        }
+    }
+
     /// 声明式 footer 元素树 —— 状态文本 + Spacer + 计数按钮
     /// （演示 view! 驱动真实 UI）。Spacer 把按钮推到右端，文字与按钮各按内在宽度渲染。
     /// 参 V8：原本 Row 强制等分导致按钮撑到半屏。
@@ -319,6 +446,59 @@ impl GalleryApp {
             Decl::spacer(1.0),
             Decl::button("点我 +1", DeclAction::Custom(9001)),
         ])
+    }
+
+    /// Tiles 页：MetroTile + TileWall 磁贴墙演示（TILES_DESIGN §2/§3/§4/§6）。
+    /// 页 0 展示三档尺寸 + Live 内容；页 1 演示整页翻页；下方翻页按钮。
+    fn render_page_tiles(&mut self, engine: &TextEngine, content: Rect, scene: &mut Scene) {
+        let origin = Rect::new(content.origin.x, content.origin.y, content.size.width, content.size.height);
+
+        // 当前页磁贴矩形 + 状态同步
+        self.tile_rects = self.tile_rects_for_page(self.tile_page, origin);
+        self.sync_tile_states();
+
+        let page_tile_indices: Vec<usize> = self
+            .tile_slots
+            .iter()
+            .enumerate()
+            .filter(|(_, (p, _, _))| *p == self.tile_page)
+            .map(|(i, _)| i)
+            .collect();
+        for (i, rect) in page_tile_indices.iter().zip(self.tile_rects.iter()) {
+            self.tiles[*i].render(&self.theme, engine, *rect, scene);
+        }
+
+        // 翻页按钮
+        let prev = self.tile_nav_prev_rect(content);
+        let next = self.tile_nav_next_rect(content);
+        let style = self.theme.typography.body;
+        for (rect, label, is_prev, enabled) in [
+            (prev, "‹ 上一页", true, self.tile_page > 0),
+            (next, "下一页 ›", false, self.tile_page < TILE_MAX_PAGE),
+        ] {
+            scene.fill_rounded_rect(
+                self.theme.colors.surface,
+                rect,
+                self.theme.tokens.corner_radius,
+            );
+            if enabled {
+                if self.tile_nav_pressed == Some(is_prev) {
+                    scene.fill_rect(self.theme.indication.press_tint, rect);
+                }
+                scene.text(
+                    label.into(),
+                    Rect::new(
+                        rect.origin.x + 12.0,
+                        rect.origin.y + (rect.size.height - style.line_height) / 2.0,
+                        rect.size.width - 24.0,
+                        style.line_height,
+                    ),
+                    self.theme.colors.on_surface,
+                    style,
+                    TextAlign::Left,
+                );
+            }
+        }
     }
 
     /// 命中常规控件（弹层优先，由调用方处理）。
@@ -355,6 +535,16 @@ impl GalleryApp {
     /// 更新悬停态（Motion / Enter）。
     fn update_hover(&mut self, p: Point) {
         self.pointer = p;
+
+        // Tiles 页：磁贴墙优先（不含常规控件）。
+        if self.page == GalleryPage::Tiles {
+            let t = self.tile_at(p);
+            if t != self.tile_hovered {
+                self.tile_hovered = t;
+                self.sync_tile_states();
+            }
+            return;
+        }
 
         // A1：Switch 拖动 —— pressed 在 switch 上时，motion 直接喂 drag_to（不走 hover）
         if self.pressed == Some(Target::Switch) {
@@ -412,6 +602,28 @@ impl GalleryApp {
 
     /// 按下（常规控件）。
     fn press(&mut self, p: Point) {
+        // Tiles 页：磁贴 / 翻页按钮。
+        if self.page == GalleryPage::Tiles {
+            if let Some(i) = self.tile_at(p) {
+                self.tile_pressed = Some(i);
+                self.sync_tile_states();
+            } else {
+                let content = self.content_rect();
+                self.tile_nav_pressed = if self.tile_nav_prev_rect(content).contains(p)
+                    && self.tile_page > 0
+                {
+                    Some(true)
+                } else if self.tile_nav_next_rect(content).contains(p)
+                    && self.tile_page < TILE_MAX_PAGE
+                {
+                    Some(false)
+                } else {
+                    None
+                };
+            }
+            return;
+        }
+
         // 弹层优先
         if self.dialog.is_visible() {
             // 按钮路由：命中按钮 → 记录身份并关闭；未命中（遮罩/空白）仅关闭（简化）。
@@ -474,6 +686,32 @@ impl GalleryApp {
 
     /// 释放（触发动作）。
     fn release(&mut self, p: Point) {
+        // Tiles 页：磁贴按下反馈 + 翻页。
+        if self.page == GalleryPage::Tiles {
+            if let Some(i) = self.tile_pressed.take() {
+                // 磁贴动作：暂无（Launcher 负责启动）；保持视觉反馈。
+                let _ = self.tile_at(p) == Some(i);
+            }
+            if let Some(is_prev) = self.tile_nav_pressed.take() {
+                let content = self.content_rect();
+                let hit = if is_prev {
+                    self.tile_nav_prev_rect(content).contains(p)
+                } else {
+                    self.tile_nav_next_rect(content).contains(p)
+                };
+                if hit {
+                    if is_prev {
+                        self.tile_page = self.tile_page.saturating_sub(1);
+                    } else {
+                        self.tile_page = (self.tile_page + 1).min(TILE_MAX_PAGE);
+                    }
+                }
+            }
+            self.sync_tile_states();
+            self.update_hover(p);
+            return;
+        }
+
         let Some(t) = self.pressed else {
             return;
         };
@@ -776,6 +1014,10 @@ impl App for GalleryApp {
                 }
                 self.clear_hover();
                 self.pressed = None;
+                self.tile_hovered = None;
+                self.tile_pressed = None;
+                self.tile_nav_pressed = None;
+                self.sync_tile_states();
             }
         }
     }
@@ -816,6 +1058,7 @@ impl App for GalleryApp {
             GalleryPage::Animation => self.render_page_animation(engine, content, &mut scene),
             GalleryPage::Controls => self.render_page_controls(engine, size, &mut scene),
             GalleryPage::Structure => self.render_page_structure(engine, content, &mut scene),
+            GalleryPage::Tiles => self.render_page_tiles(engine, content, &mut scene),
         }
 
         // ── 声明式 footer（view! + RetainedScene 增量渲染的真实 UI 区域） ──
@@ -1107,6 +1350,72 @@ mod tests {
             button: PointerButton::Left,
         });
         assert_eq!(g.decl_count, before + 1, "声明式按钮点击应计数");
+    }
+
+    #[test]
+    fn tiles_page_renders_tile_fills() {
+        let Some(p) = find_font() else { return };
+        let engine = TextEngine::load(p).unwrap();
+        let mut g = app();
+        g.page = GalleryPage::Tiles;
+        g.nav.select(page_index(GalleryPage::Tiles));
+        let scene = g.render(&engine, Size::new(960.0, 600.0));
+        // 页 0 有 5 个磁贴（含 mini/standard/large）+ 2 个翻页按钮
+        let fills = scene
+            .commands
+            .iter()
+            .filter(|c| matches!(c, kanesumi_canvas::SceneCommand::FillRect { .. }))
+            .count();
+        assert!(fills >= 7, "磁贴底色 + 翻页按钮，实际 {fills}");
+        // 相册 Large 磁贴的 Live 行
+        assert!(
+            scene.commands.iter().any(|c| matches!(
+                c,
+                kanesumi_canvas::SceneCommand::Text { content, .. } if content == "海边黄昏"
+            )),
+            "4×2 磁贴应渲染 Live 内容行"
+        );
+    }
+
+    #[test]
+    fn tiles_page_nav_switches_page() {
+        let Some(p) = find_font() else { return };
+        let engine = TextEngine::load(p).unwrap();
+        let mut g = app();
+        g.page = GalleryPage::Tiles;
+        g.nav.select(page_index(GalleryPage::Tiles));
+        let _ = g.render(&engine, Size::new(960.0, 600.0));
+        assert_eq!(g.tile_page, 0);
+        // 点下一页按钮
+        let next = g.tile_nav_next_rect(g.content_rect());
+        let c = next.center();
+        g.handle_input(InputEvent::PointerPressed {
+            x: c.x,
+            y: c.y,
+            button: PointerButton::Left,
+        });
+        g.handle_input(InputEvent::PointerReleased {
+            x: c.x,
+            y: c.y,
+            button: PointerButton::Left,
+        });
+        assert_eq!(g.tile_page, 1, "点下一页应翻到页 1");
+    }
+
+    #[test]
+    fn tiles_hover_sets_tile_state() {
+        let Some(p) = find_font() else { return };
+        let engine = TextEngine::load(p).unwrap();
+        let mut g = app();
+        g.page = GalleryPage::Tiles;
+        g.nav.select(page_index(GalleryPage::Tiles));
+        let _ = g.render(&engine, Size::new(960.0, 600.0));
+        assert_eq!(g.tile_hovered, None);
+        let r = g.tile_rects[0];
+        let c = r.center();
+        g.handle_input(InputEvent::PointerMoved { x: c.x, y: c.y });
+        assert_eq!(g.tile_hovered, Some(0));
+        assert_eq!(g.tiles[0].state, ControlState::Hovered);
     }
 
     #[test]
