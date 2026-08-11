@@ -6,7 +6,7 @@
 
 ```bash
 cargo check          # 检查所有 crate
-cargo test           # 单元测试（当前 150 个）
+cargo test           # 单元测试（当前 404 个）
 cargo clippy
 cargo fmt
 ```
