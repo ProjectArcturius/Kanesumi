@@ -146,8 +146,9 @@ Menu items 用 `\u{E8E5}` `\u{E74E}` `\u{E792}` `\u{E7E8}`，Selector 触发器�
 `progress.rs:232-238` 后半段 sweep 恒 180°，只有旋转没有 TrimStart 前推 → 视觉是匀速转半圆，不是 Metro 呼吸感。
 **修法：** 后半段 sweep `180 - 90 * ease((t-0.5)*2)` —— 90 ↔ 180 完整呼吸；rotation 保持 900°/2s（tail 前进即 TrimStart 效果）。
 
-### V16 · TabRow 字距 −2.5% 未实现 ⬜
+### V16 · TabRow 字距 −2.5% 未实现 ✅ 本 commit
 `tab_row.rs:30` `header_spacing: 0.0` + 注释 "简单起见留空"。CONTROL_SPEC §6 明确 CharacterSpacing −25。
+**修法：** `TextStyle` 新增 `letter_spacing_em: f32` 字段（默认 0）+ `.with_letter_spacing_em()` builder + `.letter_spacing_px()` helper；`TextEngine` 加 `measure_with_spacing(text, size, ls_em)`；harness render.rs `emit_text` 在每字符 pen 推进时加 `letter_spacing_em * size` 逻辑像素。TabRow.header_style 挂 `-0.025em`，measure/render 全走带字距路径。删掉 `header_spacing: f32` 冗余字段。
 
 ### V17 · ProgressBar Paused/Error 无淡出 / 换色动画 ✅ 本 commit
 CONTROL_SPEC §4 要 0.25s 淡出到 0.6 / 0.25s 换错误色。当前布尔直接切换。
@@ -209,4 +210,5 @@ DropdownMenu / SelectorFlyout / Dialog 全部合成到主 surface，`place_popup
 | A1 · Switch 重做 | ✅ | `32078c9` | 40×20 track + 10×10 knob（对齐 microsoft-ui-xaml v1 官方规格）；SwitchShape 枚举（Capsule / Square 占位）；Header 上 + State text 右；拖动 press/drag_to/release/cancel；Pressed 灰调（仅拖动中）—— 消解 V11 |
 | A1 · Square 变体 | ✅ | `0a9eacb` | SwitchShape::Square 落到 Win8 真机规格 —— 10×20 瘦长 knob、margin 0、travel 30 |
 | V17 | ✅ | `10b076e` | ProgressBar `paused_fade`/`error_blend` MetroAnim（0.25s）；update 幂等 set_target；alpha 与 primary.lerp(ERROR_COLOR) 由 anim 值驱动 |
-| V14 | ✅ | 本 commit | 引入 `unicode-linebreak` (UAX #14)；`layout` 用 (byte_idx, Allowed/Mandatory) 序列贪心；CJK 行首禁则自动生效；单段超宽走硬断兜底 |
+| V14 | ✅ | `a973df7` | 引入 `unicode-linebreak` (UAX #14)；`layout` 用 (byte_idx, Allowed/Mandatory) 序列贪心；CJK 行首禁则自动生效；单段超宽走硬断兜底 |
+| V16 | ✅ | 本 commit | `TextStyle.letter_spacing_em` 字段 + builder + `measure_with_spacing`；harness render 每字符 pen 推进加字距；TabRow 挂 −0.025em；`header_spacing: f32` 冗余删除 |

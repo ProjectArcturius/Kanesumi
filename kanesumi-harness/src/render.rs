@@ -694,6 +694,8 @@ impl Renderer {
         let lines = engine.layout(content, style.size, rect.size.width);
         let line_advance = style.line_height;
         let ascent_log = engine.ascent(size_phys) / self.scale;
+        // V16: 字距（em → 逻辑像素），每字符 pen 推进时加。
+        let letter_spacing_log = style.letter_spacing_em * style.size;
 
         let mut line_y = rect.origin.y;
         for line in &lines {
@@ -709,7 +711,7 @@ impl Renderer {
             for c in line.content.chars() {
                 let (metrics, bitmap) = engine.rasterize(c, size_phys);
                 if metrics.width == 0 || metrics.height == 0 {
-                    pen += metrics.advance_width / self.scale;
+                    pen += metrics.advance_width / self.scale + letter_spacing_log;
                     continue;
                 }
                 let key = glyph_key(c, size_phys.round() as u32);
@@ -738,7 +740,7 @@ impl Renderer {
                     count: 6,
                 });
                 pending.push((key, bitmap, metrics));
-                pen += metrics.advance_width * inv;
+                pen += metrics.advance_width * inv + letter_spacing_log;
             }
             line_y += line_advance;
         }

@@ -26,8 +26,6 @@ pub struct MetroTabRow {
     pub hovered: Option<usize>,
     /// Header 高（UWP 48）。
     pub header_height: f32,
-    /// 头字间距（px）。UWP 字距 −2.5% ≈ 每字 0.6px 收紧，简单起见留空实现。
-    pub header_spacing: f32,
 }
 
 impl Default for MetroTabRow {
@@ -37,7 +35,6 @@ impl Default for MetroTabRow {
             selected: 0,
             hovered: None,
             header_height: 48.0,
-            header_spacing: 0.0,
         }
     }
 }
@@ -56,32 +53,40 @@ impl MetroTabRow {
         }
     }
 
-    /// Header 文字样式：24 SemiLight（PivotHeaderItemFontSize/Weight）。
+    /// Header 文字样式：24 SemiLight，字距 −2.5%（UWP CharacterSpacing=−25）。
+    /// V16：字距落到 TextStyle.letter_spacing_em，render/measure 全局生效。
     pub fn header_style() -> TextStyle {
-        TextStyle::new(24.0, 30.0, FontWeight::Semilight)
+        TextStyle::new(24.0, 30.0, FontWeight::Semilight).with_letter_spacing_em(-0.025)
     }
 
-    /// 单个 Header 宽度 = 文字宽 + 左右 12px。
+    /// 单个 Header 宽度 = 文字宽（含字距）+ 左右 12px。
     pub fn header_width(&self, engine: &TextEngine, index: usize) -> f32 {
         if index >= self.tabs.len() {
             return 0.0;
         }
-        engine.measure(&self.tabs[index].label, Self::header_style().size) + 24.0
+        let style = Self::header_style();
+        engine.measure_with_spacing(&self.tabs[index].label, style.size, style.letter_spacing_em)
+            + 24.0
     }
 
     /// 全部 Header 总宽。
     pub fn total_width(&self, engine: &TextEngine) -> f32 {
+        let style = Self::header_style();
         self.tabs
             .iter()
-            .map(|t| engine.measure(&t.label, Self::header_style().size) + 24.0)
+            .map(|t| {
+                engine.measure_with_spacing(&t.label, style.size, style.letter_spacing_em) + 24.0
+            })
             .sum()
     }
 
     /// Header 命中测试：返回命中的 tab 索引。
     pub fn tab_at(&self, engine: &TextEngine, x: f32) -> Option<usize> {
+        let style = Self::header_style();
         let mut cursor = 0.0;
         for (i, tab) in self.tabs.iter().enumerate() {
-            let w = engine.measure(&tab.label, Self::header_style().size) + 24.0;
+            let w = engine.measure_with_spacing(&tab.label, style.size, style.letter_spacing_em)
+                + 24.0;
             if x >= cursor && x < cursor + w {
                 return Some(i);
             }
@@ -97,7 +102,8 @@ impl MetroTabRow {
         let mut cursor = rect.origin.x;
 
         for (i, tab) in self.tabs.iter().enumerate() {
-            let label_w = engine.measure(&tab.label, style.size);
+            let label_w =
+                engine.measure_with_spacing(&tab.label, style.size, style.letter_spacing_em);
             let header_w = label_w + 24.0;
             let selected = i == self.selected;
 
@@ -190,5 +196,30 @@ mod tests {
         let mut row = MetroTabRow::new(vec![MetroTab::new("A")]);
         row.select(5);
         assert_eq!(row.selected, 0);
+    }
+
+    #[test]
+    fn header_style_carries_negative_letter_spacing() {
+        // V16: header_style 应带 −0.025em 字距（UWP CharacterSpacing=−25）
+        let s = MetroTabRow::header_style();
+        assert!((s.letter_spacing_em - (-0.025)).abs() < 1e-6);
+        // 24px × −0.025 = −0.6 px/字
+        assert!((s.letter_spacing_px() - (-0.6)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn header_width_reflects_letter_spacing() {
+        // V16: header_width（含字距）应 < 无字距 measure（负字距收紧）
+        let Some(engine) = find_engine() else { return };
+        let row = MetroTabRow::new(vec![MetroTab::new("邮件")]);
+        let style = MetroTabRow::header_style();
+        let w_spaced = row.header_width(&engine, 0);
+        let w_raw = engine.measure("邮件", style.size) + 24.0;
+        assert!(
+            w_spaced < w_raw,
+            "字距 −0.025em 应收紧宽度：w_spaced={w_spaced}, w_raw={w_raw}"
+        );
+        // 差异 = n_chars × letter_spacing_px = 2 × −0.6 = −1.2
+        assert!((w_spaced - w_raw - (2.0 * -0.6)).abs() < 0.01);
     }
 }

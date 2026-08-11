@@ -9,20 +9,36 @@ pub enum FontWeight {
 }
 
 /// 文本样式：尺寸为逻辑像素（display.rs 逻辑/物理分离的同一原则）。
+/// `letter_spacing_em` = 字距（em 单位），负值收紧、正值放宽。UWP CharacterSpacing/1000。
+/// 例：TabRow Header CharacterSpacing=−25 → letter_spacing_em = −0.025。参 V16。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextStyle {
     pub size: f32,
     pub line_height: f32,
     pub weight: FontWeight,
+    pub letter_spacing_em: f32,
 }
 
 impl TextStyle {
+    /// 默认字距 0（普通排版）。
     pub const fn new(size: f32, line_height: f32, weight: FontWeight) -> Self {
         Self {
             size,
             line_height,
             weight,
+            letter_spacing_em: 0.0,
         }
+    }
+
+    /// Builder：设 em 单位字距（对齐 UWP CharacterSpacing）。参 V16。
+    pub const fn with_letter_spacing_em(mut self, em: f32) -> Self {
+        self.letter_spacing_em = em;
+        self
+    }
+
+    /// 字距转逻辑像素。
+    pub fn letter_spacing_px(&self) -> f32 {
+        self.letter_spacing_em * self.size
     }
 }
 

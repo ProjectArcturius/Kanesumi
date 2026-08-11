@@ -56,6 +56,14 @@ impl TextEngine {
         text.chars().map(|c| self.char_width(c, size)).sum()
     }
 
+    /// 整段文本宽度 + 字距（em）—— V16 TabRow 等控件用。
+    /// 每字符后加 `letter_spacing_em * size`（含末字，与 render 侧 pen 推进一致）。
+    pub fn measure_with_spacing(&self, text: &str, size: f32, letter_spacing_em: f32) -> f32 {
+        let base = self.measure(text, size);
+        let n = text.chars().count() as f32;
+        base + n * letter_spacing_em * size
+    }
+
     /// 行高（ascent - descent）。
     pub fn line_height(&self, size: f32) -> f32 {
         self.font
