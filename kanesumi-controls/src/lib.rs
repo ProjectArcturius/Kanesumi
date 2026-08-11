@@ -5,6 +5,7 @@
 // MetroTabRow / MetroList / MetroSelectorFlyout / MetroDropdownMenu / MetroDialog / MetroSurface。
 // 状态驱动渲染：控件持有状态，`render(theme, engine, rect, scene)` 把当前状态解析为 Scene 命令。
 
+pub mod animated_icon;
 pub mod breadcrumb_bar;
 pub mod button;
 pub mod color_picker;
@@ -21,6 +22,7 @@ pub mod menu_bar;
 pub mod metro_tile;
 pub mod navigation_view;
 pub mod pager_control;
+pub mod parallax_view;
 pub mod person_picture;
 pub mod pips_pager;
 pub mod popup;
@@ -32,6 +34,7 @@ pub mod selector_flyout;
 pub mod split_button;
 pub mod state;
 pub mod surface;
+pub mod swipe_control;
 pub mod switch;
 pub mod tab_row;
 pub mod tab_view;
@@ -41,6 +44,7 @@ pub mod title_bar;
 pub mod tree_view;
 pub mod two_pane_view;
 
+pub use animated_icon::{IconDirection, MetroAnimatedIcon};
 pub use breadcrumb_bar::{BreadcrumbClick, MetroBreadcrumbBar};
 pub use button::{ButtonKind, MetroButton};
 pub use color_picker::{ALL_CHANNELS, ColorChannel, MetroColorPicker};
@@ -61,6 +65,7 @@ pub use navigation_view::{
     MetroNavigationView, NavigationAction, NavigationPaneMode, NavigationViewItem,
 };
 pub use pager_control::{MetroPagerControl, PagerAction, PagerHover, PagerItem};
+pub use parallax_view::MetroParallaxView;
 pub use person_picture::{MetroPersonPicture, initials_from_display_name};
 pub use pips_pager::{MetroPipsPager, PipsAction, PipsOrientation};
 pub use popup::{
@@ -75,6 +80,7 @@ pub use selector_flyout::MetroSelectorFlyout;
 pub use split_button::{MetroSplitButton, SplitButtonClick, SplitButtonPart};
 pub use state::{ButtonState, ControlState};
 pub use surface::MetroSurface;
+pub use swipe_control::{MetroSwipeControl, SwipeAction, SwipeItem, SwipeItemAction, SwipeMode};
 pub use switch::MetroSwitch;
 pub use tab_row::{MetroTab, MetroTabRow};
 pub use tab_view::{MetroTabView, TabHover, TabViewAction};

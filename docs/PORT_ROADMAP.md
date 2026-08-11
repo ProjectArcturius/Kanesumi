@@ -47,7 +47,7 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 
 ---
 
-## §Ⅲ 已移植（22 个 + 2 部分）
+## §Ⅲ 已移植（35 个 + 2 部分）
 
 见 `CONTROL_MATRIX.md` 详表。此处仅摘录源类归属：
 
@@ -85,11 +85,17 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | MetroTreeView | TreeView (WinUI 2) | **开源** |
 | MetroNavigationView | NavigationView (WinUI 2) | **开源**（子项级联/flyout 略） |
 | MetroColorPicker | ColorPicker (WinUI 2) | **开源**（Spectrum 阶梯近似） |
+| MetroParallaxView | ParallaxView (WinUI 2) | **开源**（纯位移辅助） |
+| MetroAnimatedIcon | AnimatedIcon (WinUI 2) | **开源**（几何 chevron 插值） |
+| MetroSwipeControl | SwipeControl (WinUI 2) | **开源**（Reveal 模式） |
 
-**已移植开源占比 21/22 ≈ 95%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
-自足小型控件推进，开源占比显著提升。PagerControl 仅 NumberPanel 模式；RadioButtons 单项
-自绘；TwoPaneView 单区域判据；TabView 拖拽 Reorder、NavigationView 子项级联暂略（Phase 3 续）；
-ColorPicker Spectrum 2D 渐变 → 阶梯 hue 色带近似（铁律 6 纯色无渐变）。
+**已移植 35 个（开源 24 个）** —— §Ⅳ 全部**可移植**（不依赖闭源基元、非巨型虚拟化引擎）的开源
+控件已复刻完成。剩余阻塞项：NumberBox / AutoSuggestBox / CommandBarFlyout（依赖闭源 TextBox）、
+RadioMenuFlyoutItem（依赖 MenuFlyout 级联）、Repeater / ScrollPresenter（59/31 cpp 巨型虚拟化
+引擎，按路线图"先做上层控件、共用一份 Repeater"延后）、AnimatedVisualPlayer / WebView2（外部
+runtime，明确不移植）。PagerControl 仅 NumberPanel 模式；RadioButtons 单项自绘；TwoPaneView
+单区域判据；TabView 拖拽 Reorder、NavigationView 子项级联暂略（Phase 3 续）；ColorPicker
+Spectrum 2D 渐变 → 阶梯 hue 色带近似（铁律 6 纯色无渐变）。
 
 ### 已移植但部分能力未完（Phase 3 续做）
 
@@ -116,13 +122,11 @@ ColorPicker Spectrum 2D 渐变 → 阶梯 hue 色带近似（铁律 6 纯色无�
 | **RadioMenuFlyoutItem** | 1 | 菜单内单选（View → Zoom Level） | **P2** | 依赖 MenuFlyout 级联完善 |
 | **CommandBarFlyout** | 5 | 选中文本弹出 Cut/Copy/Paste 浮出 | **P2** | 需 TextBox / 选区 |
 | **AutoSuggestBox Helper** | 1 (Helper) | 搜索框建议下拉 | **P1** | 主体 TextBox 闭源；Helper 只处理键盘导航 |
-| **SwipeControl** | 7 | 触屏滑动手势项 | **P3** | Kanesumi 桌面为主，触屏优先低 |
-| **AnimatedIcon** | 2 | 图标微动画 | **P3** | |
 | **AnimatedVisualPlayer** | 2 | Lottie 播放 | **—** | 依赖 Lottie runtime，暂不引入 |
-| **ParallaxView** | 2 | 视差滚动 | **P3** | |
 | **WebView2** | 2 | Web 嵌入 | **—** | 依赖 Chromium runtime，另立方案 |
 
-**小计**：开源可移植 ~16 个，工程量最大三档：Repeater(59) / ScrollPresenter(31) / NavigationView(19)。
+**小计**：剩余 8 项 —— 4 项依赖闭源 TextBox/MenuFlyout 基元，2 项外部 runtime 不移植，
+2 项巨型虚拟化引擎（Repeater 59 / ScrollPresenter 31）按路线图延后。
 
 ---
 

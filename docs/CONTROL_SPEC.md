@@ -966,3 +966,69 @@ else → SinglePane（PanePriority 指定单面板）
 ### 交互
 - 点/拖滑轨 → 更新对应通道（`handle_click` / `drag_to` 返回变化）。
 - 返回 `Option<Color>` 新颜色（None = 未变化）。
+
+---
+
+## 30 · ParallaxView（ParallaxView 参考）
+
+> 数据源：`microsoft-ui-xaml/dev/ParallaxView/`（ParallaxView.cpp + ParallaxView.idl）。
+> 视差滚动：内容以慢于滚动源的速度位移。
+
+### 公式（HorizontalShift / VerticalShift）
+
+```
+shift = scroll_offset × ratio
+clamp 到 [−MaxShift, +MaxShift]，MaxShift = MaxShiftRatio × 视口主轴
+```
+
+| 项 | 默认 |
+|---|---|
+| ParallaxRatio | **0.5**（视差系数，0..1） |
+| Horizontal/VerticalShift | 0（基准） |
+| MaxHorizontal/VerticalShiftRatio | **1.0**（上限 = 视口 × 比率） |
+| IsShiftClamped | true |
+
+### 行为
+- `content_offset(scroll)` → 内容 rect（位移后的视口窗口），宿主据此渲染内容。
+- 纯布局/位移辅助（无自绘）。
+
+---
+
+## 31 · AnimatedIcon（AnimatedIcon 参考）
+
+> 数据源：`microsoft-ui-xaml/dev/AnimatedIcon/`（AnimatedIcon.cpp）。上游用 AnimatedVisual
+> （Lottie 式）；Kanesumi 用**几何 chevron 插值**（V7 自绘，不依赖 Lottie runtime）。
+
+### 行为
+- `dir_off` / `dir_on`：两个正交方向（Down/Up/Left/Right）；
+- `set_state(on)` → 0.1s 插值 chevron 从 `dir_off` 翻到 `dir_on`；
+- 渲染：三角形 chevron，base/tip 坐标按进度线性插值。
+
+### 交互
+- 无指针交互（纯状态动画图标；宿主驱动 `set_state`）。
+
+---
+
+## 32 · SwipeControl（SwipeControl 参考 · Reveal 模式）
+
+> 数据源：`microsoft-ui-xaml/dev/SwipeControl/`（SwipeControl.cpp + SwipeControl.idl）。
+> 触屏滑动手势项（桌面优先低，P3）。Kanesumi 实现 Reveal 模式：
+> 左右滑动露出操作项（LTR）。
+
+### 结构与尺寸
+
+```
+┌ [操作A][操作B] ──────内容──────┐   ← 拖动露出左侧操作项
+└──────────────────────────────┘
+```
+
+| 项 | 值 |
+|---|---|
+| SwipeItem | 文本 + 点击；LeftItems/RightItems |
+| Mode | **Reveal**（拖出操作项）/ Execute（拖出即触发） |
+| 释放吸合阈值 | 拖动距离 > 项区一半 → 吸合展开；否则回弹 |
+
+### 交互
+- `drag_to(dx)` → 露出距离（夹紧到项区宽）；`release()` 吸合/回弹。
+- 点操作项 → 返回 `Invoke(index)`。
+- 点内容 → `Close`（收起）。
