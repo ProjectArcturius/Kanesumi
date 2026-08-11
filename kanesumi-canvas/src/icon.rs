@@ -16,6 +16,11 @@ impl Icon {
     pub fn size(&self) -> kanesumi_core::Size {
         kanesumi_core::Size::new(self.width as f32, self.height as f32)
     }
+
+    /// 从 SVG 文件加载图标（等同 `rasterize_svg` 的便捷方法）。
+    pub fn load_svg(path: impl AsRef<Path>, target_size: u32) -> Option<Self> {
+        rasterize_svg(path, target_size)
+    }
 }
 
 /// 把 SVG 文件栅格化为直通 RGBA 图标。`target_size` 为最长边像素。

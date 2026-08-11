@@ -11,6 +11,7 @@ pub mod dialog;
 pub mod dropdown_menu;
 pub mod icon_button;
 pub mod list;
+pub mod metro_tile;
 pub mod popup;
 pub mod progress;
 pub mod retained;
@@ -29,6 +30,7 @@ pub use dialog::{DialogButton, DialogButtons, DialogDefaultButton, DialogState, 
 pub use dropdown_menu::{MenuItem, MetroDropdownMenu};
 pub use icon_button::MetroIconButton;
 pub use list::MetroList;
+pub use metro_tile::{MetroTile, TileLive, TileSize};
 pub use popup::{
     POPUP_GAP, PopupAnim, PopupDirection, PopupPlacement, PopupState, place_popup, popup_gap,
     render_overlay,
