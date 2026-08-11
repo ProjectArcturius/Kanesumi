@@ -47,7 +47,7 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 
 ---
 
-## §Ⅲ 已移植（21 个 + 2 部分）
+## §Ⅲ 已移植（22 个 + 2 部分）
 
 见 `CONTROL_MATRIX.md` 详表。此处仅摘录源类归属：
 
@@ -74,8 +74,9 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | MetroPersonPicture | PersonPicture (WinUI 2) | **开源** |
 | MetroDropDownButton | DropDownButton (WinUI 2) | **开源** |
 | MetroBreadcrumbBar | BreadcrumbBar (WinUI 2) | **开源** |
+| MetroSplitButton | SplitButton (WinUI 2) | **开源** |
 
-**已移植开源占比 10/21 ≈ 48%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
+**已移植开源占比 11/22 = 50%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
 自足小型控件推进，开源占比显著提升。PagerControl（Num 型分页）未实现，仍列 §Ⅳ。
 
 ### 已移植但部分能力未完（Phase 3 续做）
@@ -102,7 +103,6 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | **Repeater** | 59 | List / TabView / TreeView 底层虚拟化 | **P1** | 最大工程量；先做上层控件、共用一份 Repeater |
 | **ScrollView / ScrollPresenter** | 5 + 31 | 上述所有滚动容器 | **P1** | Repeater 前置。ScrollPresenter 30 个 cpp 是内核 |
 | **NumberBox** | 3 | Settings 数字项（音量、屏幕缩放…） | **P1** | TextBox + 上下步进 + 校验（依赖闭源 TextBox） |
-| **SplitButton** | 7 | 复合命令（"保存 / 另存为"） | **P2** | Button + DropDownButton（后者的 `MetroDropDownButton` 已可复用） |
 | **RadioButtons** | 5 | Settings 单选组 | **P1** | 组容器；单个 RadioButton 是闭源，需先造闭源基元 |
 | **RadioMenuFlyoutItem** | 1 | 菜单内单选（View → Zoom Level） | **P2** | 依赖 MenuFlyout 级联完善 |
 | **RatingControl** | 5 | Librarian 文件评分（非核心） | **P3** | |
@@ -119,7 +119,7 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | **ParallaxView** | 2 | 视差滚动 | **P3** | |
 | **WebView2** | 2 | Web 嵌入 | **—** | 依赖 Chromium runtime，另立方案 |
 
-**小计**：开源可移植 ~21 个，工程量最大三档：Repeater(59) / ScrollPresenter(31) / NavigationView(19)。
+**小计**：开源可移植 ~20 个，工程量最大三档：Repeater(59) / ScrollPresenter(31) / NavigationView(19)。
 
 ---
 

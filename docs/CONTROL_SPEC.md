@@ -572,3 +572,39 @@
 ### 交互
 - 点非当前项 → 返回索引（宿主导航）。
 - 当前项（末项）不可点。
+
+---
+
+## 19 · SplitButton（SplitButton 参考）
+
+> 数据源：`microsoft-ui-xaml/dev/SplitButton/`（SplitButton.cpp + SplitButton_v1.xaml + SplitButton_themeresources.xaml）。
+
+### 结构与尺寸
+
+```
+┌ [PrimaryButton（*，MinWidth 35）] │ 分隔线 1px │ [SecondaryButton 35px] ┐
+│  标签                             │            │    ⋎（E70D，12px，Pad 0,0,9,0）│
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+| 项 | 值 |
+|---|---|
+| Primary 最小宽 | **35** |
+| Secondary 宽 | **35**；chevron `E70D` → 自绘 `chevron_down` 12px、Padding `0,0,9,0` |
+| Separator | 1px 列，色 `ControlStrokeColorDefaultBrush`（→ Kanesumi `divider`） |
+| Border | 1px（ControlElevationBorderBrush → `divider`） |
+| Padding | `ButtonPadding`（同 MetroButton `8,5,8,6`） |
+
+### 视觉状态（SplitButtonBackground → Kanesumi 映射）
+
+| 态 | 背景 |
+|---|---|
+| Normal | `surface`（ControlFillColorDefault） |
+| PrimaryPointerOver | Primary 区白 10%、Secondary 区常态 |
+| PrimaryPressed | Primary 区白 22%、Secondary 常态 |
+| SecondaryPointerOver / Pressed | 同上，作用于 Secondary 区 |
+| FlyoutOpen | **两区全 Pressed**（白 22%） |
+
+### 交互
+- 点 Primary → 返回 `Primary`（宿主执行主命令）。
+- 点 Secondary → toggle 关联 `MenuFlyout`；点 flyout 项 → 返回 `Index`；点外 → 关闭。

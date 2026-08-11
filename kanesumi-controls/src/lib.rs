@@ -24,6 +24,7 @@ pub mod popup;
 pub mod progress;
 pub mod retained;
 pub mod selector_flyout;
+pub mod split_button;
 pub mod state;
 pub mod surface;
 pub mod switch;
@@ -54,6 +55,7 @@ pub use popup::{
 pub use progress::{MetroProgressBar, MetroProgressRing, ProgressMode};
 pub use retained::RetainedScene;
 pub use selector_flyout::MetroSelectorFlyout;
+pub use split_button::{MetroSplitButton, SplitButtonClick, SplitButtonPart};
 pub use state::{ButtonState, ControlState};
 pub use surface::MetroSurface;
 pub use switch::MetroSwitch;
