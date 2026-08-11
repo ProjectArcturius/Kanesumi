@@ -133,8 +133,9 @@ Menu items 用 `\u{E8E5}` `\u{E74E}` `\u{E792}` `\u{E7E8}`，Selector 触发器�
 `surface.rs:49` 只 `fill_rect`，忽略 corner_radius。
 **修法：** 底色 + tint 都改 `fill_rounded_rect(..., shape.corner_radius)`。
 
-### V13 · ProgressBar `height` 公式恒等于 `min_height` ⬜
+### V13 · ProgressBar `height` 公式恒等于 `min_height` ✅ 本 commit
 `progress.rs:83` `min_height.max(rect.size.height.min(4.0))` 恒 = 4。表达冗余。
+**修法：** 改 `rect.size.height.max(self.min_height)` —— 取传入高度，但不低于规格 MinHeight。
 
 ### V14 · Text layout `split_ascii_whitespace` 对 CJK 标点切分粗暴 ⬜
 `text.rs:97`。全角空格 U+3000、CJK 标点未识别为断行点，只靠硬断兜底。egui 用允许换行字符集是更合理的做法。
@@ -198,4 +199,5 @@ DropdownMenu / SelectorFlyout / Dialog 全部合成到主 surface，`place_popup
 | V5 | ✅ | `42bff56` | Gallery TITLE_H 36→42 对齐 line_height；CTRL_Y0 从常量 44 改为派生 = TITLE_Y+TITLE_H+12 |
 | V6 | ✅ | `dcdc9fd` | button_rect/accent_rect 用 `button.measure().width`（内在宽驱动），icon 位置右推；button.rs `x_offset` 加 `.max(0.0)` 防负偏移双保险 |
 | V8 | ✅ | `507282c` | `Decl::Spacer{grow}` 变体 + `layout_children`（内在尺寸 + spacing + Spacer 分配剩余）；Gallery footer 插入 `spacer(1.0)` |
-| V12 | ✅ | 本 commit | Surface `render` 从 `fill_rect` 改 `fill_rounded_rect(..., shape.corner_radius)` |
+| V12 | ✅ | `125e1ff` | Surface `render` 从 `fill_rect` 改 `fill_rounded_rect(..., shape.corner_radius)` |
+| V13 | ✅ | 本 commit | ProgressBar height 从 `min_height.max(rect.h.min(4))` 改 `rect.h.max(min_height)` |

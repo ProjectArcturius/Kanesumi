@@ -80,7 +80,9 @@ impl MetroProgressBar {
     /// 渲染到 `rect`。轨道为细底，指示条为强调色（错误红 / 暂停 0.6 不透明）。
     pub fn render(&self, theme: &MetroTheme, _engine: &TextEngine, rect: Rect, scene: &mut Scene) {
         let colors = &theme.colors;
-        let height = self.min_height.max(rect.size.height.min(4.0));
+        // 高度：取 rect 高，但不低于 `min_height`（CONTROL_SPEC §4 MinHeight 4）。
+        // 参 V13：原本 `min_height.max(rect.height.min(4.0))` 恒为 4，压死了自定义高度。
+        let height = rect.size.height.max(self.min_height);
         let bar_rect = Rect::new(
             rect.origin.x,
             rect.origin.y + (rect.size.height - height) / 2.0,
