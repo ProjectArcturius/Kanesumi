@@ -158,14 +158,17 @@ CONTROL_SPEC §4 要 0.25s 淡出到 0.6 / 0.25s 换错误色。当前布尔直�
 
 ## 🟢 低优 / 未来债务
 
-### V18 · Dialog `hide()` 用 Quadratic EaseIn 而非 SPEC 要求的 Linear ⬜
+### V18 · Dialog `hide()` 用 Quadratic EaseIn 而非 SPEC 要求的 Linear ✅ 本 commit
 `dialog.rs:121`。
+**修法：** sokuou 无 `Linear` 变体，`UwpEasing::Power(1.0)` = t^1 = t 是等价线性。dialog.rs hide 的 opacity anim 换成 `Power(1.0)/EaseOut`。
 
-### V19 · `Color::from_hex` 分支阈值有坑 ⬜
+### V19 · `Color::from_hex` 分支阈值有坑 ✅ 本 commit
 `color.rs:21`。`0x00FFFFFF` 会被当纯 RGB（cyan），`0x01000000` 当 RGBA（几乎透明黑）。建议加 `from_rgba(u32)` 显式方法。
+**修法：** 新 `Color::from_rgba(hex: u32)` 显式方法，全部 32 位按 RGBA 拆，无 alpha 推断；`from_hex` 文档补上 `⚠ 阈值坑` 提示，指向 `from_rgba` 作为消歧首选。
 
-### V20 · `PopupAnim::default()` 的 `MetroAnim::default_metro()` 是浪费构造 ⬜
+### V20 · `PopupAnim::default()` 的 `MetroAnim::default_metro()` 是浪费构造 ✅ 本 commit
 `popup.rs:83-86`。open() 立即又新建 overlay_open 覆盖，default 那次构造纯浪费。
+**修法：** `Default` 用零时长 `MetroAnim::new(0.0, ...)` 占位（`open()`/`close()` 必替换），删掉两次 `default_metro()` + `jump_to(0.0)` 冗余构造。
 
 ### V21 · Gallery `dropdown_panel()` 每帧重复计算 panel_size / place_popup ⬜
 `panel_size` 遍历所有 items × `engine.measure`。retained 层没利用。
@@ -211,4 +214,5 @@ DropdownMenu / SelectorFlyout / Dialog 全部合成到主 surface，`place_popup
 | A1 · Square 变体 | ✅ | `0a9eacb` | SwitchShape::Square 落到 Win8 真机规格 —— 10×20 瘦长 knob、margin 0、travel 30 |
 | V17 | ✅ | `10b076e` | ProgressBar `paused_fade`/`error_blend` MetroAnim（0.25s）；update 幂等 set_target；alpha 与 primary.lerp(ERROR_COLOR) 由 anim 值驱动 |
 | V14 | ✅ | `a973df7` | 引入 `unicode-linebreak` (UAX #14)；`layout` 用 (byte_idx, Allowed/Mandatory) 序列贪心；CJK 行首禁则自动生效；单段超宽走硬断兜底 |
-| V16 | ✅ | 本 commit | `TextStyle.letter_spacing_em` 字段 + builder + `measure_with_spacing`；harness render 每字符 pen 推进加字距；TabRow 挂 −0.025em；`header_spacing: f32` 冗余删除 |
+| V16 | ✅ | `09da24f` | `TextStyle.letter_spacing_em` 字段 + builder + `measure_with_spacing`；harness render 每字符 pen 推进加字距；TabRow 挂 −0.025em；`header_spacing: f32` 冗余删除 |
+| V18/V19/V20 | ✅ | 本 commit | Dialog hide opacity 换 Power(1.0)=线性；Color::from_rgba(u32) 显式方法；PopupAnim::default 用零时长占位（省两次 default_metro） |

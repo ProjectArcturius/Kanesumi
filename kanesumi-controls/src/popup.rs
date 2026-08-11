@@ -1,4 +1,4 @@
-use kanesumi_anim::{MetroAnim, MetroPresets};
+use kanesumi_anim::{EasingMode, MetroAnim, MetroPresets, UwpEasing};
 use kanesumi_canvas::Scene;
 use kanesumi_core::{MetroTheme, Rect, Size};
 
@@ -79,15 +79,15 @@ pub struct PopupAnim {
 }
 
 impl Default for PopupAnim {
+    /// 关闭态。`open()`/`close()` 会用 `MetroPresets::*` 立即覆盖 anim，
+    /// 所以此处用零时长占位（V20：原实现调 `default_metro()` 再 `jump_to(0.0)`
+    /// 两次构造纯浪费）。
     fn default() -> Self {
-        let mut overlay = MetroAnim::default_metro();
-        overlay.jump_to(0.0);
-        let mut panel = MetroAnim::default_metro();
-        panel.jump_to(0.0);
+        let zero = MetroAnim::new(0.0, UwpEasing::Quadratic, EasingMode::EaseOut);
         Self {
             state: PopupState::Closed,
-            overlay,
-            panel,
+            overlay: zero.clone(),
+            panel: zero,
         }
     }
 }

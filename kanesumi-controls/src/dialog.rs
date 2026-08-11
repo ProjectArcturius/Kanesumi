@@ -136,7 +136,9 @@ impl MetroDialog {
         }
         let (from_o, from_s) = (self.opacity.value(), self.scale.value());
         self.state = DialogState::Hiding;
-        self.opacity = MetroAnim::new(0.083, UwpEasing::Quadratic, EasingMode::EaseIn);
+        // V18：SPEC 要求 Linear（sokuou 无 Linear 变体，Power(1.0)=t^1=t 等价线性）。
+        // 原 Quadratic/EaseIn 曲线开头慢、末尾快 —— dialog 消失感官"拖尾"。
+        self.opacity = MetroAnim::new(0.083, UwpEasing::Power(1.0), EasingMode::EaseOut);
         self.opacity.jump_to(from_o);
         self.opacity.set_target(0.0);
         self.scale = MetroAnim::new(0.5, UwpEasing::Cubic, EasingMode::EaseOut);
