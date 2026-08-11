@@ -602,6 +602,13 @@ impl GalleryApp {
 
     /// 按下（常规控件）。
     fn press(&mut self, p: Point) {
+        // V18：页导航栏 —— 恒为最高优先级，任何页面（含 Tiles）都能切换。
+        // 旧 bug：Tiles 分支在 nav 检查之前 early-return，导致点 nav tab 无响应。
+        if self.nav_rect().contains(p) {
+            self.pressed = Some(Target::Nav);
+            return;
+        }
+
         // Tiles 页：磁贴 / 翻页按钮。
         if self.page == GalleryPage::Tiles {
             if let Some(i) = self.tile_at(p) {
@@ -686,6 +693,21 @@ impl GalleryApp {
 
     /// 释放（触发动作）。
     fn release(&mut self, p: Point) {
+        // V18：Nav 恒优先 —— 若 press 记的是 Nav，先结算再判 Tiles 分支
+        // （否则 Tiles 页永远切不出去，参 press 同款修复）。
+        if self.pressed == Some(Target::Nav) {
+            self.pressed = None;
+            if self.nav_rect().contains(p) {
+                if let Some(i) = self.nav.tab_at(&self.engine, self.nav_rect(), p) {
+                    self.nav.select(i);
+                    self.page = page_from_index(i);
+                    self.dropdown.close();
+                    self.selector.close();
+                }
+            }
+            return;
+        }
+
         // Tiles 页：磁贴按下反馈 + 翻页。
         if self.page == GalleryPage::Tiles {
             if let Some(i) = self.tile_pressed.take() {
@@ -1419,6 +1441,29 @@ mod tests {
         g.handle_input(InputEvent::PointerMoved { x: c.x, y: c.y });
         assert_eq!(g.tile_hovered, Some(0));
         assert_eq!(g.tiles[0].state, ControlState::Hovered);
+    }
+
+    #[test]
+    fn nav_click_switches_page_from_tiles() {
+        // V18 回归：Tiles 页早期 return 挡住 nav 分支 → 一进 Tiles 就切不回其它页。
+        let mut g = app();
+        g.page = GalleryPage::Tiles;
+        g.nav.select(page_index(GalleryPage::Tiles));
+        // 点 nav 第一项（DesignTokens）应能切回
+        let nav = g.nav_rect();
+        let w0 = g.nav.header_width(&g.engine, 0);
+        let p = Point::new(nav.origin.x + w0 / 2.0, nav.origin.y + nav.size.height / 2.0);
+        g.handle_input(InputEvent::PointerPressed {
+            x: p.x,
+            y: p.y,
+            button: PointerButton::Left,
+        });
+        g.handle_input(InputEvent::PointerReleased {
+            x: p.x,
+            y: p.y,
+            button: PointerButton::Left,
+        });
+        assert_eq!(g.page, GalleryPage::DesignTokens, "从 Tiles 应能切到 DesignTokens");
     }
 
     #[test]
