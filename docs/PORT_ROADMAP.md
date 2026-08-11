@@ -83,10 +83,11 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | MetroTabView | TabView (WinUI 2) | **开源**（拖拽 Reorder 略） |
 | MetroTeachingTip | TeachingTip (WinUI 2) | **开源** |
 | MetroTreeView | TreeView (WinUI 2) | **开源** |
+| MetroNavigationView | NavigationView (WinUI 2) | **开源**（子项级联/flyout 略） |
 
-**已移植开源占比 19/22 ≈ 86%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
+**已移植开源占比 20/22 ≈ 91%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
 自足小型控件推进，开源占比显著提升。PagerControl 仅 NumberPanel 模式；RadioButtons 单项
-自绘；TwoPaneView 单区域判据；TabView 拖拽 Reorder 暂略（Phase 3 续）。
+自绘；TwoPaneView 单区域判据；TabView 拖拽 Reorder、NavigationView 子项级联暂略（Phase 3 续）。
 
 ### 已移植但部分能力未完（Phase 3 续做）
 
@@ -120,7 +121,7 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | **ParallaxView** | 2 | 视差滚动 | **P3** | |
 | **WebView2** | 2 | Web 嵌入 | **—** | 依赖 Chromium runtime，另立方案 |
 
-**小计**：开源可移植 ~17 个，工程量最大三档：Repeater(59) / ScrollPresenter(31) / NavigationView(19)。
+**小计**：开源可移植 ~16 个，工程量最大三档：Repeater(59) / ScrollPresenter(31) / NavigationView(19)。
 
 ---
 

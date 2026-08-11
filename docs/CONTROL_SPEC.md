@@ -893,3 +893,41 @@ else → SinglePane（PanePriority 指定单面板）
 - 点 chevron → toggle 展开/收起（翻转 0.1s）。
 - 点行标签 → 选中（返回路径）。
 - 折叠时子项隐藏（不参与命中/渲染）。
+
+---
+
+## 28 · NavigationView（NavigationView 参考）
+
+> 数据源：`microsoft-ui-xaml/dev/NavigationView/`（NavigationView.xaml + NavigationView_themeresources.xaml）。
+> Settings 左侧导航 / Librarian 侧栏。Kanesumi 实现 Left（Pane）与 Top 两模式核心：
+> Pane toggle / 项列表（icon+label）/ 选中指示条 / Header+Content 布局。子项级联、flyout、
+> 动画式展开收窄暂略（Phase 3 续）。
+
+### 结构与尺寸（Left 模式）
+
+```
+┌ toggle 40 ────────┐
+│ PaneHeader        │
+│ ▍设置   ← 选中 3px 强调条│   ← Item 高 40、icon 16、字 14
+│ ▸ 外观            │
+│ ...               │
+├───────────────────┤
+│ footer 项         │
+└───────────────────┘
+```
+
+| 项 | 值 |
+|---|---|
+| Expanded Pane 宽 | **320**（NavigationViewExpandedPaneWidth） |
+| Compact Pane 宽 | **48**（icon 模式） |
+| Top Pane 高 | **48**（NavigationViewTopPaneHeight） |
+| PaneToggle 按钮 | **40×40**（左侧最上） |
+| Item | 高 **40**、icon 16、字 14、Padding 左 16 |
+| 选中指示条 | **3×16** 强调色（NavigationViewSelectionIndicator 3/16），项左侧 |
+| Header Margin | `56,44,0,0`（Header 位于 pane 右、顶栏下） |
+| 选中/悬停底 | 白 8% / 15%（SubtleFill） |
+
+### 行为
+- 点项 → 选中（返回索引路径）；点 toggle → 展开/收窄 Pane（320↔48）。
+- Footer 项独立（会话操作，非导航）。
+- `content_rect` = Pane 右（Left）或顶栏下（Top）；`header_rect` 依 Margin。
