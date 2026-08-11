@@ -158,15 +158,15 @@ CONTROL_SPEC §4 要 0.25s 淡出到 0.6 / 0.25s 换错误色。当前布尔直�
 
 ## 🟢 低优 / 未来债务
 
-### V18 · Dialog `hide()` 用 Quadratic EaseIn 而非 SPEC 要求的 Linear ✅ 本 commit
+### V18 · Dialog `hide()` 用 Quadratic EaseIn 而非 SPEC 要求的 Linear ✅ `cc2d83a`
 `dialog.rs:121`。
 **修法：** sokuou 无 `Linear` 变体，`UwpEasing::Power(1.0)` = t^1 = t 是等价线性。dialog.rs hide 的 opacity anim 换成 `Power(1.0)/EaseOut`。
 
-### V19 · `Color::from_hex` 分支阈值有坑 ✅ 本 commit
+### V19 · `Color::from_hex` 分支阈值有坑 ✅ `cc2d83a`
 `color.rs:21`。`0x00FFFFFF` 会被当纯 RGB（cyan），`0x01000000` 当 RGBA（几乎透明黑）。建议加 `from_rgba(u32)` 显式方法。
 **修法：** 新 `Color::from_rgba(hex: u32)` 显式方法，全部 32 位按 RGBA 拆，无 alpha 推断；`from_hex` 文档补上 `⚠ 阈值坑` 提示，指向 `from_rgba` 作为消歧首选。
 
-### V20 · `PopupAnim::default()` 的 `MetroAnim::default_metro()` 是浪费构造 ✅ 本 commit
+### V20 · `PopupAnim::default()` 的 `MetroAnim::default_metro()` 是浪费构造 ✅ `cc2d83a`
 `popup.rs:83-86`。open() 立即又新建 overlay_open 覆盖，default 那次构造纯浪费。
 **修法：** `Default` 用零时长 `MetroAnim::new(0.0, ...)` 占位（`open()`/`close()` 必替换），删掉两次 `default_metro()` + `jump_to(0.0)` 冗余构造。
 
@@ -187,10 +187,13 @@ DropdownMenu / SelectorFlyout / Dialog 全部合成到主 surface，`place_popup
 
 ## 修复顺序
 
-1. **本轮：V1 → V2 → V3 → V4**（每条一个 commit，先解锁 daily driver 可用性）。
-2. 下一轮：V7（Metro 图标资产 —— 是"我们说自己不是 Fluent"的关键证据）。
-3. 之后：V22 布局器 —— 完工后 V5 V6 V8 V11 顺势解决。
-4. 中/低优随控件迭代逐步清。
+1. ~~本轮：V1 → V2 → V3 → V4~~（已完成，`e6f65e0` `c7d8b1e` `9d909e0` `92df519`）。
+2. ~~下一轮：V7 Metro 图标资产~~（已完成 `5746c60`）。
+3. **2026-08-11 会话**：V6 → V8 → V12 → V13 → V15 → A1 Switch 重做（Capsule + Square）→
+   V17 → V14 → V16 → V18/V19/V20 一并完清。V11 由 A1 布局重构自然消解。
+4. **剩余** ⬜：**V21**（dropdown_panel 每帧 measure，cache 化）+ **V22**（A2 布局器 —— egui-style
+   `Ui { max_rect, cursor, min_rect }`，用户已拍板走渐进 A 方案）。
+5. 中/低优随控件迭代逐步清（本轮已扫完 V11–V20 中优 + 低优段）。
 
 ## 修复日志
 
@@ -215,4 +218,4 @@ DropdownMenu / SelectorFlyout / Dialog 全部合成到主 surface，`place_popup
 | V17 | ✅ | `10b076e` | ProgressBar `paused_fade`/`error_blend` MetroAnim（0.25s）；update 幂等 set_target；alpha 与 primary.lerp(ERROR_COLOR) 由 anim 值驱动 |
 | V14 | ✅ | `a973df7` | 引入 `unicode-linebreak` (UAX #14)；`layout` 用 (byte_idx, Allowed/Mandatory) 序列贪心；CJK 行首禁则自动生效；单段超宽走硬断兜底 |
 | V16 | ✅ | `09da24f` | `TextStyle.letter_spacing_em` 字段 + builder + `measure_with_spacing`；harness render 每字符 pen 推进加字距；TabRow 挂 −0.025em；`header_spacing: f32` 冗余删除 |
-| V18/V19/V20 | ✅ | 本 commit | Dialog hide opacity 换 Power(1.0)=线性；Color::from_rgba(u32) 显式方法；PopupAnim::default 用零时长占位（省两次 default_metro） |
+| V18/V19/V20 | ✅ | `cc2d83a` | Dialog hide opacity 换 Power(1.0)=线性；Color::from_rgba(u32) 显式方法；PopupAnim::default 用零时长占位（省两次 default_metro） |
