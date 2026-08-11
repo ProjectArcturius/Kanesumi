@@ -30,10 +30,11 @@ impl Default for Spacing {
     }
 }
 
-/// 全局设计 tokens。参 PLAN.md §4-5 —— Metro 形态：直角或极轻微圆角、无渐变纯色。
+/// 全局设计 tokens。参 PLAN.md §4-5 —— Metro 形态：直角优先、无渐变纯色。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tokens {
-    /// 圆角：直角优先，仅保留极轻微 2px 防锯齿（类型级约束，禁止 Fluent 大圆角）。
+    /// 圆角：**直角为默认**（`Square`，4× MSAA 保证边缘质量，参 harness render.rs）。
+    /// `Slight` 仅作个案 opt-in；`Capsule` 仅限结构性胶囊（Switch 轨道/Knob、进度条指示条）。
     pub corner_radius: CornerRadius,
     pub spacing: Spacing,
     /// 字体族。Ether 唯一字体，禁止静默回退（SD §IX）。
@@ -43,7 +44,7 @@ pub struct Tokens {
 impl Tokens {
     pub const fn ether() -> Self {
         Self {
-            corner_radius: CornerRadius::Slight,
+            corner_radius: CornerRadius::Square,
             spacing: Spacing::base4(),
             font_family: "Source Han Sans SC",
         }

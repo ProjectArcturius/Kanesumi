@@ -27,17 +27,17 @@ impl Size {
     pub const ZERO: Size = Size::new(0.0, 0.0);
 }
 
-/// 圆角规格 —— Metro 形态铁律（参 PLAN.md §4-5）。
+/// 圆角规格 —— 直角几何铁律（参 PLAN.md §4-5）。
 ///
 /// 类型级不变量：只允许三种合法值，**禁止 Fluent 式大圆角（4px/8px）混入**。
 /// `Capsule` 仅限全圆角形态（Switch 轨道/Knob、ProgressBar 指示条）——它们是
 /// CONTROL_SPEC §3/§4 里「胶囊」形状的一部分，不是通用圆角。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CornerRadius {
-    /// 直角（0px）。
-    Square,
-    /// 极轻微圆角（2px 防锯齿，对应 ControlCornerRadius）。
+    /// 直角（0px）—— **默认**。4× MSAA 保证直角边缘无锯齿（参 harness render.rs）。
     #[default]
+    Square,
+    /// 极轻微圆角（2px）—— 个案 opt-in，非默认（曾为"防锯齿"默认，被直角取代）。
     Slight,
     /// 全胶囊：短边一半（仅全圆角形态，如 Switch 轨道 40×20 → 10）。
     Capsule,

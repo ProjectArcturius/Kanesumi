@@ -26,7 +26,7 @@
 | 模板 | 单个 `ContentPresenter`（背景/边框/内容一体），无包裹 Grid |
 | Padding | `8,5,8,6`（RS3+；RS1 为 `8,5,8,5`） |
 | BorderThickness | 1（但四态边框全 Transparent → 视觉无边框，只占位） |
-| CornerRadius | 2px（`ControlCornerRadius`） |
+| CornerRadius | 2px（`ControlCornerRadius`，参考值）—— **Kanesumi 定夺：默认 `Square`（直角）**。4× MSAA 保证直角边缘质量；`Capsule` 仅限结构性胶囊（Switch/进度条）。参 geometry.rs `CornerRadius` |
 | FontSize / Weight | 14 / Normal |
 | 无 MinWidth/MinHeight | 尺寸 = 内容 + Padding；最小可点区域靠宿主约束 |
 | 激活键 | Space / Enter |

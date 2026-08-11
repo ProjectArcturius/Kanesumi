@@ -229,7 +229,7 @@ impl MetroTile {
         let badge = 20.0;
         let pad = 6.0;
         let br = Rect::new(rect.right() - badge - pad, rect.origin.y + pad, badge, badge);
-        scene.fill_rounded_rect(theme.colors.primary, br, CornerRadius::Slight);
+        scene.fill_rounded_rect(theme.colors.primary, br, CornerRadius::Square);
         let text = count.to_string();
         let label = theme.typography.label;
         let w = engine.measure(&text, label.size);
