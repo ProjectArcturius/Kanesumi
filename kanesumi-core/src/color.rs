@@ -68,6 +68,25 @@ impl Color {
     pub const TRANSPARENT: Color = Color::new(0.0, 0.0, 0.0, 0.0);
     pub const BLACK: Color = Color::new(0.0, 0.0, 0.0, 1.0);
     pub const WHITE: Color = Color::new(1.0, 1.0, 1.0, 1.0);
+
+    /// HSV → RGB（ColorPicker Spectrum 等）。h/s/v ∈ [0,1]。
+    pub fn hsv(h: f32, s: f32, v: f32) -> Color {
+        let h = (h.fract() + 1.0) % 1.0;
+        let i = (h * 6.0).floor() as i32;
+        let f = h * 6.0 - i as f32;
+        let p = v * (1.0 - s);
+        let q = v * (1.0 - f * s);
+        let t = v * (1.0 - (1.0 - f) * s);
+        let (r, g, b) = match i % 6 {
+            0 => (v, t, p),
+            1 => (q, v, p),
+            2 => (p, v, t),
+            3 => (p, q, v),
+            4 => (t, p, v),
+            _ => (v, p, q),
+        };
+        Color::rgb(r, g, b)
+    }
 }
 
 #[cfg(test)]

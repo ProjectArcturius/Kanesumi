@@ -931,3 +931,38 @@ else → SinglePane（PanePriority 指定单面板）
 - 点项 → 选中（返回索引路径）；点 toggle → 展开/收窄 Pane（320↔48）。
 - Footer 项独立（会话操作，非导航）。
 - `content_rect` = Pane 右（Left）或顶栏下（Top）；`header_rect` 依 Margin。
+
+---
+
+## 29 · ColorPicker（ColorPicker 参考）
+
+> 数据源：`microsoft-ui-xaml/dev/ColorPicker/`（ColorPicker.cpp + ColorPicker.xaml +
+> ColorPicker_themeresources.xaml）。Settings 主题色。
+> **Kanesumi 适配**：Scene 纯色无渐变（铁律 6），Spectrum 2D 渐变用**阶梯色带**近似
+> （离散 hue 列，on-brand）；RGB/A 滑轨为实心轨道 + 填充段 + 10×10 拇指（可渲染）。
+
+### 结构与尺寸
+
+```
+┌ ColorSpectrum（阶梯 hue 带，可选）──────────────────┐
+│ ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒                  │
+├───────────────────────────────────────────────────┤
+│ R ▓▓▓▓▓▓▓▓○──────────  ← 实心轨道 + 填充段 + 拇指 │
+│ G ▓▓▓▓▓▓▓▓○──────────                            │
+│ B ▓▓▓▓▓▓▓▓○──────────                            │
+│ A ▓▓▓▓▓▓▓▓○──────────                            │
+├───────────────────────────────────────────────────┤
+│ [预览色块 44]   #E57812                            │
+└───────────────────────────────────────────────────┘
+```
+
+| 项 | 值 |
+|---|---|
+| 垂直朝向 | Min **312×312** / Max **392×392**（VerticalOrientation 312..392） |
+| 滑轨 | 拇指 **10×10**（ColorPickerSliderInnerThumb 10）；轨道圆角 6 |
+| 预览块 | 高 **44**（Spectrum 隐藏时）；边 2px（ColorPickerBorderBrush） |
+| 滑轨通道 | R / G / B / A（0..255） |
+
+### 交互
+- 点/拖滑轨 → 更新对应通道（`handle_click` / `drag_to` 返回变化）。
+- 返回 `Option<Color>` 新颜色（None = 未变化）。

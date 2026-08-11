@@ -7,6 +7,7 @@
 
 pub mod breadcrumb_bar;
 pub mod button;
+pub mod color_picker;
 pub mod decl;
 pub mod dialog;
 pub mod drop_down_button;
@@ -42,6 +43,7 @@ pub mod two_pane_view;
 
 pub use breadcrumb_bar::{BreadcrumbClick, MetroBreadcrumbBar};
 pub use button::{ButtonKind, MetroButton};
+pub use color_picker::{ALL_CHANNELS, ColorChannel, MetroColorPicker};
 pub use decl::{
     Decl, DeclAction, DeclChange, DeclHit, DeclPath, collect_hits, diff_decl, render_decl,
 };
