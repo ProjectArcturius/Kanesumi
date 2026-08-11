@@ -709,3 +709,38 @@ else → SinglePane（PanePriority 指定单面板）
 
 > 多显示区域（折叠屏 hinge）逻辑不移植（Ether 桌面单屏），单区域判据已覆盖。
 > 中缝（PART_ColumnMiddle/RowMiddle）在单区域为 0 —— Kanesumi 无中缝。
+
+---
+
+## 23 · TitleBar（TitleBar 参考）
+
+> 数据源：`microsoft-ui-xaml/dev/TitleBar/`（TitleBar.cpp + TitleBar.xaml + TitleBar_themeresources.xaml）。
+> 应用 SSD 标题栏（对齐 Ether Issue #8）。
+
+### 结构与尺寸
+
+```
+[← 44×H] [icon 16]  Title ....................  [custom content]
+```
+
+| 项 | 值 |
+|---|---|
+| 高度 | Compact **32** / Expanded **48** |
+| Back 按钮 | **44×H**；glyph `E72B`（Back）→ 自绘 `chevron_left` 16px |
+| Icon | 16×16、Margin `4,0,0,0` |
+| Title | Caption（12px）；Margin `16,0,16,2`；MinWidth **48**；`TextTrimming` |
+| Custom content | 右侧（宿主注入） |
+| Back 隐藏时 | Icon Margin → `16,0,0,0` |
+
+### 视觉状态
+
+| 态 | Title / Back 前景 |
+|---|---|
+| Activated | `on_surface`（TextFillColorPrimary） |
+| Deactivated | `on_surface_variant`（TextFillColorTertiary，转暗） |
+| Back Hover | 底 `SubtleFillColorSecondary`（白 15%） |
+| Back Pressed | 底 `SubtleFillColorTertiary`（白 25%） |
+
+### 交互
+- Back 点击 → 返回 `Back`（宿主导航）。
+- 无其它交互（图标/标题不可点）。

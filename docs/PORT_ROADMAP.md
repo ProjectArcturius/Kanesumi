@@ -78,8 +78,9 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | MetroPagerControl | PagerControl (WinUI 2, NumberPanel) | **开源** |
 | MetroRadioButtons | RadioButtons (WinUI 2) | **开源**（单项自绘） |
 | MetroTwoPaneView | TwoPaneView (WinUI 2) | **开源**（纯布局） |
+| MetroTitleBar | TitleBar (WinUI 2) | **开源** |
 
-**已移植开源占比 14/22 ≈ 64%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
+**已移植开源占比 15/22 ≈ 68%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
 自足小型控件推进，开源占比显著提升。PagerControl 仅 NumberPanel 模式；RadioButtons 单项
 自绘；TwoPaneView 单区域判据（折叠屏 hinge 逻辑未移植）。
 
@@ -113,7 +114,6 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | **CommandBarFlyout** | 5 | 选中文本弹出 Cut/Copy/Paste 浮出 | **P2** | 需 TextBox / 选区 |
 | **AutoSuggestBox Helper** | 1 (Helper) | 搜索框建议下拉 | **P1** | 主体 TextBox 闭源；Helper 只处理键盘导航 |
 | **TeachingTip** | 6 | 新特性引导气泡 | **P3** | |
-| **TitleBar** | 3 | 应用 SSD 标题 | **P1** | 直接影响 Ether 窗口装饰观感（Issue #8 已列 known） |
 | **SwipeControl** | 7 | 触屏滑动手势项 | **P3** | Kanesumi 桌面为主，触屏优先低 |
 | **AnimatedIcon** | 2 | 图标微动画 | **P3** | |
 | **AnimatedVisualPlayer** | 2 | Lottie 播放 | **—** | 依赖 Lottie runtime，暂不引入 |
