@@ -100,9 +100,10 @@ Gallery 手绘一遍 (fill + 文本 `"选择 ▾"`)，然后 `selector.render(tr
 ### V5 · Gallery 标题压到按钮 ✅ 本 commit
 `kanesumi-gallery/src/app.rs:19-20`。CTRL_Y0=44，但标题从 y=20、高 42 到 y=62。重叠 18 px。**根本解**是引入 box 布局器（V22），本条只是"当前 Gallery 硬编码常量错"。
 
-### V6 · Accent 按钮 "打开对话框" 文字溢出 ⬜
+### V6 · Accent 按钮 "打开对话框" 文字溢出 ✅ 本 commit
 按钮 130 px 宽，`measure("打开对话框", 15)` 在思源黑体下约 90-100 px，本身能装下；但截图里文字左缘伸出到按钮外——原因是 `label_rect.origin.x = accent_rect.x + (130 - label_width) / 2` 允许负偏移。CONTROL_SPEC §1 明确"无 MinWidth，尺寸 = 内容 + Padding"，所以按钮宽度本应由内容驱动，而不是硬编码 130。
 **位置：** `kanesumi-controls/src/button.rs:92-100` + Gallery `accent_rect()`。
+**修法：** Gallery `button_rect()`/`accent_rect()` 调用 `button.measure()` 取内在宽（icon 位置随之右推）；button.rs `x_offset` 加 `.max(0.0)` 双保险。
 
 ### V7 · Menu / Selector 图标 glyph 全是方框 ✅ 本 commit
 Menu items 用 `\u{E8E5}` `\u{E74E}` `\u{E792}` `\u{E7E8}`，Selector 触发器用 `\u{E70D}`。这些是 Segoe MDL2 / Fluent Icons 私有区编码，思源黑体没有 → 全 `.notdef` 方框。
@@ -193,4 +194,5 @@ DropdownMenu / SelectorFlyout / Dialog 全部合成到主 surface，`place_popup
 | V7 | ✅ | `5746c60` | Metro 自绘 chevron（Scene::triangle + canvas glyph 模块），移除 5 处 MDL2 codepoint |
 | V9 | ✅ | `a27f90e` | overlay_color BLACK 0.45→0.7；补 alpha ≥ 0.6 断言；恢复 KANESUMI_DEMO_STATE 视觉审计钩子 |
 | V10 | ✅ | `66c0dc5` | focus stroke 1→2px + 修 rounded_rect_polygon 点数一致（原本 r=2/inner_r=0 时 stroke 变 fill） |
-| V5 | ✅ | 本 commit | Gallery TITLE_H 36→42 对齐 line_height；CTRL_Y0 从常量 44 改为派生 = TITLE_Y+TITLE_H+12 |
+| V5 | ✅ | `42bff56` | Gallery TITLE_H 36→42 对齐 line_height；CTRL_Y0 从常量 44 改为派生 = TITLE_Y+TITLE_H+12 |
+| V6 | ✅ | 本 commit | button_rect/accent_rect 用 `button.measure().width`（内在宽驱动），icon 位置右推；button.rs `x_offset` 加 `.max(0.0)` 防负偏移双保险 |

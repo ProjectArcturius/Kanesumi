@@ -90,10 +90,12 @@ impl MetroButton {
             );
         }
 
-        // 标签居中
+        // 标签居中 —— rect 若小于内容（如 App 侧硬编码宽度不足），
+        // 用 `.max(0.0)` 夹紧偏移，避免文字左缘伸出按钮外（参 V6）。
         let label_width = engine.measure(&self.label, style.size);
+        let x_offset = (rect.size.width - label_width).max(0.0) / 2.0;
         let label_rect = Rect::new(
-            rect.origin.x + (rect.size.width - label_width) / 2.0,
+            rect.origin.x + x_offset,
             rect.origin.y + (rect.size.height - style.line_height) / 2.0,
             label_width,
             style.line_height,

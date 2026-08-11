@@ -206,14 +206,20 @@ impl GalleryApp {
 
     // ── 布局矩形 ────────────────────────────────────────────────────────
 
+    /// 按钮宽度由内容驱动（CONTROL_SPEC §1「无 MinWidth，尺寸 = 内容 + Padding」）。
+    /// 高度仍固定 38（Gallery 视觉一致），只让宽度跟随 `measure` —— 参 V6。
     fn button_rect(&self) -> Rect {
-        Rect::new(PAD, CTRL_Y0, 96.0, 38.0)
+        let w = self.button.measure(&self.engine, self.theme.typography.body).width;
+        Rect::new(PAD, CTRL_Y0, w, 38.0)
     }
     fn accent_rect(&self) -> Rect {
-        Rect::new(PAD + 104.0, CTRL_Y0, 130.0, 38.0)
+        let w = self.accent.measure(&self.engine, self.theme.typography.body).width;
+        let x = self.button_rect().right() + 8.0;
+        Rect::new(x, CTRL_Y0, w, 38.0)
     }
     fn icon_rect(&self) -> Rect {
-        Rect::new(PAD + 250.0, CTRL_Y0 - 4.0, 68.0, 56.0)
+        let x = self.accent_rect().right() + 16.0;
+        Rect::new(x, CTRL_Y0 - 4.0, 68.0, 56.0)
     }
     fn switch_rect(&self) -> Rect {
         Rect::new(PAD, CTRL_Y0 + 44.0, 200.0, 40.0)
