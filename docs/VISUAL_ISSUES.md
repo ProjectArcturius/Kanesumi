@@ -185,7 +185,15 @@ CONTROL_SPEC §4 要 0.25s 淡出到 0.6 / 0.25s 换错误色。当前布尔直�
 ### V24 · 无 Xdg Popup —— 弹层直接画在主 surface ⬜
 DropdownMenu / SelectorFlyout / Dialog 全部合成到主 surface，`place_popup` 的 "屏幕" 其实是 window。TopBar / Dock 之类要弹到 window 外面时得改成真正的 wp-popup 或 layer-shell popup。
 
-### V25 · Capsule / 圆角矩形边缘锯齿严重（2× 缩放下明显） ✅ 本 commit
+### V26 · Gallery 一屏塞所有控件 —— 视觉极其混乱、tab hit 错位、字体到处都是 ✅ 本 commit
+用户 A1 验收：Plasma 2× 上 gallery "字体乱七八糟"、"邮件/日历/人脉 tab 点不到"、"整体极其混乱"。三个根因：
+- **hit 错位**（前置 commit `7bb0e89` 已修）：`tab_at(engine, x)` 里 x 语义是相对，Gallery 传绝对 → 偏移 tabs_rect.origin.x；
+- **一屏塞满**：Button/Switch/Bar/Ring/Tabs/List/Dropdown/Selector/Dialog 全部同框，字号从 12 到 32 跳来跳去、Bar 与 Ring 竖直位错开、Dropdown 与 List 塞同行 —— 无 UWP 那种 Frame/Page 的视觉分区；
+- **`GalleryPage` enum 存在但未接线**：`pages.rs` 定义了 4 页，`Navigation` 结构在测试里跑，但主 App 完全没用。
+
+本 commit：接线 UWP NavigationView Top 模式：顶部 `MetroTabRow` 作 nav（4 页：DesignTokens/Animation/Controls/Structure），点击切页；每页只画自己关注的内容。DesignTokens 用 V22/A2 的 `Ui` 原语画调色板行，Animation 画 Bar+Ring，Controls 保留所有控件示范（仍是"控件目录"页，接下来可继续细分子域），Structure 画 `MetroShell` 微缩卡片。Dialog 独立于页栈（UWP `ContentDialog` 惯例）。
+
+### V25 · Capsule / 圆角矩形边缘锯齿严重（2× 缩放下明显） ✅ `c539b4e`
 Switch 胶囊在 Plasma 2× 下边缘 staircase 明显。根因：`kanesumi-harness/render.rs` 的 wgpu 管线 `multisample.count = 1`（无 MSAA），且 `emit_fill`/`emit_stroke` 每角只 6 段 tessellation —— 40×20 track、radius 10（物理 20px）的 quarter-arc 每段跨 15°、chord ~5px，斜边像素锯齿肉眼可见。**修复**：三条 pipeline 全开 4× MSAA + segs 6→12。文本/图标覆盖纹理不受影响（额外成本仅一次 resolve pass）。
 
 ---
@@ -226,4 +234,6 @@ Switch 胶囊在 Plasma 2× 下边缘 staircase 明显。根因：`kanesumi-harn
 | V18/V19/V20 | ✅ | `cc2d83a` | Dialog hide opacity 换 Power(1.0)=线性；Color::from_rgba(u32) 显式方法；PopupAnim::default 用零时长占位（省两次 default_metro） |
 | V25 | ✅ | `c539b4e` | wgpu 三条 pipeline 开 4× MSAA + `create_msaa_view` + resize 重建；rounded_rect_polygon segs 6→12 —— 消除 Capsule/圆角矩形斜边锯齿 |
 | V21 | ✅ | `e0402d4` | `MetroDropdownMenu` 加 `panel_size_cache: Cell<Option<Size>>` + `invalidate_layout()`；`PartialEq` derive 移除（未被使用）；补 `panel_size_is_cached_until_invalidate` 测试 |
-| V22 · A2 核心 | 🟡 | 本 commit | `kanesumi-structure/src/ui.rs` —— `Ui { max_rect, cursor, min_rect, direction, spacing }` + `allocate(size) -> Rect` + `horizontal`/`vertical` 子域；8 个单元测试。控件迁移待下 session |
+| V22 · A2 核心 | 🟡 | `5be836b` | `kanesumi-structure/src/ui.rs` —— `Ui { max_rect, cursor, min_rect, direction, spacing }` + `allocate(size) -> Rect` + `horizontal`/`vertical` 子域；8 个单元测试。控件迁移待下 session |
+| tab_at 签名 | ✅ | `7bb0e89` | `tab_at(engine, rect, pos)` —— 坐标系与 Switch/List 对齐；Gallery Target::Tabs 直传绝对点 |
+| V26 · Gallery UWP 化 | ✅ | 本 commit | 接线 `GalleryPage` + `MetroTabRow` 顶部 nav（4 页）；按页分发 render；DesignTokens 用 `Ui` 原语列调色板；Animation 承接 Bar/Ring；Structure 画 `MetroShell` 微缩；Dialog 独立于页栈 —— 消除"一屏塞满"混乱 |

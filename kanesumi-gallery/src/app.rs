@@ -14,6 +14,8 @@ use kanesumi_controls::{
 use kanesumi_core::{MetroTheme, Point, Rect, Size, TextStyle};
 use kanesumi_harness::{App, AppConfig, EtherRole, InputEvent, PointerButton};
 
+use crate::pages::{GalleryPage, page_tree, palette};
+
 /// 布局常量（逻辑像素）。
 const PAD: f32 = 16.0;
 /// 标题 y 起点。
@@ -21,12 +23,29 @@ const TITLE_Y: f32 = 20.0;
 /// 标题 rect 高度 —— page_heading (34/42) 行高，与 emit_text 实际排版一致
 /// （原本用 36 与 line_height 42 不一致，视觉上标题会溢出 rect 6px）。
 const TITLE_H: f32 = 42.0;
-/// 控件区起点 = 标题下沿 + 12 gap（V5：原本 44，与标题 y∈[20,62] 重叠 18px）。
-const CTRL_Y0: f32 = TITLE_Y + TITLE_H + 12.0;
+/// 页导航栏（TabRow, UWP NavigationView Top 模式的等价物）。
+const NAV_Y: f32 = TITLE_Y + TITLE_H + 8.0;
+const NAV_H: f32 = 48.0;
+/// 内容区起点 = 导航栏底 + 12 gap。
+const CTRL_Y0: f32 = NAV_Y + NAV_H + 12.0;
+/// footer（声明式区）高度。
+const FOOTER_H: f32 = 48.0;
+
+/// `GalleryPage` → `page_tree()` 索引。用于 nav.select 同步。
+fn page_index(p: GalleryPage) -> usize {
+    page_tree().iter().position(|&x| x == p).unwrap_or(0)
+}
+
+/// 索引 → `GalleryPage`。用于 nav 点击 → page 切换。
+fn page_from_index(i: usize) -> GalleryPage {
+    page_tree()[i.min(page_tree().len() - 1)]
+}
 
 /// 交互目标 —— 常规控件命中标识。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Target {
+    /// 页导航栏（顶部 TabRow，UWP NavigationView Top）。切换 GalleryPage。
+    Nav,
     Button,
     Accent,
     Icon,
@@ -42,6 +61,11 @@ pub struct GalleryApp {
     theme: MetroTheme,
     engine: TextEngine,
     config: AppConfig,
+
+    /// 当前页（UWP NavigationView 选中项的等价）。
+    page: GalleryPage,
+    /// 页导航栏 —— TabRow 作为 top-mode NavigationView。
+    nav: MetroTabRow,
 
     // 控件
     button: MetroButton,
@@ -85,6 +109,17 @@ impl GalleryApp {
     /// 直接注入 TextEngine（外壳已加载同源字体）。
     pub fn with_engine(engine: TextEngine) -> Self {
         let theme = MetroTheme::ether_dark();
+        // 首启页 = Controls（含所有控件示范）。
+        let initial_page = GalleryPage::Controls;
+        // 页导航（UWP NavigationView Top）—— 4 页与 pages::page_tree 对齐。
+        let mut nav = MetroTabRow::new(
+            page_tree()
+                .iter()
+                .map(|p| MetroTab::new(p.title()))
+                .collect(),
+        );
+        // nav 选中态与 page 同步（避免"标题选中 Controls 但视觉选中 Tokens"漂移）。
+        nav.select(page_index(initial_page));
         Self {
             theme,
             engine,
@@ -95,6 +130,8 @@ impl GalleryApp {
                 960.0,
                 600.0,
             ),
+            page: initial_page,
+            nav,
             button: MetroButton::new("Standard"),
             accent: MetroButton::accent("打开对话框"),
             icon: MetroIconButton::with_svg(
@@ -207,6 +244,21 @@ impl GalleryApp {
 
     // ── 布局矩形 ────────────────────────────────────────────────────────
 
+    /// 页导航矩形（顶部横向 TabRow）。宽 = 窗口去 padding；高 = NAV_H。
+    fn nav_rect(&self) -> Rect {
+        Rect::new(PAD, NAV_Y, self.config.width - PAD * 2.0, NAV_H)
+    }
+
+    /// 内容区矩形（导航栏下 → footer 上）。所有页在此区域内布局。
+    fn content_rect(&self) -> Rect {
+        Rect::new(
+            PAD,
+            CTRL_Y0,
+            self.config.width - PAD * 2.0,
+            self.config.height - CTRL_Y0 - FOOTER_H,
+        )
+    }
+
     /// 按钮宽度由内容驱动（CONTROL_SPEC §1「无 MinWidth，尺寸 = 内容 + Padding」）。
     /// 高度仍固定 38（Gallery 视觉一致），只让宽度跟随 `measure` —— 参 V6。
     fn button_rect(&self) -> Rect {
@@ -226,12 +278,6 @@ impl GalleryApp {
     /// 上下各 4px 边距 → 60 —— 参 A1 重做（switch.rs 新布局）。
     fn switch_rect(&self) -> Rect {
         Rect::new(PAD, CTRL_Y0 + 44.0, 200.0, 60.0)
-    }
-    fn bar_rect(&self) -> Rect {
-        Rect::new(PAD, CTRL_Y0 + 112.0, 300.0, 4.0)
-    }
-    fn ring_rect(&self) -> Rect {
-        Rect::new(PAD + 320.0, CTRL_Y0 + 104.0, 32.0, 32.0)
     }
     fn tabs_rect(&self) -> Rect {
         Rect::new(PAD, CTRL_Y0 + 128.0, 420.0, 48.0)
@@ -276,7 +322,15 @@ impl GalleryApp {
     }
 
     /// 命中常规控件（弹层优先，由调用方处理）。
+    /// 页导航栏永远可点；页内控件仅当当前页匹配时可点。
     fn hit_regular(&self, p: Point) -> Option<Target> {
+        if self.nav_rect().contains(p) {
+            return Some(Target::Nav);
+        }
+        // 页内控件仅当在 Controls 页时活跃（其它页只做展示）。
+        if self.page != GalleryPage::Controls {
+            return None;
+        }
         if self.button_rect().contains(p) {
             Some(Target::Button)
         } else if self.accent_rect().contains(p) {
@@ -426,6 +480,7 @@ impl GalleryApp {
         self.pressed = None;
         // 弹起位置仍在同一目标上才算触发
         let hit_now = match t {
+            Target::Nav => self.nav_rect().contains(p),
             Target::Button => self.button_rect().contains(p),
             Target::Accent => self.accent_rect().contains(p),
             Target::Icon => self.icon_rect().contains(p),
@@ -445,6 +500,16 @@ impl GalleryApp {
         }
 
         match t {
+            Target::Nav => {
+                // 页切换：nav.tab_at 命中 → 更新 selected + page；关闭任何弹层。
+                if let Some(i) = self.nav.tab_at(&self.engine, self.nav_rect(), p) {
+                    self.nav.select(i);
+                    self.page = page_from_index(i);
+                    // 页切换时收拢所有弹层（避免残留 dropdown 显示在错位置）。
+                    self.dropdown.close();
+                    self.selector.close();
+                }
+            }
             Target::Button | Target::Accent | Target::Icon => {
                 // 还原悬停态（若仍在其上）
                 self.clear_hover();
@@ -477,6 +542,185 @@ impl GalleryApp {
             }
         }
         self.update_hover(p);
+    }
+
+    // ── 分页渲染 ────────────────────────────────────────────────────────
+    //
+    // 参照 WinUI-Gallery / UWP NavigationView：Frame 内一次只渲染当前页内容，
+    // 不同页承载不同关注点，避免"一屏塞满所有控件"的视觉混乱。
+    //
+    // Popups（Dropdown / Selector）触发器与弹层仅在 Controls 页画；Dialog 是
+    // 应用级模态，独立于页栈，`render()` 顶层统一处理。
+
+    /// DesignTokens 页：主题调色板 —— UWP DesignTokens 参考的最小可视化。
+    /// 每个 token 一行：色块 + 名字 + hex。竖排，Ui 原语驱动。
+    fn render_page_tokens(&self, _engine: &TextEngine, content: Rect, scene: &mut Scene) {
+        use kanesumi_structure::{LayoutDirection, Ui};
+
+        let entries = palette(&self.theme);
+        let mut ui = Ui::new(content, LayoutDirection::Vertical).with_spacing(8.0);
+        let row_h = 28.0;
+        let swatch_w = 40.0;
+        let label_style = self.theme.typography.body;
+
+        for entry in &entries {
+            let row = ui.allocate(Size::new(content.size.width, row_h));
+            // 色块（左）+ token 名（中）
+            let swatch = Rect::new(row.origin.x, row.origin.y + 4.0, swatch_w, row_h - 8.0);
+            scene.fill_rect(entry.color, swatch);
+            let name_rect = Rect::new(
+                row.origin.x + swatch_w + 12.0,
+                row.origin.y + (row_h - label_style.line_height) / 2.0,
+                content.size.width - swatch_w - 12.0,
+                label_style.line_height,
+            );
+            scene.text(
+                entry.name.into(),
+                name_rect,
+                self.theme.colors.on_surface,
+                label_style,
+                TextAlign::Left,
+            );
+        }
+    }
+
+    /// Animation 页：ProgressBar（不确定）+ ProgressRing（不确定）—— 两个
+    /// UWP 时代运动的代表控件，各自演示 sokuou 时长与 UWP 缓动。
+    fn render_page_animation(
+        &self,
+        engine: &TextEngine,
+        content: Rect,
+        scene: &mut Scene,
+    ) {
+        use kanesumi_structure::{LayoutDirection, Ui};
+        let mut ui = Ui::new(content, LayoutDirection::Vertical).with_spacing(28.0);
+
+        // Bar 段：标签 + Bar
+        let label_style = self.theme.typography.body;
+        let bar_label = ui.allocate(Size::new(content.size.width, label_style.line_height));
+        scene.text(
+            "ProgressBar · 不确定态".into(),
+            bar_label,
+            self.theme.colors.on_surface,
+            label_style,
+            TextAlign::Left,
+        );
+        let bar_rect = ui.allocate(Size::new(300.0, 4.0));
+        self.bar.render(&self.theme, engine, bar_rect, scene);
+
+        // Ring 段：标签 + Ring
+        let ring_label = ui.allocate(Size::new(content.size.width, label_style.line_height));
+        scene.text(
+            "ProgressRing · 不确定态".into(),
+            ring_label,
+            self.theme.colors.on_surface,
+            label_style,
+            TextAlign::Left,
+        );
+        let ring_rect = ui.allocate(Size::new(32.0, 32.0));
+        self.ring.render(&self.theme, ring_rect, scene);
+    }
+
+    /// Controls 页：所有交互控件的示范（按钮 / 开关 / Tabs / List / 菜单）。
+    /// 使用现有的 rect helpers（button_rect / accent_rect / …）以保持既有测试有效。
+    fn render_page_controls(&mut self, engine: &TextEngine, size: Size, scene: &mut Scene) {
+        let colors = &self.theme.colors;
+
+        self.button
+            .render(&self.theme, engine, self.button_rect(), scene);
+        self.accent
+            .render(&self.theme, engine, self.accent_rect(), scene);
+        self.icon
+            .render(&self.theme, engine, self.icon_rect(), scene);
+        self.switch
+            .render(&self.theme, engine, self.switch_rect(), scene);
+        self.tabs
+            .render(&self.theme, engine, self.tabs_rect(), scene);
+        self.list
+            .render(&self.theme, engine, self.list_rect(), scene);
+
+        // Dropdown 触发器（自绘）+ 弹层
+        let dt = self.dropdown_trigger();
+        scene.fill_rounded_rect(colors.surface, dt, self.theme.tokens.corner_radius);
+        let style = TextStyle::new(14.0, 20.0, kanesumi_core::FontWeight::Normal);
+        scene.text(
+            "菜单".into(),
+            Rect::new(
+                dt.origin.x + 12.0,
+                dt.origin.y + (dt.size.height - style.line_height) / 2.0,
+                dt.size.width - 24.0 - 22.0,
+                style.line_height,
+            ),
+            colors.on_surface,
+            style,
+            TextAlign::Left,
+        );
+        kanesumi_canvas::glyph::chevron_down(
+            scene,
+            Rect::new(
+                dt.origin.x + dt.size.width - 22.0,
+                dt.origin.y + (dt.size.height - 12.0) / 2.0,
+                12.0,
+                12.0,
+            ),
+            colors.on_surface,
+        );
+        self.dropdown.render(
+            &self.theme,
+            engine,
+            Rect::new(0.0, 0.0, size.width, size.height),
+            scene,
+        );
+
+        // Selector（触发器 + 弹层同 render 拥有）
+        self.selector.render(
+            &self.theme,
+            engine,
+            self.selector_trigger(),
+            Rect::new(0.0, 0.0, size.width, size.height),
+            scene,
+        );
+    }
+
+    /// Structure 页：MetroShell 微缩演示 —— 顶部 AppBar + 内容区。
+    /// 用现成 `MetroShell::render` 在内容 rect 内画一个"页中页"。
+    fn render_page_structure(
+        &self,
+        engine: &TextEngine,
+        content: Rect,
+        scene: &mut Scene,
+    ) {
+        use kanesumi_structure::MetroShell;
+        let shell: MetroShell<GalleryPage> =
+            MetroShell::new(GalleryPage::Structure, "MetroShell 示例");
+        // 微缩：把 shell 画进 content 区域（inset 一圈以呈现"卡片"感）。
+        let inner = Rect::new(
+            content.origin.x + 8.0,
+            content.origin.y + 8.0,
+            content.size.width - 16.0,
+            (content.size.height - 16.0).max(120.0),
+        );
+        // 卡片边框
+        scene.stroke_rect(self.theme.colors.divider, inner, 1.0);
+        let content_area = shell.render(engine, inner, scene);
+        // 内容区加一段说明文字
+        let style = self.theme.typography.body;
+        let text_rect = Rect::new(
+            content_area.origin.x + 16.0,
+            content_area.origin.y + 16.0,
+            content_area.size.width - 32.0,
+            style.line_height * 3.0,
+        );
+        scene.text(
+            "MetroShell = AppBar + Scaffold（内容区）。\n\
+             AppBar 承载页标题；内容区由页负责填充。\n\
+             参 kanesumi-structure/lib.rs。"
+                .into(),
+            text_rect,
+            self.theme.colors.on_surface,
+            style,
+            TextAlign::Left,
+        );
     }
 }
 
@@ -555,26 +799,32 @@ impl App for GalleryApp {
             TextAlign::Left,
         );
 
-        // 控件
-        self.button
-            .render(&self.theme, engine, self.button_rect(), &mut scene);
-        self.accent
-            .render(&self.theme, engine, self.accent_rect(), &mut scene);
-        self.icon
-            .render(&self.theme, engine, self.icon_rect(), &mut scene);
-        self.switch
-            .render(&self.theme, engine, self.switch_rect(), &mut scene);
-        self.bar
-            .render(&self.theme, engine, self.bar_rect(), &mut scene);
-        self.ring.render(&self.theme, self.ring_rect(), &mut scene);
-        self.tabs
-            .render(&self.theme, engine, self.tabs_rect(), &mut scene);
-        self.list
-            .render(&self.theme, engine, self.list_rect(), &mut scene);
+        // 页导航（UWP NavigationView Top 等价）—— 永久可点，切换 GalleryPage。
+        self.nav
+            .render(&self.theme, engine, self.nav_rect(), &mut scene);
+        // 导航栏底 1px 分割线（UWP NavigationView 分区）。
+        scene.fill_rect(
+            colors.divider,
+            Rect::new(PAD, NAV_Y + NAV_H, size.width - PAD * 2.0, 1.0),
+        );
+
+        // 页内容：按当前 GalleryPage 分发。
+        let content = self.content_rect();
+        match self.page {
+            GalleryPage::DesignTokens => self.render_page_tokens(engine, content, &mut scene),
+            GalleryPage::Animation => self.render_page_animation(engine, content, &mut scene),
+            GalleryPage::Controls => self.render_page_controls(engine, size, &mut scene),
+            GalleryPage::Structure => self.render_page_structure(engine, content, &mut scene),
+        }
 
         // ── 声明式 footer（view! + RetainedScene 增量渲染的真实 UI 区域） ──
         {
-            let footer = Rect::new(PAD, size.height - 48.0, size.width - PAD * 2.0, 32.0);
+            let footer = Rect::new(
+                PAD,
+                size.height - FOOTER_H,
+                size.width - PAD * 2.0,
+                FOOTER_H - 16.0,
+            );
             self.decl_rect = footer;
             let tree = self.decl_footer();
             let commands = self
@@ -586,52 +836,9 @@ impl App for GalleryApp {
             scene.commands.extend(commands);
         }
 
-        // 弹层（Dropdown / Selector 触发器始终画）
-        let dt = self.dropdown_trigger();
-        scene.fill_rounded_rect(colors.surface, dt, self.theme.tokens.corner_radius);
-        let style = TextStyle::new(14.0, 20.0, kanesumi_core::FontWeight::Normal);
-        // 标签 "菜单"（原本带 " ▾" 但 U+25BE 在部分字体缺字，改用自绘 chevron 表达）
-        scene.text(
-            "菜单".into(),
-            Rect::new(
-                dt.origin.x + 12.0,
-                dt.origin.y + (dt.size.height - style.line_height) / 2.0,
-                dt.size.width - 24.0 - 22.0,
-                style.line_height,
-            ),
-            colors.on_surface,
-            style,
-            TextAlign::Left,
-        );
-        // 自绘 chevron 与 Selector 触发器同款位置约定。
-        kanesumi_canvas::glyph::chevron_down(
-            &mut scene,
-            Rect::new(
-                dt.origin.x + dt.size.width - 22.0,
-                dt.origin.y + (dt.size.height - 12.0) / 2.0,
-                12.0,
-                12.0,
-            ),
-            colors.on_surface,
-        );
-        self.dropdown.render(
-            &self.theme,
-            engine,
-            Rect::new(0.0, 0.0, size.width, size.height),
-            &mut scene,
-        );
-
-        // Selector：触发器 + 弹层完全由 selector.render 拥有（原来 App 又画一遍
-        // 触发器 BG + "选择 ▾" 文本，与 selector 内部的箭头 glyph 位置错开 → 双方框）。
-        self.selector.render(
-            &self.theme,
-            engine,
-            self.selector_trigger(),
-            Rect::new(0.0, 0.0, size.width, size.height),
-            &mut scene,
-        );
-
-        // 对话框（最上层）
+        // 对话框（最上层）—— 任何页都可见。accent 按钮触发（Controls 页），
+        // 但状态存活于页切换（若用户在 Controls 页打开 Dialog，切到其它页仍看得见，
+        // 与 UWP `ContentDialog` 行为一致：Dialog 是应用级模态，独立于 Frame 页栈）。
         self.dialog.render(
             &self.theme,
             engine,
@@ -899,6 +1106,42 @@ mod tests {
             button: PointerButton::Left,
         });
         assert_eq!(g.decl_count, before + 1, "声明式按钮点击应计数");
+    }
+
+    #[test]
+    fn nav_click_switches_page() {
+        let mut g = app();
+        assert_eq!(g.page, GalleryPage::Controls, "首启进 Controls 页");
+        assert_eq!(g.nav.selected, page_index(GalleryPage::Controls));
+        // 点击第一个 nav tab（DesignTokens）
+        let nav = g.nav_rect();
+        let w0 = g.nav.header_width(&g.engine, 0);
+        let p = Point::new(nav.origin.x + w0 / 2.0, nav.origin.y + nav.size.height / 2.0);
+        g.handle_input(InputEvent::PointerPressed {
+            x: p.x,
+            y: p.y,
+            button: PointerButton::Left,
+        });
+        g.handle_input(InputEvent::PointerReleased {
+            x: p.x,
+            y: p.y,
+            button: PointerButton::Left,
+        });
+        assert_eq!(g.page, GalleryPage::DesignTokens, "点 nav 第一项应切到 Tokens");
+        assert_eq!(g.nav.selected, 0);
+    }
+
+    #[test]
+    fn non_controls_page_ignores_widget_clicks() {
+        let mut g = app();
+        g.page = GalleryPage::DesignTokens;
+        g.nav.select(page_index(GalleryPage::DesignTokens));
+        // Button rect 是 Controls 页的控件；在 Tokens 页点它应无效。
+        let rect = g.button_rect();
+        // button 初态 = Normal
+        let before = g.button.state;
+        click(&mut g, rect);
+        assert_eq!(g.button.state, before, "非 Controls 页 button 点击应不改状态");
     }
 
     #[test]
