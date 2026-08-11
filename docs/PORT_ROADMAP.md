@@ -82,8 +82,9 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | MetroRatingControl | RatingControl (WinUI 2) | **开源** |
 | MetroTabView | TabView (WinUI 2) | **开源**（拖拽 Reorder 略） |
 | MetroTeachingTip | TeachingTip (WinUI 2) | **开源** |
+| MetroTreeView | TreeView (WinUI 2) | **开源** |
 
-**已移植开源占比 18/22 ≈ 82%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
+**已移植开源占比 19/22 ≈ 86%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
 自足小型控件推进，开源占比显著提升。PagerControl 仅 NumberPanel 模式；RadioButtons 单项
 自绘；TwoPaneView 单区域判据；TabView 拖拽 Reorder 暂略（Phase 3 续）。
 
@@ -106,7 +107,6 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | 控件 | dev/ 有 .cpp 数 | Ether 用途 | 优先级 | 备注 |
 |---|---:|---|:---:|---|
 | **NavigationView** | 19 | Settings 左侧导航、Librarian 侧栏 | **P1** | 现有 MetroTabRow ≈ NavigationView Top 模式的简化；侧栏 Left 模式 + Header/Pane/Content 分离全都没做。19 个 cpp 是移植量最大的一档 |
-| **TreeView** | 15 | Librarian 文件夹树、Settings 层级选项 | **P2** | 项展开动画 + 缩进层级 + 键盘 Right/Left 展开 |
 | **Repeater** | 59 | List / TabView / TreeView 底层虚拟化 | **P1** | 最大工程量；先做上层控件、共用一份 Repeater |
 | **ScrollView / ScrollPresenter** | 5 + 31 | 上述所有滚动容器 | **P1** | Repeater 前置。ScrollPresenter 30 个 cpp 是内核 |
 | **NumberBox** | 3 | Settings 数字项（音量、屏幕缩放…） | **P1** | TextBox + 上下步进 + 校验（依赖闭源 TextBox） |

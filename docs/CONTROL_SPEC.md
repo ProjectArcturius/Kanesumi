@@ -855,3 +855,41 @@ else → SinglePane（PanePriority 指定单面板）
 ### 交互
 - Action 点击 → 返回 `Action` 并关闭；Close 点击 → `Close` 并关闭。
 - 打开 = 淡入（0.167s 线性近似）；关闭 = 淡出（0.083s）。
+
+---
+
+## 27 · TreeView（TreeView 参考）
+
+> 数据源：`microsoft-ui-xaml/dev/TreeView/`（TreeView.cpp + TreeViewItem.cpp +
+> TreeView_themeresources.xaml）。文件夹树 / 层级选项。
+
+### 结构与尺寸
+
+```
+▸ 文档                    ← 有子项：chevron（折叠 → ▸/展开 → ▾）
+  ▾ 项目                  ← 缩进 depth×16
+    · 源码
+    · 文档
+```
+
+| 项 | 值 |
+|---|---|
+| Item MinHeight | **28**；PresenterPadding `0,3,0,5`（内容 20 居中） |
+| PresenterMargin | `4,2` |
+| 缩进 | **depth × 16**（TreeViewItem::UpdateIndentation `depth * 16`） |
+| Chevron | 16px；折叠 `E70D` 旋转 → Kanesumi 自绘 `chevron_right`（折叠）/`chevron_down`（展开），翻转 0.1s |
+
+### 视觉状态（Kanesumi 映射）
+
+| 态 | 底 | 前景 |
+|---|---|---|
+| 默认 | Transparent | `on_surface` |
+| PointerOver | 白 15%（SubtleFillColorSecondary） | `on_surface` |
+| Pressed | 白 25%（Tertiary） | `on_surface_variant` |
+| **Selected** | 白 15%（同 PointerOver，SubtleFillColorSecondary） | `on_surface` |
+| 选中指示 | 多选时强调色（单选用底高亮） | — |
+
+### 交互
+- 点 chevron → toggle 展开/收起（翻转 0.1s）。
+- 点行标签 → 选中（返回路径）。
+- 折叠时子项隐藏（不参与命中/渲染）。

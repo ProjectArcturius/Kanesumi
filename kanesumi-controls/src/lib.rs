@@ -36,6 +36,7 @@ pub mod tab_view;
 pub mod teaching_tip;
 pub mod text;
 pub mod title_bar;
+pub mod tree_view;
 pub mod two_pane_view;
 
 pub use breadcrumb_bar::{BreadcrumbClick, MetroBreadcrumbBar};
@@ -74,6 +75,7 @@ pub use tab_view::{MetroTabView, TabHover, TabViewAction};
 pub use teaching_tip::{MetroTeachingTip, TeachingTipClick, TeachingTipPlacement, TeachingTipSide};
 pub use text::MetroText;
 pub use title_bar::{MetroTitleBar, TitleBarClick};
+pub use tree_view::{MetroTreeView, TreeAction, TreeRow, TreeViewNode};
 pub use two_pane_view::{
     MetroTwoPaneView, TwoPaneMode, TwoPanePriority, TwoPaneTallConfig, TwoPaneWideConfig,
 };
