@@ -17,8 +17,11 @@
 | §8 ComboBox | MetroSelectorFlyout | `selector_flyout.rs` | 触发器高 32/箭头 32px、面板 MaxH 504、选中强调低透、遮罩 0.383/0.216s | ✅ | ✅ `toggle_opens_closes` / `panel_height_capped` / `item_at_maps_rows` / `renders_trigger_when_closed` |
 | §8 MenuFlyout | MetroDropdownMenu | `dropdown_menu.rs` | 项高 32、图标 16、快捷键右、分隔线 1px、PointerOver 中性高亮、遮罩+面板动画 | ✅ | ✅ `toggle_open_close` / `item_at_maps_y` / `panel_size_grows_with_items` / `renders_panel_when_open` |
 | §9 Dialog | MetroDialog | `dialog.rs` | 遮罩+盒体、淡入 0.167/淡出 0.083s、缩放 1.05→1.0 @0.5s、三按钮 P→S→C、默认按钮 Accent | ✅ | ✅ `show_hide_cycle` / `scale_animates_1_05_to_1` / `open_renders_scrim_box_and_buttons` / `box_rect_centers_and_clamps` |
+| §8.5 MenuBar | MetroMenuBar | `menu_bar.rs` | 行高 40、header padding 10,4、Selected/Pressed 0.10 α、hover-swap（flyout 开时 hover 其它 header 自动切换）、点外关闭、点项返 (h,i) | ✅ | ✅ `header_at_maps_x` / `click_header_toggles_flyout` / `hover_swaps_flyout_when_open` / `click_flyout_item_returns_indices_and_closes` / `click_outside_flyout_closes_it` + 3 |
 | §3 轨道/Knob | MetroSurface | `surface.rs` | 底色 + tint 叠加 | ✅ | ✅ |
 | §7 列表项 | — | `list.rs` | 悬停/禁用态（待输入层） | 🔶 | — |
+| §8.5 MenuBar 键盘遍历 | MetroMenuBar | `menu_bar.rs` | Alt-加速键 / Arrow Left/Right / Arrow Up/Down / Enter / Esc | 🔶 未接 | — |
+| §8 MenuFlyoutSubItem | MetroDropdownMenu | `dropdown_menu.rs` | 二级级联（MenuItem.submenu 占位字段已在，render/命中未消费） | 🔶 未接 | — |
 
 ## 通用能力对照
 
