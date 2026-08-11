@@ -77,10 +77,11 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | MetroSplitButton | SplitButton (WinUI 2) | **开源** |
 | MetroPagerControl | PagerControl (WinUI 2, NumberPanel) | **开源** |
 | MetroRadioButtons | RadioButtons (WinUI 2) | **开源**（单项自绘） |
+| MetroTwoPaneView | TwoPaneView (WinUI 2) | **开源**（纯布局） |
 
-**已移植开源占比 13/22 ≈ 59%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
+**已移植开源占比 14/22 ≈ 64%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
 自足小型控件推进，开源占比显著提升。PagerControl 仅 NumberPanel 模式；RadioButtons 单项
-自绘（闭源 RadioButton 基元由容器内实现）。
+自绘；TwoPaneView 单区域判据（折叠屏 hinge 逻辑未移植）。
 
 ### 已移植但部分能力未完（Phase 3 续做）
 
@@ -114,7 +115,6 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | **TeachingTip** | 6 | 新特性引导气泡 | **P3** | |
 | **TitleBar** | 3 | 应用 SSD 标题 | **P1** | 直接影响 Ether 窗口装饰观感（Issue #8 已列 known） |
 | **SwipeControl** | 7 | 触屏滑动手势项 | **P3** | Kanesumi 桌面为主，触屏优先低 |
-| **TwoPaneView** | 4 | 双面板自适应（宽屏并排 / 窄屏堆叠） | **P2** | 手机/折叠屏取向；Ether 桌面暂无强需 |
 | **AnimatedIcon** | 2 | 图标微动画 | **P3** | |
 | **AnimatedVisualPlayer** | 2 | Lottie 播放 | **—** | 依赖 Lottie runtime，暂不引入 |
 | **ParallaxView** | 2 | 视差滚动 | **P3** | |

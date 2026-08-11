@@ -32,6 +32,7 @@ pub mod surface;
 pub mod switch;
 pub mod tab_row;
 pub mod text;
+pub mod two_pane_view;
 
 pub use breadcrumb_bar::{BreadcrumbClick, MetroBreadcrumbBar};
 pub use button::{ButtonKind, MetroButton};
@@ -65,6 +66,9 @@ pub use surface::MetroSurface;
 pub use switch::MetroSwitch;
 pub use tab_row::{MetroTab, MetroTabRow};
 pub use text::MetroText;
+pub use two_pane_view::{
+    MetroTwoPaneView, TwoPaneMode, TwoPanePriority, TwoPaneTallConfig, TwoPaneWideConfig,
+};
 
 /// Phase 3 后续控件（对照 Kanesumi-sec-a + WinUI-Gallery）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

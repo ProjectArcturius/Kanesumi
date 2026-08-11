@@ -674,3 +674,38 @@ Header（可选，Margin 0,0,0,8）
 ### 交互
 - 点任意项 → 选中（单选框语义，`selected_index` 更新）。
 - 点已选中项 → 保持选中（不取消）。
+
+---
+
+## 22 · TwoPaneView（TwoPaneView 参考）
+
+> 数据源：`microsoft-ui-xaml/dev/TwoPaneView/`（TwoPaneView.cpp + TwoPaneView.xaml）。
+> 双面板自适应容器（宽屏并排 / 高屏堆叠 / 窄屏单面板）。Kanesumi 实现为**纯布局**
+> （返回两面板 rect，宿主渲染内容），无自绘。
+
+### 属性与默认值
+
+| 项 | 默认 | 说明 |
+|---|---|---|
+| MinWideModeWidth | **641** | 宽于此切 Wide 模式 |
+| MinTallModeHeight | **641** | 高于此切 Tall 模式 |
+| WideModeConfiguration | LeftRight | LeftRight / RightLeft / SinglePane |
+| TallModeConfiguration | TopBottom | TopBottom / BottomTop / SinglePane |
+| PanePriority | Pane1 | 单面板模式显示哪个面板 |
+| Pane1/Pane2 长度 | 1:1 | Kanesumi 用 `pane1_ratio`（默认 0.5）分栏 |
+
+### 模式判定（UpdateMode，单区域）
+
+```
+if  宽 > MinWideModeWidth && config≠SinglePane → Wide（按 config 左右/右左）
+else if 高 > MinTallModeHeight && config≠SinglePane → Tall（按 config 上下/下上）
+else → SinglePane（PanePriority 指定单面板）
+```
+
+### 面板矩形
+- **Wide**：Pane1 左 `[0, w·r]`、Pane2 右 `[w·r, w]`；
+- **Tall**：Pane1 上 `[0, h·r]`、Pane2 下 `[h·r, h]`；
+- **SinglePane**：PanePriority 面板占满，另一面板空。
+
+> 多显示区域（折叠屏 hinge）逻辑不移植（Ether 桌面单屏），单区域判据已覆盖。
+> 中缝（PART_ColumnMiddle/RowMiddle）在单区域为 0 —— Kanesumi 无中缝。
