@@ -8,11 +8,17 @@
 pub mod button;
 pub mod decl;
 pub mod dialog;
+pub mod drop_down_button;
 pub mod dropdown_menu;
+pub mod expander;
 pub mod icon_button;
+pub mod info_badge;
+pub mod info_bar;
 pub mod list;
 pub mod menu_bar;
 pub mod metro_tile;
+pub mod person_picture;
+pub mod pips_pager;
 pub mod popup;
 pub mod progress;
 pub mod retained;
@@ -28,11 +34,17 @@ pub use decl::{
     Decl, DeclAction, DeclChange, DeclHit, DeclPath, collect_hits, diff_decl, render_decl,
 };
 pub use dialog::{DialogButton, DialogButtons, DialogDefaultButton, DialogState, MetroDialog};
+pub use drop_down_button::MetroDropDownButton;
 pub use dropdown_menu::{MenuItem, MetroDropdownMenu};
+pub use expander::{ExpandDirection, MetroExpander};
 pub use icon_button::MetroIconButton;
+pub use info_badge::{InfoBadgeKind, MetroInfoBadge};
+pub use info_bar::{InfoBarClick, InfoBarSeverity, MetroInfoBar};
 pub use list::MetroList;
 pub use menu_bar::{MenuBarItem, MetroMenuBar};
 pub use metro_tile::{MetroTile, TileLive, TileSize};
+pub use person_picture::{MetroPersonPicture, initials_from_display_name};
+pub use pips_pager::{MetroPipsPager, PipsAction, PipsOrientation};
 pub use popup::{
     POPUP_GAP, PopupAnim, PopupDirection, PopupPlacement, PopupState, place_popup, popup_gap,
     render_overlay,

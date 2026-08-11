@@ -47,7 +47,7 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 
 ---
 
-## §Ⅲ 已移植（15 个 + 2 部分）
+## §Ⅲ 已移植（20 个 + 2 部分）
 
 见 `CONTROL_MATRIX.md` 详表。此处仅摘录源类归属：
 
@@ -67,8 +67,15 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | MetroTile | Tile（Metro 时代 StartTile，非 WinUI） | Metro 遗产（无源） |
 | MetroText | TextBlock | 闭源 |
 | MetroMenuBar | MenuBar (WinUI 2) | **开源** |
+| MetroInfoBar | InfoBar (WinUI 2) | **开源** |
+| MetroExpander | Expander (WinUI 2) | **开源** |
+| MetroInfoBadge | InfoBadge (WinUI 2) | **开源** |
+| MetroPipsPager | PipsPager (WinUI 2) | **开源** |
+| MetroPersonPicture | PersonPicture (WinUI 2) | **开源** |
+| MetroDropDownButton | DropDownButton (WinUI 2) | **开源** |
 
-**已移植开源占比 3/14 ≈ 21%** —— 因为 Kanesumi 首批优先造 Metro 时代的基础控件，而 Metro/UWP 时代的基础控件多在 Windows 平台层，是闭源。开源部分（WinUI 2 加进来的）大量是"更高层组合控件"，之前没纳入。
+**已移植开源占比 9/20 ≈ 45%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
+自足小型控件推进，开源占比显著提升。PagerControl（Num 型分页）未实现，仍列 §Ⅳ。
 
 ### 已移植但部分能力未完（Phase 3 续做）
 
@@ -94,21 +101,16 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | **Breadcrumb** | 9 | Librarian 路径栏、Settings 层级返回 | **P1** | 相对小，很实用 |
 | **Repeater** | 59 | List / TabView / TreeView 底层虚拟化 | **P1** | 最大工程量；先做上层控件、共用一份 Repeater |
 | **ScrollView / ScrollPresenter** | 5 + 31 | 上述所有滚动容器 | **P1** | Repeater 前置。ScrollPresenter 30 个 cpp 是内核 |
-| **InfoBar** | 6 | Settings 提示、Librarian 错误通知 | **P1** | Horizontal 横幅：icon + text + close，Severity 四色 |
-| **Expander** | 3 | Settings 折叠组 | **P1** | 简单动画 + header/content |
-| **NumberBox** | 3 | Settings 数字项（音量、屏幕缩放…） | **P1** | TextBox + 上下步进 + 校验 |
-| **SplitButton** | 7 | 复合命令（"保存 / 另存为"） | **P2** | Button + 附带 DropDownButton |
-| **DropDownButton** | 2 | 独立三角形按钮触发 flyout | **P2** | Button + chevron，Ceyboard 候选栏可能用 |
+| **NumberBox** | 3 | Settings 数字项（音量、屏幕缩放…） | **P1** | TextBox + 上下步进 + 校验（依赖闭源 TextBox） |
+| **SplitButton** | 7 | 复合命令（"保存 / 另存为"） | **P2** | Button + DropDownButton（后者的 `MetroDropDownButton` 已可复用） |
 | **RadioButtons** | 5 | Settings 单选组 | **P1** | 组容器；单个 RadioButton 是闭源，需先造闭源基元 |
 | **RadioMenuFlyoutItem** | 1 | 菜单内单选（View → Zoom Level） | **P2** | 依赖 MenuFlyout 级联完善 |
 | **RatingControl** | 5 | Librarian 文件评分（非核心） | **P3** | |
 | **ColorPicker** | 8 | Settings 主题色（Ether 暂无用户可选主题） | **P3** | |
-| **PersonPicture** | 3 | TopBar 用户头像 | **P2** | Fallback initial + shape |
-| **PagerControl / PipsPager** | 3 / 3 | Librarian 分页、启动器分页 | **P2** | 两种视觉：Number 型 + Pip 型 |
+| **PagerControl** | 3 | Librarian 分页、启动器分页（Num 型） | **P2** | PipsPager 已移植（Pip 型）；Num 型未做 |
 | **CommandBarFlyout** | 5 | 选中文本弹出 Cut/Copy/Paste 浮出 | **P2** | 需 TextBox / 选区 |
 | **AutoSuggestBox Helper** | 1 (Helper) | 搜索框建议下拉 | **P1** | 主体 TextBox 闭源；Helper 只处理键盘导航 |
 | **TeachingTip** | 6 | 新特性引导气泡 | **P3** | |
-| **InfoBadge** | 2 | Dock 应用未读计数 | **P2** | 已在 MetroTile.TileLive::Badge 部分覆盖，独立组件缺 |
 | **TitleBar** | 3 | 应用 SSD 标题 | **P1** | 直接影响 Ether 窗口装饰观感（Issue #8 已列 known） |
 | **SwipeControl** | 7 | 触屏滑动手势项 | **P3** | Kanesumi 桌面为主，触屏优先低 |
 | **TwoPaneView** | 4 | 双面板自适应（宽屏并排 / 窄屏堆叠） | **P2** | 手机/折叠屏取向；Ether 桌面暂无强需 |
@@ -117,7 +119,7 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | **ParallaxView** | 2 | 视差滚动 | **P3** | |
 | **WebView2** | 2 | Web 嵌入 | **—** | 依赖 Chromium runtime，另立方案 |
 
-**小计**：开源可移植 ~28 个，工程量最大三档：Repeater(59) / ScrollPresenter(31) / NavigationView(19)。
+**小计**：开源可移植 ~22 个，工程量最大三档：Repeater(59) / ScrollPresenter(31) / NavigationView(19)。
 
 ---
 
@@ -234,11 +236,14 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 11. **Image** —— 应用内图片
 12. **TitleBar** —— 应用窗口 SSD 标题（Ether Issue #8）
 13. **Repeater + ScrollPresenter + ScrollView** —— List 虚拟化前置
-14. **InfoBar / Expander / NumberBox / Breadcrumb** —— 开源可读、小工程量
+14. ~~**InfoBar / Expander**~~ ✅ 已完成；**NumberBox / Breadcrumb** —— 开源可读、小工程量
 15. **AutoSuggestBox（Helper 开源，TextBox 依赖 P0-1）** —— 搜索框
 16. **NumberBox** —— 数字步进
 17. **MenuBar 键盘遍历 + MenuFlyoutSubItem** —— 补齐 MenuBar 二级级联与键盘（本次已埋钩子）
 18. **Frame / Page transition 动画** —— 已有 Navigation 状态机，接页面 slide 动画即可
+
+> 本批已完成的自足小型控件（§Ⅳ 首批）：InfoBar / Expander / InfoBadge / PipsPager /
+> PersonPicture / DropDownButton（P1–P2，2026-08-12 移植，参 CONTROL_SPEC §12–§17）。
 
 ### P2-P3
 

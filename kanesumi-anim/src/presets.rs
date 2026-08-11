@@ -28,6 +28,13 @@ pub const DURATION_DIALOG_FADE_IN: f64 = 0.167;
 /// 对话框淡出。UWP 0.083s 线性（opacity 先行熄灭）。
 pub const DURATION_DIALOG_FADE_OUT: f64 = 0.083;
 
+/// Expander 展开时长。对齐 UWP ExpandDown/Up 333ms。参 CONTROL_SPEC §13。
+pub const DURATION_EXPANDER_EXPAND: f64 = 0.333;
+/// Expander 收起时长。对齐 UWP Collapse 167ms。参 CONTROL_SPEC §13。
+pub const DURATION_EXPANDER_COLLAPSE: f64 = 0.167;
+/// Expander chevron 旋转时长。UWP 0.1s（Checked DoubleAnimation）。参 CONTROL_SPEC §13。
+pub const DURATION_EXPANDER_CHEVRON: f64 = 0.1;
+
 /// Kanesumi 动画预设。参 PLAN.md §4-1/§4-2 动画三层：
 ///
 /// - **主运动**（位移 / 缩放 / 面板滑入）→ `SpringAnim` 解析解弹簧，帧率无关、可中断。
@@ -136,6 +143,33 @@ impl MetroPresets {
     /// 淡入/淡出另用 `DURATION_DIALOG_FADE_IN/OUT` 常量 + 线性近似。
     pub fn dialog_scale() -> MetroAnim {
         MetroAnim::new(DURATION_DIALOG_ENTER, UwpEasing::Cubic, EasingMode::EaseOut)
+    }
+
+    /// Expander 展开：333ms Cubic/EaseOut（对齐 UWP ExpandDown/Up spline (0,0,0,1)，CONTROL_SPEC §13）。
+    pub fn expander_expand() -> MetroAnim {
+        MetroAnim::new(
+            DURATION_EXPANDER_EXPAND,
+            UwpEasing::Cubic,
+            EasingMode::EaseOut,
+        )
+    }
+
+    /// Expander 收起：167ms Cubic/EaseOut（对齐 UWP CollapseUp/Down spline (1,1,0,1)，§13）。
+    pub fn expander_collapse() -> MetroAnim {
+        MetroAnim::new(
+            DURATION_EXPANDER_COLLAPSE,
+            UwpEasing::Cubic,
+            EasingMode::EaseOut,
+        )
+    }
+
+    /// Expander chevron 旋转：100ms（对齐 UWP Checked DoubleAnimation Duration 0:0:0.1，§13）。
+    pub fn expander_chevron() -> MetroAnim {
+        MetroAnim::new(
+            DURATION_EXPANDER_CHEVRON,
+            UwpEasing::Quadratic,
+            EasingMode::EaseOut,
+        )
     }
 }
 

@@ -5,7 +5,7 @@
 use std::path::Path;
 
 /// 已光栅化的图标（直通 RGBA 像素）。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Icon {
     pub rgba: Vec<u8>,
     pub width: u32,

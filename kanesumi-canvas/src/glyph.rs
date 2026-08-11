@@ -39,6 +39,30 @@ pub fn chevron_up(scene: &mut Scene, rect: Rect, color: Color) {
     scene.triangle(left, right, tip, color);
 }
 
+/// ChevronRight —— 右向指示三角（PipsPager 下一页等）。
+pub fn chevron_right(scene: &mut Scene, rect: Rect, color: Color) {
+    let cx = rect.origin.x + rect.size.width / 2.0;
+    let cy = rect.origin.y + rect.size.height / 2.0;
+    let w = (rect.size.width * 0.4).min(rect.size.width - 2.0);
+    let h = (rect.size.height * 0.6).min(rect.size.height - 2.0);
+    let top = Point::new(cx - w / 2.0, cy - h / 2.0);
+    let bottom = Point::new(cx - w / 2.0, cy + h / 2.0);
+    let tip = Point::new(cx + w / 2.0, cy);
+    scene.triangle(top, bottom, tip, color);
+}
+
+/// ChevronLeft —— 左向指示三角（PipsPager 上一页等）。
+pub fn chevron_left(scene: &mut Scene, rect: Rect, color: Color) {
+    let cx = rect.origin.x + rect.size.width / 2.0;
+    let cy = rect.origin.y + rect.size.height / 2.0;
+    let w = (rect.size.width * 0.4).min(rect.size.width - 2.0);
+    let h = (rect.size.height * 0.6).min(rect.size.height - 2.0);
+    let top = Point::new(cx + w / 2.0, cy - h / 2.0);
+    let bottom = Point::new(cx + w / 2.0, cy + h / 2.0);
+    let tip = Point::new(cx - w / 2.0, cy);
+    scene.triangle(top, bottom, tip, color);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

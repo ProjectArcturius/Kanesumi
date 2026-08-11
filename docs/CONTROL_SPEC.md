@@ -329,3 +329,210 @@
 | `ComboBox.cpp` 开合定位 | OS | 方向判据已由 `ComboBoxHelper` 记录（Top>0 向下） |
 | `ContentDialog.cpp` Esc/遮罩语义 | OS | 已按 UWP 语义记录（Esc 解除、点遮罩不关） |
 | MenuFlyout 弹出动画 | OS Popup | ~200ms 位移+淡入 ease-out，用 `sheet_appear/dismiss` 对齐 |
+
+---
+
+## 12 · InfoBar（InfoBar 参考）
+
+> 数据源：`microsoft-ui-xaml/dev/InfoBar/`（InfoBar.cpp + InfoBar_themeresources.xaml + InfoBar.xaml）。
+> WinUI 2 时代开源控件（Fluent 风格资源）；Kanesumi 按铁律 6 将 Severity 配色映射为深色空间桌面纯色面板。
+
+### 结构与布局
+
+```
+┌ ContentRoot（边框 1px divider）───────────────────────────────┐
+│ Padding 16,0,0,0，MinHeight 48                                  │
+│  [Icon] │ InfoBarPanel（横排或纵排）            │ [× 38×38] │
+│          Title (14 SemiBold)  Message (14)  [Action]             │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 尺寸
+
+| 项 | 值 |
+|---|---|
+| MinHeight | **48** |
+| BorderThickness / 色 | 1 / `divider`（上游 `CardStrokeColorDefaultBrush`） |
+| ContentRoot Padding | `16,0,0,0` |
+| Icon | 16px；Margin `0,16,14,16`（上 16、右 14、下 16） |
+| Panel Margin | `0,0,16,0` |
+| 横排 Padding | `0,0,0,0`；Title `0,14,0,0`、Message `12,14,0,0`、Action `16,8,0,0` |
+| 纵排 Padding | `0,14,0,18`；Title `0,14,0,0`、Message `0,4,0,0`、Action `0,12,0,0` |
+| Title / Message | 14px；SemiBold / Normal |
+| Close 按钮 | **38×38**，glyph 16，Margin `5` |
+
+### 横排/纵排判据（InfoBarPanel::MeasureOverride）
+
+1. 仅 1 项 → 纵排；
+2. `totalWidth > availableWidth` → 纵排；
+3. 任一项在横排高度 `> MinHeight(48)` → 纵排；
+4. 否则横排（Title、Message、Action 一字排开，Message 前 12、Action 前 16）。
+
+### Severity 四色（Kanesumi 深色适配）
+
+| Severity | 面板底色 | 图标方块色 | 图标字形 |
+|---|---|---|---|
+| Informational | `#1E2A38` | `#4FC1FF` | `i` |
+| Success | `#1E3328` | `#4CC38A` | `✓` |
+| Warning | `#332B1E` | `#E5A94E` | `!` |
+| Error | `#331E1E` | `#E5534A` | `✕` |
+
+> 上游为 Fluent `SystemFillColor{Critical/Caution/Success/Attention}{Background}Brush`；Kanesumi 映射为纯色深底面板 + 高亮图标方块（铁律 6 无渐变纯色）。Title/Message 前景 = `on_surface`，图标字形白色。
+
+### 交互
+- `IsOpen=false` → 整个 ContentRoot 隐藏（无动画，模板 Collapsed 直接改 Visibility）。
+- Close 按钮点击 → `close()` 置 `open=false`（回传关闭理由 CloseButton，无确认钩子）。
+- Action 按钮（可选）点击 → 返回动作事件，宿主处理。
+
+---
+
+## 13 · Expander（Expander 参考）
+
+> 数据源：`microsoft-ui-xaml/dev/Expander/`（Expander.cpp + Expander.xaml + Expander_themeresources.xaml）。
+
+### 结构与尺寸
+
+```
+┌ Header（ToggleButton，MinHeight 48，Padding 16,0,0,0，bg surface，border divider 1px）┐
+│  标题                                 [⋎ 32×32，glyph 12]                          │
+├ Content（Padding 16，bg surface_variant，border 1,0,1,1 / 1,1,1,0）────────────────┤
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+| 项 | 值 |
+|---|---|
+| MinHeight | **48**；MinWidth = `FlyoutThemeMinWidth` |
+| Header Padding | `16,0,0,0`；Header bg `surface`、边框 `divider` 1px |
+| Chevron 按钮 | **32×32**；Margin `20,0,8,0`（左 gap 20、右 8）；glyph 12 |
+| Content | Padding **16**；bg `surface_variant` |
+| Content 边框 | Down 模式 `1,0,1,1`；Up 模式 `1,1,1,0` |
+
+### 动画（ExpandStates，progress 驱动）
+
+| 方向 | 展开 | 收起 |
+|---|---|---|
+| Down | Content TranslateY `-contentH → 0`，**0.333s**，KeySpline `(0,0,0,1)` | `0 → +contentH`，**0.167s**，KeySpline `(1,1,0,1)`，0.2s 处隐藏 |
+| Up | `+contentH → 0`，**0.333s** | `0 → -contentH`，**0.167s** |
+
+- Chevron 旋转 `0° → 180°`，**0.1s**（`Checked` 状态）。
+- Kanesumi 实现：`MetroAnim` 时长 0.333s / 0.167s（Cubic EaseOut 近似），chevron 0.1s。
+- 铁律 4：展开只动 Content 位移（视觉属性），不动宿主布局。
+
+### 视觉状态（Header 头）
+- Normal / PointerOver / Pressed / Disabled：前景恒 `on_surface`（上游各态同 TextFillColorPrimaryBrush）；Chevron 按钮 PointerOver `secondary`（白 15%）底、Pressed `tertiary`（白 25%）。
+
+---
+
+## 14 · InfoBadge（InfoBadge 参考）
+
+> 数据源：`microsoft-ui-xaml/dev/InfoBadge/`（InfoBadge.cpp + InfoBadge_themeresources.xaml）。
+
+### 显示形态（DisplayKindStates）
+
+| 状态 | 触发 | 视觉 |
+|---|---|---|
+| **Value** | `Value >= 0` | 数字文本（>99 → **"99+"**），FontSize **11**，Padding `4,0,4,2` |
+| **Icon** | 有 icon 且 Value<0 | 图标 12×8 / 9×9，Padding `4,4,4,4` |
+| **Dot** | 均无 | 最小 **4×4** 圆点 |
+
+### 尺寸 / 色
+
+| 项 | 值 |
+|---|---|
+| Min | **4×4**；MaxHeight **16** |
+| CornerRadius | **ActualHeight/2**（全圆角胶囊；方形时 = 圆） |
+| MeasureOverride | 若 `W < H` → 强制 `H×H` 方形（短边取齐） |
+| 底 / 前景 | **强调色**（`primary`）/ 白（`on_primary`）——上游 `AccentFillColorDefault` / `TextOnAccentFillColorPrimary` |
+| 派生风格 | Attention（`#4FC1FF`）/ Success（`#4CC38A`）/ Caution（`#E5A94E`）/ Critical（`#E5534A`）底（对齐 InfoBar 图标色） |
+
+---
+
+## 15 · PipsPager（PipsPager 参考）
+
+> 数据源：`microsoft-ui-xaml/dev/PipsPager/`（PipsPager.cpp + PipsPager_themeresources.xaml）。
+> 上游用 Segoe MDL2 glyph `EA3B` 画 pip；Kanesumi 自绘胶囊条（V7 不依赖私有区字形）。
+
+### 尺寸
+
+| 项 | 值 |
+|---|---|
+| Pip 命中区 | 横排 **12×20**；纵排 **20×12** |
+| Pip 视觉（横排） | 横胶囊条：正常高 **4**（glyph font 4）、选中高 **6**（glyph font 6），宽 12 |
+| Pip 视觉（纵排） | 纵胶囊条：正常 **4×12**、选中 **6×12** |
+| Nav 按钮 | **20×20**；glyph 8（chevron）；Pressed 缩放 **0.875** |
+
+### 色（上游 ControlStrongFillColorDefault → Kanesumi 映射）
+
+| 项 | 值 |
+|---|---|
+| Pip（未选） | `on_surface_variant`（上游 ControlStrongFill ≈ 高强调白） |
+| Pip（选中） | **强调色**（Kanesumi 适配：上游选中仅放大同色，铁律 5 选中态用强调色） |
+| Nav 前景 | `on_surface`；PointerOver `on_surface_variant` |
+| Nav 按钮可见性 | `pointer_over` 或 `show_nav` 时显示；选中首尾边缘时对应按钮禁用/隐藏 |
+
+### 行为
+- 点 pip → `selected_index` 更新（返回新索引）。
+- Nav `<`/`>`：首/尾时隐藏。
+- `MaxVisiblePips` < 页数时**居中滚动**（`CalculateScrollViewerSize = default×(n−1)+selected`）；Kanesumi 简化为滚动偏移渲染。
+
+---
+
+## 16 · PersonPicture（PersonPicture 参考）
+
+> 数据源：`microsoft-ui-xaml/dev/PersonPicture/`（PersonPicture.cpp + InitialsGenerator.cpp + PersonPicture_themeresources_v1.xaml）。
+
+### 结构与尺寸
+
+```
+┌────────────────┐
+│   ╭─────╮      │ ← 头像圆（min(w,h) 方形），Ellipse fill surface_variant
+│   │  JJ │      │   Initials 字号 = 42% of size，SemiBold，白
+│   ╰─────╯      │
+│     ┌──┐       │ ← Badge（可选）：50% of size 圆，右上角 Margin 0,-4,-4,0
+└─────┴──┴───────┘   Badge 字号 = 60% of badge，2px 描边
+```
+
+| 项 | 值 |
+|---|---|
+| 默认尺寸 | **96×96**；尺寸变化维持方形（min 值强制到宽高） |
+| 头像圆 | Ellipse fill `surface_variant`、无描边、fg 白 |
+| Initials 字号 | **42%** of 边长；SemiBold |
+| Badge | **50%** of 边长；位置右上 Margin `0,-4,-4,0`；fill `#1A1A1A`、描边 `divider` **2px** opacity 0.8、fg `on_surface`（白） |
+| Badge 字号 | **60%** of badge 圆 |
+| Badge 数字 | `>99` → **"99+"** |
+
+### 首字母生成（InitialsGenerator::InitialsFromDisplayName）
+
+1. 名字含 CJK/字形（Symbolic/Glyph）→ 空（回退默认图形/留空）；
+2. 去尾随括号对（`(…)`/`[…]`/`{…}`）；
+3. 按空格拆分：
+   - 单词 → 取首字符；
+   - 多词 → 首词首字符 + 末词首字符；
+   - 全空 → 空；
+4. 跳过开头标点（`!…/`、`:…@`、`{|}~`）与后续组合变音符；结果转大写。
+
+---
+
+## 17 · DropDownButton（DropDownButton 参考）
+
+> 数据源：`microsoft-ui-xaml/dev/DropDownButton/`（DropDownButton.cpp + DropDownButton_v1.xaml）。
+> WinUI 2 开源；本质 = Button + 右侧 chevron + Flyout。
+
+### 结构与尺寸
+
+```
+┌ InnerGrid（Padding 8,5,8,6，bg surface）─────────────────────┐
+│  标签                                     [⋎ 12，Margin 6,0,0,0] │
+└───────────────────────────────────────────────────────────────┘
+```
+
+| 项 | 值 |
+|---|---|
+| Padding | `8,5,8,6`（同 MetroButton） |
+| Chevron | `E70D`（ChevronDown）→ Kanesumi 自绘 `chevron_down`；FontSize **12**；Margin `6,0,0,0` |
+| 视觉状态 | 同 MetroButton Standard（四态硬切换、禁用降透明度） |
+
+### 交互
+- 点击 → toggle 关联 flyout（`MetroDropdownMenu`）。
+- Flyout 打开时按钮呈 Pressed 亮度（对齐 MenuBar 的 Selected 语义）。
+- 点 flyout 项 → 关闭并返回 `(item_idx)`；点外部 → 关闭。
