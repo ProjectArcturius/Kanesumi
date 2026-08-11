@@ -13,7 +13,7 @@ pub enum ProgressMode {
 /// MetroProgressBar —— 横向进度条。参 CONTROL_SPEC §4：
 /// - MinHeight 4；确定模式值变化 **0.15s** 滑动（RepositionThemeAnimation）；
 /// - 不确定模式 **2.0s** 循环，两波脉冲（40%/60% 块），KeySpline≈Cubic/EaseInOut；
-/// - Paused 条色 0.25s 淡出至 0.6；Error 换错误色。
+/// - Paused 条色 0.25s 淡入到 0.6 alpha；Error 0.25s 换到错误色（V17）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetroProgressBar {
     /// 确定模式进度 [0,1]。
@@ -26,6 +26,10 @@ pub struct MetroProgressBar {
     phase: f64,
     /// 确定模式显示值（0.15s 滑动），由 `update(dt)` 推进。
     slide: MetroAnim,
+    /// Paused 淡入进度 [0,1]：0=正常，1=paused（alpha 降到 0.6）。V17。
+    paused_fade: MetroAnim,
+    /// Error 换色进度 [0,1]：0=正常，1=error（色 lerp 到 ERROR_COLOR）。V17。
+    error_blend: MetroAnim,
 }
 
 /// 错误色 —— Windows 系统错误红（无主题 token，常量）。
@@ -41,6 +45,10 @@ impl Default for MetroProgressBar {
             min_height: 4.0,
             phase: 0.0,
             slide: MetroAnim::new(0.15, UwpEasing::Cubic, EasingMode::EaseOut),
+            // V17: Paused/Error 均 0.25s 过渡（CONTROL_SPEC §4）。
+            // sokuou UwpEasing 无 Linear —— Cubic/EaseOut 观感接近（0.25s 内近线性）。
+            paused_fade: MetroAnim::new(0.25, UwpEasing::Cubic, EasingMode::EaseOut),
+            error_blend: MetroAnim::new(0.25, UwpEasing::Cubic, EasingMode::EaseOut),
         }
     }
 }
@@ -63,13 +71,21 @@ impl MetroProgressBar {
         self.slide.set_target(self.value as f64);
     }
 
-    /// 每帧推进（0.15s 滑动 / 2.0s 不确定循环相位）。
+    /// 每帧推进（0.15s 滑动 / 2.0s 不确定循环相位 / 0.25s Paused-Error 过渡）。
     pub fn update(&mut self, dt: f64) {
         if self.mode == ProgressMode::Indeterminate {
             self.phase = (self.phase + dt) % DURATION_INDETERMINATE;
         } else {
             self.slide.update(dt);
         }
+        // V17: Paused/Error 0.25s 过渡 —— 每帧根据布尔态设目标，MetroAnim 自动
+        // 平滑过渡到目标值。同目标反复 set_target 无副作用。
+        self.paused_fade
+            .set_target(if self.paused { 1.0 } else { 0.0 });
+        self.error_blend
+            .set_target(if self.error { 1.0 } else { 0.0 });
+        self.paused_fade.update(dt);
+        self.error_blend.update(dt);
     }
 
     /// 当前显示进度 [0,1]（已含滑动动画）。
@@ -101,12 +117,12 @@ impl MetroProgressBar {
         // 从轨道外滑入，必须裁剪到轨道边界，禁止溢出到控件外。
         scene.clip(Some(bar_rect));
 
-        let indicator_color = if self.error {
-            ERROR_COLOR
-        } else {
-            colors.primary
-        };
-        let indicator_alpha = if self.paused { 0.6 } else { 1.0 };
+        // V17: Paused/Error 过渡色 —— error_blend 从 primary lerp 到 ERROR_COLOR；
+        // paused_fade 把 alpha 从 1.0 拉到 0.6（差 0.4）。
+        let error_t = self.error_blend.value();
+        let paused_t = self.paused_fade.value() as f32;
+        let indicator_color = colors.primary.lerp(ERROR_COLOR, error_t);
+        let indicator_alpha = 1.0 - 0.4 * paused_t;
         let color = indicator_color.with_alpha(indicator_color.a * indicator_alpha);
 
         match self.mode {
@@ -373,6 +389,78 @@ mod tests {
         let mut bar = MetroProgressBar::indeterminate();
         bar.update(2.5);
         assert!(bar.phase < DURATION_INDETERMINATE);
+    }
+
+    #[test]
+    fn paused_fade_reaches_target_over_025s() {
+        // V17: 设 paused=true → 0.25s 后 alpha 从 1.0 → 0.6
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
+        let mut bar = MetroProgressBar::new();
+        bar.set_value(0.5);
+        for _ in 0..30 {
+            bar.update(1.0 / 60.0); // 先让 slide 稳定
+        }
+        bar.paused = true;
+        // 推 ≥0.25s（分帧模拟）
+        for _ in 0..30 {
+            bar.update(1.0 / 60.0);
+        }
+        let mut scene = Scene::default();
+        bar.render(&theme, &engine, Rect::new(0.0, 0.0, 200.0, 4.0), &mut scene);
+        // 找指示条命令：alpha 应 ≈ 0.6
+        let ind = scene.commands.iter().find_map(|c| match c {
+            SceneCommand::FillRect { color, .. } if color.r > 0.1 || color.g > 0.1 || color.b > 0.1 => Some(color.a),
+            _ => None,
+        });
+        assert!(ind.is_some(), "应有指示条");
+        let a = ind.unwrap();
+        assert!((a - 0.6).abs() < 0.02, "paused 后 alpha ≈ 0.6，实际 {a}");
+    }
+
+    #[test]
+    fn error_blend_transitions_to_error_color() {
+        // V17: 设 error=true → 0.25s 后色 lerp 到 ERROR_COLOR
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
+        let mut bar = MetroProgressBar::new();
+        bar.set_value(0.5);
+        for _ in 0..30 { bar.update(1.0 / 60.0); }
+        bar.error = true;
+        for _ in 0..30 { bar.update(1.0 / 60.0); }
+        let mut scene = Scene::default();
+        bar.render(&theme, &engine, Rect::new(0.0, 0.0, 200.0, 4.0), &mut scene);
+        // 找指示条：R 通道应接近 ERROR_COLOR.r (0xE8/255 ≈ 0.91)
+        let ind_r = scene.commands.iter().find_map(|c| match c {
+            SceneCommand::FillRect { color, rect, .. } if rect.size.width > 50.0 && rect.size.height <= 4.0 => Some(color.r),
+            _ => None,
+        });
+        assert!(ind_r.is_some(), "应有指示条");
+        let r = ind_r.unwrap();
+        assert!(r > 0.85, "error 后 R 通道接近 ERROR_COLOR.r=0.91，实际 {r}");
+    }
+
+    #[test]
+    fn paused_fade_reverses_when_unpaused() {
+        // V17: paused → unpaused 应 0.25s 内 alpha 回到 1.0
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
+        let mut bar = MetroProgressBar::new();
+        bar.set_value(0.5);
+        for _ in 0..30 { bar.update(1.0 / 60.0); }
+        bar.paused = true;
+        for _ in 0..30 { bar.update(1.0 / 60.0); }
+        bar.paused = false;
+        for _ in 0..30 { bar.update(1.0 / 60.0); }
+        let mut scene = Scene::default();
+        bar.render(&theme, &engine, Rect::new(0.0, 0.0, 200.0, 4.0), &mut scene);
+        let ind_a = scene.commands.iter().find_map(|c| match c {
+            SceneCommand::FillRect { color, .. } if color.r > 0.1 || color.g > 0.1 || color.b > 0.1 => Some(color.a),
+            _ => None,
+        });
+        assert!(ind_a.is_some());
+        let a = ind_a.unwrap();
+        assert!((a - 1.0).abs() < 0.02, "unpause 后 alpha 回到 1.0，实际 {a}");
     }
 
     #[test]

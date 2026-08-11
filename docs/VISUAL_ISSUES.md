@@ -148,8 +148,9 @@ Menu items 用 `\u{E8E5}` `\u{E74E}` `\u{E792}` `\u{E7E8}`，Selector 触发器�
 ### V16 · TabRow 字距 −2.5% 未实现 ⬜
 `tab_row.rs:30` `header_spacing: 0.0` + 注释 "简单起见留空"。CONTROL_SPEC §6 明确 CharacterSpacing −25。
 
-### V17 · ProgressBar Paused/Error 无淡出 / 换色动画 ⬜
+### V17 · ProgressBar Paused/Error 无淡出 / 换色动画 ✅ 本 commit
 CONTROL_SPEC §4 要 0.25s 淡出到 0.6 / 0.25s 换错误色。当前布尔直接切换。
+**修法：** 加 `paused_fade` / `error_blend` 两个 MetroAnim（0.25s Cubic/EaseOut）；`update()` 每帧根据 `paused`/`error` 布尔态 `set_target`（MetroAnim 幂等），render 用 `paused_fade.value()` 拉 alpha (1.0→0.6)，用 `error_blend.value()` 做 `primary.lerp(ERROR_COLOR, t)` 换色。反向恢复自然。
 
 ---
 
@@ -204,4 +205,6 @@ DropdownMenu / SelectorFlyout / Dialog 全部合成到主 surface，`place_popup
 | V12 | ✅ | `125e1ff` | Surface `render` 从 `fill_rect` 改 `fill_rounded_rect(..., shape.corner_radius)` |
 | V13 | ✅ | `1794720` | ProgressBar height 从 `min_height.max(rect.h.min(4))` 改 `rect.h.max(min_height)` |
 | V15 | ✅ | `3d38504` | Ring 不确定态 sweep 后半段改 `180 − 90*ease` 完整呼吸 90↔180；rotation 保持 900°/2s |
-| A1 · Switch 重做 | ✅ | 本 commit | 40×20 track + 10×10 knob（对齐 microsoft-ui-xaml v1 官方规格）；SwitchShape 枚举（Capsule / Square 占位）；Header 上 + State text 右；拖动 press/drag_to/release/cancel；Pressed 灰调（仅拖动中）—— 消解 V11 |
+| A1 · Switch 重做 | ✅ | `32078c9` | 40×20 track + 10×10 knob（对齐 microsoft-ui-xaml v1 官方规格）；SwitchShape 枚举（Capsule / Square 占位）；Header 上 + State text 右；拖动 press/drag_to/release/cancel；Pressed 灰调（仅拖动中）—— 消解 V11 |
+| A1 · Square 变体 | ✅ | `0a9eacb` | SwitchShape::Square 落到 Win8 真机规格 —— 10×20 瘦长 knob、margin 0、travel 30 |
+| V17 | ✅ | 本 commit | ProgressBar `paused_fade`/`error_blend` MetroAnim（0.25s）；update 幂等 set_target；alpha 与 primary.lerp(ERROR_COLOR) 由 anim 值驱动 |
