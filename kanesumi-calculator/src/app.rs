@@ -10,6 +10,7 @@ use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_controls::{ButtonKind, ControlState, MetroButton};
 use kanesumi_core::{FontWeight, MetroTheme, Point, Rect, Size, TextStyle};
 use kanesumi_harness::{App, AppConfig, EtherRole, InputEvent, Key, PointerButton};
+use kanesumi_structure::UniformGrid;
 
 use crate::calc::{Calc, Op};
 
@@ -19,8 +20,8 @@ const PAD: f32 = 8.0;
 const GAP: f32 = 8.0;
 /// 显示区高度（右对齐结果行）。
 const DISPLAY_H: f32 = 116.0;
+/// 键盘列数（4 列 × 方形单元，0 键跨 2 列）。
 const COLS: usize = 4;
-const ROWS: usize = 5;
 
 // ── 键位 ────────────────────────────────────────────────────────────────────────────
 
@@ -173,7 +174,8 @@ impl CalculatorApp {
                 "计算器",
                 EtherRole::Browser,
                 320.0,
-                500.0,
+                // 4 列方形单元(70) × 5 行 + 4 间隔 + 显示区 + 外边距：8+116+8+382+8 = 522。
+                522.0,
             ),
             calc: Calc::new(),
             buttons,
@@ -186,52 +188,24 @@ impl CalculatorApp {
 
     // ── 布局（每帧从窗口尺寸计算） ──────────────────────────────────────────────────
 
+    /// 键盘区：4 列均匀网格（UniformGrid），0 键跨 2 列；单元方形由列数反推。
     fn layout(&self, size: Size) -> (Rect, Vec<Rect>) {
         let display = Rect::new(PAD, PAD, size.width - PAD * 2.0, DISPLAY_H);
         let keypad_y = PAD + DISPLAY_H + GAP;
-        let keypad_h = (size.height - keypad_y - PAD).max(0.0);
-        let col_w = (size.width - PAD * 2.0 - GAP * (COLS as f32 - 1.0)) / COLS as f32;
-        let row_h = (keypad_h - GAP * (ROWS as f32 - 1.0)) / ROWS as f32;
-
-        let cell = |r: usize, c: usize| Rect::new(
-            PAD + c as f32 * (col_w + GAP),
-            keypad_y + r as f32 * (row_h + GAP),
-            col_w,
-            row_h,
+        let keypad = Rect::new(
+            PAD,
+            keypad_y,
+            size.width - PAD * 2.0,
+            (size.height - keypad_y - PAD).max(0.0),
         );
-
-        // 行序 → 键索引：每行 4 键；第 5 行 0(跨 2) + 小数 + 等号。
-        let row_at = |i: usize| i / COLS;
-        let col_at = |i: usize| i % COLS;
-        let mut rects = Vec::with_capacity(KEYS.len());
-        for (i, id) in KEYS.iter().enumerate() {
-            let r = row_at(i);
-            let c = col_at(i);
-            let rect = if *id == KeyId::D0 {
-                // 0 键横跨第 1、2 列。
-                Rect::new(
-                    cell(r, 0).origin.x,
-                    cell(r, 0).origin.y,
-                    col_w * 2.0 + GAP,
-                    row_h,
-                )
-            } else {
-                // 第 5 行（r=4）的键列序左移：0 占了 2 列 → 其余从 c=2 起。
-                let shift = if r == 4 { c + 1 } else { c };
-                if shift < COLS {
-                    cell(r, shift)
-                } else {
-                    // 等号列（r=4,c=3）：0 跨 2 列后剩 2 列，小数 + 等号填满。
-                    Rect::new(
-                        cell(r, 0).origin.x + col_w * 2.0 + GAP,
-                        cell(r, 0).origin.y,
-                        (size.width - PAD * 2.0 - (col_w * 2.0 + GAP)) / 2.0,
-                        row_h,
-                    )
-                }
-            };
-            rects.push(rect);
-        }
+        let mut grid = UniformGrid::new(keypad, COLS, GAP);
+        let rects = KEYS
+            .iter()
+            .map(|id| {
+                let span = if *id == KeyId::D0 { (2, 1) } else { (1, 1) };
+                grid.allocate(span)
+            })
+            .collect();
         (display, rects)
     }
 
@@ -427,7 +401,7 @@ mod tests {
     fn click_key(app: &mut CalculatorApp, key: KeyId) {
         let Some(p) = find_font() else { return };
         let engine = TextEngine::load(p).unwrap();
-        let _ = app.render(&engine, Size::new(320.0, 500.0));
+        let _ = app.render(&engine, Size::new(320.0, 522.0));
         let idx = KEYS.iter().position(|&k| k == key).unwrap();
         let center = app.rects[idx].center();
         app.handle_input(InputEvent::PointerPressed {
@@ -474,7 +448,7 @@ mod tests {
         let Some(p) = find_font() else { return };
         let engine = TextEngine::load(p).unwrap();
         let mut a = app();
-        let scene = a.render(&engine, Size::new(320.0, 500.0));
+        let scene = a.render(&engine, Size::new(320.0, 522.0));
         assert!(!scene.commands.is_empty());
         let texts = scene
             .commands
@@ -489,7 +463,7 @@ mod tests {
         let mut a = app();
         let Some(p) = find_font() else { return };
         let engine = TextEngine::load(p).unwrap();
-        let _ = a.render(&engine, Size::new(320.0, 500.0));
+        let _ = a.render(&engine, Size::new(320.0, 522.0));
         let center = a.rects[0].center();
         a.handle_input(InputEvent::PointerMoved {
             x: center.x,
