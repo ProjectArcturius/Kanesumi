@@ -430,9 +430,11 @@ mod tests {
         for _ in 0..30 { bar.update(1.0 / 60.0); }
         let mut scene = Scene::default();
         bar.render(&theme, &engine, Rect::new(0.0, 0.0, 200.0, 4.0), &mut scene);
-        // 找指示条：R 通道应接近 ERROR_COLOR.r (0xE8/255 ≈ 0.91)
+        // V18：指示条须与轨道区分。轨道 = surface_variant（灰 r≈0.18），
+        // 指示条 = primary→ERROR_COLOR 之间（r≥0.9）。旧过滤 `width > 50`
+        // 会先匹配轨道（宽 200）→ 拿到灰底 r 而非红指示条 r。
         let ind_r = scene.commands.iter().find_map(|c| match c {
-            SceneCommand::FillRect { color, rect, .. } if rect.size.width > 50.0 && rect.size.height <= 4.0 => Some(color.r),
+            SceneCommand::FillRect { color, .. } if color.r > 0.5 => Some(color.r),
             _ => None,
         });
         assert!(ind_r.is_some(), "应有指示条");
@@ -454,8 +456,10 @@ mod tests {
         for _ in 0..30 { bar.update(1.0 / 60.0); }
         let mut scene = Scene::default();
         bar.render(&theme, &engine, Rect::new(0.0, 0.0, 200.0, 4.0), &mut scene);
+        // V18：过滤指示条（非灰轨道）。primary orange r≈0.9 > 0.5，
+        // surface_variant 灰 r≈0.18 < 0.5，可稳区分。
         let ind_a = scene.commands.iter().find_map(|c| match c {
-            SceneCommand::FillRect { color, .. } if color.r > 0.1 || color.g > 0.1 || color.b > 0.1 => Some(color.a),
+            SceneCommand::FillRect { color, .. } if color.r > 0.5 => Some(color.a),
             _ => None,
         });
         assert!(ind_a.is_some());
