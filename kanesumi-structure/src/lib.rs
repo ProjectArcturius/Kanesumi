@@ -4,10 +4,12 @@
 // 参 Ether-main PLAN.md §4（Runtime 架构）—— 结构层 = 导航状态机 + 壳布局划分。
 // App 消费 `Navigation` 决定渲染哪页，`MetroShell::layout` 提供区域矩形。
 
+pub mod grid;
 pub mod layout;
 pub mod navigation;
 pub mod ui;
 
+pub use grid::{TileWall, UniformGrid};
 pub use layout::{APP_BAR_HEIGHT, ShellLayout};
 pub use navigation::{DURATION_PAGE_TRANSITION, Navigation};
 pub use ui::{LayoutDirection, Ui};
