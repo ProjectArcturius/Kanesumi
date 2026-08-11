@@ -608,3 +608,39 @@
 ### 交互
 - 点 Primary → 返回 `Primary`（宿主执行主命令）。
 - 点 Secondary → toggle 关联 `MenuFlyout`；点 flyout 项 → 返回 `Index`；点外 → 关闭。
+
+---
+
+## 20 · PagerControl（PagerControl 参考 · NumberPanel 模式）
+
+> 数据源：`microsoft-ui-xaml/dev/PagerControl/`（PagerControl.cpp + PagerControl.xaml + PagerControl_themeresources.xaml）。
+> Kanesumi 实现 **NumberPanel 显示模式**（数字按钮分页）——NumberBox / ComboBox 模式依赖闭源
+> NumberBox / ComboBox，不在此列。
+
+### 结构与尺寸
+
+```
+[First ◀◀] [Prev ◀]  1  2  3  4  5  …  n  [Next ▶] [Last ▶▶]
+                 （选中数字下方 2px 强调色指示条）
+```
+
+| 项 | 值 |
+|---|---|
+| Nav 按钮 | **40×40**；glyph `E892`（◀◀）/`E76B`（◀）/`E76C`（▶）/`E893`（▶▶）→ Kanesumi 自绘 chevron |
+| 数字按钮 | MinWidth **32**、MinHeight **20**、间距 **5** |
+| 选中指示 | 数字下 **2px** 强调色条（`PagerControlSelectionIndicatorForeground` = Accent；`RepositionThemeTransition` 滑动 → Kanesumi 直接画在选中数字下） |
+| 选中数字前景 | **强调色**（AccentFillColorDefault） |
+| Nav 可见性 | 首页隐藏 First/Prev、末页隐藏 Next/Last（保留布局空间，opacity 0） |
+
+### 数字窗口（UpdateNumberPanel 逻辑）
+
+- `n ≤ 7` → 全部 `1..n`；
+- `s ≤ 4`（前四页）→ `1 2 3 4 5 … n`（`always_show_first_last` 时含末页）；
+- `s ≥ n−3`（后四页）→ `1 … n−4 n−3 n−2 n−1 n`；
+- 中间 → `1 … s−1 s s+1 … n`。
+
+> `ButtonPanelAlwaysShowFirstLastPageIndex` 默认 true。`s` 为 1 基选中页。
+
+### 交互
+- 点数字按钮 → `Select(page)`（0 基返回）。
+- First/Prev/Next/Last → 分页动作；首/末边缘对应按钮隐藏。

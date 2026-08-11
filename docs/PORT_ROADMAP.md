@@ -75,9 +75,11 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | MetroDropDownButton | DropDownButton (WinUI 2) | **开源** |
 | MetroBreadcrumbBar | BreadcrumbBar (WinUI 2) | **开源** |
 | MetroSplitButton | SplitButton (WinUI 2) | **开源** |
+| MetroPagerControl | PagerControl (WinUI 2, NumberPanel) | **开源** |
 
-**已移植开源占比 11/22 = 50%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
-自足小型控件推进，开源占比显著提升。PagerControl（Num 型分页）未实现，仍列 §Ⅳ。
+**已移植开源占比 12/22 ≈ 55%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
+自足小型控件推进，开源占比显著提升。PagerControl 仅 NumberPanel 模式（NumberBox/ComboBox
+模式依赖闭源控件）。
 
 ### 已移植但部分能力未完（Phase 3 续做）
 
@@ -107,7 +109,6 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | **RadioMenuFlyoutItem** | 1 | 菜单内单选（View → Zoom Level） | **P2** | 依赖 MenuFlyout 级联完善 |
 | **RatingControl** | 5 | Librarian 文件评分（非核心） | **P3** | |
 | **ColorPicker** | 8 | Settings 主题色（Ether 暂无用户可选主题） | **P3** | |
-| **PagerControl** | 3 | Librarian 分页、启动器分页（Num 型） | **P2** | PipsPager 已移植（Pip 型）；Num 型未做 |
 | **CommandBarFlyout** | 5 | 选中文本弹出 Cut/Copy/Paste 浮出 | **P2** | 需 TextBox / 选区 |
 | **AutoSuggestBox Helper** | 1 (Helper) | 搜索框建议下拉 | **P1** | 主体 TextBox 闭源；Helper 只处理键盘导航 |
 | **TeachingTip** | 6 | 新特性引导气泡 | **P3** | |
@@ -119,7 +120,7 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | **ParallaxView** | 2 | 视差滚动 | **P3** | |
 | **WebView2** | 2 | Web 嵌入 | **—** | 依赖 Chromium runtime，另立方案 |
 
-**小计**：开源可移植 ~20 个，工程量最大三档：Repeater(59) / ScrollPresenter(31) / NavigationView(19)。
+**小计**：开源可移植 ~19 个，工程量最大三档：Repeater(59) / ScrollPresenter(31) / NavigationView(19)。
 
 ---
 
