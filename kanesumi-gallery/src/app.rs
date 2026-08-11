@@ -458,7 +458,7 @@ impl GalleryApp {
                 let _ = self.switch.release();
             }
             Target::Tabs => {
-                if let Some(i) = self.tabs.tab_at(&self.engine, p.x) {
+                if let Some(i) = self.tabs.tab_at(&self.engine, self.tabs_rect(), p) {
                     self.tabs.select(i);
                 }
             }

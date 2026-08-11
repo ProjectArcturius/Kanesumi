@@ -1,6 +1,6 @@
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::{FontWeight, MetroTheme, Rect, TextStyle};
+use kanesumi_core::{FontWeight, MetroTheme, Point, Rect, TextStyle};
 
 /// MetroTabRow —— 标签行（Pivot 参考）。参 CONTROL_SPEC §6：
 /// - Header 高 48、Padding `12,0,12,0`；头字 24 SemiLight、字距 −2.5%；
@@ -80,14 +80,21 @@ impl MetroTabRow {
             .sum()
     }
 
-    /// Header 命中测试：返回命中的 tab 索引。
-    pub fn tab_at(&self, engine: &TextEngine, x: f32) -> Option<usize> {
+    /// Header 命中测试：`rect` = TabRow 布局矩形；`pos` = **绝对**指针坐标。
+    ///
+    /// 与 [`MetroSwitch::hit_test`] 约定一致——命中逻辑集中在控件内，调用方
+    /// 无需手动减 origin。历史 bug：旧签名 `(engine, x)` 把 x 当**相对**坐标，
+    /// Gallery 传绝对 `p.x` → 命中偏移一个 `rect.origin.x`。
+    pub fn tab_at(&self, engine: &TextEngine, rect: Rect, pos: Point) -> Option<usize> {
+        if !rect.contains(pos) {
+            return None;
+        }
         let style = Self::header_style();
-        let mut cursor = 0.0;
+        let mut cursor = rect.origin.x;
         for (i, tab) in self.tabs.iter().enumerate() {
             let w = engine.measure_with_spacing(&tab.label, style.size, style.letter_spacing_em)
                 + 24.0;
-            if x >= cursor && x < cursor + w {
+            if pos.x >= cursor && pos.x < cursor + w {
                 return Some(i);
             }
             cursor += w;
@@ -165,9 +172,28 @@ mod tests {
         let Some(engine) = find_engine() else { return };
         let row = MetroTabRow::new(vec![MetroTab::new("Mail"), MetroTab::new("Calendar")]);
         let w0 = row.header_width(&engine, 0);
-        assert_eq!(row.tab_at(&engine, 1.0), Some(0));
-        assert_eq!(row.tab_at(&engine, w0 + 2.0), Some(1));
-        assert_eq!(row.tab_at(&engine, 99999.0), None);
+        // rect 有非零 origin，验证内部相对化正确
+        let rect = Rect::new(50.0, 100.0, 400.0, 48.0);
+        assert_eq!(
+            row.tab_at(&engine, rect, Point::new(50.0 + 1.0, 100.0 + 10.0)),
+            Some(0)
+        );
+        assert_eq!(
+            row.tab_at(&engine, rect, Point::new(50.0 + w0 + 2.0, 100.0 + 10.0)),
+            Some(1)
+        );
+        // rect 外
+        assert_eq!(
+            row.tab_at(&engine, rect, Point::new(10.0, 10.0)),
+            None,
+            "点在 rect 外应返回 None"
+        );
+        // rect 内但 x 超过所有 header 宽度
+        assert_eq!(
+            row.tab_at(&engine, rect, Point::new(400.0, 110.0)),
+            None,
+            "命中失败应返回 None"
+        );
     }
 
     #[test]
