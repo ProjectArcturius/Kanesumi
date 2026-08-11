@@ -81,8 +81,9 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | MetroTitleBar | TitleBar (WinUI 2) | **开源** |
 | MetroRatingControl | RatingControl (WinUI 2) | **开源** |
 | MetroTabView | TabView (WinUI 2) | **开源**（拖拽 Reorder 略） |
+| MetroTeachingTip | TeachingTip (WinUI 2) | **开源** |
 
-**已移植开源占比 17/22 ≈ 77%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
+**已移植开源占比 18/22 ≈ 82%** —— 首批（Metro 时代基础控件）多为闭源平台层；第二批按 §Ⅳ
 自足小型控件推进，开源占比显著提升。PagerControl 仅 NumberPanel 模式；RadioButtons 单项
 自绘；TwoPaneView 单区域判据；TabView 拖拽 Reorder 暂略（Phase 3 续）。
 
@@ -113,7 +114,6 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | **ColorPicker** | 8 | Settings 主题色（Ether 暂无用户可选主题） | **P3** | |
 | **CommandBarFlyout** | 5 | 选中文本弹出 Cut/Copy/Paste 浮出 | **P2** | 需 TextBox / 选区 |
 | **AutoSuggestBox Helper** | 1 (Helper) | 搜索框建议下拉 | **P1** | 主体 TextBox 闭源；Helper 只处理键盘导航 |
-| **TeachingTip** | 6 | 新特性引导气泡 | **P3** | |
 | **SwipeControl** | 7 | 触屏滑动手势项 | **P3** | Kanesumi 桌面为主，触屏优先低 |
 | **AnimatedIcon** | 2 | 图标微动画 | **P3** | |
 | **AnimatedVisualPlayer** | 2 | Lottie 播放 | **—** | 依赖 Lottie runtime，暂不引入 |

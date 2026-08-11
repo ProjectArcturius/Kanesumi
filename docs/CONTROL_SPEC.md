@@ -818,3 +818,40 @@ else → SinglePane（PanePriority 指定单面板）
 - 点 tab → `Select`；点 Close（hovered/selected 显示）→ `Close`；点 ＋ → `Add`。
 - `IsClosable` 隐藏 Close；`AddButtonEnabled` 隐藏 ＋。
 - 滚动：`scroll_by(delta)` 夹紧 `[0, total−avail]`。
+
+---
+
+## 26 · TeachingTip（TeachingTip 参考）
+
+> 数据源：`microsoft-ui-xaml/dev/TeachingTip/`（TeachingTip.cpp + TeachingTip.xaml +
+> TeachingTip_rs1/rs2_themeresources.xaml）。新特性引导气泡。
+
+### 结构与尺寸
+
+```
+        ┌──────────────────────────────┐
+        │ [×]                          │  ← AlternateCloseButton 40×40（glyph 16）
+        │  Title（SemiBold 14）         │
+        │  Subtitle（14）               │
+        │  Body                        │
+        │  [Action] [Close]            │
+        └───────────▾──────────────────┘
+                    尾（Tail 指向目标）
+```
+
+| 项 | 值 |
+|---|---|
+| 面板 | MinW **320** / MaxW **336**；MinH **40** / MaxH **520** |
+| ContentMargin | **12**；Border 1px |
+| Title / Subtitle | 14px；SemiBold / Normal；前景 `on_surface` |
+| Close（Alternate） | **40×40**、× 16；右上；Title 区右让位 Margin `0,0,28,0` |
+| 操作区 | Row 2：[Action] [Close] 两列 `*/*`；Margin `0,12,0,0` |
+| Tail | 三角指向目标，Fill 面板底 |
+
+### 放置（TeachingTipPlacement 判定）
+- 四方向（Top/Bottom/Left/Right）取**可用空间最大**的一侧（`place_teaching_tip` 返回 (rect, side)）。
+- 面板 320 宽、贴目标侧；Tail 对齐目标中心。
+
+### 交互
+- Action 点击 → 返回 `Action` 并关闭；Close 点击 → `Close` 并关闭。
+- 打开 = 淡入（0.167s 线性近似）；关闭 = 淡出（0.083s）。
