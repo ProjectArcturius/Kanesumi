@@ -768,6 +768,7 @@ impl App for GalleryApp {
                         .scroll_by(&self.theme, self.list_rect().size.height, y);
                 }
             }
+            InputEvent::KeyPressed { .. } => {}
             InputEvent::PointerLeft => {
                 // A1：指针离开窗口时若 Switch 正被拖动，取消（避免 knob 悬在中间）
                 if self.pressed == Some(Target::Switch) {

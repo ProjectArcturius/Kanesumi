@@ -13,7 +13,7 @@ pub mod platform;
 #[cfg(target_os = "linux")]
 pub mod render;
 
-pub use app::{App, AppConfig, InputEvent, PointerButton};
+pub use app::{App, AppConfig, InputEvent, Key, PointerButton};
 pub use role::{EtherRole, RoleParseError, SurfaceKind};
 
 // Scene 属 kanesumi-canvas（渲染命令层）。此处重导出供应用使用。

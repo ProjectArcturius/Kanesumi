@@ -40,6 +40,27 @@ pub enum PointerButton {
     Middle,
 }
 
+/// 逻辑键 —— 键盘事件（wl_keyboard 经 xkbcommon 语义化）的跨平台契约。
+/// 可打印字符（含 shift 符号 / 小键盘）→ `Char`；控制键 → 具名变体；未分类 → `Unknown`（原始 keysym 透传）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    /// 可打印字符（utf8 语义，如 `'+'`、`'%'`、`'7'`）。
+    Char(char),
+    Enter,
+    Backspace,
+    Escape,
+    Tab,
+    Left,
+    Right,
+    Up,
+    Down,
+    Home,
+    End,
+    Delete,
+    /// 未分类 keysym（原始值透传，App 可自行处理）。
+    Unknown(u32),
+}
+
 /// 输入事件 —— 纯数据、跨平台。`x/y` 为表面本地逻辑坐标（指针进入表面后有效）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InputEvent {
@@ -61,6 +82,8 @@ pub enum InputEvent {
     /// 即向下滚为正。外壳把 Wayland Axis 的 `discrete`（整格 ~50px）或 `absolute`
     /// （触摸板连续）转换为像素增量。
     Scroll { x: f32, y: f32 },
+    /// 键按下（表面持有键盘焦点时）。释放事件不推（App 一般只关心按下）。
+    KeyPressed { key: Key },
     /// 指针离开表面。
     PointerLeft,
 }

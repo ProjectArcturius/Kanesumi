@@ -14,13 +14,14 @@ use smithay_client_toolkit::reexports::{
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
-    delegate_seat, delegate_xdg_shell, delegate_xdg_window,
+    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
+    delegate_registry, delegate_seat, delegate_xdg_shell, delegate_xdg_window,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{
         Capability, SeatHandler, SeatState,
+        keyboard::{KeyEvent as SctkKeyEvent, KeyboardHandler, Keysym},
         pointer::{
             BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, PointerEvent, PointerEventKind, PointerHandler,
         },
@@ -38,10 +39,10 @@ use smithay_client_toolkit::{
 use wayland_client::{
     Connection, QueueHandle,
     globals::registry_queue_init,
-    protocol::{wl_output, wl_pointer, wl_seat, wl_surface},
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface},
 };
 
-use crate::app::{App, InputEvent, PointerButton};
+use crate::app::{App, InputEvent, Key, PointerButton};
 use crate::render::Renderer;
 use crate::role::{EtherRole, SurfaceKind};
 
@@ -148,6 +149,7 @@ struct Shell {
     window: Option<Window>,
     layer_surface: Option<LayerSurface>,
     pointer: Option<wl_pointer::WlPointer>,
+    keyboard: Option<wl_keyboard::WlKeyboard>,
 
     renderer: Option<Renderer>,
 
@@ -258,6 +260,7 @@ impl Shell {
             window,
             layer_surface,
             pointer: None,
+            keyboard: None,
             renderer: Some(renderer),
             scale: 1,
             width,
@@ -548,6 +551,12 @@ impl SeatHandler for Shell {
                 .expect("指针设备获取失败");
             self.pointer = Some(pointer);
         }
+        if capability == Capability::Keyboard && self.keyboard.is_none() {
+            // 绑定键盘（xkbcommon keymap）→ 表面持焦点时 KeyPressed 事件推进。
+            if let Ok(keyboard) = self.seat_state.get_keyboard(qh, &seat, None) {
+                self.keyboard = Some(keyboard);
+            }
+        }
     }
 
     fn remove_capability(
@@ -561,6 +570,11 @@ impl SeatHandler for Shell {
             && let Some(ptr) = self.pointer.take()
         {
             ptr.release();
+        }
+        if capability == Capability::Keyboard
+            && let Some(kb) = self.keyboard.take()
+        {
+            kb.release();
         }
     }
 
@@ -643,12 +657,105 @@ fn map_button(button: u32) -> PointerButton {
     }
 }
 
+// ── KeyboardHandler ────────────────────────────────────────────────────
+
+impl KeyboardHandler for Shell {
+    fn enter(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _surface: &wl_surface::WlSurface,
+        _serial: u32,
+        _raw: &[u32],
+        _keysyms: &[Keysym],
+    ) {
+    }
+
+    fn leave(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _surface: &wl_surface::WlSurface,
+        _serial: u32,
+    ) {
+    }
+
+    fn press_key(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        event: SctkKeyEvent,
+    ) {
+        let key = map_key(event.keysym, event.utf8);
+        self.emit_input(InputEvent::KeyPressed { key });
+    }
+
+    fn release_key(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        _event: SctkKeyEvent,
+    ) {
+    }
+
+    fn update_modifiers(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        _modifiers: smithay_client_toolkit::seat::keyboard::Modifiers,
+        _layout: u32,
+    ) {
+    }
+
+    fn update_repeat_info(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _repeat: smithay_client_toolkit::seat::keyboard::RepeatInfo,
+    ) {
+    }
+}
+
+/// Keysym + utf8 → 逻辑键。控制键优先（Backspace 的 utf8 是控制字符，不能当 Char）；
+/// 其余可打印键走 utf8 字符（含 shift 符号 / 小键盘）。未分类透传原始 keysym。
+fn map_key(keysym: Keysym, utf8: Option<String>) -> Key {
+    use xkeysym::key;
+    match keysym.raw() {
+        key::Return | key::KP_Enter => return Key::Enter,
+        key::BackSpace => return Key::Backspace,
+        key::Escape => return Key::Escape,
+        key::Tab => return Key::Tab,
+        key::Left => return Key::Left,
+        key::Right => return Key::Right,
+        key::Up => return Key::Up,
+        key::Down => return Key::Down,
+        key::Home => return Key::Home,
+        key::End => return Key::End,
+        key::Delete => return Key::Delete,
+        _ => {}
+    }
+    if let Some(c) = utf8.and_then(|s| s.chars().next()) {
+        return Key::Char(c);
+    }
+    Key::Unknown(keysym.raw())
+}
+
 // ── 委派宏 ───────────────────────────────────────────────────────────────
 
 delegate_compositor!(Shell);
 delegate_output!(Shell);
 delegate_seat!(Shell);
 delegate_pointer!(Shell);
+delegate_keyboard!(Shell);
 delegate_registry!(Shell);
 delegate_xdg_shell!(Shell);
 delegate_xdg_window!(Shell);
