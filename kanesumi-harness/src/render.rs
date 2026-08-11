@@ -740,7 +740,14 @@ impl Renderer {
         // 光栅化用物理字号（保字形清晰），quad 坐标用逻辑（与 fill_rect 同坐标系）。
         // 修复：scale>1 时若混用物理坐标进逻辑 NDC，文字会放大错位。
         let size_phys = style.size * self.scale;
-        let lines = engine.layout(content, style.size, rect.size.width);
+        // V17：布局须知字距，否则负字距（TabRow −0.025em）会把可容纳文本判为"装不下"
+        // → 单词硬断 / CJK 一字一行 → 第二行溢出 rect 底部（"字体出框"）。
+        let lines = engine.layout_with_spacing(
+            content,
+            style.size,
+            style.letter_spacing_em,
+            rect.size.width,
+        );
         let line_advance = style.line_height;
         let ascent_log = engine.ascent(size_phys) / self.scale;
         // V16: 字距（em → 逻辑像素），每字符 pen 推进时加。

@@ -101,11 +101,29 @@ impl TextEngine {
     /// 4. `Mandatory`（如 `\n`）强制换行；
     /// 5. Line.content 剥尾部空白（避免"the quick  brown" 双空格）。
     pub fn layout(&self, text: &str, size: f32, max_width: f32) -> Vec<Line> {
+        self.layout_with_spacing(text, size, 0.0, max_width)
+    }
+
+    /// 贪心换行布局（含字距）—— 参 V16：TabRow 等控件用 `letter_spacing_em < 0` 收紧头字。
+    /// 排字实际宽度 = `measure(text) + n_chars * letter_spacing_em * size`；
+    /// `layout` 只用 `measure` 会把负字距文本误判为"装不下" → 单词逐字硬断、CJK 一字一行
+    /// → 第二行掉到 `line_advance` 处从 rect 底部溢出（正是"字体出框"的根因）。
+    ///
+    /// 本方法在 seg/buf 宽度里同步加上 `letter_spacing_px * n`，`Line.width` 亦是实际排字宽度，
+    /// 与 emit_text 里 `pen += advance + letter_spacing_log` 的推进一致，Center/Right 对齐也稳。
+    pub fn layout_with_spacing(
+        &self,
+        text: &str,
+        size: f32,
+        letter_spacing_em: f32,
+        max_width: f32,
+    ) -> Vec<Line> {
         let mut lines = Vec::new();
         if text.is_empty() || max_width <= 0.0 {
             return lines;
         }
 
+        let ls_px = letter_spacing_em * size;
         let mut current = String::new();
         let mut current_width = 0.0;
         let mut prev_end = 0usize;
@@ -127,34 +145,35 @@ impl TextEngine {
             } else {
                 segment
             };
-            let seg_width = self.measure(render_segment, size);
+            let seg_width = self.measure(render_segment, size)
+                + render_segment.chars().count() as f32 * ls_px;
 
             if current_width + seg_width <= max_width {
                 current.push_str(render_segment);
                 current_width += seg_width;
             } else if current.is_empty() {
                 // 单段超宽 —— 按字符硬断（保底）
-                self.hard_break_into_lines(render_segment, size, max_width, &mut lines);
+                self.hard_break_into_lines(render_segment, size, ls_px, max_width, &mut lines);
             } else {
                 // 换行：先 flush 当前，再放新段（新段仍超宽再硬断）
-                Self::push_trimmed(&mut lines, &mut current, current_width, size, self);
+                Self::push_trimmed(&mut lines, &mut current, size, ls_px, self);
                 current_width = 0.0;
                 if seg_width <= max_width {
                     current.push_str(render_segment);
                     current_width = seg_width;
                 } else {
-                    self.hard_break_into_lines(render_segment, size, max_width, &mut lines);
+                    self.hard_break_into_lines(render_segment, size, ls_px, max_width, &mut lines);
                 }
             }
 
             if is_mandatory && !current.is_empty() {
-                Self::push_trimmed(&mut lines, &mut current, current_width, size, self);
+                Self::push_trimmed(&mut lines, &mut current, size, ls_px, self);
                 current_width = 0.0;
             }
         }
 
         if !current.is_empty() {
-            Self::push_trimmed(&mut lines, &mut current, current_width, size, self);
+            Self::push_trimmed(&mut lines, &mut current, size, ls_px, self);
         }
         lines
     }
@@ -164,16 +183,18 @@ impl TextEngine {
         &self,
         seg: &str,
         size: f32,
+        letter_spacing_px: f32,
         max_width: f32,
         out: &mut Vec<Line>,
     ) {
         let mut buf = String::new();
         let mut buf_w = 0.0;
         for c in seg.chars() {
-            let cw = self.char_width(c, size);
+            let cw = self.char_width(c, size) + letter_spacing_px;
             if buf_w + cw > max_width && !buf.is_empty() {
                 let trimmed = buf.trim_end();
-                let w = self.measure(trimmed, size);
+                let w = self.measure(trimmed, size)
+                    + trimmed.chars().count() as f32 * letter_spacing_px;
                 out.push(Line {
                     content: trimmed.to_string(),
                     width: w,
@@ -186,7 +207,8 @@ impl TextEngine {
         }
         if !buf.is_empty() {
             let trimmed = buf.trim_end();
-            let w = self.measure(trimmed, size);
+            let w = self.measure(trimmed, size)
+                + trimmed.chars().count() as f32 * letter_spacing_px;
             out.push(Line {
                 content: trimmed.to_string(),
                 width: w,
@@ -194,16 +216,17 @@ impl TextEngine {
         }
     }
 
-    /// 把 current 剥尾空白后压入 lines，清空 current。
+    /// 把 current 剥尾空白后压入 lines，清空 current。宽度含字距。
     fn push_trimmed(
         lines: &mut Vec<Line>,
         current: &mut String,
-        _current_width: f32,
         size: f32,
+        letter_spacing_px: f32,
         engine: &TextEngine,
     ) {
         let trimmed = current.trim_end();
-        let w = engine.measure(trimmed, size);
+        let w = engine.measure(trimmed, size)
+            + trimmed.chars().count() as f32 * letter_spacing_px;
         lines.push(Line {
             content: trimmed.to_string(),
             width: w,
@@ -321,6 +344,31 @@ mod tests {
         assert_eq!(lines[0].content, "line1");
         assert_eq!(lines[1].content, "line2");
         assert_eq!(lines[2].content, "line3");
+    }
+
+    #[test]
+    fn layout_with_negative_spacing_fits_tab_header() {
+        // 回归：负字距（−0.025em）下，layout 若不加字距会按 measure 判超宽
+        // → 单词 hard-break、CJK 一字一行 → 第二行掉出 header rect 底部
+        // （TabRow "字体出框" 的根因，V17）。
+        let Some(p) = find_font() else { return };
+        let engine = TextEngine::load(p).unwrap();
+        let size = 24.0;
+        let ls = -0.025;
+        for label in ["Controls", "Animation", "Structure", "邮件", "日历", "人脉"] {
+            let target_w = engine.measure_with_spacing(label, size, ls);
+            let lines = engine.layout_with_spacing(label, size, ls, target_w);
+            assert_eq!(
+                lines.len(),
+                1,
+                "「{label}」在自身实际宽度内应单行不折，实际 {} 行：{:?}",
+                lines.len(),
+                lines
+            );
+            assert_eq!(lines[0].content, label);
+            // 微差容忍：Line.width 与 measure_with_spacing 完全对齐
+            assert!((lines[0].width - target_w).abs() < 0.01);
+        }
     }
 
     #[test]
