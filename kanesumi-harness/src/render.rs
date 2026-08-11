@@ -121,6 +121,11 @@ struct TextRun {
 
 // ── 光栅化器 ─────────────────────────────────────────────────────────────
 
+/// MSAA 采样数。4× 是桌面 GPU 上「几何抗锯齿的甜蜜点」——
+/// 圆角矩形/弧线的斜边 staircase 显著减少，成本一次 resolve pass 可接受。
+/// 参 A1（本次会话新增）：40×20 胶囊在 2× 缩放下每角 6 段 tessellation 产生的边缘锯齿。
+const MSAA_SAMPLES: u32 = 4;
+
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -142,11 +147,36 @@ pub struct Renderer {
     solid_cap: u32,
     text_cap: u32,
     image_cap: u32,
+    /// MSAA 中间纹理 view（sample_count=MSAA_SAMPLES）。render pass attachment 用它，
+    /// swapchain view 作 resolve_target。resize 时重建。
+    msaa_view: wgpu::TextureView,
     /// 逻辑 → 物理缩放（整数，通常 1 或 2）。
     scale: f32,
     /// 逻辑尺寸。
     width: f32,
     height: f32,
+}
+
+/// 创建与当前 surface 同尺寸/格式的 MSAA 中间纹理 view（`MSAA_SAMPLES` 采样）。
+fn create_msaa_view(
+    device: &wgpu::Device,
+    config: &wgpu::SurfaceConfiguration,
+) -> wgpu::TextureView {
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("kanesumi-msaa"),
+        size: wgpu::Extent3d {
+            width: config.width.max(1),
+            height: config.height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: MSAA_SAMPLES,
+        dimension: wgpu::TextureDimension::D2,
+        format: config.format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    tex.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 /// 渲染器初始化错误。
@@ -270,7 +300,11 @@ impl Renderer {
             }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: MSAA_SAMPLES,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview: None,
             cache: None,
         });
@@ -331,7 +365,11 @@ impl Renderer {
             }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: MSAA_SAMPLES,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview: None,
             cache: None,
         });
@@ -380,7 +418,11 @@ impl Renderer {
             }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: MSAA_SAMPLES,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview: None,
             cache: None,
         });
@@ -398,6 +440,8 @@ impl Renderer {
         let solid_buf = mk_vert_buf("kanesumi-solid-buf", 1024);
         let text_buf = mk_vert_buf("kanesumi-text-buf", 1024);
         let image_buf = mk_vert_buf("kanesumi-image-buf", 128);
+
+        let msaa_view = create_msaa_view(&device, &config);
 
         Ok(Self {
             surface,
@@ -417,6 +461,7 @@ impl Renderer {
             solid_cap,
             text_cap,
             image_cap,
+            msaa_view,
             scale,
             width,
             height,
@@ -432,6 +477,7 @@ impl Renderer {
         self.config.width = pw.max(1.0) as u32;
         self.config.height = ph.max(1.0) as u32;
         self.surface.configure(&self.device, &self.config);
+        self.msaa_view = create_msaa_view(&self.device, &self.config);
     }
 
     /// 把一帧 Scene 光栅化到当前表面并提交。
@@ -601,12 +647,15 @@ impl Renderer {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("kanesumi-pass"),
+                // MSAA：多重采样纹理作 attachment，swapchain view 作 resolve_target。
+                // pass 结束时硬件自动 4→1 downsample 到 swapchain。store=Discard 因为
+                // MSAA 中间纹理不再使用（resolve 已完成）。
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
+                    view: &self.msaa_view,
+                    resolve_target: Some(&view),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
+                        store: wgpu::StoreOp::Discard,
                     },
                 })],
                 depth_stencil_attachment: None,
@@ -955,7 +1004,7 @@ fn emit_fill(
         });
         return;
     }
-    let pts = rounded_rect_polygon(rect, radius, 6);
+    let pts = rounded_rect_polygon(rect, radius, 12);
     let (cx, cy) = (
         rect.origin.x + rect.size.width / 2.0,
         rect.origin.y + rect.size.height / 2.0,
@@ -1008,7 +1057,7 @@ fn emit_stroke(
         let _ = inner_w;
         return;
     }
-    let outer = rounded_rect_polygon(rect, radius, 6);
+    let outer = rounded_rect_polygon(rect, radius, 12);
     let inner_r = (radius - thickness).max(0.0);
     let inner_rect = Rect::new(
         rect.origin.x + thickness,
@@ -1020,7 +1069,7 @@ fn emit_stroke(
         emit_fill(verts, ndc, rect, radius, color);
         return;
     }
-    let inner = rounded_rect_polygon(inner_rect, inner_r, 6);
+    let inner = rounded_rect_polygon(inner_rect, inner_r, 12);
     let c = [color.r, color.g, color.b, color.a];
     let n = outer.len().min(inner.len());
     for i in 0..n {

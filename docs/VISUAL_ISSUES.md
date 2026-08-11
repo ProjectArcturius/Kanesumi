@@ -183,6 +183,9 @@ CONTROL_SPEC §4 要 0.25s 淡出到 0.6 / 0.25s 换错误色。当前布尔直�
 ### V24 · 无 Xdg Popup —— 弹层直接画在主 surface ⬜
 DropdownMenu / SelectorFlyout / Dialog 全部合成到主 surface，`place_popup` 的 "屏幕" 其实是 window。TopBar / Dock 之类要弹到 window 外面时得改成真正的 wp-popup 或 layer-shell popup。
 
+### V25 · Capsule / 圆角矩形边缘锯齿严重（2× 缩放下明显） ✅ 本 commit
+Switch 胶囊在 Plasma 2× 下边缘 staircase 明显。根因：`kanesumi-harness/render.rs` 的 wgpu 管线 `multisample.count = 1`（无 MSAA），且 `emit_fill`/`emit_stroke` 每角只 6 段 tessellation —— 40×20 track、radius 10（物理 20px）的 quarter-arc 每段跨 15°、chord ~5px，斜边像素锯齿肉眼可见。**修复**：三条 pipeline 全开 4× MSAA + segs 6→12。文本/图标覆盖纹理不受影响（额外成本仅一次 resolve pass）。
+
 ---
 
 ## 修复顺序
@@ -219,3 +222,4 @@ DropdownMenu / SelectorFlyout / Dialog 全部合成到主 surface，`place_popup
 | V14 | ✅ | `a973df7` | 引入 `unicode-linebreak` (UAX #14)；`layout` 用 (byte_idx, Allowed/Mandatory) 序列贪心；CJK 行首禁则自动生效；单段超宽走硬断兜底 |
 | V16 | ✅ | `09da24f` | `TextStyle.letter_spacing_em` 字段 + builder + `measure_with_spacing`；harness render 每字符 pen 推进加字距；TabRow 挂 −0.025em；`header_spacing: f32` 冗余删除 |
 | V18/V19/V20 | ✅ | `cc2d83a` | Dialog hide opacity 换 Power(1.0)=线性；Color::from_rgba(u32) 显式方法；PopupAnim::default 用零时长占位（省两次 default_metro） |
+| V25 | ✅ | 本 commit | wgpu 三条 pipeline 开 4× MSAA + `create_msaa_view` + resize 重建；rounded_rect_polygon segs 6→12 —— 消除 Capsule/圆角矩形斜边锯齿 |
