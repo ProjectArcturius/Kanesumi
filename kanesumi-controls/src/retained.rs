@@ -151,8 +151,9 @@ fn build_segments(
                 cur = segments.last().map(|s| s.start + s.count).unwrap_or(cur);
             }
         }
-        Decl::Button { .. } | Decl::Text { .. } | Decl::Box { .. } => {
+        Decl::Button { .. } | Decl::Text { .. } | Decl::Box { .. } | Decl::Spacer { .. } => {
             // 叶子：命令数由渲染决定，此处无法预知——简化为单段（后续精确化）。
+            // Spacer 无绘制，count 也为 0。
             segments.push(Segment {
                 path: path.clone(),
                 start: seg_start,

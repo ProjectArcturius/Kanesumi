@@ -110,9 +110,9 @@ Menu items 用 `\u{E8E5}` `\u{E74E}` `\u{E792}` `\u{E7E8}`，Selector 触发器�
 **Metro 定位下这是致命选择**：Metro 时代（Win8-10 早期）UI 图标是 Segoe UI Symbol + Segoe MDL2；Ether 既然选思源黑体作正体，就必须自带图标资产（SVG 位图，走 Gallery 里 `share.svg` 同款 `MetroIconButton::with_svg` 管线），或至少 fallback 到 ASCII 几何符号（"▼" "▲" "+" "×"）。
 **修法：** (a) Kanesumi 内置最小图标集（chevron_down / chevron_up / plus / close / file_open / …），走 SVG；(b) 移除代码里所有 Segoe MDL2 codepoint。
 
-### V8 · Row / Column DSL 强制等分 ⬜
+### V8 · Row / Column DSL 强制等分 ✅ 本 commit
 `kanesumi-controls/src/decl.rs:174-194`。`spacing` 字段声明了但 `let _ = spacing;` 直接扔。Gallery footer `Row(Text, Button)` 两个子都拿 464 px，导致"点我 +1" 按钮撑到半屏。
-**修法：** 加 `Decl::Spacer{ grow: f32 }` + `Sized{ width, child }`，或让 `Text` / `Button` 有"自然宽度模式"、Row 只均分标 flex 的子。
+**修法：** 加 `Decl::Spacer{ grow }` 变体 + `layout_children`（内在尺寸 Text/Button 走 `TextEngine.measure`、`spacing` 加进游标、剩余按 Spacer.grow 比例分配）；Gallery footer 插入 `Decl::spacer(1.0)` 把按钮推右端。`collect_hits` 保留旧等分行为（无 engine 环境），gallery 走 `render_decl → RetainedScene::hits()`。
 
 ### V9 · 深色主题下 Dialog 遮罩几乎不可见 ✅ 本 commit
 `kanesumi-core/src/theme.rs:27` `overlay_color = Color::BLACK.with_alpha(0.45)`。在 #1E1E1E 深底上只暗 10%，遮罩形同虚设。Metro 原版 dark 主题也用**白色遮罩**（`ContentDialogDimmingThemeBrush = #99FFFFFF`）—— dark 底加白遮罩才有"上一层"的观感。
@@ -195,4 +195,5 @@ DropdownMenu / SelectorFlyout / Dialog 全部合成到主 surface，`place_popup
 | V9 | ✅ | `a27f90e` | overlay_color BLACK 0.45→0.7；补 alpha ≥ 0.6 断言；恢复 KANESUMI_DEMO_STATE 视觉审计钩子 |
 | V10 | ✅ | `66c0dc5` | focus stroke 1→2px + 修 rounded_rect_polygon 点数一致（原本 r=2/inner_r=0 时 stroke 变 fill） |
 | V5 | ✅ | `42bff56` | Gallery TITLE_H 36→42 对齐 line_height；CTRL_Y0 从常量 44 改为派生 = TITLE_Y+TITLE_H+12 |
-| V6 | ✅ | 本 commit | button_rect/accent_rect 用 `button.measure().width`（内在宽驱动），icon 位置右推；button.rs `x_offset` 加 `.max(0.0)` 防负偏移双保险 |
+| V6 | ✅ | `dcdc9fd` | button_rect/accent_rect 用 `button.measure().width`（内在宽驱动），icon 位置右推；button.rs `x_offset` 加 `.max(0.0)` 防负偏移双保险 |
+| V8 | ✅ | 本 commit | `Decl::Spacer{grow}` 变体 + `layout_children`（内在尺寸 + spacing + Spacer 分配剩余）；Gallery footer 插入 `spacer(1.0)` |

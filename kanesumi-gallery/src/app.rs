@@ -260,11 +260,14 @@ impl GalleryApp {
         Rect::new(0.0, 0.0, self.config.width, self.config.height)
     }
 
-    /// 声明式 footer 元素树 —— 状态文本 + 计数按钮（演示 view! 驱动真实 UI）。
+    /// 声明式 footer 元素树 —— 状态文本 + Spacer + 计数按钮
+    /// （演示 view! 驱动真实 UI）。Spacer 把按钮推到右端，文字与按钮各按内在宽度渲染。
+    /// 参 V8：原本 Row 强制等分导致按钮撑到半屏。
     fn decl_footer(&self) -> kanesumi_controls::Decl {
         use kanesumi_controls::{Decl, DeclAction};
         Decl::row(vec![
             Decl::text(format!("声明式区域 · 计数 {}", self.decl_count)),
+            Decl::spacer(1.0),
             Decl::button("点我 +1", DeclAction::Custom(9001)),
         ])
     }
@@ -980,7 +983,21 @@ mod decl_integration {
         assert_eq!(hits.len(), 2, "两个按钮都可命中");
         assert_eq!(hits[0].action, DeclAction::OpenDialog);
         assert_eq!(hits[1].action, DeclAction::Custom(1));
-        assert_eq!(hits[0].rect.size.height, 40.0, "纵向均分");
+        // V8 修复后：按钮取内在高度（line_height + 11 = 22 + 11 = 33），
+        // 相邻按钮间加 Column 默认 spacing=8 —— 不再等分 80/2=40。
+        let intr_h = kanesumi_controls::MetroButton::accent("")
+            .measure(&engine, theme.typography.body)
+            .height;
+        assert!(
+            (hits[0].rect.size.height - intr_h).abs() < 0.5,
+            "按钮内在高度，实际 {}",
+            hits[0].rect.size.height
+        );
+        assert!(
+            (hits[1].rect.origin.y - (intr_h + 8.0)).abs() < 0.5,
+            "第二按钮起点 = 第一按钮高 + spacing 8，实际 {}",
+            hits[1].rect.origin.y
+        );
     }
 
     /// 动作路由：命中表 → 触发（验证声明式 UI 与 App 逻辑的接线）。

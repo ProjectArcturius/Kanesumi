@@ -53,6 +53,9 @@ pub enum Decl {
     Text { content: String },
     /// 占位矩形（调试 / 布局测试）。
     Box { width: f32, height: f32 },
+    /// 弹性占位 —— 在 Row/Column 中按 `grow` 比例分配剩余空间。参 V8。
+    /// grow=0 时等价于零宽（无占位效果）；正数与其他 Spacer 按比例分。
+    Spacer { grow: f32 },
 }
 
 impl Decl {
@@ -95,6 +98,11 @@ impl Decl {
         Decl::Text {
             content: content.into(),
         }
+    }
+
+    /// 弹性占位（默认 grow=1）。参 V8。
+    pub fn spacer(grow: f32) -> Self {
+        Decl::Spacer { grow }
     }
 }
 
@@ -151,6 +159,10 @@ macro_rules! view {
     (Box { width: $w:expr, height: $h:expr }) => {
         $crate::decl::Decl::Box { width: $w, height: $h }
     };
+    // Spacer
+    (Spacer { grow: $grow:expr }) => {
+        $crate::decl::Decl::Spacer { grow: $grow }
+    };
 }
 
 /// 把声明式树按给定矩形布局展开，并收集可命中元素（动作 + 矩形）。
@@ -171,24 +183,21 @@ pub fn collect_hits(root: &Decl, rect: Rect) -> Vec<DeclHit> {
 
 fn collect_hits_in(node: &Decl, rect: Rect, out: &mut Vec<DeclHit>) {
     match node {
-        Decl::Row { spacing, children } => {
+        Decl::Row { spacing, children } | Decl::Column { spacing, children } => {
+            let is_row = matches!(node, Decl::Row { .. });
+            // 无 engine 环境：按等分布局（无内在尺寸测量）。Spacer 与 spacing 忽略。
+            // 真实布局（Text/Button 内在宽度 + Spacer + spacing）走 `render_decl`
+            // → `RetainedScene::hits()`；`collect_hits` 仅为无字体测试保留。
+            let _ = spacing;
             let n = children.len().max(1) as f32;
-            let w = rect.size.width / n;
             for (i, child) in children.iter().enumerate() {
-                let x = rect.origin.x + i as f32 * w;
-                let child_rect = Rect::new(x, rect.origin.y, w, rect.size.height);
-                // 间距在均分中忽略（原型简化）
-                let _ = spacing;
-                collect_hits_in(child, child_rect, out);
-            }
-        }
-        Decl::Column { spacing, children } => {
-            let n = children.len().max(1) as f32;
-            let h = rect.size.height / n;
-            for (i, child) in children.iter().enumerate() {
-                let y = rect.origin.y + i as f32 * h;
-                let child_rect = Rect::new(rect.origin.x, y, rect.size.width, h);
-                let _ = spacing;
+                let child_rect = if is_row {
+                    let w = rect.size.width / n;
+                    Rect::new(rect.origin.x + i as f32 * w, rect.origin.y, w, rect.size.height)
+                } else {
+                    let h = rect.size.height / n;
+                    Rect::new(rect.origin.x, rect.origin.y + i as f32 * h, rect.size.width, h)
+                };
                 collect_hits_in(child, child_rect, out);
             }
         }
@@ -200,8 +209,7 @@ fn collect_hits_in(node: &Decl, rect: Rect, out: &mut Vec<DeclHit>) {
                 });
             }
         }
-        Decl::Text { .. } => {}
-        Decl::Box { .. } => {}
+        Decl::Text { .. } | Decl::Box { .. } | Decl::Spacer { .. } => {}
     }
 }
 
@@ -232,24 +240,11 @@ fn render_in(
     hits: &mut Vec<DeclHit>,
 ) {
     match node {
-        Decl::Row { children, .. } | Decl::Column { children, .. } => {
-            let n = children.len().max(1) as f32;
-            for (i, child) in children.iter().enumerate() {
-                let child_rect = match node {
-                    Decl::Row { .. } => Rect::new(
-                        rect.origin.x + i as f32 * (rect.size.width / n),
-                        rect.origin.y,
-                        rect.size.width / n,
-                        rect.size.height,
-                    ),
-                    _ => Rect::new(
-                        rect.origin.x,
-                        rect.origin.y + i as f32 * (rect.size.height / n),
-                        rect.size.width,
-                        rect.size.height / n,
-                    ),
-                };
-                render_in(theme, engine, child, child_rect, scene, hits);
+        Decl::Row { spacing, children } | Decl::Column { spacing, children } => {
+            let is_row = matches!(node, Decl::Row { .. });
+            let child_rects = layout_children(theme, engine, children, *spacing, rect, is_row);
+            for (child, r) in children.iter().zip(child_rects) {
+                render_in(theme, engine, child, r, scene, hits);
             }
         }
         Decl::Button {
@@ -291,6 +286,100 @@ fn render_in(
             let _ = (width, height);
             scene.fill_rect(theme.colors.surface_variant, rect);
         }
+        Decl::Spacer { .. } => {
+            // 无绘制 —— 仅在 Row/Column 布局中吃剩余空间。
+        }
+    }
+}
+
+/// Row/Column 子元素矩形分配 —— 内在尺寸 + `spacing` + `Spacer.grow` 剩余分配。
+///
+/// 规则（对齐 CONTROL_SPEC「无 MinWidth，尺寸 = 内容 + Padding」）：
+/// 1. 每个子沿主轴取内在尺寸（Text/Button 由 `TextEngine.measure` 决定，Box 由字段决定，
+///    Spacer 与嵌套容器为 0）；
+/// 2. 相邻子间加 `spacing`；
+/// 3. 主轴剩余空间按 Spacer.grow 比例分给 Spacer；无 Spacer 则剩余留白（左/上对齐）；
+/// 4. 交叉轴每个子占满 `rect` 交叉轴（简化：不做 cross-axis 对齐）。
+///
+/// 参 V8。
+fn layout_children(
+    theme: &MetroTheme,
+    engine: &TextEngine,
+    children: &[Decl],
+    spacing: f32,
+    rect: Rect,
+    is_row: bool,
+) -> Vec<Rect> {
+    if children.is_empty() {
+        return Vec::new();
+    }
+    let intrinsic: Vec<f32> = children
+        .iter()
+        .map(|c| main_axis_intrinsic(theme, engine, c, is_row))
+        .collect();
+    let sum_intrinsic: f32 = intrinsic.iter().sum();
+    let gaps = spacing * (children.len() - 1) as f32;
+    let main_len = if is_row { rect.size.width } else { rect.size.height };
+    let remaining = (main_len - sum_intrinsic - gaps).max(0.0);
+    let total_grow: f32 = children
+        .iter()
+        .map(|c| match c {
+            Decl::Spacer { grow } => grow.max(0.0),
+            _ => 0.0,
+        })
+        .sum();
+    let mut out = Vec::with_capacity(children.len());
+    let (mut cursor, cross_origin, cross_size) = if is_row {
+        (rect.origin.x, rect.origin.y, rect.size.height)
+    } else {
+        (rect.origin.y, rect.origin.x, rect.size.width)
+    };
+    for (i, (child, &intr)) in children.iter().zip(&intrinsic).enumerate() {
+        let extra = match child {
+            Decl::Spacer { grow } if total_grow > 0.0 => remaining * (grow.max(0.0) / total_grow),
+            _ => 0.0,
+        };
+        let size = intr + extra;
+        let r = if is_row {
+            Rect::new(cursor, cross_origin, size, cross_size)
+        } else {
+            Rect::new(cross_origin, cursor, cross_size, size)
+        };
+        out.push(r);
+        cursor += size;
+        if i + 1 < children.len() {
+            cursor += spacing;
+        }
+    }
+    out
+}
+
+/// 主轴内在尺寸（Text/Button 由字体度量、Box 由字段；Spacer/嵌套容器为 0）。
+fn main_axis_intrinsic(theme: &MetroTheme, engine: &TextEngine, node: &Decl, is_row: bool) -> f32 {
+    match node {
+        Decl::Text { content } => {
+            let style = theme.typography.body;
+            if is_row {
+                engine.measure(content, style.size)
+            } else {
+                style.line_height
+            }
+        }
+        Decl::Button { label, accent, .. } => {
+            let btn = if *accent {
+                MetroButton::accent(label.clone())
+            } else {
+                MetroButton::new(label.clone())
+            };
+            let s = btn.measure(engine, theme.typography.body);
+            if is_row { s.width } else { s.height }
+        }
+        Decl::Box { width, height } => {
+            if is_row { *width } else { *height }
+        }
+        // 嵌套容器 / Spacer：主轴内在尺寸 0（Spacer 靠 grow 吃剩余；
+        // 嵌套容器暂未支持精确内在测量，交给外层配 Spacer 或直接给足空间）。
+        Decl::Row { .. } | Decl::Column { .. } | Decl::Spacer { .. } => 0.0,
     }
 }
 
@@ -312,6 +401,7 @@ enum DeclKind {
     Button,
     Text,
     Box,
+    Spacer,
 }
 
 fn kind_of(node: &Decl) -> DeclKind {
@@ -321,6 +411,7 @@ fn kind_of(node: &Decl) -> DeclKind {
         Decl::Button { .. } => DeclKind::Button,
         Decl::Text { .. } => DeclKind::Text,
         Decl::Box { .. } => DeclKind::Box,
+        Decl::Spacer { .. } => DeclKind::Spacer,
     }
 }
 
@@ -386,6 +477,10 @@ fn diff_node(old: &Decl, new: &Decl, path: DeclPath, out: &mut Vec<DeclChange>) 
                 height: nh,
             },
         ) if ow != nw || oh != nh => {
+            out.push(DeclChange::Changed(path.clone()));
+            return;
+        }
+        (Decl::Spacer { grow: o }, Decl::Spacer { grow: n }) if o != n => {
             out.push(DeclChange::Changed(path.clone()));
             return;
         }
