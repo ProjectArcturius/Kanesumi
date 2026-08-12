@@ -26,6 +26,18 @@ pub const NAV_ITEM_H: f32 = 40.0;
 pub const NAV_HEADER_MARGIN: (f32, f32) = (56.0, 44.0);
 /// 选中指示条 3×16。
 pub const NAV_INDICATOR: (f32, f32) = (3.0, 16.0);
+/// Top 模式 item 起始 padding —— 与 render 内 `x = r.origin.x + 16.0` 一致。
+pub const NAV_TOP_ITEM_PAD_LEFT: f32 = 16.0;
+/// Top 模式 item 右 padding —— 与 render 内 label `right - 12` 一致。
+pub const NAV_TOP_ITEM_PAD_RIGHT: f32 = 12.0;
+/// Top 模式 item 最小宽 —— 老硬编码值（40 + 16），保证 icon-only / 短 label 观感稳定。
+pub const NAV_TOP_ITEM_MIN_W: f32 = NAV_ITEM_H + 16.0;
+/// Top 模式 item 最大宽 —— 对齐 UWP NavigationViewItem 顶模式默认上限，防止长中文标签独占顶栏。
+pub const NAV_TOP_ITEM_MAX_W: f32 = 240.0;
+/// Top 模式带图标项的 icon 槽宽（含 icon 16 + 与 label 间距 12，与 render 内 `x += 28` 对齐）。
+const NAV_TOP_ICON_SLOT: f32 = 28.0;
+/// Top 模式无图标项额外左移（保持与带图标项 label 视觉起点接近，对齐 render `else x += 16`）。
+const NAV_TOP_NO_ICON_PAD: f32 = 16.0;
 
 /// 导航模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,8 +162,31 @@ impl MetroNavigationView {
         }
     }
 
+    /// Top 模式单项宽度：`pad_left + icon_slot + label_measure + pad_right`，夹紧 [MIN, MAX]。
+    /// 与 render 内部 label 起点 / 右缘一致，避免超长中文标签被裁掉。
+    fn top_item_width(&self, engine: &TextEngine, index: usize) -> f32 {
+        let Some(item) = self.items.get(index) else {
+            return NAV_TOP_ITEM_MIN_W;
+        };
+        let style = Self::item_style();
+        let label_w = if item.label.is_empty() {
+            0.0
+        } else {
+            engine.measure(&item.label, style.size)
+        };
+        let icon_w = if item.icon.is_some() {
+            NAV_TOP_ICON_SLOT
+        } else {
+            NAV_TOP_NO_ICON_PAD
+        };
+        let raw = NAV_TOP_ITEM_PAD_LEFT + icon_w + label_w + NAV_TOP_ITEM_PAD_RIGHT;
+        raw.clamp(NAV_TOP_ITEM_MIN_W, NAV_TOP_ITEM_MAX_W)
+    }
+
     /// 顶层项 rect（按模式排布）。
-    pub fn top_item_rects(&self, rect: Rect) -> Vec<Rect> {
+    ///
+    /// Top 模式按 label 测量算宽（[MIN, MAX] 夹紧）；Left 模式无需测量，`engine` 忽略。
+    pub fn top_item_rects(&self, engine: &TextEngine, rect: Rect) -> Vec<Rect> {
         let area = self.item_area(rect);
         match self.mode {
             NavigationPaneMode::Left => (0..self.items.len())
@@ -167,8 +202,8 @@ impl MetroNavigationView {
             NavigationPaneMode::Top => {
                 let mut x = area.origin.x;
                 (0..self.items.len())
-                    .map(|_| {
-                        let w = NAV_ITEM_H + 16.0; // 固定 item 宽（含 label）
+                    .map(|i| {
+                        let w = self.top_item_width(engine, i);
                         let r = Rect::new(x, area.origin.y, w, NAV_ITEM_H);
                         x += w;
                         r
@@ -211,12 +246,12 @@ impl MetroNavigationView {
         TextStyle::new(14.0, 20.0, FontWeight::Normal)
     }
 
-    /// 命中：Toggle / 顶层项。
-    pub fn hit(&self, rect: Rect, pos: Point) -> NavigationAction {
+    /// 命中：Toggle / 顶层项。`engine` 仅 Top 模式用来量 label 宽；Left 模式忽略。
+    pub fn hit(&self, engine: &TextEngine, rect: Rect, pos: Point) -> NavigationAction {
         if self.toggle_rect(rect).contains(pos) {
             return NavigationAction::Toggle;
         }
-        for (i, r) in self.top_item_rects(rect).iter().enumerate() {
+        for (i, r) in self.top_item_rects(engine, rect).iter().enumerate() {
             if r.contains(pos) {
                 return NavigationAction::Select(vec![i]);
             }
@@ -225,8 +260,8 @@ impl MetroNavigationView {
     }
 
     /// 应用点击：Toggle / Select。
-    pub fn handle_click(&mut self, rect: Rect, pos: Point) -> NavigationAction {
-        match self.hit(rect, pos) {
+    pub fn handle_click(&mut self, engine: &TextEngine, rect: Rect, pos: Point) -> NavigationAction {
+        match self.hit(engine, rect, pos) {
             NavigationAction::Select(path) => {
                 self.selected = Some(path.clone());
                 NavigationAction::Select(path)
@@ -246,7 +281,7 @@ impl MetroNavigationView {
     }
 
     /// 渲染 Pane / Top 栏（Toggle + 项列表 + Footer）。
-    pub fn render(&self, theme: &MetroTheme, _engine: &TextEngine, rect: Rect, scene: &mut Scene) {
+    pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
         let colors = &theme.colors;
         let style = Self::item_style();
 
@@ -270,7 +305,7 @@ impl MetroNavigationView {
             );
         }
 
-        let rects = self.top_item_rects(rect);
+        let rects = self.top_item_rects(engine, rect);
         // 子项可见性（Left 展开 + 选中展开）——简化为展开态展示 children。
         for (i, item) in self.items.iter().enumerate() {
             let r = rects[i];
@@ -417,10 +452,11 @@ mod tests {
 
     #[test]
     fn toggle_click_switches() {
+        let Some(engine) = find_engine() else { return };
         let mut n = nav();
         let r = area();
         assert_eq!(
-            n.handle_click(r, Point::new(20.0, 20.0)),
+            n.handle_click(&engine, r, Point::new(20.0, 20.0)),
             NavigationAction::Toggle
         );
         assert!(!n.pane_expanded, "点 toggle 收窄");
@@ -429,12 +465,13 @@ mod tests {
 
     #[test]
     fn select_top_item() {
+        let Some(engine) = find_engine() else { return };
         let mut n = nav();
         let r = area();
-        let rects = n.top_item_rects(r);
+        let rects = n.top_item_rects(&engine, r);
         let second = rects[1];
         assert_eq!(
-            n.handle_click(r, second.center()),
+            n.handle_click(&engine, r, second.center()),
             NavigationAction::Select(vec![1])
         );
         assert_eq!(n.selected.as_deref(), Some([1].as_slice()));
@@ -455,17 +492,67 @@ mod tests {
 
     #[test]
     fn top_mode_horizontal() {
+        let Some(engine) = find_engine() else { return };
         let n = MetroNavigationView {
             mode: NavigationPaneMode::Top,
             ..nav()
         };
         let r = area();
-        let rects = n.top_item_rects(r);
+        let rects = n.top_item_rects(&engine, r);
         // 横排：y 相同、x 递增
         assert_eq!(rects[0].origin.y, rects[1].origin.y);
         assert!(rects[1].origin.x > rects[0].origin.x);
         // 顶栏下 header
         assert_eq!(n.header_rect(r).origin.y, NAV_TOP_HEIGHT);
+    }
+
+    /// 长中文标签在 Top 模式下应扩宽（不被硬编码 56px 裁断）。
+    #[test]
+    fn top_mode_widens_for_long_labels() {
+        let Some(engine) = find_engine() else { return };
+        let n = MetroNavigationView {
+            mode: NavigationPaneMode::Top,
+            items: vec![
+                NavigationViewItem::with_icon("设置", "⚙"),
+                NavigationViewItem::with_icon("网络与共享中心", "◐"),
+            ],
+            ..MetroNavigationView::default()
+        };
+        let rects = n.top_item_rects(&engine, area());
+        assert!(
+            rects[1].size.width > rects[0].size.width,
+            "长 label 应比短 label 宽：短={} 长={}",
+            rects[0].size.width,
+            rects[1].size.width
+        );
+        assert!(
+            rects[0].size.width >= NAV_TOP_ITEM_MIN_W,
+            "短 label 不低于 MIN"
+        );
+        assert!(
+            rects[1].size.width <= NAV_TOP_ITEM_MAX_W + 0.01,
+            "长 label 不超过 MAX（截断而非无限扩张）"
+        );
+    }
+
+    /// 极端超长 label 被 MAX 夹紧。
+    #[test]
+    fn top_mode_clamps_to_max() {
+        let Some(engine) = find_engine() else { return };
+        let n = MetroNavigationView {
+            mode: NavigationPaneMode::Top,
+            items: vec![NavigationViewItem::with_icon(
+                "这是一个非常非常非常非常非常长的导航标签用来测试上限夹紧",
+                "◆",
+            )],
+            ..MetroNavigationView::default()
+        };
+        let rects = n.top_item_rects(&engine, area());
+        assert!(
+            (rects[0].size.width - NAV_TOP_ITEM_MAX_W).abs() < 0.01,
+            "超长应夹到 MAX，实际 {}",
+            rects[0].size.width
+        );
     }
 
     #[test]
