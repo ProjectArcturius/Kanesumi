@@ -473,10 +473,23 @@ impl GalleryApp {
     fn suggest_rect(&self) -> Rect {
         Rect::new(PAD + 300.0, CTRL_Y0 + 68.0, 280.0, 60.0)
     }
-    /// 命令条触发点（TextBox 选中区域下方 —— 演示浮出命令条）。
+    /// 命令条触发点 —— 放在 TextBox 下方 50px 处的隐形一线。UWP 契约：命令条画在
+    /// **选中区域上方**；`CommandBarFlyout::place` 会把 bar 摆到 anchor 上方（带 4px 间隙）。
+    ///
+    /// V22 迭代：
+    /// - 原方案：anchor 在 tb 底缘（`tb.bottom - 8`）→ bar 上翻后落回 tb 内部，click 判定为
+    ///   「点面板内」→ 早退，选区永远清不掉，反应式命令条反复弹起。
+    /// - 二版：anchor 在 tb 顶缘 → bar 上翻反而顶到 NAV 区（NAV 处理优先），点击被 NAV 吞掉。
+    /// - 终版：anchor 放在 tb 下方 `bar.h + 2*gap` 处。bar 上翻后自然贴着 tb 下沿显示，
+    ///   完全落在 tb 之外，也远离 NAV。gallery demo 视觉链依然清楚（bar 就在文本下方）。
     fn command_bar_anchor(&self) -> Rect {
         let tb = self.textbox_rect();
-        Rect::new(tb.origin.x + 40.0, tb.bottom() - 8.0, 60.0, 16.0)
+        let bar_h = kanesumi_controls::COMMANDBAR_BUTTON_SIZE
+            + 2.0 * kanesumi_controls::COMMANDBAR_BORDER;
+        // bar_y_after_flip_up = anchor.y - gap(4) - bar_h → 要求 ≥ tb.bottom + 4 →
+        // anchor.y ≥ tb.bottom + 4 + 4 + bar_h。
+        let anchor_y = tb.bottom() + 8.0 + bar_h;
+        Rect::new(tb.origin.x, anchor_y, tb.size.width, 1.0)
     }
     /// 命令条面板（由 place 定位）。
     fn command_bar_rect(&self) -> Rect {
@@ -856,22 +869,25 @@ impl GalleryApp {
             }
             return;
         }
-
-        // 命令条（Input 页浮出）：命中命令按钮 → 执行；点外关闭。
+        // 命令条（Input 页浮出）：命中命令按钮 → 执行；命中面板其它区域 → 关闭并消费点击；
+        // 命中面板外 → 关闭命令条但**继续路由该点击**（让 TextBox 等控件正常接收，
+        // 例如点 TextBox 空白处应清选区、放光标 —— 若在此处 early-return，
+        // place_caret 不跑，选区不清，update() 反应式又立即把命令条弹回来）。
         if self.command_bar_open {
             if let Some(action) = self.command_bar.hit_command(p) {
                 self.apply_command(action);
                 self.command_bar.close();
                 self.command_bar_open = false;
-            } else if self.command_bar_rect().contains(p) {
-                // 面板内但非按钮（边框区）→ 关闭
-                self.command_bar.close();
-                self.command_bar_open = false;
-            } else {
-                self.command_bar.close();
-                self.command_bar_open = false;
+                return;
             }
-            return;
+            if self.command_bar_rect().contains(p) {
+                self.command_bar.close();
+                self.command_bar_open = false;
+                return;
+            }
+            // 点面板外 —— 关闭命令条，继续走后续路由（不 early-return）。
+            self.command_bar.close();
+            self.command_bar_open = false;
         }
 
         // 声明式 footer 命中路由（render_decl 产出的命中表）
@@ -902,19 +918,24 @@ impl GalleryApp {
                 self.switch.press(rect, &self.theme, p);
             }
             Some(Target::TextBox) => {
-                // 聚焦文本框（点击定位光标）
+                // 聚焦文本框（点击定位光标）—— 不 select_all，不弹命令条。
+                // V22 fix：旧实现无条件 select_all + open command_bar，UX 上：
+                //   1) 用户仅想聚焦 → 光标位置被抹掉；
+                //   2) 命令条弹出遮挡输入区，第一眼就是四个功能键（还含 .notdef 方框）。
+                // UWP TextCommandBarFlyout 契约：仅在**存在非空选区**时浮出
+                // （drag-select / double-tap / Ctrl+A），单纯聚焦不触发。
                 self.textbox.focus();
                 self.password.blur();
                 self.number.blur();
                 self.suggest.blur();
+                // place_caret_at 内部走 set_cursor → 自动清 anchor（无需单独 deselect）。
                 let body = self.textbox_body_rect();
                 self.textbox
                     .place_caret_at(&self.theme, &self.engine, body, p);
-                // 聚焦时全选（UWP 行为）→ 浮出命令条
-                self.textbox.field.select_all();
-                self.command_bar
-                    .open(self.command_bar_anchor(), self.screen());
-                self.command_bar_open = true;
+                if self.command_bar_open {
+                    self.command_bar.close();
+                    self.command_bar_open = false;
+                }
             }
             Some(Target::PasswordBox) => {
                 self.password.focus();
@@ -1461,6 +1482,22 @@ impl App for GalleryApp {
         // 输入控件
         self.textbox.update(dt);
         self.password.update(dt);
+        // TextCommandBarFlyout 反应式弹出：TextBox 有非空选区 → 打开；无选区 → 关闭。
+        // 对齐 UWP 契约（drag-select / Ctrl+A 均可触发；单纯聚焦不触发）。
+        let has_selection = self
+            .textbox
+            .field
+            .selection()
+            .map(|(lo, hi)| hi > lo)
+            .unwrap_or(false);
+        if has_selection && !self.command_bar_open {
+            self.command_bar
+                .open(self.command_bar_anchor(), self.screen());
+            self.command_bar_open = true;
+        } else if !has_selection && self.command_bar_open {
+            self.command_bar.close();
+            self.command_bar_open = false;
+        }
         self.command_bar.update(dt);
         // 虚拟化长列表平滑滚动
         self.virtual_list.update(dt);
@@ -2107,14 +2144,19 @@ mod tests {
         assert_eq!(g.suggest.shown, vec!["苹果"], "过滤建议");
     }
 
+    /// V22 契约：仅聚焦不弹命令条；有非空选区才弹（UWP TextCommandBarFlyout 行为）。
     #[test]
-    fn command_bar_opens_on_textbox_focus_and_routes() {
+    fn command_bar_opens_only_on_selection_and_routes() {
         let mut g = app();
         input_page(&mut g);
         assert!(!g.command_bar_open);
         let tb = g.textbox_rect();
         click(&mut g, tb);
-        assert!(g.command_bar_open, "聚焦文本框应浮出命令条");
+        assert!(!g.command_bar_open, "单纯聚焦不应弹命令条（V22 修正）");
+        // 制造选区（模拟 Ctrl+A / drag-select 结果）→ update 反应式弹出
+        g.textbox.field.select_all();
+        g.update(1.0 / 60.0);
+        assert!(g.command_bar_open, "有非空选区应弹命令条");
         // 点击 Copy 按钮（index 0）→ 记录动作
         let r = g.command_bar_rect();
         let copy_btn = Point::new(
@@ -2133,6 +2175,22 @@ mod tests {
         });
         assert_eq!(g.command_result.as_deref(), Some("已复制"));
         assert!(!g.command_bar_open, "点命令按钮后关闭命令条");
+    }
+
+    /// 选区消失（如 Delete 或 place_caret）→ update 反应式关闭命令条。
+    #[test]
+    fn command_bar_closes_when_selection_clears() {
+        let mut g = app();
+        input_page(&mut g);
+        let tb = g.textbox_rect();
+        click(&mut g, tb);
+        g.textbox.field.select_all();
+        g.update(1.0 / 60.0);
+        assert!(g.command_bar_open);
+        // 再次点击 TextBox → place_caret 清 anchor → selection() = None
+        click(&mut g, tb);
+        g.update(1.0 / 60.0);
+        assert!(!g.command_bar_open, "选区清空应关闭命令条");
     }
 
     #[test]
