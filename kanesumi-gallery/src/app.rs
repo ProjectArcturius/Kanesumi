@@ -517,6 +517,60 @@ impl GalleryApp {
         r
     }
 
+    // ── IME 路由（阶段 C，参 IME_WIRING_PLAN） ───────────────────
+
+    /// 聚焦的输入控件（键盘 / IME 共用判定）。
+    fn focused_input(&self) -> FocusedInput {
+        if self.textbox.focused {
+            FocusedInput::TextBox
+        } else if self.password.focused() {
+            FocusedInput::Password
+        } else if self.number.focused {
+            FocusedInput::Number
+        } else if self.suggest.focused {
+            FocusedInput::AutoSuggest
+        } else {
+            FocusedInput::None
+        }
+    }
+
+    /// 组合态路由到聚焦控件（TextBox/PasswordBox 支持；Number/AutoSuggest 暂不接 IME）。
+    fn route_ime_preedit(&mut self, text: String, cursor_byte: Option<usize>) {
+        match self.focused_input() {
+            FocusedInput::TextBox => self.textbox.field.set_preedit(&text, cursor_byte),
+            FocusedInput::Password => self.password.field_mut().set_preedit(&text, cursor_byte),
+            _ => {}
+        }
+    }
+
+    /// 提交路由（原子编辑：删选区 + 插入 + 清组合态）。
+    fn route_ime_commit(&mut self, text: String) {
+        match self.focused_input() {
+            FocusedInput::TextBox => {
+                self.textbox.field.commit_ime(&text);
+            }
+            FocusedInput::Password => {
+                self.password.field_mut().commit_ime(&text);
+            }
+            _ => {}
+        }
+    }
+
+    /// 周边删除路由（UTF-8 边界夹紧在控件层）。
+    fn route_ime_delete(&mut self, before_bytes: u32, after_bytes: u32) {
+        match self.focused_input() {
+            FocusedInput::TextBox => {
+                self.textbox.field.delete_surrounding(before_bytes, after_bytes);
+            }
+            FocusedInput::Password => {
+                self.password
+                    .field_mut()
+                    .delete_surrounding(before_bytes, after_bytes);
+            }
+            _ => {}
+        }
+    }
+
     /// 执行 CommandBar 动作（演示文本操作）。
     fn apply_command(&mut self, action: CommandBarAction) {
         use kanesumi_controls::TextField;
@@ -1469,6 +1523,21 @@ impl App for GalleryApp {
         None
     }
 
+    fn ime_focus(&self) -> Option<kanesumi_harness::ImeContext> {
+        // 复用聚焦级联：TextBox / PasswordBox 提供 IME 上下文（含光标矩形）。
+        match self.focused_input() {
+            FocusedInput::TextBox => Some(self.textbox.ime_context(
+                &self.theme,
+                &self.engine,
+                self.textbox_body_rect(),
+            )),
+            FocusedInput::Password => {
+                Some(self.password.ime_context(&self.theme, &self.engine, self.password_rect()))
+            }
+            _ => None,
+        }
+    }
+
     fn update(&mut self, dt: f64) {
         self.switch.update(dt);
         self.bar.update(dt);
@@ -1533,17 +1602,7 @@ impl App for GalleryApp {
             }
             InputEvent::KeyPressed { key } => {
                 // 键盘路由：聚焦的输入控件优先（TextBox / PasswordBox / NumberBox / AutoSuggestBox）
-                let focused: FocusedInput = if self.textbox.focused {
-                    FocusedInput::TextBox
-                } else if self.password.focused() {
-                    FocusedInput::Password
-                } else if self.number.focused {
-                    FocusedInput::Number
-                } else if self.suggest.focused {
-                    FocusedInput::AutoSuggest
-                } else {
-                    FocusedInput::None
-                };
+                let focused = self.focused_input();
 
                 use kanesumi_harness::Key as HarnessKey;
                 // 统一转 TextInputKey；Up/Down 保留给 suggest 导航，其余交给文本编辑。
@@ -1565,6 +1624,13 @@ impl App for GalleryApp {
                 let Some(mapped) = mapped else {
                     return;
                 };
+                // IME 组合态激活时，可打印键归输入法（组合被打断由控件层处理）。
+                if matches!(mapped, TextInputKey::Char(_))
+                    && matches!(focused, FocusedInput::TextBox | FocusedInput::Password)
+                    && (self.textbox.field.has_preedit() || self.password.field().has_preedit())
+                {
+                    return;
+                }
 
                 match focused {
                     FocusedInput::TextBox => {
@@ -1592,6 +1658,12 @@ impl App for GalleryApp {
                     FocusedInput::None => {}
                 }
             }
+            InputEvent::Preedit { text, cursor_byte } => self.route_ime_preedit(text, cursor_byte),
+            InputEvent::Commit { text } => self.route_ime_commit(text),
+            InputEvent::DeleteSurrounding {
+                before_bytes,
+                after_bytes,
+            } => self.route_ime_delete(before_bytes, after_bytes),
             InputEvent::PointerLeft => {
                 // A1：指针离开窗口时若 Switch 正被拖动，取消（避免 knob 悬在中间）
                 if self.pressed == Some(Target::Switch) {
@@ -2142,6 +2214,103 @@ mod tests {
             key: kanesumi_harness::Key::Char('苹'),
         });
         assert_eq!(g.suggest.shown, vec!["苹果"], "过滤建议");
+    }
+
+    // ── IME 路由（阶段 C，参 IME_WIRING_PLAN） ───────────────────
+
+    #[test]
+    fn ime_preedit_commit_flow_updates_textbox() {
+        let mut g = app();
+        input_page(&mut g);
+        let r = g.textbox_rect();
+        click(&mut g, r);
+        assert!(g.textbox.focused);
+        assert_eq!(g.textbox.field.text(), "Kanesumi");
+        // 制造选区（点击定位光标已清选区；直接模拟 Ctrl+A 全选）
+        g.textbox.field.select_all();
+        assert_eq!(g.textbox.field.selection(), Some((0, 8)));
+        // 组合态：preedit 不入 text
+        g.handle_input(InputEvent::Preedit {
+            text: "nǐ".into(),
+            cursor_byte: Some(2),
+        });
+        assert_eq!(g.textbox.field.text(), "Kanesumi", "preedit 不改文本");
+        assert!(g.textbox.field.has_preedit());
+        assert_eq!(g.textbox.field.preedit(), "nǐ");
+        // 提交：替换选区
+        g.handle_input(InputEvent::Commit { text: "你好".into() });
+        assert_eq!(g.textbox.field.text(), "你好");
+        assert!(!g.textbox.field.has_preedit(), "提交清组合态");
+        // 空 preedit 清除组合态
+        g.handle_input(InputEvent::Preedit {
+            text: "x".into(),
+            cursor_byte: None,
+        });
+        assert!(g.textbox.field.has_preedit());
+        g.handle_input(InputEvent::Preedit {
+            text: String::new(),
+            cursor_byte: None,
+        });
+        assert!(!g.textbox.field.has_preedit(), "空 preedit 清除组合");
+    }
+
+    #[test]
+    fn ime_events_route_to_focused_control_only() {
+        let mut g = app();
+        input_page(&mut g);
+        let r = g.password_rect();
+        click(&mut g, r);
+        assert!(g.password.focused());
+        g.handle_input(InputEvent::Preedit {
+            text: "pass".into(),
+            cursor_byte: None,
+        });
+        assert!(g.password.field().has_preedit(), "组合态路由到密码框");
+        assert!(!g.textbox.field.has_preedit(), "TextBox 不受影响");
+        g.handle_input(InputEvent::Commit { text: "hunter2".into() });
+        assert_eq!(g.password.password(), "hunter2");
+        // 失焦后 IME 事件被忽略
+        g.textbox.blur();
+        g.password.blur();
+        g.handle_input(InputEvent::Preedit {
+            text: "zzz".into(),
+            cursor_byte: None,
+        });
+        assert_eq!(g.textbox.field.preedit(), "", "无 IME 焦点控件不收组合态");
+    }
+
+    #[test]
+    fn ime_delete_surrounding_removes_bytes() {
+        let mut g = app();
+        input_page(&mut g);
+        let r = g.textbox_rect();
+        click(&mut g, r);
+        // 聚焦全选 "Kanesumi" → 先移动光标避免选区影响
+        g.textbox.field.set_cursor(2);
+        g.handle_input(InputEvent::DeleteSurrounding {
+            before_bytes: 1,
+            after_bytes: 1,
+        });
+        assert_eq!(g.textbox.field.text(), "Kesumi", "光标前后各删 1 字符");
+    }
+
+    #[test]
+    fn ime_focus_exposes_surrounding_and_caret() {
+        let mut g = app();
+        input_page(&mut g);
+        assert_eq!(g.ime_focus(), None, "无聚焦输入控件时无 IME 上下文");
+        let r = g.textbox_rect();
+        click(&mut g, r);
+        let ctx = g.ime_focus().expect("TextBox 聚焦应返回上下文");
+        assert_eq!(ctx.surrounding_before, "Kanesumi");
+        assert!(ctx.caret_rect.size.width > 0.0);
+        assert_eq!(ctx.content_hint, kanesumi_harness::ImeContentHint::Normal);
+        // PasswordBox 聚焦 → Password 提示 + 不外发周边文本
+        let pr = g.password_rect();
+        click(&mut g, pr);
+        let ctx = g.ime_focus().expect("PasswordBox 聚焦应返回上下文");
+        assert_eq!(ctx.content_hint, kanesumi_harness::ImeContentHint::Password);
+        assert!(ctx.surrounding_before.is_empty(), "密码不外发周边文本");
     }
 
     /// V22 契约：仅聚焦不弹命令条；有非空选区才弹（UWP TextCommandBarFlyout 行为）。

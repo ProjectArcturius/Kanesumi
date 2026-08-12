@@ -4,6 +4,9 @@ use kanesumi_core::{MetroTheme, Size};
 
 use crate::role::EtherRole;
 
+/// IME 上下文 / 内容提示 —— 定义于控件库（依赖方向 core ← controls ← harness）。
+pub use kanesumi_controls::{ImeContentHint, ImeContext};
+
 /// 应用配置 —— 身份 + 启动尺寸。app_id 命名空间 `org.ether.*`（ENCS §XI）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AppConfig {
@@ -62,7 +65,8 @@ pub enum Key {
 }
 
 /// 输入事件 —— 纯数据、跨平台。`x/y` 为表面本地逻辑坐标（指针进入表面后有效）。
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// 非 Copy（IME 变体含 `String`）；App 消费时按值 move。
+#[derive(Debug, Clone, PartialEq)]
 pub enum InputEvent {
     /// 指针移动。
     PointerMoved { x: f32, y: f32 },
@@ -86,6 +90,16 @@ pub enum InputEvent {
     KeyPressed { key: Key },
     /// 指针离开表面。
     PointerLeft,
+    /// IME 组合态更新。`cursor_byte` 为组合态内光标字节偏移（None = 光标在尾部，
+    /// 对应协议 cursor_begin/end = -1 的隐藏光标）。文本为空 = 清除组合态。
+    Preedit {
+        text: String,
+        cursor_byte: Option<usize>,
+    },
+    /// IME 提交 —— 以提交文本替换光标处组合态（原子编辑）。
+    Commit { text: String },
+    /// IME 周边删除 —— 删光标前/后字节数（UTF-8，控件层外扩夹紧）。
+    DeleteSurrounding { before_bytes: u32, after_bytes: u32 },
 }
 
 /// Kanesumi 应用入口 trait —— 把 Kanesumi 变成应用 SDK 的契约。
@@ -112,6 +126,12 @@ pub trait App {
 
     /// 输入事件（指针位置为表面本地逻辑坐标）。控件命中测试由 App 负责（参 HANDOVER §2 输入层）。
     fn handle_input(&mut self, _event: InputEvent) {}
+
+    /// IME 焦点上下文。返回 `Some(ImeContext)` = 当前有文本输入焦点（TextBox/PasswordBox 等），
+    /// 外壳据此 enable text-input 并灌周边文本/光标矩形；`None` = 无 IME（默认）。
+    fn ime_focus(&self) -> Option<ImeContext> {
+        None
+    }
 
     /// 渲染一帧：把当前状态解析为绘制命令。
     /// `engine` 为外壳注入的 TextEngine（排版唯一真源），App 用它量测文本、外壳用它光栅化。
@@ -152,6 +172,86 @@ pub fn key_to_text_input(key: Key) -> Option<kanesumi_controls::TextInputKey> {
     }
 }
 
+/// IME 使能动作 —— `compute_ime_action` 的产物（幂等 reconcile 的决策核心，
+/// 参 IME_WIRING_PLAN 阶段 D）。纯逻辑，无 Wayland 依赖，跨平台可测。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImeAction {
+    /// 表面持键盘焦点 + App 有文本输入焦点 → enable + 灌上下文。
+    Enable,
+    /// 任一焦点缺失 → disable。
+    Disable,
+}
+
+/// 幂等决策：根据当前期望（`focus_surface && focus_control`）与已发送状态比较，
+/// 返回需要执行的动作。**只在状态翻转时返回动作**（不翻转 = None，无协议流量）。
+pub fn compute_ime_action(
+    focus_surface: bool,
+    focus_control: bool,
+    currently_enabled: bool,
+) -> Option<ImeAction> {
+    let want = focus_surface && focus_control;
+    if want == currently_enabled {
+        None
+    } else if want {
+        Some(ImeAction::Enable)
+    } else {
+        Some(ImeAction::Disable)
+    }
+}
+
+/// 一帧待应用 IME 事件批 —— done 事件到达前累积的 pending 状态。
+/// 协议批次 = 一帧内 Preedit/Commit/DeleteSurrounding 的积压，`done` 触发应用。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PendingImeBatch {
+    pub preedit: Option<String>,
+    pub cursor_begin: i32,
+    pub cursor_end: i32,
+    pub commit: Option<String>,
+    pub delete_before: u32,
+    pub delete_after: u32,
+}
+
+impl PendingImeBatch {
+    /// 按协议 done 序列展开为 InputEvent 流：`DeleteSurrounding → Commit → Preedit`
+    /// （参 text-input-unstable-v3 done 事件说明）。空字段不产生事件；
+    /// 空 preedit 产生 `Preedit { text: "", … }`（= 清除组合态）。
+    pub fn apply(&self) -> Vec<InputEvent> {
+        let mut out = Vec::new();
+        if self.delete_before > 0 || self.delete_after > 0 {
+            out.push(InputEvent::DeleteSurrounding {
+                before_bytes: self.delete_before,
+                after_bytes: self.delete_after,
+            });
+        }
+        if let Some(text) = &self.commit
+            && !text.is_empty()
+        {
+            out.push(InputEvent::Commit { text: text.clone() });
+        }
+        if let Some(text) = &self.preedit {
+            // cursor_begin = -1（隐藏光标）→ None；否则取 begin 字节。
+            let cursor_byte = if self.cursor_begin >= 0 {
+                Some(self.cursor_begin as usize)
+            } else {
+                None
+            };
+            out.push(InputEvent::Preedit {
+                text: text.clone(),
+                cursor_byte,
+            });
+        }
+        out
+    }
+
+    /// done 应用：`serial == current_serial`（非 stale 帧）才返回事件流，否则 None。
+    pub fn apply_done(&self, serial: u32, current_serial: u32) -> Option<Vec<InputEvent>> {
+        if serial != current_serial {
+            return None;
+        }
+        Some(self.apply())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,5 +271,104 @@ mod tests {
             Some(kanesumi_controls::TextInputKey::Up)
         );
         assert_eq!(key_to_text_input(Key::Unknown(0x00ff)), None);
+    }
+
+    #[test]
+    fn compute_ime_action_only_flips_on_change() {
+        // 期望 = focus_surface && focus_control
+        assert_eq!(
+            compute_ime_action(true, true, false),
+            Some(ImeAction::Enable),
+            "两焦点齐 → enable"
+        );
+        assert_eq!(
+            compute_ime_action(true, true, true),
+            None,
+            "已 enable 且仍期望 → 幂等无动作"
+        );
+        assert_eq!(
+            compute_ime_action(true, false, true),
+            Some(ImeAction::Disable),
+            "控件失焦 → disable"
+        );
+        assert_eq!(
+            compute_ime_action(false, true, true),
+            Some(ImeAction::Disable),
+            "表面离开 → disable"
+        );
+        assert_eq!(
+            compute_ime_action(false, false, false),
+            None,
+            "已 disable → 幂等无动作"
+        );
+    }
+
+    #[test]
+    fn pending_batch_applies_in_protocol_order() {
+        let b = PendingImeBatch {
+            preedit: Some("nǐ".into()),
+            cursor_begin: 3,
+            cursor_end: 3,
+            commit: Some("你好".into()),
+            delete_before: 3,
+            delete_after: 6,
+            ..Default::default()
+        };
+        let events = b.apply();
+        assert!(matches!(
+            events[0],
+            InputEvent::DeleteSurrounding {
+                before_bytes: 3,
+                after_bytes: 6
+            }
+        ));
+        assert!(matches!(&events[1], InputEvent::Commit { text } if text == "你好"));
+        assert!(
+            matches!(&events[2], InputEvent::Preedit { text, cursor_byte } if text == "nǐ" && *cursor_byte == Some(3))
+        );
+    }
+
+    #[test]
+    fn pending_batch_stale_serial_is_dropped() {
+        let b = PendingImeBatch {
+            commit: Some("x".into()),
+            ..Default::default()
+        };
+        assert_eq!(b.apply_done(1, 1).unwrap().len(), 1, "匹配 serial 生效");
+        assert_eq!(b.apply_done(0, 1), None, "stale serial 丢弃");
+    }
+
+    #[test]
+    fn pending_batch_empty_fields_produce_no_events() {
+        let b = PendingImeBatch::default();
+        assert!(b.apply().is_empty());
+    }
+
+    #[test]
+    fn pending_batch_cursor_neg_one_is_hidden() {
+        let b = PendingImeBatch {
+            preedit: Some("ab".into()),
+            cursor_begin: -1,
+            cursor_end: -1,
+            ..Default::default()
+        };
+        let events = b.apply();
+        assert!(matches!(
+            &events[0],
+            InputEvent::Preedit {
+                cursor_byte: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn pending_batch_empty_preedit_clears() {
+        let b = PendingImeBatch {
+            preedit: Some(String::new()),
+            ..Default::default()
+        };
+        let events = b.apply();
+        assert!(matches!(&events[0], InputEvent::Preedit { text, .. } if text.is_empty()));
     }
 }

@@ -8,6 +8,7 @@ use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::Scene;
 use kanesumi_core::{MetroTheme, Point, Rect};
 
+use crate::ime::{ImeContentHint, ImeContext};
 use crate::state::ControlState;
 use crate::text_box::MetroTextBox;
 use crate::text_field::{TextInputKey, TextField};
@@ -106,6 +107,19 @@ impl MetroPasswordBox {
     pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
         self.boxed.render(theme, engine, rect, scene);
     }
+
+    /// IME 上下文 —— 内容提示 = Password，且**不外发周边文本**（敏感字段不暴露
+    /// 给输入法；fcitx5 收到 password|sensitive_data|hidden_text 自禁候选窗）。
+    /// 光标矩形仍有效（掩码宽度）。
+    pub fn ime_context(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> ImeContext {
+        let mut ctx = self.boxed.ime_context(theme, engine, body);
+        ctx.content_hint = ImeContentHint::Password;
+        ctx.surrounding_before.clear();
+        ctx.surrounding_after.clear();
+        ctx.cursor_byte = 0;
+        ctx.anchor_byte = 0;
+        ctx
+    }
 }
 
 #[cfg(test)]
@@ -185,5 +199,30 @@ mod tests {
         p.handle_key(TextInputKey::Char('b'));
         p.handle_key(TextInputKey::Backspace);
         assert_eq!(p.password(), "a");
+    }
+
+    // ── IME 组合态（阶段 B/E，参 IME_WIRING_PLAN） ──────────────
+
+    #[test]
+    fn preedit_is_masked() {
+        let mut p = MetroPasswordBox::with_text("ab");
+        p.boxed.field.move_end(false);
+        p.boxed.field.set_preedit("cd", None);
+        assert_eq!(p.boxed.field.preedit(), "cd", "明文保留");
+        assert_eq!(p.boxed.field.preedit_display(), "●●", "组合态也掩码");
+    }
+
+    #[test]
+    fn ime_context_hints_password_and_omits_surrounding() {
+        let e = TextEngine::load(find_font().unwrap()).unwrap();
+        let th = MetroTheme::ether_dark();
+        let p = MetroPasswordBox::with_text("hunter2");
+        let ctx = p.ime_context(&th, &e, Rect::new(0.0, 0.0, 200.0, 32.0));
+        assert_eq!(ctx.content_hint, crate::ime::ImeContentHint::Password);
+        assert!(ctx.surrounding_before.is_empty(), "密码不外发周边文本");
+        assert!(ctx.surrounding_after.is_empty());
+        assert_eq!(ctx.cursor_byte, 0);
+        assert_eq!(ctx.anchor_byte, 0);
+        assert!(ctx.caret_rect.size.width > 0.0, "光标矩形仍有效");
     }
 }

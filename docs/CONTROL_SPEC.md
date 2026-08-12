@@ -1099,10 +1099,19 @@ clamp 到 [−MaxShift, +MaxShift]，MaxShift = MaxShiftRatio × 视口主轴
 - 占位文本：空内容时显示，Focused 时转半透明（TextControlPlaceholderForegroundFocused）。
 - 删除按钮：有内容 + 聚焦/悬停时显示（ButtonStates ButtonVisible）。
 
+### IME 组合态（zwp_text_input_v3，参 IME_WIRING_PLAN）
+
+- 组合态显示流 = 光标前文本 + **preedit** + 光标后文本；preedit 不入 `text` / 选区 / 撤销栈。
+- preedit 视觉规格：**虚线下划线**（`on_surface` 60% opacity，dash 4px / gap 3px，基线下方 2px）；
+  无平台固定规格（UWP 闭源），走以上平台默认（参 IME_WIRING_PLAN 阶段 B）。
+- 光标 x 后移 `preedit_cursor` 宽；`caret_rect_absolute()` / `ime_context()` 暴露给 harness
+  灌 set_surrounding_text / set_cursor_rectangle。
+- Escape / 直接键插入 / 周边删除 → 打断组合态（清 preedit）。
+
 ### Kanesumi 适配
 
 - 深色桌面底色 `surface`；选区高亮强调色 **35%**（TextControlSelectionHighlightColor → primary）；
-- CJK 安全：下标按 char 非字节。
+- CJK 安全：下标按 char 非字节；IME 协议字节下标一律 UTF-8 边界外扩夹紧（不劈码点）。
 
 ---
 
@@ -1118,7 +1127,12 @@ clamp 到 [−MaxShift, +MaxShift]，MaxShift = MaxShiftRatio × 视口主轴
 | 掩码字符 | `●`（UWP 默认 PasswordChar） |
 | 明文 | 保留于 `field.text()`，显示层全掩码，**绝不渲染明文** |
 | 尺寸/状态/交互 | 同 TextBox（§34），仅掩码差异 |
-| 输入法 | IME 组成尚未接入（Phase 2-1 / Ceyboard）；先支持 ASCII/CJK 直接输入 |
+| 输入法 | IME 已接入：组合态同样掩码显示；`ime_focus()` 返回 `content_hint = Password` → harness 映射 `content_purpose = password \| content_hint = sensitive_data \| hidden_text`（fcitx5 自禁候选窗）；周边文本**不外发**（不暴露明文） |
+
+### IME 组合态（PasswordBox 专属）
+
+- preedit 逐字符掩码（与正文同一 `●`）；
+- `ime_context()` 清空 surrounding（敏感字段不交给输入法），光标矩形保留。
 
 ---
 

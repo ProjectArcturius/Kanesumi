@@ -319,6 +319,9 @@ impl App for CalculatorApp {
             InputEvent::PointerLeft => self.clear_hover(),
             InputEvent::Scroll { .. } => {}
             InputEvent::KeyPressed { key } => self.key_press(key),
+            // IME 事件：计算器无文本输入，忽略（组合态/提交均不适用）。
+            InputEvent::Preedit { .. } | InputEvent::Commit { .. } | InputEvent::DeleteSurrounding { .. } => {
+            }
         }
     }
 

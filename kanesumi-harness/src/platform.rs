@@ -37,12 +37,19 @@ use smithay_client_toolkit::{
     },
 };
 use wayland_client::{
-    Connection, QueueHandle,
+    Connection, Dispatch, QueueHandle,
     globals::registry_queue_init,
     protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface},
 };
+use wayland_protocols::wp::text_input::zv3::client::{
+    zwp_text_input_manager_v3::ZwpTextInputManagerV3,
+    zwp_text_input_v3::{ContentHint, ContentPurpose, Event as TextInputEvent, ZwpTextInputV3},
+};
 
-use crate::app::{App, InputEvent, Key, PointerButton};
+use crate::app::{
+    App, ImeAction, ImeContentHint, ImeContext, InputEvent, Key, PendingImeBatch, PointerButton,
+    compute_ime_action,
+};
 use crate::render::Renderer;
 use crate::role::{EtherRole, SurfaceKind};
 
@@ -162,6 +169,22 @@ struct Shell {
     running: bool,
     last_frame: Instant,
     pointer_pos: (f32, f32),
+
+    // ── IME（zwp_text_input_v3，参 IME_WIRING_PLAN 阶段 D） ─────
+    /// text-input manager 全局（合成器未提供 → None，App 降级走裸 KeyPressed）。
+    text_input_manager: Option<ZwpTextInputManagerV3>,
+    /// per-seat text-input 对象。
+    text_input: Option<ZwpTextInputV3>,
+    /// 上次发送的 enable 状态（reconcile 幂等判定）。
+    ime_enabled: bool,
+    /// wl_keyboard / text-input enter 标记：表面是否持键盘焦点。
+    ime_focus_surface: bool,
+    /// 单调 commit 计数 —— 每次实际 commit() 后 +1，done serial 与之匹配才生效。
+    commit_serial: u32,
+    /// done 到达前累积的事件批。
+    pending_ime: PendingImeBatch,
+    /// 上次发送的 IME 上下文缓存（无变化不重发，避免每帧灌上下文 + commit 抖动）。
+    ime_context_cache: Option<ImeContext>,
 }
 
 impl Shell {
@@ -246,6 +269,14 @@ impl Shell {
         let renderer = Renderer::new(conn, wl_surface, width, height, 1.0)
             .map_err(|e| format!("wgpu 初始化失败：{e:?}"))?;
 
+        // IME：绑定 text-input manager（合成器缺失 → None，App 降级走裸 KeyPressed，记一次日志）。
+        let text_input_manager = globals
+            .bind::<ZwpTextInputManagerV3, Self, ()>(qh, 1..=2, ())
+            .map_err(|e| {
+                log::warn!("zwp_text_input_manager_v3 不可用，IME 降级：{e}");
+            })
+            .ok();
+
         Ok(Self {
             app,
             engine,
@@ -269,6 +300,13 @@ impl Shell {
             running: true,
             last_frame: Instant::now(),
             pointer_pos: (-1.0, -1.0),
+            text_input_manager,
+            text_input: None,
+            ime_enabled: false,
+            ime_focus_surface: false,
+            commit_serial: 0,
+            pending_ime: PendingImeBatch::default(),
+            ime_context_cache: None,
         })
     }
 
@@ -300,6 +338,9 @@ impl Shell {
             self.request_next_frame(qh);
             return;
         }
+
+        // App 状态可能已变（焦点/文本/光标）→ 幂等 reconcile IME（无变化零成本）。
+        self.reconcile_ime();
 
         let size = self.size();
         let scene_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -336,6 +377,80 @@ impl Shell {
         if !ok {
             log::error!("App::handle_input panic，已隔离");
         }
+    }
+
+    /// IME 幂等 reconcile（参 IME_WIRING_PLAN 阶段 D）：
+    /// 期望 = `ime_focus_surface && App::ime_focus().is_some()`；与已发送状态不一致才
+    /// enable/disable；上下文（周边文本/内容类型/光标矩形）有变化才重灌 + commit。
+    ///
+    /// 调用点：每帧 `App::update` 后 + wl_keyboard/text-input enter/leave + done 派发后。
+    /// 无 text-input 对象（合成器缺 manager）→ 空操作。
+    fn reconcile_ime(&mut self) {
+        let Some(ti) = self.text_input.clone() else {
+            return;
+        };
+        let focus_control = self.app.ime_focus().is_some();
+        let want = self.ime_focus_surface && focus_control;
+
+        // 使能状态翻转才发 enable/disable（幂等，避免协议流量）。
+        let action = compute_ime_action(self.ime_focus_surface, focus_control, self.ime_enabled);
+        if let Some(action) = action {
+            self.ime_enabled = matches!(action, ImeAction::Enable);
+            match action {
+                ImeAction::Enable => ti.enable(),
+                ImeAction::Disable => {
+                    ti.disable();
+                    ti.commit();
+                    self.commit_serial += 1;
+                    self.ime_context_cache = None;
+                    // 失能：清除组合态（App 可能仍显示 preedit）。
+                    self.emit_input(InputEvent::Preedit {
+                        text: String::new(),
+                        cursor_byte: None,
+                    });
+                    return;
+                }
+            }
+        }
+
+        if !want {
+            return;
+        }
+
+        // 上下文无变化 → 不重灌（避免每帧 set_surrounding_text + commit）。
+        let ctx = self.app.ime_focus().unwrap_or_default();
+        if self.ime_context_cache.as_ref() == Some(&ctx) {
+            return;
+        }
+        self.ime_context_cache = Some(ctx.clone());
+        self.push_ime_context(&ti, &ctx);
+        ti.commit();
+        self.commit_serial += 1;
+    }
+
+    /// 灌 IME 上下文：周边文本（密码不外发）+ 内容类型 + 光标矩形。
+    fn push_ime_context(&mut self, ti: &ZwpTextInputV3, ctx: &ImeContext) {
+        if !ctx.surrounding_before.is_empty() || !ctx.surrounding_after.is_empty() {
+            let text = format!("{}{}", ctx.surrounding_before, ctx.surrounding_after);
+            ti.set_surrounding_text(text, ctx.cursor_byte as i32, ctx.anchor_byte as i32);
+        }
+        // 内容提示 → content_hint / content_purpose（阶段 E：Password 自禁候选窗）。
+        let (hint, purpose) = match ctx.content_hint {
+            ImeContentHint::Normal => (ContentHint::None, ContentPurpose::Normal),
+            ImeContentHint::Password => (
+                ContentHint::SensitiveData | ContentHint::HiddenText,
+                ContentPurpose::Password,
+            ),
+            ImeContentHint::Digits => (ContentHint::None, ContentPurpose::Digits),
+        };
+        ti.set_content_type(hint, purpose);
+        let r = ctx.caret_rect;
+        ti.set_cursor_rectangle(
+            r.origin.x as i32,
+            r.origin.y as i32,
+            r.size.width as i32,
+            r.size.height as i32,
+        );
     }
 
     /// 应用新缩放：重配 wgpu 表面物理尺寸 + buffer_scale。
@@ -556,6 +671,13 @@ impl SeatHandler for Shell {
             if let Ok(keyboard) = self.seat_state.get_keyboard(qh, &seat, None) {
                 self.keyboard = Some(keyboard);
             }
+            // per-seat text-input 对象（合成器缺 manager 时 None，App 降级裸 KeyPressed）。
+            if self.text_input.is_none()
+                && let Some(manager) = self.text_input_manager.as_ref()
+            {
+                let ti = manager.get_text_input(&seat, qh, ());
+                self.text_input = Some(ti);
+            }
         }
     }
 
@@ -670,6 +792,9 @@ impl KeyboardHandler for Shell {
         _raw: &[u32],
         _keysyms: &[Keysym],
     ) {
+        // 表面获得键盘焦点 → text-input 焦点标记 + 幂等 reconcile。
+        self.ime_focus_surface = true;
+        self.reconcile_ime();
     }
 
     fn leave(
@@ -680,6 +805,9 @@ impl KeyboardHandler for Shell {
         _surface: &wl_surface::WlSurface,
         _serial: u32,
     ) {
+        self.ime_focus_surface = false;
+        self.pending_ime = PendingImeBatch::default();
+        self.reconcile_ime();
     }
 
     fn press_key(
@@ -778,5 +906,91 @@ impl wayland_client::Dispatch<wayland_client::protocol::wl_region::WlRegion, ()>
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+    }
+}
+
+// ── IME（zwp_text_input_v3，参 IME_WIRING_PLAN 阶段 D） ────────────────────
+
+// manager 无事件，仅保证对象存活。
+impl Dispatch<ZwpTextInputManagerV3, ()> for Shell {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpTextInputManagerV3,
+        _event: wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwpTextInputV3, ()> for Shell {
+    fn event(
+        state: &mut Self,
+        _proxy: &ZwpTextInputV3,
+        event: TextInputEvent,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            // 表面获得/失去 text-input 焦点 → 幂等 reconcile。
+            TextInputEvent::Enter { surface } => {
+                if surface == state.surface {
+                    state.ime_focus_surface = true;
+                }
+                state.reconcile_ime();
+            }
+            TextInputEvent::Leave { .. } => {
+                state.ime_focus_surface = false;
+                state.pending_ime = PendingImeBatch::default();
+                // 协议要求 leave 时重置 preedit（清 App 组合态）。
+                state.emit_input(InputEvent::Preedit {
+                    text: String::new(),
+                    cursor_byte: None,
+                });
+                state.reconcile_ime();
+            }
+            // done 前累积进 pending 批。
+            TextInputEvent::PreeditString {
+                text,
+                cursor_begin,
+                cursor_end,
+            } => {
+                state.pending_ime.preedit = text;
+                state.pending_ime.cursor_begin = cursor_begin;
+                state.pending_ime.cursor_end = cursor_end;
+            }
+            TextInputEvent::CommitString { text } => {
+                state.pending_ime.commit = text;
+            }
+            TextInputEvent::DeleteSurroundingText {
+                before_length,
+                after_length,
+            } => {
+                state.pending_ime.delete_before = before_length;
+                state.pending_ime.delete_after = after_length;
+            }
+            TextInputEvent::Done { serial } => {
+                // 仅 serial 匹配生效（stale 帧丢弃，参 IME_WIRING_PLAN 风险 1）。
+                match state.pending_ime.apply_done(serial, state.commit_serial) {
+                    Some(events) => {
+                        for ev in events {
+                            state.emit_input(ev);
+                        }
+                    }
+                    None => {
+                        log::debug!(
+                            "text-input done serial {serial}（当前 {}）stale，丢弃",
+                            state.commit_serial
+                        );
+                    }
+                }
+                state.pending_ime = PendingImeBatch::default();
+                // 派发后文本/光标已变 → 重新灌上下文。
+                state.reconcile_ime();
+            }
+            _ => {}
+        }
     }
 }
