@@ -21,7 +21,7 @@ pub const COMMANDBAR_BUTTON_SIZE: f32 = 40.0;
 pub const COMMANDBAR_ICON_SIZE: f32 = 16.0;
 /// 边框厚度（1）。
 pub const COMMANDBAR_BORDER: f32 = 1.0;
-/// 文本选区命令（TextCommandBarFlyout 默认四命令）。
+/// 文本选区命令（TextCommandBarFlyout 默认四命令）—— 保留供宿主拼 tooltip。
 pub const TEXT_COMMANDS: [&str; 4] = ["复制", "剪切", "粘贴", "全选"];
 
 /// 命令条动作 —— 宿主据此执行对应文本操作。
@@ -55,12 +55,21 @@ impl CommandButton {
     }
 
     /// 标准文本命令构造（Copy/Cut/Paste/SelectAll）。
+    ///
+    /// **字形选择铁律**：图标必须落在 SourceHan（Ether 正体）已覆盖的 codepoint，
+    /// 否则渲染成 .notdef 方框。历史 bug：`⧉` (U+29C9 数学符号) / `📋` (U+1F4CB emoji)
+    /// 在 SourceHan 里没有 → gallery 命令条两块方框（用户报告 V22）。
+    ///
+    /// 现用 `C / X / V / A` 键盘助记字母：
+    /// - ASCII 单字符，任何字体（含 fallback）保证渲染；
+    /// - 与实际 Ctrl+X/C/V/A 快捷键完全对应，用户无需记图形；
+    /// - 40×40 按钮里 14~16px 单字母居中，视觉重心稳定。
     pub fn text_command(idx: usize) -> Self {
         let (glyph, name, action) = match idx {
-            0 => ("⧉", "复制", CommandBarAction::Copy), // 双矩形（Copy）
-            1 => ("✂", "剪切", CommandBarAction::Cut),
-            2 => ("📋", "粘贴", CommandBarAction::Paste), // 占位，可用字形替换
-            _ => ("■", "全选", CommandBarAction::SelectAll),
+            0 => ("C", "复制", CommandBarAction::Copy),
+            1 => ("X", "剪切", CommandBarAction::Cut),
+            2 => ("V", "粘贴", CommandBarAction::Paste),
+            _ => ("A", "全选", CommandBarAction::SelectAll),
         };
         Self::new(glyph, name, action)
     }
