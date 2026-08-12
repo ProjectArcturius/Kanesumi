@@ -117,3 +117,48 @@ pub trait App {
     /// `engine` 为外壳注入的 TextEngine（排版唯一真源），App 用它量测文本、外壳用它光栅化。
     fn render(&mut self, engine: &TextEngine, size: Size) -> Scene;
 }
+
+/// harness `Key` → 控件层 `TextInputKey` 转换（TextBox 等文本控件路由用）。
+///
+/// `Unknown` / 无法映射的键 → None（宿主可不消费）。Shift 组合（如 Shift+方向 = 选区）
+/// 由宿主在调用处自行处理（此转换只做键身份映射）。
+pub fn key_to_text_input(key: Key) -> Option<kanesumi_controls::TextInputKey> {
+    use kanesumi_controls::TextInputKey as K;
+    match key {
+        Key::Char(c) => Some(K::Char(c)),
+        Key::Enter => Some(K::Enter),
+        Key::Backspace => Some(K::Backspace),
+        Key::Escape => Some(K::Escape),
+        Key::Tab => Some(K::Tab),
+        Key::Left => Some(K::Left),
+        Key::Right => Some(K::Right),
+        Key::Up => Some(K::Up),
+        Key::Down => Some(K::Down),
+        Key::Home => Some(K::Home),
+        Key::End => Some(K::End),
+        Key::Delete => Some(K::Delete),
+        Key::Unknown(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_maps_to_text_input() {
+        assert_eq!(
+            key_to_text_input(Key::Char('a')),
+            Some(kanesumi_controls::TextInputKey::Char('a'))
+        );
+        assert_eq!(
+            key_to_text_input(Key::Backspace),
+            Some(kanesumi_controls::TextInputKey::Backspace)
+        );
+        assert_eq!(
+            key_to_text_input(Key::Up),
+            Some(kanesumi_controls::TextInputKey::Up)
+        );
+        assert_eq!(key_to_text_input(Key::Unknown(0x00ff)), None);
+    }
+}
