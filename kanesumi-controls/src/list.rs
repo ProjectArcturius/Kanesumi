@@ -2,7 +2,12 @@ use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::{MetroTheme, Rect};
 
-/// MetroList —— 垂直列表。行高下限 40（UWP ListViewItem MinHeight，参 CONTROL_SPEC §7）；视口外行裁剪。
+use crate::repeater::{MetroRepeater, RepeaterOrientation};
+
+/// MetroList —— 垂直列表。行高下限 40（UWP ListViewItem MinHeight，参 CONTROL_SPEC §7）。
+///
+/// 虚拟化：经 `MetroRepeater::visible_range` 只渲染视口内行（参 CONTROL_SPEC §41）——
+/// 长列表不遍历全部行，仅计算可见窗口，避免掉帧。
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetroList {
     pub rows: Vec<String>,
@@ -58,8 +63,19 @@ impl MetroList {
         (theme.typography.body.line_height + 16.0).max(40.0)
     }
 
+    /// 虚拟化布局器（MetroRepeater StackLayout，参 CONTROL_SPEC §41）。
+    pub fn virtualizer(&self, theme: &MetroTheme) -> MetroRepeater {
+        MetroRepeater {
+            item_count: self.rows.len(),
+            main_extent: self.row_height(theme),
+            layout: crate::repeater::RepeaterLayout::Stack,
+            orientation: RepeaterOrientation::Vertical,
+            ..MetroRepeater::default()
+        }
+    }
+
     /// 渲染到视口 `rect`。顺序：选中高亮 → 悬停高亮 → 行文字。
-    /// `engine` 暂未用于行测量（行文本由外壳统一排版），保留签名以与其余控件一致。
+    /// 只渲染视口内行（Repeater 虚拟化）。
     pub fn render(&self, theme: &MetroTheme, _engine: &TextEngine, rect: Rect, scene: &mut Scene) {
         let style = theme.typography.body;
         let row_height = self.row_height(theme);
@@ -70,11 +86,13 @@ impl MetroList {
             1.0
         };
 
-        for (i, row) in self.rows.iter().enumerate() {
+        let repeater = self.virtualizer(theme);
+        let Some((first, last)) = repeater.visible_range(rect.size.height, self.scroll) else {
+            return;
+        };
+
+        for i in first..=last {
             let y = rect.origin.y - self.scroll + i as f32 * row_height;
-            if y + row_height < rect.origin.y || y > rect.origin.y + rect.size.height {
-                continue;
-            }
             let row_rect = Rect::new(rect.origin.x, y, rect.size.width, row_height);
             let selected = self.selected == Some(i);
             let hovered = self.hovered == Some(i);
@@ -100,7 +118,7 @@ impl MetroList {
                 rect.size.width - self.padding_x * 2.0,
                 style.line_height,
             );
-            scene.text(row.clone(), label_rect, fg, style, TextAlign::Left);
+            scene.text(self.rows[i].clone(), label_rect, fg, style, TextAlign::Left);
         }
     }
 }
