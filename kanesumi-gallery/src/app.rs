@@ -740,7 +740,8 @@ impl GalleryApp {
                 .map(|s| s.panel.contains(p))
                 .unwrap_or(false);
             if in_panel || in_sub {
-                self.dropdown.hover(&self.engine, p);
+                let screen = self.screen();
+                self.dropdown.hover(&self.engine, screen, p);
                 self.hovered = Some(Target::Dropdown);
                 return;
             }
@@ -762,7 +763,8 @@ impl GalleryApp {
             }
             Some(Target::Dropdown) => {
                 // 级联：hover 自动展开子菜单（子菜单项悬停由 path_at 命中）
-                self.dropdown.hover(&self.engine, p);
+                let screen = self.screen();
+                self.dropdown.hover(&self.engine, screen, p);
             }
             Some(Target::Selector) => {
                 self.selector.hovered = self.selector.item_at(p);

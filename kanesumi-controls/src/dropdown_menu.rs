@@ -4,7 +4,7 @@ use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::{MetroTheme, Point, Rect, TextStyle};
 
-use crate::popup::{PopupAnim, PopupState, render_overlay};
+use crate::popup::{PopupAnim, PopupState, place_submenu, popup_gap, render_overlay};
 
 /// 菜单项。参 CONTROL_SPEC §8（MenuFlyout）：
 /// - 项高 ≈32（Padding `11,9,11,10` + 14px 字）；图标 16px；快捷键右侧；
@@ -104,7 +104,8 @@ pub struct MetroDropdownMenu {
     /// 项高（UWP 32）。修改后调 `invalidate_layout`。
     pub item_height: f32,
     pub anim: PopupAnim,
-    /// 锚点（面板相对触发器的弹出位置，Phase 3 续做方向自适应）。
+    /// 锚点（面板相对触发器的弹出位置）。顶级弹层方向由外部 [`crate::popup::place_popup`]
+    /// 决定；二级子菜单方向由 [`Self::open_submenu`] 内部走 [`crate::popup::place_submenu`]。
     pub panel_rect: Rect,
     /// `panel_size` 结果缓存（Size: Copy，直接 Cell）。None = 需重算。
     panel_size_cache: Cell<Option<kanesumi_core::Size>>,
@@ -236,21 +237,24 @@ impl MetroDropdownMenu {
 
     /// 悬停路由：命中顶层项；若该项有子菜单且未展开 → 自动展开（级联）。
     /// 子菜单展开时悬停其它项 → 收起当前子菜单（hover-swap 语义，对齐 MenuBar §8.5）。
-    pub fn hover(&mut self, engine: &TextEngine, pos: Point) {
+    ///
+    /// `screen` 供子菜单方向自适应（右侧越屏翻左 / 下缘越屏上移），参 [`place_submenu`]。
+    pub fn hover(&mut self, engine: &TextEngine, screen: Rect, pos: Point) {
         self.hovered = self.item_at(pos);
         // 级联：悬停嵌套项自动展开其子菜单；悬停普通项/空白收起当前子菜单。
         let submenu_target = self.hovered.filter(|i| self.items[*i].is_submenu());
         if let Some(i) = submenu_target {
             if self.submenu.as_ref().map(|s| s.parent) != Some(i) {
-                self.open_submenu(engine, i);
+                self.open_submenu(engine, screen, i);
             }
         } else {
             self.submenu = None;
         }
     }
 
-    /// 展开第 `i` 项的二级子菜单（若该项有 submenu）。子菜单面板 = 父项右侧垂直对齐。
-    pub fn open_submenu(&mut self, engine: &TextEngine, idx: usize) {
+    /// 展开第 `i` 项的二级子菜单（若该项有 submenu）。子菜单面板方向由
+    /// [`place_submenu`] 决定：默认父项右侧展开；右缘越屏 → 翻左；下缘越屏 → 上移。
+    pub fn open_submenu(&mut self, engine: &TextEngine, screen: Rect, idx: usize) {
         let items = self.items.get(idx).map(|it| it.submenu.clone());
         let Some(items) = items else {
             return;
@@ -261,12 +265,7 @@ impl MetroDropdownMenu {
         }
         let parent_rect = self.item_rect(idx);
         let sub_size = MetroDropdownMenu::new(items.clone()).panel_size(engine);
-        let panel = Rect::new(
-            parent_rect.right() + 2.0,
-            parent_rect.origin.y,
-            sub_size.width,
-            sub_size.height,
-        );
+        let panel = place_submenu(parent_rect, sub_size, screen, popup_gap().min(2.0));
         let mut menu = MetroDropdownMenu::new(items);
         menu.panel_rect = panel;
         menu.anim.open();
@@ -564,6 +563,8 @@ fn icon_style() -> TextStyle {
 mod tests {
     use super::*;
 
+    const TEST_SCREEN: Rect = Rect::new(0.0, 0.0, 1024.0, 768.0);
+
     fn find_engine() -> Option<TextEngine> {
         if let Ok(p) = std::env::var("KANESUMI_TEST_FONT") {
             if let Ok(e) = TextEngine::load(p) {
@@ -725,7 +726,7 @@ mod tests {
         menu.open(Rect::new(0.0, 0.0, 120.0, 96.0));
         // 悬停"缩放"（index 1）→ 展开子菜单
         let r1 = menu.item_rect(1);
-        menu.hover(&engine, Point::new(r1.origin.x + 10.0, r1.origin.y + 10.0));
+        menu.hover(&engine, TEST_SCREEN, Point::new(r1.origin.x + 10.0, r1.origin.y + 10.0));
         assert_eq!(menu.hovered, Some(1));
         let sub = menu.submenu_state().expect("悬停嵌套项应展开子菜单");
         assert_eq!(sub.parent, 1);
@@ -741,11 +742,11 @@ mod tests {
         let mut menu = cascaded_menu();
         menu.open(Rect::new(0.0, 0.0, 120.0, 96.0));
         let r1 = menu.item_rect(1);
-        menu.hover(&engine, Point::new(r1.origin.x + 10.0, r1.origin.y + 10.0));
+        menu.hover(&engine, TEST_SCREEN, Point::new(r1.origin.x + 10.0, r1.origin.y + 10.0));
         assert!(menu.submenu.is_some());
         // 悬停普通项（index 0）→ 收起子菜单
         let r0 = menu.item_rect(0);
-        menu.hover(&engine, Point::new(r0.origin.x + 10.0, r0.origin.y + 10.0));
+        menu.hover(&engine, TEST_SCREEN, Point::new(r0.origin.x + 10.0, r0.origin.y + 10.0));
         assert!(menu.submenu.is_none(), "悬停普通项应收起子菜单");
         assert_eq!(menu.hovered, Some(0));
     }
@@ -756,7 +757,7 @@ mod tests {
         let mut menu = cascaded_menu();
         menu.open(Rect::new(0.0, 0.0, 120.0, 96.0));
         let r1 = menu.item_rect(1);
-        menu.hover(&engine, Point::new(r1.origin.x + 10.0, r1.origin.y + 10.0));
+        menu.hover(&engine, TEST_SCREEN, Point::new(r1.origin.x + 10.0, r1.origin.y + 10.0));
         let sub = menu.submenu_state().unwrap();
         // 点子菜单第一项（index 0）→ 返回 (parent=1, index=0)
         let child_center = Point::new(
@@ -784,7 +785,7 @@ mod tests {
         // 用 hover 打开子菜单后 select_submenu
         // （这里 engine 需要；open_submenu 内部用 panel_size 需要 engine）
         if let Some(engine) = find_engine() {
-            menu.hover(&engine, Point::new(r1.origin.x + 10.0, r1.origin.y + 10.0));
+            menu.hover(&engine, TEST_SCREEN, Point::new(r1.origin.x + 10.0, r1.origin.y + 10.0));
             assert!(menu.select_submenu(MenuPath { parent: Some(1), index: 0 }));
             assert!(menu.submenu_state().unwrap().menu.items[0].checked);
             assert!(menu.select_submenu(MenuPath { parent: Some(1), index: 2 }));
@@ -794,6 +795,47 @@ mod tests {
             // 再点已选中项 → 无变化
             assert!(!menu.select_submenu(MenuPath { parent: Some(1), index: 2 }));
         }
+    }
+
+    /// 子菜单右缘越屏 → `open_submenu` 应翻到父项左侧（参 §39 MenuFlyoutSubItem）。
+    #[test]
+    fn submenu_flips_left_when_right_overflows() {
+        let Some(engine) = find_engine() else { return };
+        let mut menu = cascaded_menu();
+        // 面板贴屏右缘：panel_rect origin.x = 900, width=120 → 父项 right ≈ 1020 + 子菜单 → 越屏 1024
+        menu.open(Rect::new(900.0, 0.0, 120.0, 96.0));
+        let r1 = menu.item_rect(1);
+        menu.hover(&engine, TEST_SCREEN, Point::new(r1.origin.x + 10.0, r1.origin.y + 10.0));
+        let sub = menu.submenu_state().expect("应展开子菜单");
+        assert!(
+            sub.panel.origin.x < r1.origin.x,
+            "子菜单应翻到父项左侧：sub.x={} vs parent.x={}",
+            sub.panel.origin.x,
+            r1.origin.x
+        );
+        assert!(
+            sub.panel.right() <= TEST_SCREEN.right() + 0.01,
+            "翻左后子菜单不越屏"
+        );
+    }
+
+    /// 子菜单下缘越屏 → `open_submenu` 应上移到屏内。
+    #[test]
+    fn submenu_shifts_up_when_bottom_overflows() {
+        let Some(engine) = find_engine() else { return };
+        let mut menu = cascaded_menu();
+        // 屏 200 高；父面板贴屏底
+        let tiny_screen = Rect::new(0.0, 0.0, 800.0, 200.0);
+        menu.open(Rect::new(0.0, 140.0, 120.0, 96.0));
+        let r1 = menu.item_rect(1);
+        menu.hover(&engine, tiny_screen, Point::new(r1.origin.x + 10.0, r1.origin.y + 10.0));
+        let sub = menu.submenu_state().expect("应展开子菜单");
+        assert!(
+            sub.panel.bottom() <= tiny_screen.bottom() + 0.01,
+            "下缘上移到屏内：bottom={} screen.bottom={}",
+            sub.panel.bottom(),
+            tiny_screen.bottom()
+        );
     }
 
     #[test]

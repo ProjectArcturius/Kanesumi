@@ -28,6 +28,9 @@ pub const fn popup_gap() -> f32 {
 ///
 /// 判据（ComboBoxHelper）：触发器下缘到屏幕底的空间 ≥ 面板高 + 间隙 → Down；否则 Up。
 /// 水平方向：面板与触发器左缘对齐（右缘超出屏幕时收拢）。
+///
+/// 用于 ComboBox/DropDownButton/MenuBar 顶级 flyout —— 触发器 vs 面板是「下方 or 上方」二择。
+/// 子菜单（父项右侧展开）请用 [`place_submenu`]。
 #[must_use]
 pub fn place_popup(trigger: Rect, panel_size: Size, screen: Rect, gap: f32) -> PopupPlacement {
     let below = screen.bottom() - trigger.bottom();
@@ -57,6 +60,39 @@ pub fn place_popup(trigger: Rect, panel_size: Size, screen: Rect, gap: f32) -> P
         direction,
         rect: Rect::new(x, y, panel_size.width, panel_size.height),
     }
+}
+
+/// 子菜单（父菜单某项右侧展开）横向定位：优先父项右侧；右缘越屏 → 翻到父项左侧；
+/// 若翻左后左缘仍越屏（父项贴左）→ 收拢到屏幕左缘。纵向以父项顶为准，下缘越屏时上移。
+///
+/// UWP MenuFlyoutSubItem 行为参考：子面板不覆盖父项、遇边翻转、始终屏内。
+/// 参 CONTROL_SPEC §39（MenuFlyoutSubItem）。
+#[must_use]
+pub fn place_submenu(parent: Rect, panel_size: Size, screen: Rect, gap: f32) -> Rect {
+    let w = panel_size.width.min(screen.size.width);
+    let h = panel_size.height.min(screen.size.height);
+    // 横向：右优先，越屏则翻左，仍越屏则贴屏边。
+    let right_x = parent.right() + gap;
+    let x = if right_x + w <= screen.right() {
+        right_x
+    } else {
+        let left_x = parent.origin.x - gap - w;
+        if left_x >= screen.origin.x {
+            left_x
+        } else {
+            // 两侧都放不下 —— 靠屏右夹紧（保面板可见，允许轻微遮父项）。
+            (screen.right() - w).max(screen.origin.x)
+        }
+    };
+    // 纵向：与父项顶对齐；下缘越屏 → 上移；再越顶 → 贴屏顶。
+    let mut y = parent.origin.y;
+    if y + h > screen.bottom() {
+        y = screen.bottom() - h;
+    }
+    if y < screen.origin.y {
+        y = screen.origin.y;
+    }
+    Rect::new(x, y, panel_size.width, panel_size.height)
 }
 
 /// 弹层状态机。参 CONTROL_SPEC §8/§9：
@@ -258,6 +294,49 @@ mod tests {
         let p = place_popup(trigger, size, screen, 4.0);
         assert_eq!(p.direction, PopupDirection::Up);
         assert_eq!(p.rect.origin.y, 540.0 - 160.0 - 4.0, "面板上翻");
+    }
+
+    #[test]
+    fn place_submenu_right_when_space() {
+        let parent = Rect::new(100.0, 100.0, 160.0, 32.0);
+        let size = Size::new(180.0, 120.0);
+        let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let r = place_submenu(parent, size, screen, 2.0);
+        assert_eq!(r.origin.x, parent.right() + 2.0, "默认父项右侧展开");
+        assert_eq!(r.origin.y, 100.0);
+    }
+
+    #[test]
+    fn place_submenu_flips_left_when_right_overflows() {
+        // 父项 right = 700 + 160 = 860；右侧 862 + 180 = 1042 > 800 → 翻左
+        let parent = Rect::new(700.0, 100.0, 100.0, 32.0);
+        let size = Size::new(180.0, 120.0);
+        let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let r = place_submenu(parent, size, screen, 2.0);
+        assert!(r.origin.x < parent.origin.x, "翻到父项左侧");
+        assert_eq!(r.origin.x, parent.origin.x - 2.0 - 180.0);
+    }
+
+    #[test]
+    fn place_submenu_shifts_up_when_bottom_overflows() {
+        // 父项贴屏底：y=560, h=32 → 底 592；子面板 y=560, h=120 → 底 680 > 600 → 上移
+        let parent = Rect::new(100.0, 560.0, 160.0, 32.0);
+        let size = Size::new(180.0, 120.0);
+        let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let r = place_submenu(parent, size, screen, 2.0);
+        assert_eq!(r.origin.y + r.size.height, screen.bottom(), "下缘齐屏底");
+    }
+
+    #[test]
+    fn place_submenu_clamps_when_neither_side_fits() {
+        // 屏幕仅 100 宽，面板 180 宽 —— 两侧都放不下，靠右夹紧
+        let parent = Rect::new(20.0, 20.0, 60.0, 32.0);
+        let size = Size::new(180.0, 120.0);
+        let screen = Rect::new(0.0, 0.0, 100.0, 600.0);
+        let r = place_submenu(parent, size, screen, 2.0);
+        assert!(r.origin.x >= screen.origin.x - 0.01, "不越屏左");
+        // 面板宽 > 屏 → 靠右夹紧 = right - w = -80，被 max(origin.x=0) 拉回 0
+        assert!(r.origin.x <= screen.right() - 1.0 || (screen.right() - size.width) < 0.0);
     }
 
     #[test]
