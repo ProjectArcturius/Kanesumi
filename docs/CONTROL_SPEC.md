@@ -1032,3 +1032,329 @@ clamp 到 [−MaxShift, +MaxShift]，MaxShift = MaxShiftRatio × 视口主轴
 - `drag_to(dx)` → 露出距离（夹紧到项区宽）；`release()` 吸合/回弹。
 - 点操作项 → 返回 `Invoke(index)`。
 - 点内容 → `Close`（收起）。
+
+---
+
+## 33 · Grid（MetroGrid 布局原语）
+
+> 数据源：UWP `Grid` 为平台内置布局容器（Windows.UI.Xaml，闭源），无独立 .cpp。
+> 规格来自 XAML 用法惯例（RowDefinition/ColumnDefinition：Fixed / Auto / Star）+ Metro 时代网格布局。
+
+### 尺寸定义
+
+| 项 | 值 |
+|---|---|
+| 轨道类型 | `Fixed(px)` / `Auto`（内容自适应）/ `Star(w)`（比例分配剩余，`*`=1） |
+| 间距 | UWP Grid 无 gap（子元素用 Margin）；Kanesumi 以 `gap`（row, col）可选扩展 |
+| 子单元 | `GridChild { row, col, row_span, col_span }`（UWP `Grid.Row/Column/RowSpan/ColumnSpan`） |
+
+### 布局算法（`resolve`）
+
+1. Fixed 轨道占自身像素；Auto 轨道取宿主量测值（经 `auto_rows/auto_cols` 传入）；
+2. 剩余空间（rect − Fixed − Auto − 间距）按 Star 权重比例分配；
+3. 无 Star 轨道时剩余空间留空（UWP 行为）；
+4. `child_rect` 合并跨度多轨道 + 其间间距。
+
+> Kanesumi 实现：`kanesumi-structure::MetroGrid`（纯布局，不自绘、不持控件状态）。
+
+---
+
+## 34 · TextBox（MetroTextBox）
+
+> 数据源：`reference/microsoft-ui-xaml/dev/CommonStyles/TextBox_themeresources_v1.xaml`
+> （Windows.UI.Xaml 平台内置控件，主体闭源，只有默认模板 XAML 可读）。
+
+### 结构与尺寸
+
+```
+┌ Header（可选，Margin 0,0,0,4）────────────────────────────┐
+│ ┌─────────────────────────────────────────┬────────────┐ │
+│ │ 文本 / 占位（Padding 10,6,6,5）           │ [× 34]     │ │
+│ └─────────────────────────────────────────┴────────────┘ │
+└──────────────────────────────────────────────────────────┘
+```
+
+| 项 | 值 |
+|---|---|
+| MinHeight / MinWidth | **32 / 64**（TextControlThemeMinHeight/MinWidth） |
+| BorderThickness | 1（`TextControlBorderThemeThickness`）；Focused **2** |
+| Padding | `10,6,6,5`（TextControlThemePadding v1） |
+| 字号 | ControlContentThemeFontSize（14，Kanesumi 用主题 body） |
+| 删除按钮 | MinWidth **34**、glyph `E894`（×）→ Kanesumi 自绘 `✕` 字形 |
+| 光标 | 1px（V10：HiDPI 用 **2px**）；闪烁 on/off 各 0.5s |
+
+### 视觉状态（CommonStates，全部瞬时）
+
+| 态 | 边框 | 底 |
+|---|---|---|
+| Normal | `TextControlBorderBrush`（BaseMedium → divider） | `TextControlBackground`（surface） |
+| PointerOver | `TextControlBorderBrushPointerOver`（Highlight → on_surface_variant） | 同 Normal |
+| Focused | `TextControlBorderBrushFocused`（**2px**，Kanesumi focus_stroke） | `TextControlBackgroundFocused`（AltHigh） |
+| Disabled | 前景降透明度 | 前景降透明度 |
+
+### 交互
+
+- 聚焦（点击/键盘）：**全选**（UWP TextBox 聚焦行为）；点击定位光标（按字符边界最近）。
+- 编辑核心（`TextField`）：插入/删除/Backspace/Delete/Left/Right/Home/End + **选区**（Shift+方向）+ **撤销**（栈上限 64）+ 掩码（PasswordBox）。
+- 占位文本：空内容时显示，Focused 时转半透明（TextControlPlaceholderForegroundFocused）。
+- 删除按钮：有内容 + 聚焦/悬停时显示（ButtonStates ButtonVisible）。
+
+### Kanesumi 适配
+
+- 深色桌面底色 `surface`；选区高亮强调色 **35%**（TextControlSelectionHighlightColor → primary）；
+- CJK 安全：下标按 char 非字节。
+
+---
+
+## 35 · PasswordBox（MetroPasswordBox）
+
+> PasswordBox 是 TextBox 的掩码变体（Windows.UI.Xaml，闭源）。Kanesumi 以
+> `MetroTextBox` + `TextField::set_mask(Some('●'))` 实现。
+
+### 规格
+
+| 项 | 值 |
+|---|---|
+| 掩码字符 | `●`（UWP 默认 PasswordChar） |
+| 明文 | 保留于 `field.text()`，显示层全掩码，**绝不渲染明文** |
+| 尺寸/状态/交互 | 同 TextBox（§34），仅掩码差异 |
+| 输入法 | IME 组成尚未接入（Phase 2-1 / Ceyboard）；先支持 ASCII/CJK 直接输入 |
+
+---
+
+## 36 · CheckBox（MetroCheckBox）
+
+> 数据源：`reference/microsoft-ui-xaml/dev/CommonStyles/CheckBox_themeresources_v1.xaml`
+> （Windows.UI.Xaml 平台内置，主体闭源，只有默认模板 XAML 可读）。
+
+### 结构与尺寸
+
+```
+┌ [□ 20]  标签（Padding 左 8）──────────────┐
+│   列0=20   列1=*                          │
+└──────────────────────────────────────────┘
+```
+
+| 项 | 值 |
+|---|---|
+| 勾选框 | **20×20**、列 0 宽 20 |
+| Padding | `8,5,0,0` |
+| MinWidth / MinHeight | **120 / 32** |
+| 描边 | CheckBoxBorderThemeThickness **1** |
+| 字形 | ✓（`E73E`）/ —（`E73C`）→ Kanesumi 用标准 Unicode（思源黑体含） |
+| CornerRadius | ControlCornerRadius（Kanesumi 默认 Square） |
+
+### 视觉状态（CombinedStates，全瞬时）
+
+| 态 | 勾选框 fill | 勾选框 stroke | 字形 |
+|---|---|---|---|
+| Unchecked | Transparent | `on_surface_variant`（BaseMedium） | 无 |
+| UncheckedPointerOver | Transparent | `on_surface`（Highlight） | 无 |
+| UncheckedPressed | `on_surface_variant` 35%（BaseMediumLow） | 无 | 无 |
+| **Checked** | **强调色** | Transparent | 白 ✓ |
+| CheckedPointerOver | 强调色提亮（Accent Light1） | — | 白 ✓ |
+| CheckedPressed | 强调色压暗（Accent Dark1） | — | 白 ✓ |
+| **Indeterminate** | **强调色** | Transparent | 白 — |
+| Disabled | 上述 × disabled_opacity | 同上 | 白 × alpha |
+
+### 交互
+
+- 点击 → toggle。默认 **两态循环**（Unchecked ↔ Checked，UWP 语义）；
+- `allow_indeterminate` = true 时**三态循环**（Unchecked → Checked → Indeterminate → Unchecked）。
+
+---
+
+## 37 · NumberBox（MetroNumberBox）
+
+> 数据源：`reference/microsoft-ui-xaml/dev/NumberBox/`（NumberBox.cpp + NumberBox.xaml，**开源**）。
+
+### 结构与尺寸
+
+```
+┌ Header（可选）───────────────────────────────────────────┐
+│ ┌ 文本 ────────────────┬───┬───┬───┐                     │
+│ │ 数字（Padding 10,6,6,5）│ ▲ │ │ ▼ │  ← Spin 区 72 宽    │
+│ └──────────────────────┴───┴───┴───┘                     │
+└──────────────────────────────────────────────────────────┘
+```
+
+| 项 | 值 |
+|---|---|
+| MinWidth | **120**（NumberBoxMinWidth） |
+| SpinButtonsColumn | **72**（SpinButtonsVisible 态） |
+| SpinButton MinWidth | **32**（NumberBoxSpinButtonStyle） |
+| 分隔线 | `NumberBoxSpinButtonBorderThickness` `0,1,1,1` → 两按钮间 1px |
+| 步进 | SmallChange（默认 1）；Minimum/Maximum（默认 ±∞ = 无界） |
+| 模式 | Compact（并排）/ Popup（弹层，首期仅 Compact） |
+
+### 行为
+
+- 上/下按钮 → `Value ± SmallChange`，**夹紧到 [Minimum, Maximum]**（RepeatButton 按住重复语义，Kanesumi 首期单击）。
+- 文本编辑：仅接受数字/小数点（唯一）/负号（开头）；Enter/失焦 → 解析 + clamp 回值域。
+- 聚焦 → 全选（TextBox 语义）；失焦 → 提交。
+
+### Kanesumi 适配
+
+- chevron 三角自绘（V7 不依赖 Segoe MDL2 glyph E70E/E70D）；
+- 数字格式化：整数去小数点（`3` 而非 `3.0`）。
+
+---
+
+## 38 · AutoSuggestBox（MetroAutoSuggestBox）
+
+> 数据源：`reference/microsoft-ui-xaml/dev/AutoSuggestBox/`（AutoSuggestBoxHelper.cpp + 模板，**开源**；
+> Helper 只处理键盘导航，主体 TextBox 闭源）。
+
+### 结构与尺寸
+
+```
+┌ Header（可选）─────────────────────────────────────────┐
+│ ┌ TextBox ───────────────────────────┐                 │
+│ │ 文本 / 占位                         │                 │
+│ └────────────────────────────────────┘                 │
+│ ┌ SuggestionsPopup（MaxH 300）───────────────────────┐  │
+│ │  [建议项 40px，Padding 12]                          │  │
+│ │  [建议项 40px]                                     │  │
+│ └────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+| 项 | 值 |
+|---|---|
+| 建议列表 MaxHeight | **300**（AutoSuggestListMaxHeight，OS 值） |
+| 建议项高 | **40**（ListViewItem，参 CONTROL_SPEC §7） |
+| 建议项 Padding | **12** |
+| 面板边框 | AutoSuggestListBorderThemeThickness **1**；底色 ChromeMediumLow → surface_variant |
+
+### 行为
+
+- 输入变化 → 过滤建议（`suggestions.contains(query)`）+ 展开弹层；空文本不弹（IsSuggestionListOpen false）。
+- **键盘导航**：Up/Down 移动高亮（循环）；Enter 提交高亮项（无高亮则提交当前文本）；Esc 关闭。
+- 点击建议项 → 提交 + 关闭。
+- 高亮 = **中性**（参 §5 规律 5，非强调色）。
+
+> Kanesumi 实现：建议源由宿主 `set_suggestions` 注入（纯逻辑过滤，上限 50 防爆栈）；
+> 弹层复用 ListView 语义渲染。
+
+---
+
+## 39 · MenuFlyoutSubItem / RadioMenuFlyoutItem（MetroDropdownMenu 级联）
+
+> 数据源：`reference/microsoft-ui-xaml/dev/RadioMenuFlyoutItem/`（RadioMenuFlyoutItem.cpp，**开源**）。
+> MenuFlyoutSubItem 为 MenuFlyout 原生嵌套（闭源）；RadioMenuFlyoutItem 依赖级联容器。
+
+### MenuFlyoutSubItem（二级级联）
+
+- 顶层项带 `submenu: Vec<MenuItem>` → **悬停自动展开**二级面板（hover-swap：悬停其它项收起）；
+- 子菜单面板 = **父项右侧 + 2px gap、垂直对齐**父项上缘；
+- 子菜单项命中返回 `(parent, child)` 路径（`MenuPath`）；
+- 渲染：父项右侧 chevron-right 指示；子菜单项同 MenuFlyout 规格（项高 32、悬停中性高亮）。
+
+### RadioMenuFlyoutItem（单选组）
+
+- 菜单项带 `radio_group: Option<String>` → 同组内**勾选互斥**（选一项自动取消其它）；
+- 已勾选项重选不取消（UWP RadioMenuFlyoutItem 语义：`InternalIsChecked` 阻止用户取消）；
+- 组名基于字符串；顶层与子菜单内均可出现（组作用域 = 所在菜单层）。
+
+### 视觉
+
+| 态 | 指示 |
+|---|---|
+| 未勾选 | 无勾选标记 |
+| 已勾选 | 左侧/文本前勾选态（Kanesumi 以文本前缀表示，后续可换图标） |
+
+---
+
+## 40 · CommandBarFlyout（MetroCommandBarFlyout）
+
+> 数据源：`reference/microsoft-ui-xaml/dev/CommandBarFlyout/`（CommandBarFlyout.cpp + 模板，**开源**）。
+
+### 结构与尺寸
+
+```
+┌ [40×40][40×40][40×40][40×40] ┐   ← 横向命令条（TextCommandBarFlyout 默认四命令）
+└──────────────────────────────┘     边框 1px、按钮 40×40、图标 16
+```
+
+| 项 | 值 |
+|---|---|
+| 按钮 | **40×40**（CommandBarFlyoutAppBarButtonStyleBase Width/Height=40） |
+| 图标 | 16px 居中 |
+| 边框 | CommandBarFlyoutBorderThemeThickness **1** |
+| 底色 | 系统 chrome → Kanesumi `surface_variant` |
+| 默认命令 | Copy / Cut / Paste / Select All（TextCommandBarFlyout） |
+
+### 行为
+
+- **选中文本时浮出**（TextCommandBarFlyout 语义）；默认贴选区**上方**水平居中；
+  上方不足翻到下方；左右收拢不越屏。
+- 按钮 PointerOver = 中性高亮（HighlightListLow 白 10%）。
+- **无遮罩**（轻量工具栏不压暗背景，区别于 DropdownMenu）。
+- 点命令按钮 → 返回动作（Copy/Cut/Paste/SelectAll）；点外关闭。
+
+### Kanesumi 适配
+
+- 命令图标用标准 Unicode 字形（⧉/✂/★ 等，思源黑体包含），不依赖 MDL2；
+
+---
+
+## 41 · Repeater（MetroRepeater 虚拟化布局引擎）
+
+> 数据源：`reference/microsoft-ui-xaml/dev/Repeater/`（FlowLayout.cpp + ItemsRepeater.cpp，**开源**）。
+
+### 定位
+
+WinUI `ItemsRepeater` 是**元素工厂 + 回收复用**（59 个 cpp）。Kanesumi 状态驱动渲染
+无保留视觉树、无 DOM 复用，移植其**虚拟化核心**：给定视口 + 滚动偏移，只计算
+应渲染的条目范围与矩形 —— 长列表不再全量遍历/绘制，避免掉帧。
+
+### 布局模式
+
+| 模式 | 对应 WinUI | 行为 |
+|---|---|---|
+| **Stack** | `StackLayout` | 单轴等尺寸堆叠（横/纵） |
+| **UniformGrid** | `UniformGridLayout` | 等宽网格（GridView / 磁贴） |
+
+### 几何
+
+| 项 | 公式 |
+|---|---|
+| 内容主轴长 | `item_count × (item_extent + spacing) − spacing` |
+| 可见范围 | `first = floor(offset/stride)`；`last = ceil((offset+viewport)/stride) − 1`；滚过末尾 → None |
+| 条目矩形 | 主轴位置 `index × stride − offset`；Grid 模式含列/行换算 |
+| 命中 | 视口内点 + offset 还原 → 条目索引（空白间距不命中） |
+| scroll_into_view | 已可见不动；在上方 → 滚到上缘；在下方 → 底边贴视口底（最小滚动） |
+
+### 应用
+
+- `MetroList` 已改用 `virtualizer()`（`visible_range` 只渲染视口内行）；
+- TabView / TreeView / Grid 长列表可复用同一引擎。
+
+---
+
+## 42 · ScrollView / ScrollPresenter（MetroScrollView 滚动容器）
+
+> 数据源：`reference/microsoft-ui-xaml/dev/ScrollView/`（ScrollView.idl + ScrollPresenter.cpp，**开源**）。
+
+### 定位
+
+WinUI `ScrollView`/`ScrollPresenter` 是富交互滚动容器（惯性、Chaining、Railing、缩放）。
+Kanesumi 移植**纯状态 + 几何**：offset 夹紧、滚动条拇指/轨道几何、滚轮路由、
+可选弹簧平滑滚动。宿主渲染内容时以 `content_offset` 平移 + 视口裁剪。
+
+### 尺寸
+
+| 项 | 值 |
+|---|---|
+| `max_offset` | `ExtentHeight − ViewportHeight`（内容超视口才可滚，对齐 ScrollableHeight） |
+| 滚轮离散步 | **50px/格**（对齐合成器 Axis discrete） |
+| 滚动条宽度 | **8px**（UWP ScrollBar 常规宽） |
+| 拇指最小长 | **24px**（避免内容极长时拇指缩为点） |
+
+### 行为
+
+- `ScrollMode`：Auto / Enabled / Disabled（Disabled 阻塞滚动）；
+- `ScrollBarVisibility`：Auto（可滚时显示）/ Visible / Hidden；
+- 滚动条拇指：大小 = `视口/内容 × 轨道长`（下限 24），位置 = `offset/max_offset × 轨道长`；
+- 平滑滚动 = sokuou `SpringAnim`（UWP 用 Composition 惯性，Kanesumi 弹簧等价）；
+- `scroll_into_view(item_pos, extent)`：已可见不动 / 上方滚到上缘 / 下方底边贴视口底。

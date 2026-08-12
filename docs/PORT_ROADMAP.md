@@ -47,7 +47,7 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 
 ---
 
-## §Ⅲ 已移植（35 个 + 2 部分）
+## §Ⅲ 已移植（45 个 + 2 部分）
 
 见 `CONTROL_MATRIX.md` 详表。此处仅摘录源类归属：
 
@@ -88,24 +88,34 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 | MetroParallaxView | ParallaxView (WinUI 2) | **开源**（纯位移辅助） |
 | MetroAnimatedIcon | AnimatedIcon (WinUI 2) | **开源**（几何 chevron 插值） |
 | MetroSwipeControl | SwipeControl (WinUI 2) | **开源**（Reveal 模式） |
+| MetroGrid | Grid | 闭源（布局原语，structure） |
+| MetroTextBox | TextBox | 闭源 |
+| MetroPasswordBox | PasswordBox | 闭源（TextBox 掩码变体） |
+| MetroCheckBox | CheckBox | 闭源 |
+| MetroNumberBox | NumberBox (WinUI 2) | **开源** |
+| MetroAutoSuggestBox | AutoSuggestBox (WinUI 2) | **开源**（主体 TextBox 闭源） |
+| MetroDropdownMenu 级联 | MenuFlyoutSubItem | 闭源（悬停展开二级） |
+| RadioMenuFlyoutItem | RadioMenuFlyoutItem (WinUI 2) | **开源**（单选组，级联容器内） |
+| MetroCommandBarFlyout | CommandBarFlyout (WinUI 2) | **开源**（TextCommandBarFlyout 语义） |
+| MetroRepeater | Repeater / ItemsRepeater (WinUI 2) | **开源**（虚拟化布局核心：visible_range/item_rect） |
+| MetroScrollView | ScrollView / ScrollPresenter (WinUI 2) | **开源**（offset 夹紧 / 滚动条几何 / 平滑） |
 
-**已移植 35 个（开源 24 个）** —— §Ⅳ 全部**可移植**（不依赖闭源基元、非巨型虚拟化引擎）的开源
-控件已复刻完成。剩余阻塞项：NumberBox / AutoSuggestBox / CommandBarFlyout（依赖闭源 TextBox）、
-RadioMenuFlyoutItem（依赖 MenuFlyout 级联）、Repeater / ScrollPresenter（59/31 cpp 巨型虚拟化
-引擎，按路线图"先做上层控件、共用一份 Repeater"延后）、AnimatedVisualPlayer / WebView2（外部
-runtime，明确不移植）。PagerControl 仅 NumberPanel 模式；RadioButtons 单项自绘；TwoPaneView
-单区域判据；TabView 拖拽 Reorder、NavigationView 子项级联暂略（Phase 3 续）；ColorPicker
-Spectrum 2D 渐变 → 阶梯 hue 色带近似（铁律 6 纯色无渐变）。
+**已移植 45 个（开源 29 个 + 3 部分能力）** —— §Ⅳ **可移植开源控件已全部清空**。
+Repeater / ScrollView 虚拟化引擎落地并驱动 MetroList（只渲染可见行）。
+剩余仅 AnimatedVisualPlayer / WebView2（外部 runtime，明确不移植）。
 
 ### 已移植但部分能力未完（Phase 3 续做）
 
 | 控件 | 未完成 |
 |---|---|
 | MetroMenuBar | 键盘遍历（Alt / Arrow / Enter / Esc） |
-| MetroDropdownMenu | 二级级联（`MenuItem.submenu` 字段已在，render/命中未消费） |
 | MetroTabRow | 页体切换动画（只做 header + pipe，UWP Pivot 还有页面 slide） |
-| MetroList | 虚拟化（长列表全量渲染，长表掉帧） |
 | MetroSelectorFlyout | 分组 / 图标项 / 自定义 template |
+| MetroTextBox | IME 组成未接（Phase 2-1 / Ceyboard）；Ctrl+Z 撤销钩子待宿主键盘 |
+| MetroNumberBox | Popup 模式（首期仅 Compact）、按住重复步进 |
+| MetroDropdownMenu | 三级以上级联（现支持二级）、键盘遍历 |
+| MetroRepeater | 回收复用（Kanesumi 无保留视觉树，只做可见性虚拟化） |
+| MetroScrollView | 惯性/Chaining/Railing/缩放（Kanesumi 弹簧平滑等价惯性） |
 
 ---
 
@@ -114,37 +124,37 @@ Spectrum 2D 渐变 → 阶梯 hue 色带近似（铁律 6 纯色无渐变）。
 按微软 dev/ 目录字母序，标 P0-P3。行数越多、组合越复杂。
 
 | 控件 | dev/ 有 .cpp 数 | Ether 用途 | 优先级 | 备注 |
-|---|---:|---|:---:|---|
-| **NavigationView** | 19 | Settings 左侧导航、Librarian 侧栏 | **P1** | 现有 MetroTabRow ≈ NavigationView Top 模式的简化；侧栏 Left 模式 + Header/Pane/Content 分离全都没做。19 个 cpp 是移植量最大的一档 |
-| **Repeater** | 59 | List / TabView / TreeView 底层虚拟化 | **P1** | 最大工程量；先做上层控件、共用一份 Repeater |
-| **ScrollView / ScrollPresenter** | 5 + 31 | 上述所有滚动容器 | **P1** | Repeater 前置。ScrollPresenter 30 个 cpp 是内核 |
-| **NumberBox** | 3 | Settings 数字项（音量、屏幕缩放…） | **P1** | TextBox + 上下步进 + 校验（依赖闭源 TextBox） |
-| **RadioMenuFlyoutItem** | 1 | 菜单内单选（View → Zoom Level） | **P2** | 依赖 MenuFlyout 级联完善 |
-| **CommandBarFlyout** | 5 | 选中文本弹出 Cut/Copy/Paste 浮出 | **P2** | 需 TextBox / 选区 |
-| **AutoSuggestBox Helper** | 1 (Helper) | 搜索框建议下拉 | **P1** | 主体 TextBox 闭源；Helper 只处理键盘导航 |
+|---|---|---:|---:|---|
+| ~~**Repeater**~~ | 59 | 虚拟化布局引擎 | ✅ | **2026-08-12 已移植**（visible_range/item_rect，驱动 MetroList） |
+| ~~**ScrollView / ScrollPresenter**~~ | 5 + 31 | 滚动容器 | ✅ | **2026-08-12 已移植**（offset 夹紧 / 滚动条 / 平滑） |
+| ~~**RadioMenuFlyoutItem**~~ | 1 | 菜单内单选 | ✅ | **2026-08-12 已移植**（MenuFlyout 级联完成后） |
+| ~~**CommandBarFlyout**~~ | 5 | 选中文本浮出 | ✅ | **2026-08-12 已移植**（TextBox 选区 + 级联就绪） |
+| ~~**NumberBox**~~ | 3 | Settings 数字项 | ✅ | **2026-08-12 已移植**（依赖 TextBox 已解决） |
+| ~~**AutoSuggestBox**~~ | 1 (Helper) | 搜索框建议下拉 | ✅ | **2026-08-12 已移植**（TextBox 已解决） |
 | **AnimatedVisualPlayer** | 2 | Lottie 播放 | **—** | 依赖 Lottie runtime，暂不引入 |
 | **WebView2** | 2 | Web 嵌入 | **—** | 依赖 Chromium runtime，另立方案 |
 
-**小计**：剩余 8 项 —— 4 项依赖闭源 TextBox/MenuFlyout 基元，2 项外部 runtime 不移植，
-2 项巨型虚拟化引擎（Repeater 59 / ScrollPresenter 31）按路线图延后。
+**小计**：可移植开源控件已全部完成。剩余 2 项均依赖外部 runtime（Lottie / Chromium），
+不移植（标注「—」）。虚拟化引擎（Repeater + ScrollView）已落地并驱动 MetroList。
 
 ---
 
 ## §Ⅴ 待移植 —— **闭源**（`Windows.UI.Xaml`，靠 spec + Gallery 逆推）
 
-`reference/` 里无源码目录（或仅 XAML themeresources）的控件。Kanesumi 已移植的 11 个闭源控件是**同套方法**：读 `CONTROL_SPEC.md` 对应节 + 跑 WinUI 2 Gallery 观察 + 猜测数值。移植时同时**新增** `CONTROL_SPEC.md §N` 一节记录规格。
+`reference/` 里无源码目录（或仅 XAML themeresources）的控件。Kanesumi 已移植的 15 个闭源控件是**同套方法**：读 `CONTROL_SPEC.md` 对应节 + 跑 WinUI 2 Gallery 观察 + 猜测数值。移植时同时**新增** `CONTROL_SPEC.md §N` 一节记录规格。
 
 按类别聚合。
 
 ### V.1 基础输入（P0-P1）
 
-**最缺的一批。Ether 目前没有任何文本输入控件，settings/ceyboard 无法上线。**
+**TextBox / PasswordBox / CheckBox 已落地（2026-08-12）—— Ether 首个文本输入通路打通，
+settings/ceyboard 不再被输入控件阻塞（IME 接入仍待 Phase 2-1）。**
 
 | 控件 | Ether 用途 | 优先级 | 备注 |
-|---|---|:---:|---|
-| **TextBox** | Settings wifi 密码、Librarian 文件名、搜索框 | **P0** | 光标 / 选区 / IME / 撤销 —— 依赖 harness 键盘输入（P2-1 待做） |
-| **PasswordBox** | wifi / 锁屏密码 | **P0** | TextBox 变体（显式 masked） |
-| **CheckBox** | Settings 开关组（三态：Checked / Unchecked / Indeterminate） | **P0** | 与 Switch 语义不同：CheckBox = 多选一组内独立项，Switch = 布尔即时应用 |
+|---|---|---|:---:|---|
+| ~~**TextBox**~~ | Settings wifi 密码、Librarian 文件名、搜索框 | ✅ | **已移植**（`text_field.rs` + `text_box.rs`） |
+| ~~**PasswordBox**~~ | wifi / 锁屏密码 | ✅ | **已移植**（`password_box.rs`） |
+| ~~**CheckBox**~~ | Settings 开关组（三态） | ✅ | **已移植**（`check_box.rs`） |
 | **RadioButton**（单个） | 组内单选项 | **P1** | 组容器 RadioButtons 开源，单项自身闭源 |
 | **Slider** | 音量 / 亮度 / 色温 | **P1** | 连续数值输入；`MetroSwitch` 是布尔离散 |
 | **HyperlinkButton** | Settings 里指向外部 URL / 文档链接 | **P1** | Button 变体（下划线 + accent 前景） |
@@ -154,8 +164,8 @@ Spectrum 2D 渐变 → 阶梯 hue 色带近似（铁律 6 纯色无渐变）。
 ### V.2 基础容器 / 布局（P0-P1）
 
 | 控件 | Ether 用途 | 优先级 | 备注 |
-|---|---|:---:|---|
-| **Grid** | 通用二维布局 | **P0** | `kanesumi-structure::Ui` 有 Row/Column（一维），二维 Grid 未做 |
+|---|---|---|:---:|---|
+| ~~**Grid**~~ | 通用二维布局 | ✅ | **已移植**（`kanesumi-structure::MetroGrid`，Fixed/Auto/Star + span） |
 | **StackPanel** | 一维排列 | ✅≈ | `kanesumi-structure::Ui::LayoutDirection` 已覆盖 |
 | **Border** | 单独描边 / 圆角容器 | **P1** | Scene FillRect+StrokeRect 组合可替；显式控件更清晰 |
 | **Canvas** | 绝对定位 | **P2** | 少用，MetroTile 磁贴墙内部已自绘 |
@@ -223,34 +233,35 @@ Spectrum 2D 渐变 → 阶梯 hue 色带近似（铁律 6 纯色无渐变）。
 
 ## §Ⅵ 优先级摘要（"接下来做什么"）
 
-排完 P0 之后依次推 P1。**P0 必须先于 Ceyboard / Settings 真正上线**。
+排完 P0 之后依次推 P1。**P0 已于 2026-08-12 清空（TextBox / PasswordBox / CheckBox / Grid
+落地），Ceyboard / Settings 的输入通路不再被控件阻塞；IME 接入仍待 Phase 2-1。**
 
-### P0（当前阻塞项，全属闭源基础输入 + 布局）
+### P0（已清空 ✅）
 
-1. **TextBox** —— 无它 Settings/Ceyboard 都进不了下一步；依赖 harness `KeyPressed` 事件已到位，缺光标/选区/IME 接口
-2. **PasswordBox** —— TextBox 派生
-3. **CheckBox** —— Settings 组件标配
-4. **Grid** —— 二维布局，Settings 面板必需
+1. ~~**TextBox**~~ ✅ 已移植（`text_field.rs` + `text_box.rs`，光标/选区/撤销/掩码）
+2. ~~**PasswordBox**~~ ✅ 已移植（`password_box.rs`）
+3. ~~**CheckBox**~~ ✅ 已移植（`check_box.rs`，三态）
+4. ~~**Grid**~~ ✅ 已移植（`kanesumi-structure::MetroGrid`）
 
 ### P1（Ether 常见应用需求）
 
-5. **NavigationView** —— Settings 左侧栏
+5. **NavigationView** —— Settings 左侧栏（已实现，待接 Settings）
 6. **SplitView** —— Librarian 双栏
 7. **Slider** —— Settings 数值调节
 8. **HyperlinkButton** —— 关于/许可页
 9. **Border** —— 通用装饰
-10. **RadioButton + RadioButtons** —— 单选组
+10. **RadioButton + RadioButtons** —— 单选组（组已实现，单项自绘）
 11. **Image** —— 应用内图片
-12. **TitleBar** —— 应用窗口 SSD 标题（Ether Issue #8）
-13. **Repeater + ScrollPresenter + ScrollView** —— List 虚拟化前置
-14. ~~**InfoBar / Expander / Breadcrumb**~~ ✅ 已完成；**NumberBox** —— 开源可读、小工程量
-15. **AutoSuggestBox（Helper 开源，TextBox 依赖 P0-1）** —— 搜索框
-16. **NumberBox** —— 数字步进
-17. **MenuBar 键盘遍历 + MenuFlyoutSubItem** —— 补齐 MenuBar 二级级联与键盘（本次已埋钩子）
+12. ~~**Repeater + ScrollPresenter + ScrollView**~~ ✅ 2026-08-12（虚拟化引擎，驱动 MetroList）
+13. ~~**InfoBar / Expander / Breadcrumb**~~ ✅；~~**NumberBox**~~ ✅ 2026-08-12
+14. ~~**AutoSuggestBox**~~ ✅ 2026-08-12
+15. ~~**CommandBarFlyout**~~ ✅ 2026-08-12（TextBox 选区 + MenuFlyout 级联就绪）
+16. ~~**MenuFlyoutSubItem + RadioMenuFlyoutItem**~~ ✅ 2026-08-12（级联落地）
+17. **MenuBar 键盘遍历** —— 补齐 MenuBar 键盘（Alt / Arrow / Enter / Esc）
 18. **Frame / Page transition 动画** —— 已有 Navigation 状态机，接页面 slide 动画即可
 
-> 本批已完成的自足小型控件（§Ⅳ 首批）：InfoBar / Expander / InfoBadge / PipsPager /
-> PersonPicture / DropDownButton（P1–P2，2026-08-12 移植，参 CONTROL_SPEC §12–§17）。
+> 2026-08-12 批次三：Repeater 虚拟化引擎 + ScrollView 滚动容器。
+> 参 CONTROL_SPEC §41–§42。Gallery Input 页新增 1000 项虚拟化长列表演示。
 
 ### P2-P3
 
