@@ -95,6 +95,20 @@ impl Rect {
     pub fn contains(self, p: Point) -> bool {
         p.x >= self.origin.x && p.x < self.right() && p.y >= self.origin.y && p.y < self.bottom()
     }
+
+    /// 与 `other` 的交集（半开区间）。不相交时返回 `None`（或退化矩形）。
+    /// 布局引擎裁剪（box 语义）用：`clip ∩ child_rect` 决定可见区域。
+    pub fn intersect(self, other: Rect) -> Option<Rect> {
+        let x0 = self.origin.x.max(other.origin.x);
+        let y0 = self.origin.y.max(other.origin.y);
+        let x1 = self.right().min(other.right());
+        let y1 = self.bottom().min(other.bottom());
+        if x0 < x1 && y0 < y1 {
+            Some(Rect::new(x0, y0, x1 - x0, y1 - y0))
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]

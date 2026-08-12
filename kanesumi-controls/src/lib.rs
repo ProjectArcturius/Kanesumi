@@ -39,6 +39,7 @@ pub mod repeater;
 pub mod retained;
 pub mod scroll_view;
 pub mod selector_flyout;
+pub mod slider;
 pub mod split_button;
 pub mod state;
 pub mod surface;
@@ -101,6 +102,7 @@ pub use scroll_view::{
     ScrollMode,
 };
 pub use selector_flyout::MetroSelectorFlyout;
+pub use slider::{MetroSlider, SLIDER_HEADER_MARGIN, SLIDER_MIN_H, SLIDER_MIN_W, SLIDER_THUMB, SLIDER_TRACK_H, SLIDER_TRACK_MARGIN};
 pub use split_button::{MetroSplitButton, SplitButtonClick, SplitButtonPart};
 pub use state::{ButtonState, ControlState};
 pub use surface::MetroSurface;

@@ -64,6 +64,27 @@ pub enum Key {
     Unknown(u32),
 }
 
+/// 修饰键状态 —— 纯数据、跨平台。事件附带事件发生瞬间的修饰键组合。
+/// 由外壳（Wayland `update_modifiers`）维护并注入每个事件；App 据此实现
+/// Ctrl+C/V、Shift+范围选等组合（参 `key_to_text_input` 契约：修饰键由宿主组合）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Modifiers {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    /// Super / Win / Meta 键。
+    pub super_key: bool,
+}
+
+impl Modifiers {
+    pub const NONE: Modifiers = Modifiers {
+        ctrl: false,
+        alt: false,
+        shift: false,
+        super_key: false,
+    };
+}
+
 /// 输入事件 —— 纯数据、跨平台。`x/y` 为表面本地逻辑坐标（指针进入表面后有效）。
 /// 非 Copy（IME 变体含 `String`）；App 消费时按值 move。
 #[derive(Debug, Clone, PartialEq)]
@@ -75,19 +96,21 @@ pub enum InputEvent {
         x: f32,
         y: f32,
         button: PointerButton,
+        modifiers: Modifiers,
     },
     /// 释放。
     PointerReleased {
         x: f32,
         y: f32,
         button: PointerButton,
+        modifiers: Modifiers,
     },
     /// 滚轮 / 触摸板滚动。`dx`/`dy` 为逻辑像素增量；**正方向 = 表面坐标 +y（下）**，
     /// 即向下滚为正。外壳把 Wayland Axis 的 `discrete`（整格 ~50px）或 `absolute`
     /// （触摸板连续）转换为像素增量。
-    Scroll { x: f32, y: f32 },
+    Scroll { x: f32, y: f32, modifiers: Modifiers },
     /// 键按下（表面持有键盘焦点时）。释放事件不推（App 一般只关心按下）。
-    KeyPressed { key: Key },
+    KeyPressed { key: Key, modifiers: Modifiers },
     /// 指针离开表面。
     PointerLeft,
     /// IME 组合态更新。`cursor_byte` 为组合态内光标字节偏移（None = 光标在尾部，
@@ -118,6 +141,15 @@ pub trait App {
     /// 字体路径。外壳据此加载 `TextEngine` 注入 `render`（排版唯一真源，SD §IX 禁止静默回退）。
     /// 默认 `None` → 外壳按 KANESUMI_TEST_FONT → 系统字体顺序查找。
     fn font_path(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+
+    /// 请求的动态高度（layer-shell 角色）。返回 `Some(h)` 表示 App 希望表面变为
+    /// 该高度（如 TopBar 展开面板）；`None` = 固定 `AppConfig.height`。
+    /// 外壳每帧比对后经 wlr-layer-shell `set_size` 提交并**立即生效**（不等 configure
+    /// 往返，参旧 topbar.rs `set_height` 模式）；合成器按 cached_state.size.h 扩大命中
+    /// 与渲染区域（参 Ether compositor input/pointer.rs `topbar_height`）。
+    fn preferred_height(&self) -> Option<f32> {
         None
     }
 
@@ -370,5 +402,32 @@ mod tests {
         };
         let events = b.apply();
         assert!(matches!(&events[0], InputEvent::Preedit { text, .. } if text.is_empty()));
+    }
+
+    #[test]
+    fn modifiers_default_none() {
+        let none = Modifiers::default();
+        assert_eq!(none, Modifiers::NONE);
+        assert!(!none.ctrl && !none.shift && !none.alt && !none.super_key);
+    }
+
+    #[test]
+    fn modifiers_in_events() {
+        let ctrl_shift = Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::NONE
+        };
+        let ev = InputEvent::KeyPressed {
+            key: Key::Char('c'),
+            modifiers: ctrl_shift,
+        };
+        match ev {
+            InputEvent::KeyPressed { key, modifiers } => {
+                assert_eq!(key, Key::Char('c'));
+                assert!(modifiers.ctrl && modifiers.shift);
+            }
+            _ => panic!("类型不符"),
+        }
     }
 }

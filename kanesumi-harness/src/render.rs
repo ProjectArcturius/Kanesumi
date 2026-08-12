@@ -189,6 +189,11 @@ pub enum RendererError {
 
 impl Renderer {
     /// 从 wl_surface 建 wgpu 表面与管线。`conn` 用于取 wl_display 指针。
+    ///
+    /// 后端选择：优先 Vulkan；`request_adapter` 失败（含 `SURFACE_LOST_KHR`，常见于
+    /// GLES 合成器下）时回退 GL（Mesa llvmpipe/lavapipe 软件路径），仍失败再试
+    /// `force_fallback_adapter`。参 Known Issue #8 —— Ether DRM 合成器（GlesRenderer）
+    /// 下 Vulkan 客户端 surface 可能失效，GL 软件回退保证 TopBar/Dock 可渲染。
     pub fn new(
         conn: &Connection,
         wl_surface: &WlSurface,
@@ -196,8 +201,47 @@ impl Renderer {
         height: f32,
         scale: f32,
     ) -> Result<Self, RendererError> {
+        Self::new_with_backends(
+            conn,
+            wl_surface,
+            width,
+            height,
+            scale,
+            &[wgpu::Backends::VULKAN, wgpu::Backends::GL],
+        )
+    }
+
+    /// 显式指定后端候选（主→备）。遍历首个能成功创建 adapter 的后端。
+    pub fn new_with_backends(
+        conn: &Connection,
+        wl_surface: &WlSurface,
+        width: f32,
+        height: f32,
+        scale: f32,
+        backends: &[wgpu::Backends],
+    ) -> Result<Self, RendererError> {
+        for (i, backend) in backends.iter().enumerate() {
+            match Self::new_with_backend(conn, wl_surface, width, height, scale, *backend) {
+                Ok(r) => return Ok(r),
+                Err(e) if i + 1 < backends.len() => {
+                    log::warn!("wgpu 后端 {:?} 初始化失败（{e:?}），尝试下一候选", backend);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!("backends 非空")
+    }
+
+    fn new_with_backend(
+        conn: &Connection,
+        wl_surface: &WlSurface,
+        width: f32,
+        height: f32,
+        scale: f32,
+        backend: wgpu::Backends,
+    ) -> Result<Self, RendererError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN,
+            backends: backend,
             ..Default::default()
         });
 
@@ -230,6 +274,14 @@ impl Renderer {
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
         }))
+        .or_else(|| {
+            // 兼容 surface 失败（SURFACE_LOST）→ 试 fallback adapter（软件渲染）。
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: true,
+            }))
+        })
         .ok_or(RendererError::Adapter)?;
 
         let (device, queue) =
@@ -245,12 +297,21 @@ impl Renderer {
             .find(|f| !f.is_srgb())
             .copied()
             .unwrap_or(caps.formats[0]);
+        // alpha_mode：优先 Opaque（Kanesumi 表面默认不透明，含 TopBar 背景）。
+        // ⚠ 用 PreMultiplied 时合成器（GLES）会把整个表面当透明混合 → 不透明背景
+        //   也被混成透明（TopBar 背景消失、"字样飞出"）。仅显式需要透明时用 PreMultiplied。
         let alpha_mode = caps
             .alpha_modes
             .iter()
-            .find(|a| **a == wgpu::CompositeAlphaMode::PreMultiplied)
+            .find(|a| **a == wgpu::CompositeAlphaMode::Opaque)
             .copied()
-            .unwrap_or(wgpu::CompositeAlphaMode::Auto);
+            .unwrap_or_else(|| {
+                caps.alpha_modes
+                    .iter()
+                    .find(|a| **a == wgpu::CompositeAlphaMode::PreMultiplied)
+                    .copied()
+                    .unwrap_or(wgpu::CompositeAlphaMode::Auto)
+            });
 
         let (pw, ph) = (width * scale, height * scale);
         let config = wgpu::SurfaceConfiguration {
@@ -498,8 +559,9 @@ impl Renderer {
         let mut image: Vec<TextVertex> = Vec::new();
         let mut image_runs: Vec<TextRun> = Vec::new();
         let mut pending_images: Vec<(u32, Vec<u8>, u32, u32)> = Vec::new();
-        // 当前裁剪矩形（box 语义）：None = 不裁剪。
-        let mut clip: Option<Rect> = None;
+        // 裁剪栈（box 语义，嵌套容器用）：`ClipRect(Some(r))` push，`ClipRect(None)` pop。
+        // 有效裁剪 = 栈内全部矩形的交集（子容器不放大父裁剪，只收窄）。
+        let mut clip_stack: Vec<Rect> = Vec::new();
 
         // V18：按 Scene 命令原始顺序记录绘制步（保 painter's algorithm 跨类型）。
         // 旧代码把所有 FillRect 汇入一次 solid draw、所有 Text 汇入一次 text draw、
@@ -508,58 +570,98 @@ impl Renderer {
         //
         // 新方案：同类型连续命令合成一个 Step，异类之间切 Step；draw 阶段按 Step
         // 顺序切 pipeline + 画对应区间。多几次 set_pipeline，换来正确 z-order。
+        // 2026-08-12：Step 携带裁剪（`clip` 为 Draw 阶段 scissor 用）—— 同一裁剪
+        // 上下文内的同类命令才合并；裁剪切换（含嵌套 push/pop）自动切 Step，
+        // 保证 Text/Triangle 也被 scissor 裁进容器（修复文字溢出，参 layout.rs）。
+        #[derive(Clone, Copy)]
         enum Step {
-            Solid { start: u32, count: u32 },
-            Text { run_start: u32, run_end: u32 },
-            Image { run_start: u32, run_end: u32 },
+            Solid {
+                start: u32,
+                count: u32,
+                clip: Option<Rect>,
+            },
+            Text {
+                run_start: u32,
+                run_end: u32,
+                clip: Option<Rect>,
+            },
+            Image {
+                run_start: u32,
+                run_end: u32,
+                clip: Option<Rect>,
+            },
         }
         let mut steps: Vec<Step> = Vec::new();
 
-        // 追加或延长同类型末尾 Step。类型不同 → 结算旧 Step、开新 Step。
-        fn push_solid(steps: &mut Vec<Step>, before: u32, after: u32) {
+        // 追加或延长同类型末尾 Step。类型不同或裁剪不同 → 结算旧 Step、开新 Step。
+        fn push_solid(steps: &mut Vec<Step>, before: u32, after: u32, clip: Option<Rect>) {
             if after == before {
                 return;
             }
-            if let Some(Step::Solid { count, .. }) = steps.last_mut() {
+            if let Some(Step::Solid { count, clip: c, .. }) = steps.last_mut()
+                && *c == clip
+            {
                 *count += after - before;
             } else {
                 steps.push(Step::Solid {
                     start: before,
                     count: after - before,
+                    clip,
                 });
             }
         }
-        fn push_text(steps: &mut Vec<Step>, before: u32, after: u32) {
+        fn push_text(steps: &mut Vec<Step>, before: u32, after: u32, clip: Option<Rect>) {
             if after == before {
                 return;
             }
-            if let Some(Step::Text { run_end, .. }) = steps.last_mut() {
+            if let Some(Step::Text { run_end, clip: c, .. }) = steps.last_mut()
+                && *c == clip
+            {
                 *run_end = after;
             } else {
                 steps.push(Step::Text {
                     run_start: before,
                     run_end: after,
+                    clip,
                 });
             }
         }
-        fn push_image(steps: &mut Vec<Step>, before: u32, after: u32) {
+        fn push_image(steps: &mut Vec<Step>, before: u32, after: u32, clip: Option<Rect>) {
             if after == before {
                 return;
             }
-            if let Some(Step::Image { run_end, .. }) = steps.last_mut() {
+            if let Some(Step::Image { run_end, clip: c, .. }) = steps.last_mut()
+                && *c == clip
+            {
                 *run_end = after;
             } else {
                 steps.push(Step::Image {
                     run_start: before,
                     run_end: after,
+                    clip,
                 });
             }
         }
 
+        // 有效裁剪：栈内矩形交集的包围盒；空栈 = None。
+        let effective_clip = |stack: &[Rect]| -> Option<Rect> {
+            let mut it = stack.iter().copied();
+            let first = it.next()?;
+            let mut acc = first;
+            for r in it {
+                acc = intersect(acc, r)?;
+            }
+            Some(acc)
+        };
+
         for cmd in &scene.commands {
             match cmd {
                 SceneCommand::ClipRect { rect } => {
-                    clip = *rect;
+                    if let Some(r) = rect {
+                        clip_stack.push(*r);
+                    } else {
+                        clip_stack.pop();
+                    }
                 }
                 SceneCommand::FillRect {
                     color,
@@ -567,13 +669,14 @@ impl Renderer {
                     corner_radius,
                 } => {
                     let before = solid.len() as u32;
+                    let clip = effective_clip(&clip_stack);
                     if let Some(c) = &clip {
                         let Some(r) = intersect(*rect, *c) else { continue };
                         emit_fill(&mut solid, &ndc, r, *corner_radius, *color);
                     } else {
                         emit_fill(&mut solid, &ndc, *rect, *corner_radius, *color);
                     }
-                    push_solid(&mut steps, before, solid.len() as u32);
+                    push_solid(&mut steps, before, solid.len() as u32, clip);
                 }
                 SceneCommand::StrokeRect {
                     color,
@@ -582,13 +685,14 @@ impl Renderer {
                     corner_radius,
                 } => {
                     let before = solid.len() as u32;
+                    let clip = effective_clip(&clip_stack);
                     if let Some(c) = &clip {
                         let Some(r) = intersect(*rect, *c) else { continue };
                         emit_stroke(&mut solid, &ndc, r, *corner_radius, *thickness, *color);
                     } else {
                         emit_stroke(&mut solid, &ndc, *rect, *corner_radius, *thickness, *color);
                     }
-                    push_solid(&mut steps, before, solid.len() as u32);
+                    push_solid(&mut steps, before, solid.len() as u32, clip);
                 }
                 SceneCommand::Arc {
                     center,
@@ -603,7 +707,12 @@ impl Renderer {
                         &mut solid, &ndc, *center, *radius, *thickness, *color, *start_deg,
                         *end_deg,
                     );
-                    push_solid(&mut steps, before, solid.len() as u32);
+                    push_solid(
+                        &mut steps,
+                        before,
+                        solid.len() as u32,
+                        effective_clip(&clip_stack),
+                    );
                 }
                 SceneCommand::Text {
                     content,
@@ -625,7 +734,12 @@ impl Renderer {
                         *style,
                         *align,
                     );
-                    push_text(&mut steps, before, text_runs.len() as u32);
+                    push_text(
+                        &mut steps,
+                        before,
+                        text_runs.len() as u32,
+                        effective_clip(&clip_stack),
+                    );
                 }
                 SceneCommand::Image {
                     rgba,
@@ -635,6 +749,7 @@ impl Renderer {
                     tint,
                 } => {
                     let before = image_runs.len() as u32;
+                    let clip = effective_clip(&clip_stack);
                     if let Some(c) = &clip {
                         let Some(r) = intersect(*rect, *c) else { continue };
                         emit_image(
@@ -661,11 +776,11 @@ impl Renderer {
                             *tint,
                         );
                     }
-                    push_image(&mut steps, before, image_runs.len() as u32);
+                    push_image(&mut steps, before, image_runs.len() as u32, clip);
                 }
                 SceneCommand::Triangle { p0, p1, p2, color } => {
                     // 自绘几何 glyph（Metro chevron/箭头/收合指示等）——三顶点直接入 solid。
-                    // 不做 clip：几何 glyph 本身很小，不易越出容器；若真需要可后续加。
+                    // 裁剪经 Draw 阶段 scissor（Step.clip）统一处理。
                     let before = solid.len() as u32;
                     let c = [color.r, color.g, color.b, color.a];
                     solid.push(SolidVertex {
@@ -680,7 +795,12 @@ impl Renderer {
                         pos: ndc(p2.x, p2.y),
                         color: c,
                     });
-                    push_solid(&mut steps, before, solid.len() as u32);
+                    push_solid(
+                        &mut steps,
+                        before,
+                        solid.len() as u32,
+                        effective_clip(&clip_stack),
+                    );
                 }
             }
         }
@@ -768,18 +888,40 @@ impl Renderer {
                 None
             };
 
+            // 裁剪矩形（逻辑）→ wgpu scissor（物理像素）。clip 为空 = 全表面。
+            // 四步 clip 全覆盖：Solid/Text/Image 统一裁剪 —— 文字/几何 glyph 也被
+            // 裁进容器（修复文字溢出、字体出框，参 layout.rs box 语义）。
+            let set_scissor = |pass: &mut wgpu::RenderPass, clip: Option<Rect>| {
+                match clip {
+                    Some(c) => {
+                        let x = (c.origin.x * self.scale).round().clamp(0.0, pw) as u32;
+                        let y = (c.origin.y * self.scale).round().clamp(0.0, ph) as u32;
+                        let right = (c.right() * self.scale).round().clamp(x as f32, pw);
+                        let bottom = (c.bottom() * self.scale).round().clamp(y as f32, ph);
+                        let w = (right - x as f32).max(1.0) as u32;
+                        let h = (bottom - y as f32).max(1.0) as u32;
+                        pass.set_scissor_rect(x, y, w, h);
+                    }
+                    None => {
+                        pass.set_scissor_rect(0, 0, pw as u32, ph as u32);
+                    }
+                }
+            };
+
             for step in &steps {
                 match step {
-                    Step::Solid { start, count } => {
+                    Step::Solid { start, count, clip } => {
                         let Some(buf) = solid_buf.as_ref() else { continue };
                         pass.set_pipeline(&self.solid_pipeline);
                         pass.set_vertex_buffer(0, buf.slice(..));
+                        set_scissor(&mut pass, *clip);
                         pass.draw(*start..*start + *count, 0..1);
                     }
-                    Step::Text { run_start, run_end } => {
+                    Step::Text { run_start, run_end, clip } => {
                         let Some(buf) = text_buf.as_ref() else { continue };
                         pass.set_pipeline(&self.text_pipeline);
                         pass.set_vertex_buffer(0, buf.slice(..));
+                        set_scissor(&mut pass, *clip);
                         for run in &text_runs[*run_start as usize..*run_end as usize] {
                             let Some(glyph) = self.glyphs.get(&run.glyph_key) else {
                                 continue;
@@ -788,10 +930,11 @@ impl Renderer {
                             pass.draw(run.start..run.start + run.count, 0..1);
                         }
                     }
-                    Step::Image { run_start, run_end } => {
+                    Step::Image { run_start, run_end, clip } => {
                         let Some(buf) = image_buf.as_ref() else { continue };
                         pass.set_pipeline(&self.image_pipeline);
                         pass.set_vertex_buffer(0, buf.slice(..));
+                        set_scissor(&mut pass, *clip);
                         for run in &image_runs[*run_start as usize..*run_end as usize] {
                             let Some(tex) = self.images.get(&run.glyph_key) else {
                                 continue;

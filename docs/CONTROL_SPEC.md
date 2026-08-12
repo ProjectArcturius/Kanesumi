@@ -1372,3 +1372,49 @@ Kanesumi 移植**纯状态 + 几何**：offset 夹紧、滚动条拇指/轨道�
 - 滚动条拇指：大小 = `视口/内容 × 轨道长`（下限 24），位置 = `offset/max_offset × 轨道长`；
 - 平滑滚动 = sokuou `SpringAnim`（UWP 用 Composition 惯性，Kanesumi 弹簧等价）；
 - `scroll_into_view(item_pos, extent)`：已可见不动 / 上方滚到上缘 / 下方底边贴视口底。
+
+---
+
+## 43 · Slider（MetroSlider）
+
+> 数据源：`reference/microsoft-ui-xaml/dev/CommonStyles/Slider_themeresources_v1.xaml`
+> （**闭源 B 类**，无 dev/Slider 目录；v1 = Metro 时代规格）。Kanesumi 移植**纯状态 + 几何**。
+
+### 定位
+
+连续数值输入（音量 / 亮度 / 色温）。`MetroSwitch` 是布尔离散，本控件补连续档。
+
+### 尺寸
+
+| 项 | 值 |
+|---|---|
+| 轨道高 | **2px**（SliderTrackThemeHeight） |
+| 拇指 | **20×20**（SliderHorizontalThumbWidth/Height；Metro 时代无圆角 → Kanesumi 取 Capsule） |
+| 水平整体 MinHeight | **32**（SliderHorizontalHeight） |
+| 轨道上下留白 | 各 **15px**（SliderPreContentMargin / SliderPostContentMargin） |
+| Header | 可选项；Margin **0,0,0,4**（SliderHeaderThemeMargin） |
+| 默认 MinWidth | **120**（对齐 NumberBox MinW） |
+
+### 颜色（Slider_themeresources_v1）
+
+| 角色 | Metro 资源 | Kanesumi 映射 |
+|---|---|---|
+| 轨道底 | SliderTrackFill = SystemControlForegroundBaseMediumLowBrush | `surface_variant` |
+| 轨道填充段 | SliderTrackValueFill = SystemControlHighlightAccentBrush | `primary` |
+| 拇指 | SliderThumbBackground = SystemControlForegroundAccentBrush | `primary` |
+| PointerOver 拇指 | SystemAccentColorLight1 | `primary`（Kanesumi 无 Light1，hover 不变色） |
+| Pressed 拇指 | SystemAccentColorDark1 | `press_tint` 叠加 |
+| Disabled | DisabledChromeDisabledHighBrush | 前景 0.38 alpha（通用铁律 §通用规律 3） |
+
+### 行为
+
+- 状态驱动：`value ∈ [min, max]`，`set_value` 夹紧；`fraction()` = `(value−min)/(max−min)`。
+- **点击即跳**：`click(rect, pos)` 在轨道区按下 → 直接置值到点击 x（UWP 默认 Slider 点轨道跳值）。
+- **拖动**：`press` 记录拖动中，`drag_to` 连续更新（按下时未命中拇指也吸到最近值）。
+- 命中区 = 轨道矩形（含拇指 20×20 行程余量）：轨道 = 宿主 rect 内，左右各留 15px，
+  y 向以轨道 2px 为中心上下各扩 15px（总 32 高）。
+- 纯色无渐变，拇指 Capsule 圆角（轨道本身 2px 无圆角）。
+
+---
+
+

@@ -1,20 +1,25 @@
-// 声明式 DSL —— Kanesumi 应用 UI 的声明式描述（原型）。
+// 声明式 DSL —— Kanesumi 应用 UI 的声明式描述。
 //
 // 参 Ether-main PLAN.md §4（声明式控件树 + reconciler，参考 windows-reactor）。
 // 状态驱动：`state → progress → render`，声明式描述是每帧从状态产出的**纯数据树**，
 // reconciler 把它布局展开为 Scene 命令（无隐藏控件：元素不产生额外原生控件）。
+//
+// **布局唯一真源（2026-08-12 重构）**：本模块不再自算布局（旧 `collect_hits` 均分
+// vs `layout_children` 内在尺寸两套算法 → 点击错位），而是把 `Decl` 树转换为
+// `kanesumi_canvas::layout::LayoutNode`，交给 Measure/Arrange 引擎产出 `LaidTree`。
+// 渲染命令、命中表、裁剪矩形全部从同一棵树派生（参 canvas/layout.rs）。
 //
 // 设计要点：
 // - 纯数据、跨平台可测（不持 GPU/文本状态）；
 // - 编译期类型检查（Rust 枚举/宏，非字符串 DSL）；
 // - 与现有控件对接：元素最终调用 `MetroButton::render` 等（无重复实现）。
 
+use kanesumi_canvas::layout::{CrossAlign, LayoutLeaf, LayoutNode, layout};
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::{MetroTheme, Rect};
+use kanesumi_core::{MetroTheme, Rect, Size, TextStyle};
 
 use crate::button::MetroButton;
-use crate::state::ControlState;
 
 /// 元素动作 —— 声明式 UI 与 App 逻辑的接线点。
 /// 由 App 消费：命中元素 → 执行对应动作。
@@ -165,59 +170,135 @@ macro_rules! view {
     };
 }
 
-/// 把声明式树按给定矩形布局展开，并收集可命中元素（动作 + 矩形）。
-///
-/// 返回命中表：App 在输入事件时查表触发动作。布局为简单顺序排布
-/// （Row = 横向均分，Column = 纵向堆叠），reconciler 展开为 Scene 由 App/控件渲染。
-///
-/// # 布局语义（原型）
-/// - `Row`：children 在给定矩形内**水平均分**，每个子元素等宽。
-/// - `Column`：children 在给定矩形内**纵向均分**，每个子元素等高。
-/// - `Box`：固定尺寸（在 Row/Column 中占位）。
-#[must_use]
-pub fn collect_hits(root: &Decl, rect: Rect) -> Vec<DeclHit> {
-    let mut hits = Vec::new();
-    collect_hits_in(root, rect, &mut hits);
-    hits
+// ── 布局叶子（Decl 的 Leaf 种类 → LayoutLeaf） ──────────────────────────────
+
+/// 声明式叶子的引擎适配：Button / Text / Box。
+/// 样式在构建时从 theme 解析（`LayoutLeaf::measure` 无 theme 入参，故先固化）。
+#[derive(Debug, Clone, PartialEq)]
+enum DeclLeaf {
+    Button {
+        label: String,
+        accent: bool,
+        action: DeclAction,
+        style: TextStyle,
+    },
+    Text { content: String, style: TextStyle },
+    Box { width: f32, height: f32 },
 }
 
-fn collect_hits_in(node: &Decl, rect: Rect, out: &mut Vec<DeclHit>) {
-    match node {
-        Decl::Row { spacing, children } | Decl::Column { spacing, children } => {
-            let is_row = matches!(node, Decl::Row { .. });
-            // 无 engine 环境：按等分布局（无内在尺寸测量）。Spacer 与 spacing 忽略。
-            // 真实布局（Text/Button 内在宽度 + Spacer + spacing）走 `render_decl`
-            // → `RetainedScene::hits()`；`collect_hits` 仅为无字体测试保留。
-            let _ = spacing;
-            let n = children.len().max(1) as f32;
-            for (i, child) in children.iter().enumerate() {
-                let child_rect = if is_row {
-                    let w = rect.size.width / n;
-                    Rect::new(rect.origin.x + i as f32 * w, rect.origin.y, w, rect.size.height)
-                } else {
-                    let h = rect.size.height / n;
-                    Rect::new(rect.origin.x, rect.origin.y + i as f32 * h, rect.size.width, h)
-                };
-                collect_hits_in(child, child_rect, out);
-            }
+impl DeclLeaf {
+    /// 命中动作（None = 纯展示不可命中）。
+    fn action(&self) -> Option<DeclAction> {
+        match self {
+            DeclLeaf::Button {
+                action, style: _, ..
+            } if *action != DeclAction::None => Some(*action),
+            _ => None,
         }
-        Decl::Button { action, .. } => {
-            if *action != DeclAction::None {
-                out.push(DeclHit {
-                    action: *action,
-                    rect,
-                });
-            }
-        }
-        Decl::Text { .. } | Decl::Box { .. } | Decl::Spacer { .. } => {}
     }
 }
 
-/// reconciler：把声明式树渲染为 Scene 命令（无隐藏控件）。
+impl LayoutLeaf for DeclLeaf {
+    fn measure(&self, engine: &TextEngine, available: Size) -> Size {
+        match self {
+            DeclLeaf::Button { label, style, .. } => {
+                MetroButton::new(label.clone()).measure(engine, *style)
+            }
+            DeclLeaf::Text { content, style } => {
+                let lines = engine.layout(content, style.size, available.width);
+                let width = lines
+                    .iter()
+                    .map(|l| l.width)
+                    .fold(0.0, f32::max)
+                    .min(available.width);
+                Size::new(width, lines.len() as f32 * style.line_height)
+            }
+            DeclLeaf::Box { width, height } => Size::new(*width, *height),
+        }
+    }
+
+    fn render(&self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
+        let style = match self {
+            DeclLeaf::Button { style, .. } | DeclLeaf::Text { style, .. } => *style,
+            DeclLeaf::Box { .. } => theme.typography.body,
+        };
+        match self {
+            DeclLeaf::Button { label, accent, .. } => {
+                let btn = if *accent {
+                    MetroButton::accent(label.clone())
+                } else {
+                    MetroButton::new(label.clone())
+                };
+                btn.render(theme, engine, rect, scene);
+            }
+            DeclLeaf::Text { content, .. } => {
+                // 与 `measure` 同源换行（canvas TextEngine::layout 唯一真源），
+                // 逐行下发 → 量测与绘制永远一致（参 layout.rs「量测即排版」）。
+                let lines = engine.layout(content, style.size, rect.size.width);
+                for (i, line) in lines.iter().enumerate() {
+                    let line_rect = Rect::new(
+                        rect.origin.x,
+                        rect.origin.y + i as f32 * style.line_height,
+                        line.width,
+                        style.line_height,
+                    );
+                    scene.text(
+                        line.content.clone(),
+                        line_rect,
+                        theme.colors.on_surface,
+                        style,
+                        TextAlign::Left,
+                    );
+                }
+            }
+            DeclLeaf::Box { .. } => {
+                scene.fill_rect(theme.colors.surface_variant, rect);
+            }
+        }
+    }
+}
+
+// ── Decl → LayoutNode 转换 ──────────────────────────────────────────────
+
+/// 把声明式树转换为引擎布局节点。`style` 从 theme 解析（Measure/Arrange 一致）。
+fn to_layout_node(root: &Decl, style: TextStyle) -> LayoutNode<DeclLeaf> {
+    match root {
+        Decl::Row { spacing, children } => LayoutNode::Row {
+            spacing: *spacing,
+            cross: CrossAlign::Stretch,
+            children: children.iter().map(|c| to_layout_node(c, style)).collect(),
+        },
+        Decl::Column { spacing, children } => LayoutNode::Column {
+            spacing: *spacing,
+            cross: CrossAlign::Stretch,
+            children: children.iter().map(|c| to_layout_node(c, style)).collect(),
+        },
+        Decl::Button {
+            label,
+            accent,
+            action,
+        } => LayoutNode::Leaf(DeclLeaf::Button {
+            label: label.clone(),
+            accent: *accent,
+            action: *action,
+            style,
+        }),
+        Decl::Text { content } => LayoutNode::Leaf(DeclLeaf::Text {
+            content: content.clone(),
+            style,
+        }),
+        Decl::Box { width, height } => LayoutNode::Leaf(DeclLeaf::Box {
+            width: *width,
+            height: *height,
+        }),
+        Decl::Spacer { grow } => LayoutNode::Spacer { grow: *grow },
+    }
+}
+
+/// reconciler：把声明式树渲染为 Scene 命令 + 命中表（无隐藏控件）。
 ///
-/// 布局与 `collect_hits` 一致（Row/Column 均分），元素用现有控件渲染：
-/// `Button` → `MetroButton`，`Text` → 场景文本。返回 (Scene, hits) —— App 一次
-/// 声明 → 渲染 + 命中表，状态驱动每帧重建。
+/// 走 Measure/Arrange 引擎：`layout()` 一次产出 LaidTree，渲染与命中从同一棵树派生。
+/// 容器以自身矩形裁剪子内容（box 语义）—— 文本溢出、点击错位从此不可能发生。
 #[must_use]
 pub fn render_decl(
     theme: &MetroTheme,
@@ -225,162 +306,30 @@ pub fn render_decl(
     root: &Decl,
     rect: Rect,
 ) -> (Scene, Vec<DeclHit>) {
+    let style = theme.typography.body;
+    let node = to_layout_node(root, style);
+    let tree = layout(&node, engine, rect);
     let mut scene = Scene::default();
-    let mut hits = Vec::new();
-    render_in(theme, engine, root, rect, &mut scene, &mut hits);
+    tree.render(theme, engine, &mut scene);
+    let hits = tree
+        .leaves()
+        .filter_map(|(r, leaf)| leaf.action().map(|action| DeclHit { action, rect: r }))
+        .collect();
     (scene, hits)
 }
 
-fn render_in(
+/// 命中表收集（与 `render_decl` 同源：同一棵 LaidTree 的叶子矩形）。
+///
+/// 不再有独立的均分算法 —— `collect_hits` 即 `render_decl` 的命中面，
+/// 画在哪里，点就得在哪里（参 decl.rs 头部设计注记）。
+#[must_use]
+pub fn collect_hits(
     theme: &MetroTheme,
     engine: &TextEngine,
-    node: &Decl,
+    root: &Decl,
     rect: Rect,
-    scene: &mut Scene,
-    hits: &mut Vec<DeclHit>,
-) {
-    match node {
-        Decl::Row { spacing, children } | Decl::Column { spacing, children } => {
-            let is_row = matches!(node, Decl::Row { .. });
-            let child_rects = layout_children(theme, engine, children, *spacing, rect, is_row);
-            for (child, r) in children.iter().zip(child_rects) {
-                render_in(theme, engine, child, r, scene, hits);
-            }
-        }
-        Decl::Button {
-            label,
-            accent,
-            action,
-        } => {
-            let mut btn = if *accent {
-                MetroButton::accent(label.clone())
-            } else {
-                MetroButton::new(label.clone())
-            };
-            btn.state = ControlState::Normal;
-            btn.render(theme, engine, rect, scene);
-            if *action != DeclAction::None {
-                hits.push(DeclHit {
-                    action: *action,
-                    rect,
-                });
-            }
-        }
-        Decl::Text { content } => {
-            let style = theme.typography.body;
-            let text_rect = Rect::new(
-                rect.origin.x,
-                rect.origin.y + (rect.size.height - style.line_height) / 2.0,
-                rect.size.width,
-                style.line_height,
-            );
-            scene.text(
-                content.clone(),
-                text_rect,
-                theme.colors.on_surface,
-                style,
-                TextAlign::Left,
-            );
-        }
-        Decl::Box { width, height } => {
-            let _ = (width, height);
-            scene.fill_rect(theme.colors.surface_variant, rect);
-        }
-        Decl::Spacer { .. } => {
-            // 无绘制 —— 仅在 Row/Column 布局中吃剩余空间。
-        }
-    }
-}
-
-/// Row/Column 子元素矩形分配 —— 内在尺寸 + `spacing` + `Spacer.grow` 剩余分配。
-///
-/// 规则（对齐 CONTROL_SPEC「无 MinWidth，尺寸 = 内容 + Padding」）：
-/// 1. 每个子沿主轴取内在尺寸（Text/Button 由 `TextEngine.measure` 决定，Box 由字段决定，
-///    Spacer 与嵌套容器为 0）；
-/// 2. 相邻子间加 `spacing`；
-/// 3. 主轴剩余空间按 Spacer.grow 比例分给 Spacer；无 Spacer 则剩余留白（左/上对齐）；
-/// 4. 交叉轴每个子占满 `rect` 交叉轴（简化：不做 cross-axis 对齐）。
-///
-/// 参 V8。
-fn layout_children(
-    theme: &MetroTheme,
-    engine: &TextEngine,
-    children: &[Decl],
-    spacing: f32,
-    rect: Rect,
-    is_row: bool,
-) -> Vec<Rect> {
-    if children.is_empty() {
-        return Vec::new();
-    }
-    let intrinsic: Vec<f32> = children
-        .iter()
-        .map(|c| main_axis_intrinsic(theme, engine, c, is_row))
-        .collect();
-    let sum_intrinsic: f32 = intrinsic.iter().sum();
-    let gaps = spacing * (children.len() - 1) as f32;
-    let main_len = if is_row { rect.size.width } else { rect.size.height };
-    let remaining = (main_len - sum_intrinsic - gaps).max(0.0);
-    let total_grow: f32 = children
-        .iter()
-        .map(|c| match c {
-            Decl::Spacer { grow } => grow.max(0.0),
-            _ => 0.0,
-        })
-        .sum();
-    let mut out = Vec::with_capacity(children.len());
-    let (mut cursor, cross_origin, cross_size) = if is_row {
-        (rect.origin.x, rect.origin.y, rect.size.height)
-    } else {
-        (rect.origin.y, rect.origin.x, rect.size.width)
-    };
-    for (i, (child, &intr)) in children.iter().zip(&intrinsic).enumerate() {
-        let extra = match child {
-            Decl::Spacer { grow } if total_grow > 0.0 => remaining * (grow.max(0.0) / total_grow),
-            _ => 0.0,
-        };
-        let size = intr + extra;
-        let r = if is_row {
-            Rect::new(cursor, cross_origin, size, cross_size)
-        } else {
-            Rect::new(cross_origin, cursor, cross_size, size)
-        };
-        out.push(r);
-        cursor += size;
-        if i + 1 < children.len() {
-            cursor += spacing;
-        }
-    }
-    out
-}
-
-/// 主轴内在尺寸（Text/Button 由字体度量、Box 由字段；Spacer/嵌套容器为 0）。
-fn main_axis_intrinsic(theme: &MetroTheme, engine: &TextEngine, node: &Decl, is_row: bool) -> f32 {
-    match node {
-        Decl::Text { content } => {
-            let style = theme.typography.body;
-            if is_row {
-                engine.measure(content, style.size)
-            } else {
-                style.line_height
-            }
-        }
-        Decl::Button { label, accent, .. } => {
-            let btn = if *accent {
-                MetroButton::accent(label.clone())
-            } else {
-                MetroButton::new(label.clone())
-            };
-            let s = btn.measure(engine, theme.typography.body);
-            if is_row { s.width } else { s.height }
-        }
-        Decl::Box { width, height } => {
-            if is_row { *width } else { *height }
-        }
-        // 嵌套容器 / Spacer：主轴内在尺寸 0（Spacer 靠 grow 吃剩余；
-        // 嵌套容器暂未支持精确内在测量，交给外层配 Spacer 或直接给足空间）。
-        Decl::Row { .. } | Decl::Column { .. } | Decl::Spacer { .. } => 0.0,
-    }
+) -> Vec<DeclHit> {
+    render_decl(theme, engine, root, rect).1
 }
 
 // ── reconciler 增量 diff ────────────────────────────────────────────────
@@ -510,33 +459,68 @@ fn diff_node(old: &Decl, new: &Decl, path: DeclPath, out: &mut Vec<DeclChange>) 
 mod tests {
     use super::*;
 
+    fn find_engine() -> Option<TextEngine> {
+        if let Ok(p) = std::env::var("KANESUMI_TEST_FONT") {
+            if let Ok(e) = TextEngine::load(p) {
+                return Some(e);
+            }
+        }
+        for p in [
+            "C:/Windows/Fonts/segoeui.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        ] {
+            if let Ok(e) = TextEngine::load(p) {
+                return Some(e);
+            }
+        }
+        None
+    }
+
     #[test]
-    fn row_allocates_equal_width() {
+    fn row_places_children_by_intrinsic_width() {
+        // 引擎布局：内在宽度 + spacing，不再均分（参 V8）。
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
         let root = Decl::row(vec![
             Decl::button("A", DeclAction::Custom(1)),
             Decl::button("B", DeclAction::Custom(2)),
         ]);
-        let hits = collect_hits(&root, Rect::new(0.0, 0.0, 200.0, 40.0));
+        let hits = collect_hits(&theme, &engine, &root, Rect::new(0.0, 0.0, 200.0, 40.0));
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].action, DeclAction::Custom(1));
-        assert_eq!(hits[0].rect.size.width, 100.0);
-        assert_eq!(hits[1].rect.origin.x, 100.0);
+        // 第二按钮 x = A 内在宽 + spacing 8
+        assert!(
+            (hits[1].rect.origin.x - (hits[0].rect.size.width + 8.0)).abs() < 0.5,
+            "B.x = A.w + spacing 8，实际 {}",
+            hits[1].rect.origin.x
+        );
     }
 
     #[test]
-    fn column_allocates_equal_height() {
+    fn column_places_children_by_intrinsic_height() {
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
         let root = Decl::column(vec![
             Decl::text("a"),
             Decl::button("b", DeclAction::OpenDialog),
         ]);
-        let hits = collect_hits(&root, Rect::new(0.0, 0.0, 200.0, 80.0));
+        let hits = collect_hits(&theme, &engine, &root, Rect::new(0.0, 0.0, 200.0, 80.0));
         assert_eq!(hits.len(), 1, "只有按钮可命中");
         assert_eq!(hits[0].action, DeclAction::OpenDialog);
-        assert_eq!(hits[0].rect.size.height, 40.0);
+        // 按钮取内在高度（line_height + 11），非均分 80/2=40
+        let intr = MetroButton::new("b").measure(&engine, theme.typography.body).height;
+        assert!(
+            (hits[0].rect.size.height - intr).abs() < 0.5,
+            "按钮内在高度，实际 {}",
+            hits[0].rect.size.height
+        );
     }
 
     #[test]
     fn nested_layout_collects_leaves() {
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
         let root = Decl::row(vec![
             Decl::text("label"),
             Decl::column(vec![
@@ -544,16 +528,20 @@ mod tests {
                 Decl::button("save", DeclAction::Custom(7)),
             ]),
         ]);
-        let hits = collect_hits(&root, Rect::new(0.0, 0.0, 400.0, 80.0));
+        let hits = collect_hits(&theme, &engine, &root, Rect::new(0.0, 0.0, 400.0, 80.0));
         assert_eq!(hits.len(), 2);
-        // 右半：两个按钮上下均分
-        assert_eq!(hits[0].rect.origin.x, 200.0);
-        assert_eq!(hits[0].rect.size.height, 40.0);
-        assert_eq!(hits[1].rect.origin.y, 40.0);
+        // 右半：两个按钮上下排列（spacing 8）
+        assert!(
+            (hits[1].rect.origin.y - (hits[0].rect.size.height + 8.0)).abs() < 0.5,
+            "save.y = open.h + spacing 8，实际 {}",
+            hits[1].rect.origin.y
+        );
     }
 
     #[test]
     fn no_action_elements_not_hittable() {
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
         let root = Decl::row(vec![
             Decl::text("pure text"),
             Decl::Box {
@@ -561,7 +549,7 @@ mod tests {
                 height: 10.0,
             },
         ]);
-        assert!(collect_hits(&root, Rect::new(0.0, 0.0, 200.0, 40.0)).is_empty());
+        assert!(collect_hits(&theme, &engine, &root, Rect::new(0.0, 0.0, 200.0, 40.0)).is_empty());
     }
 
     #[test]
@@ -605,22 +593,20 @@ mod tests {
         assert_eq!(hits[0].action, DeclAction::OpenDialog);
     }
 
-    fn find_engine() -> Option<TextEngine> {
-        if let Ok(p) = std::env::var("KANESUMI_TEST_FONT") {
-            if let Ok(e) = TextEngine::load(p) {
-                return Some(e);
-            }
-        }
-        for p in [
-            "C:/Windows/Fonts/segoeui.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        ] {
-            if let Ok(e) = TextEngine::load(p) {
-                return Some(e);
-            }
-        }
-        None
+    #[test]
+    fn render_decl_emits_clip_for_container() {
+        // 容器应发出 ClipRect（box 语义）—— 文本溢出从此被裁剪。
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
+        let tree = Decl::column(vec![Decl::text("超长文本超长文本超长文本超长文本")]);
+        let (scene, _) = render_decl(&theme, &engine, &tree, Rect::new(0.0, 0.0, 80.0, 40.0));
+        assert!(
+            scene.commands.iter().any(|c| matches!(
+                c,
+                kanesumi_canvas::SceneCommand::ClipRect { rect: Some(_) }
+            )),
+            "容器应发 ClipRect"
+        );
     }
 
     // ── diff_decl 测试 ──

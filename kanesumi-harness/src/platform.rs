@@ -47,8 +47,8 @@ use wayland_protocols::wp::text_input::zv3::client::{
 };
 
 use crate::app::{
-    App, ImeAction, ImeContentHint, ImeContext, InputEvent, Key, PendingImeBatch, PointerButton,
-    compute_ime_action,
+    App, ImeAction, ImeContentHint, ImeContext, InputEvent, Key, Modifiers, PendingImeBatch,
+    PointerButton, compute_ime_action,
 };
 use crate::render::Renderer;
 use crate::role::{EtherRole, SurfaceKind};
@@ -185,6 +185,12 @@ struct Shell {
     pending_ime: PendingImeBatch,
     /// 上次发送的 IME 上下文缓存（无变化不重发，避免每帧灌上下文 + commit 抖动）。
     ime_context_cache: Option<ImeContext>,
+    /// 当前修饰键状态（`update_modifiers` 维护，注入每个输入事件）。
+    modifiers: Modifiers,
+    /// Wayland 连接（延迟渲染器初始化用：首 configure 后才创建 wgpu surface）。
+    conn: Connection,
+    /// App 请求但尚未被 configure 确认的动态高度（layer-shell 展开用）。
+    pending_height: Option<f32>,
 }
 
 impl Shell {
@@ -258,20 +264,17 @@ impl Shell {
             }
         }
 
-        // wgpu 渲染器附着。
-        let wl_surface = if let Some(w) = &window {
-            w.wl_surface()
-        } else if let Some(l) = &layer_surface {
-            l.wl_surface()
-        } else {
-            &surface
-        };
-        let renderer = Renderer::new(conn, wl_surface, width, height, 1.0)
-            .map_err(|e| format!("wgpu 初始化失败：{e:?}"))?;
+        // wgpu 渲染器**延迟**到首个 configure 后创建（Shell::new 时 surface 尚未
+        // configure，尺寸 0，Vulkan surface 会报 SURFACE_LOST_KHR —— Known Issue #8）。
+        // 由 ensure_renderer() 在 WindowHandler/LayerShellHandler::configure 里触发。
+        let renderer = None;
 
         // IME：绑定 text-input manager（合成器缺失 → None，App 降级走裸 KeyPressed，记一次日志）。
+        // ⚠ range 上限须 ≤ wayland-protocols 声明的接口最大版本。smithay 0.7（Ether 合成器）
+        // 仅实现 zwp_text_input_v3 v1，故请求 1..=1；写 1..=2 会触发 globals.rs panic
+        // （"Maximum version (2) was higher than the proxy's maximum version (1)"）。
         let text_input_manager = globals
-            .bind::<ZwpTextInputManagerV3, Self, ()>(qh, 1..=2, ())
+            .bind::<ZwpTextInputManagerV3, Self, ()>(qh, 1..=1, ())
             .map_err(|e| {
                 log::warn!("zwp_text_input_manager_v3 不可用，IME 降级：{e}");
             })
@@ -292,7 +295,7 @@ impl Shell {
             layer_surface,
             pointer: None,
             keyboard: None,
-            renderer: Some(renderer),
+            renderer,
             scale: 1,
             width,
             height,
@@ -307,12 +310,60 @@ impl Shell {
             commit_serial: 0,
             pending_ime: PendingImeBatch::default(),
             ime_context_cache: None,
+            modifiers: Modifiers::NONE,
+            conn: conn.clone(),
+            pending_height: None,
         })
+    }
+
+    /// 同步 App 请求的动态高度：layer-shell 角色下 `preferred_height` 与当前高度
+    /// 不一致 → `set_size` 并立即生效（不等 configure 往返，参旧 topbar.rs `set_height`）。
+    /// 合成器按 cached_state.size.h 扩大命中与渲染区域，无需等协议确认。
+    fn sync_preferred_height(&mut self) {
+        let Some(h) = self.app.preferred_height() else {
+            return;
+        };
+        if (h - self.height).abs() < 0.5 {
+            return;
+        }
+        if let Some(ls) = self.layer_surface.as_ref() {
+            ls.set_size(0, h as u32);
+        }
+        self.height = h;
+        self.pending_height = Some(h);
+        if let Some(r) = self.renderer.as_mut() {
+            r.resize(self.width, self.height, self.scale as f32);
+        }
     }
 
     /// 逻辑尺寸。
     fn size(&self) -> Size {
         Size::new(self.width, self.height)
+    }
+
+    /// 确保渲染器已创建（首个 configure 后调用；surface 已配置、尺寸已知）。
+    /// 失败记日志并置 running=false（App 退出）。
+    fn ensure_renderer(&mut self) {
+        if self.renderer.is_some() {
+            return;
+        }
+        let wl_surface = if let Some(w) = &self.window {
+            w.wl_surface()
+        } else if let Some(l) = &self.layer_surface {
+            l.wl_surface()
+        } else {
+            &self.surface
+        };
+        match Renderer::new(&self.conn, wl_surface, self.width, self.height, self.scale as f32) {
+            Ok(r) => {
+                self.renderer = Some(r);
+                log::info!("wgpu 渲染器已创建（{:.0}x{:.0}）", self.width, self.height);
+            }
+            Err(e) => {
+                log::error!("wgpu 渲染器初始化失败（{e:?}），退出");
+                self.running = false;
+            }
+        }
     }
 
     /// 渲染一帧：update + render + 光栅化 + present。
@@ -338,6 +389,9 @@ impl Shell {
             self.request_next_frame(qh);
             return;
         }
+
+        // 动态高度同步：App update 后可能请求展开/收起（TopBar 面板），先同步表面尺寸。
+        self.sync_preferred_height();
 
         // App 状态可能已变（焦点/文本/光标）→ 幂等 reconcile IME（无变化零成本）。
         self.reconcile_ime();
@@ -601,6 +655,13 @@ impl WindowHandler for Shell {
             .map(|v| v.get() as f32)
             .unwrap_or(self.height);
         self.apply_size(w, h);
+        // 首 configure：延迟创建渲染器（surface 已配置；此前 wgpu 会 SURFACE_LOST）。
+        if self.renderer.is_none() {
+            self.ensure_renderer();
+            if !self.running {
+                return;
+            }
+        }
         if !self.configured {
             self.configured = true;
             // 首帧：render_frame 内部会请求 frame callback 并渲染。
@@ -628,8 +689,19 @@ impl LayerShellHandler for Shell {
         if w > 0 {
             self.width = w as f32;
         }
-        if h > 0 {
+        // 优先已主动请求的高度（面板展开/收起无需等合成器 configure 往返，
+        // 参旧 topbar.rs pending_height 模式）。
+        if let Some(ph) = self.pending_height.take() {
+            self.height = ph;
+        } else if h > 0 {
             self.height = h as f32;
+        }
+        // 首 configure：延迟创建渲染器（surface 已配置、尺寸已知；此前 wgpu 会 SURFACE_LOST）。
+        if self.renderer.is_none() {
+            self.ensure_renderer();
+            if !self.running {
+                return;
+            }
         }
         if let Some(r) = self.renderer.as_mut() {
             r.resize(self.width, self.height, self.scale as f32);
@@ -730,6 +802,7 @@ impl PointerHandler for Shell {
                         x: pos.0,
                         y: pos.1,
                         button,
+                        modifiers: self.modifiers,
                     });
                 }
                 PointerEventKind::Release { button, .. } => {
@@ -739,6 +812,7 @@ impl PointerHandler for Shell {
                         x: pos.0,
                         y: pos.1,
                         button,
+                        modifiers: self.modifiers,
                     });
                 }
                 PointerEventKind::Axis {
@@ -761,7 +835,11 @@ impl PointerHandler for Shell {
                     };
                     if dx != 0.0 || dy != 0.0 {
                         self.pointer_pos = pos;
-                        self.emit_input(InputEvent::Scroll { x: dx, y: dy });
+                        self.emit_input(InputEvent::Scroll {
+                            x: dx,
+                            y: dy,
+                            modifiers: self.modifiers,
+                        });
                     }
                 }
             }
@@ -819,7 +897,10 @@ impl KeyboardHandler for Shell {
         event: SctkKeyEvent,
     ) {
         let key = map_key(event.keysym, event.utf8);
-        self.emit_input(InputEvent::KeyPressed { key });
+        self.emit_input(InputEvent::KeyPressed {
+            key,
+            modifiers: self.modifiers,
+        });
     }
 
     fn release_key(
@@ -838,9 +919,16 @@ impl KeyboardHandler for Shell {
         _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _serial: u32,
-        _modifiers: smithay_client_toolkit::seat::keyboard::Modifiers,
+        modifiers: smithay_client_toolkit::seat::keyboard::Modifiers,
         _layout: u32,
     ) {
+        // 缓存修饰键状态，注入后续输入事件（App 据此组合快捷键/范围选）。
+        self.modifiers = Modifiers {
+            ctrl: modifiers.ctrl,
+            alt: modifiers.alt,
+            shift: modifiers.shift,
+            super_key: modifiers.logo,
+        };
     }
 
     fn update_repeat_info(

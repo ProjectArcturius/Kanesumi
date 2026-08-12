@@ -306,19 +306,19 @@ impl App for CalculatorApp {
     fn handle_input(&mut self, event: InputEvent) {
         match event {
             InputEvent::PointerMoved { x, y } => self.update_hover(Point::new(x, y)),
-            InputEvent::PointerPressed { x, y, button } => {
+            InputEvent::PointerPressed { x, y, button, .. } => {
                 if button == PointerButton::Left {
                     self.press(Point::new(x, y));
                 }
             }
-            InputEvent::PointerReleased { x, y, button } => {
+            InputEvent::PointerReleased { x, y, button, .. } => {
                 if button == PointerButton::Left {
                     self.release(Point::new(x, y));
                 }
             }
             InputEvent::PointerLeft => self.clear_hover(),
             InputEvent::Scroll { .. } => {}
-            InputEvent::KeyPressed { key } => self.key_press(key),
+            InputEvent::KeyPressed { key, .. } => self.key_press(key),
             // IME 事件：计算器无文本输入，忽略（组合态/提交均不适用）。
             InputEvent::Preedit { .. } | InputEvent::Commit { .. } | InputEvent::DeleteSurrounding { .. } => {
             }
@@ -411,11 +411,13 @@ mod tests {
             x: center.x,
             y: center.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         app.handle_input(InputEvent::PointerReleased {
             x: center.x,
             y: center.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
     }
 
@@ -480,29 +482,29 @@ mod tests {
     fn keyboard_enters_digits_and_operators() {
         let mut a = app();
         for c in ['1', '2', '3'] {
-            a.handle_input(InputEvent::KeyPressed { key: Key::Char(c) });
+            a.handle_input(InputEvent::KeyPressed {key: Key::Char(c), modifiers: kanesumi_harness::Modifiers::NONE});
         }
         assert_eq!(a.calc.display(), "123");
-        a.handle_input(InputEvent::KeyPressed { key: Key::Char('+') });
-        a.handle_input(InputEvent::KeyPressed { key: Key::Char('4') });
-        a.handle_input(InputEvent::KeyPressed { key: Key::Enter });
+        a.handle_input(InputEvent::KeyPressed {key: Key::Char('+'), modifiers: kanesumi_harness::Modifiers::NONE});
+        a.handle_input(InputEvent::KeyPressed {key: Key::Char('4'), modifiers: kanesumi_harness::Modifiers::NONE});
+        a.handle_input(InputEvent::KeyPressed {key: Key::Enter, modifiers: kanesumi_harness::Modifiers::NONE});
         assert_eq!(a.calc.display(), "127", "123+4=127");
     }
 
     #[test]
     fn keyboard_backspace_deletes_last_digit() {
         let mut a = app();
-        a.handle_input(InputEvent::KeyPressed { key: Key::Char('9') });
-        a.handle_input(InputEvent::KeyPressed { key: Key::Char('7') });
-        a.handle_input(InputEvent::KeyPressed { key: Key::Backspace });
+        a.handle_input(InputEvent::KeyPressed {key: Key::Char('9'), modifiers: kanesumi_harness::Modifiers::NONE});
+        a.handle_input(InputEvent::KeyPressed {key: Key::Char('7'), modifiers: kanesumi_harness::Modifiers::NONE});
+        a.handle_input(InputEvent::KeyPressed {key: Key::Backspace, modifiers: kanesumi_harness::Modifiers::NONE});
         assert_eq!(a.calc.display(), "9");
     }
 
     #[test]
     fn keyboard_escape_clears() {
         let mut a = app();
-        a.handle_input(InputEvent::KeyPressed { key: Key::Char('5') });
-        a.handle_input(InputEvent::KeyPressed { key: Key::Escape });
+        a.handle_input(InputEvent::KeyPressed {key: Key::Char('5'), modifiers: kanesumi_harness::Modifiers::NONE});
+        a.handle_input(InputEvent::KeyPressed {key: Key::Escape, modifiers: kanesumi_harness::Modifiers::NONE});
         assert_eq!(a.calc.display(), "0");
     }
 }

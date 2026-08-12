@@ -149,14 +149,15 @@ Repeater / ScrollView 虚拟化引擎落地并驱动 MetroList（只渲染可见
 
 **TextBox / PasswordBox / CheckBox 已落地（2026-08-12）—— Ether 首个文本输入通路打通，
 settings/ceyboard 不再被输入控件阻塞（IME 接入仍待 Phase 2-1）。**
+**Slider 已落地（2026-08-12）—— 连续数值输入（音量/亮度/色温），Settings 数值调节不再被阻塞。**
 
 | 控件 | Ether 用途 | 优先级 | 备注 |
-|---|---|---|:---:|---|
+|---|---|---|---|
 | ~~**TextBox**~~ | Settings wifi 密码、Librarian 文件名、搜索框 | ✅ | **已移植**（`text_field.rs` + `text_box.rs`） |
 | ~~**PasswordBox**~~ | wifi / 锁屏密码 | ✅ | **已移植**（`password_box.rs`） |
 | ~~**CheckBox**~~ | Settings 开关组（三态） | ✅ | **已移植**（`check_box.rs`） |
 | **RadioButton**（单个） | 组内单选项 | **P1** | 组容器 RadioButtons 开源，单项自身闭源 |
-| **Slider** | 音量 / 亮度 / 色温 | **P1** | 连续数值输入；`MetroSwitch` 是布尔离散 |
+| ~~**Slider**~~ | 音量 / 亮度 / 色温 | ✅ | **已移植**（`slider.rs`，CONTROL_SPEC §43）；`MetroSwitch` 是布尔离散 |
 | **HyperlinkButton** | Settings 里指向外部 URL / 文档链接 | **P1** | Button 变体（下划线 + accent 前景） |
 | **RichEditBox** | Notes 应用富文本 | **P3** | TextBox 高级形态 |
 | **TextBlock**（多样式 span） | 简单 MetroText 已覆盖单样式；混排未做 | **P2** | Run / Bold / Italic / Hyperlink inline |
@@ -247,7 +248,7 @@ settings/ceyboard 不再被输入控件阻塞（IME 接入仍待 Phase 2-1）。
 
 5. **NavigationView** —— Settings 左侧栏（已实现，待接 Settings）
 6. **SplitView** —— Librarian 双栏
-7. **Slider** —— Settings 数值调节
+7. ~~**Slider**~~ ✅ 2026-08-12（`slider.rs`，CONTROL_SPEC §43）
 8. **HyperlinkButton** —— 关于/许可页
 9. **Border** —— 通用装饰
 10. **RadioButton + RadioButtons** —— 单选组（组已实现，单项自绘）

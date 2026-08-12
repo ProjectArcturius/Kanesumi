@@ -5,14 +5,15 @@
 // 控件状态切换：set_state / set_checked / hovered / show / hide / toggle。
 
 use kanesumi_canvas::icon::Icon;
+use kanesumi_canvas::layout::{CrossAlign, LaidTree, LayoutLeaf, LayoutNode, layout};
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_controls::{
     CommandBarAction, ControlState, MenuItem, MetroAutoSuggestBox, MetroButton, MetroCheckBox,
     MetroCommandBarFlyout, MetroDialog, MetroDropdownMenu, MetroIconButton, MetroList,
     MetroNumberBox, MetroPasswordBox, MetroProgressBar, MetroProgressRing, MetroRepeater,
-    MetroScrollView, MetroSelectorFlyout, MetroSwitch, MetroTab, MetroTabRow, MetroTextBox, MetroTile,
-    TextInputKey, TileSize,
+    MetroScrollView, MetroSelectorFlyout, MetroSlider, MetroSwitch, MetroTab, MetroTabRow, MetroTextBox,
+    MetroTile, TextInputKey, TileSize,
 };
 use kanesumi_core::{Color, MetroTheme, Point, Rect, Size, TextStyle};
 use kanesumi_harness::{App, AppConfig, EtherRole, InputEvent, PointerButton};
@@ -119,6 +120,8 @@ enum Target {
     NumberUp,
     NumberDown,
     AutoSuggest,
+    /// Slider（连续数值，参 CONTROL_SPEC §43）。
+    Slider,
     /// CommandBarFlyout 命令按钮（命中时按按钮映射动作）。
     CommandBar,
     /// 虚拟化长列表（MetroRepeater 引擎演示）。
@@ -135,11 +138,57 @@ enum FocusedInput {
     AutoSuggest,
 }
 
+/// 控件槽位身份（引擎叶子）。布局矩形由引擎 LaidTree 产出，本枚举是渲染/命中共用索引。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    Button,
+    Accent,
+    Icon,
+    Switch,
+    Tabs,
+    List,
+    Dropdown,
+    Selector,
+    TextBox,
+    Password,
+    CheckBox,
+    Number,
+    Suggest,
+    Slider,
+    VirtualList,
+}
+
+/// 引擎叶子：槽位 + 预量测尺寸（`LayoutLeaf::measure` 直接返回）。
+/// `render` 为空操作 —— 控件实际绘制由 Gallery 按槽位分派（控件带状态）。
+#[derive(Debug, Clone, PartialEq)]
+struct SizedSlot {
+    slot: Slot,
+    size: Size,
+}
+
+impl LayoutLeaf for SizedSlot {
+    fn measure(&self, _engine: &TextEngine, _available: Size) -> Size {
+        self.size
+    }
+    fn render(
+        &self,
+        _theme: &MetroTheme,
+        _engine: &TextEngine,
+        _rect: Rect,
+        _scene: &mut Scene,
+    ) {
+        // Gallery 自行渲染控件（带状态），这里不产生命令。
+    }
+}
+
 /// Gallery 应用状态。
-pub struct GalleryApp {
-    theme: MetroTheme,
+pub struct GalleryApp {    theme: MetroTheme,
     engine: TextEngine,
     config: AppConfig,
+    /// 当前视口尺寸（render 每帧以实际 `size` 更新）。布局矩形一律以此为根约束，
+    /// 不再读固定 `config.width/height` —— resize 后内容/命中/弹层自动跟随
+    /// （参 canvas/layout.rs「布局 = 约束的函数」）。
+    viewport: Size,
 
     /// 当前页（UWP NavigationView 选中项的等价）。
     page: GalleryPage,
@@ -170,6 +219,10 @@ pub struct GalleryApp {
     number: MetroNumberBox,
     /// 自动建议框。
     suggest: MetroAutoSuggestBox,
+    /// 滑杆（音量演示，参 CONTROL_SPEC §43）。
+    slider: MetroSlider,
+    /// Slider 最近值回显。
+    slider_value: String,
     /// 选中文本浮出命令条（TextBox 内选中时显示）。
     command_bar: MetroCommandBarFlyout,
     /// 命令条是否打开（供命中路由）。
@@ -188,6 +241,8 @@ pub struct GalleryApp {
     pressed: Option<Target>,
     /// 最近一次指针位置（滚轮路由需要，因为 Scroll 不带坐标）。
     pointer: Point,
+    /// App 内局部剪贴板（演示 Ctrl+C/V；跨应用剪贴板待 harness data_device）。
+    clipboard: String,
     /// 最近一次对话框按钮动作（Primary/Secondary/Close），供应用响应。
     dialog_result: Option<kanesumi_controls::DialogButton>,
 
@@ -248,6 +303,7 @@ impl GalleryApp {
                 960.0,
                 600.0,
             ),
+            viewport: Size::new(960.0, 600.0),
             page: initial_page,
             nav,
             button: MetroButton::new("Standard"),
@@ -321,6 +377,11 @@ impl GalleryApp {
                     .map(|s| s.to_string())
                     .collect(),
             ),
+            slider: MetroSlider::new()
+                .with_header("亮度")
+                .with_range(0.0, 100.0)
+                .with_step(5.0),
+            slider_value: "50".into(),
             command_bar: MetroCommandBarFlyout::text_commands(),
             command_bar_open: false,
             command_result: None,
@@ -329,6 +390,7 @@ impl GalleryApp {
             hovered: None,
             pressed: None,
             pointer: Point::ORIGIN,
+            clipboard: String::new(),
             dialog_result: None,
             tiles: demo_tiles(),
             tile_slots: demo_tile_slots(),
@@ -388,11 +450,91 @@ impl GalleryApp {
         self
     }
 
-    // ── 布局矩形 ────────────────────────────────────────────────────────
+    // ── 布局（引擎 LaidTree 驱动）───────────────────────────────────────
+    //
+    // Controls/Input 页的控件矩形全部由 Measure/Arrange 引擎（canvas/layout.rs）
+    // 产出：`build_controls_tree` / `build_input_tree` 声明 Row/Column/Spacer，
+    // `layout()` 一次算好，`slot_rect` 按身份取矩形。**渲染与命中读同一棵树** ——
+    // 画在哪里，点就得在哪里（UWP 布局唯一真源）。
+
+    fn leaf(&self, slot: Slot, w: f32, h: f32) -> LayoutNode<SizedSlot> {
+        LayoutNode::Leaf(SizedSlot {
+            slot,
+            size: Size::new(w, h),
+        })
+    }
+
+    /// Controls 页布局树：按钮行 → Switch → Tabs → List + 右侧弹层列。
+    fn build_controls_tree(&self) -> LayoutNode<SizedSlot> {
+        let body = self.theme.typography.body;
+        let button_w = self.button.measure(&self.engine, body).width;
+        let accent_w = self.accent.measure(&self.engine, body).width;
+        LayoutNode::column_with(8.0, CrossAlign::Start, vec![
+            LayoutNode::row_with(8.0, CrossAlign::Start, vec![
+                self.leaf(Slot::Button, button_w, 38.0),
+                self.leaf(Slot::Accent, accent_w, 38.0),
+                self.leaf(Slot::Icon, 68.0, 56.0),
+            ]),
+            self.leaf(Slot::Switch, 200.0, 60.0),
+            self.leaf(Slot::Tabs, 420.0, 48.0),
+            LayoutNode::row_with(8.0, CrossAlign::Start, vec![
+                self.leaf(Slot::List, 260.0, 280.0),
+                LayoutNode::column_with(8.0, CrossAlign::Start, vec![
+                    self.leaf(Slot::Dropdown, 130.0, 32.0),
+                    self.leaf(Slot::Selector, 180.0, 32.0),
+                ]),
+            ]),
+        ])
+    }
+
+    /// Input 页布局树：两列（文本输入 | 数值/建议）→ 虚拟列表。
+    fn build_input_tree(&self) -> LayoutNode<SizedSlot> {
+        LayoutNode::column_with(8.0, CrossAlign::Start, vec![
+            LayoutNode::row_with(8.0, CrossAlign::Start, vec![
+                self.leaf(Slot::TextBox, 280.0, 60.0),
+                self.leaf(Slot::Number, 220.0, 60.0),
+            ]),
+            LayoutNode::row_with(8.0, CrossAlign::Start, vec![
+                self.leaf(Slot::Password, 280.0, 60.0),
+                self.leaf(Slot::Suggest, 280.0, 60.0),
+            ]),
+            LayoutNode::row_with(8.0, CrossAlign::Start, vec![
+                self.leaf(Slot::CheckBox, 220.0, 40.0),
+                self.leaf(Slot::Slider, 280.0, 56.0),
+            ]),
+            self.leaf(Slot::VirtualList, 320.0, 190.0),
+        ])
+    }
+
+    /// 控件页布局树产物（在内容区内展开）。
+    fn controls_layout(&self) -> LaidTree<SizedSlot> {
+        layout(
+            &self.build_controls_tree(),
+            &self.engine,
+            self.content_rect(),
+        )
+    }
+
+    /// Input 页布局树产物（在内容区内展开）。
+    fn input_layout(&self) -> LaidTree<SizedSlot> {
+        layout(
+            &self.build_input_tree(),
+            &self.engine,
+            self.content_rect(),
+        )
+    }
+
+    /// 从布局树按身份取矩形（渲染与命中共用同一棵树）。
+    fn slot_rect(&self, tree: &LaidTree<SizedSlot>, slot: Slot) -> Rect {
+        tree.leaves()
+            .find(|(_, l)| l.slot == slot)
+            .map(|(r, _)| r)
+            .unwrap_or(Rect::new(PAD, CTRL_Y0, 0.0, 0.0))
+    }
 
     /// 页导航矩形（顶部横向 TabRow）。宽 = 窗口去 padding；高 = NAV_H。
     fn nav_rect(&self) -> Rect {
-        Rect::new(PAD, NAV_Y, self.config.width - PAD * 2.0, NAV_H)
+        Rect::new(PAD, NAV_Y, self.viewport.width - PAD * 2.0, NAV_H)
     }
 
     /// 内容区矩形（导航栏下 → footer 上）。所有页在此区域内布局。
@@ -400,42 +542,38 @@ impl GalleryApp {
         Rect::new(
             PAD,
             CTRL_Y0,
-            self.config.width - PAD * 2.0,
-            self.config.height - CTRL_Y0 - FOOTER_H,
+            self.viewport.width - PAD * 2.0,
+            self.viewport.height - CTRL_Y0 - FOOTER_H,
         )
     }
 
     /// 按钮宽度由内容驱动（CONTROL_SPEC §1「无 MinWidth，尺寸 = 内容 + Padding」）。
     /// 高度仍固定 38（Gallery 视觉一致），只让宽度跟随 `measure` —— 参 V6。
     fn button_rect(&self) -> Rect {
-        let w = self.button.measure(&self.engine, self.theme.typography.body).width;
-        Rect::new(PAD, CTRL_Y0, w, 38.0)
+        self.slot_rect(&self.controls_layout(), Slot::Button)
     }
     fn accent_rect(&self) -> Rect {
-        let w = self.accent.measure(&self.engine, self.theme.typography.body).width;
-        let x = self.button_rect().right() + 8.0;
-        Rect::new(x, CTRL_Y0, w, 38.0)
+        self.slot_rect(&self.controls_layout(), Slot::Accent)
     }
     fn icon_rect(&self) -> Rect {
-        let x = self.accent_rect().right() + 16.0;
-        Rect::new(x, CTRL_Y0 - 4.0, 68.0, 56.0)
+        self.slot_rect(&self.controls_layout(), Slot::Icon)
     }
     /// Switch 需装下 Header（body.line_height 22）+ 8 gap + Track 行高 22 = 52，
     /// 上下各 4px 边距 → 60 —— 参 A1 重做（switch.rs 新布局）。
     fn switch_rect(&self) -> Rect {
-        Rect::new(PAD, CTRL_Y0 + 44.0, 200.0, 60.0)
+        self.slot_rect(&self.controls_layout(), Slot::Switch)
     }
     fn tabs_rect(&self) -> Rect {
-        Rect::new(PAD, CTRL_Y0 + 128.0, 420.0, 48.0)
+        self.slot_rect(&self.controls_layout(), Slot::Tabs)
     }
     fn list_rect(&self) -> Rect {
-        Rect::new(PAD, CTRL_Y0 + 188.0, 260.0, 280.0)
+        self.slot_rect(&self.controls_layout(), Slot::List)
     }
     fn dropdown_trigger(&self) -> Rect {
-        Rect::new(PAD + 280.0, CTRL_Y0 + 188.0, 130.0, 32.0)
+        self.slot_rect(&self.controls_layout(), Slot::Dropdown)
     }
     fn selector_trigger(&self) -> Rect {
-        Rect::new(PAD + 280.0, CTRL_Y0 + 234.0, 180.0, 32.0)
+        self.slot_rect(&self.controls_layout(), Slot::Selector)
     }
 
     /// 弹层面板锚点（方向自适应：下方空间不足时上翻，参 CONTROL_SPEC §8）。
@@ -452,26 +590,30 @@ impl GalleryApp {
 
     /// Gallery 全屏窗口（供弹层方向自适应用）。
     fn screen(&self) -> Rect {
-        Rect::new(0.0, 0.0, self.config.width, self.config.height)
+        Rect::new(0.0, 0.0, self.viewport.width, self.viewport.height)
     }
 
     // ── Input 页布局 ──────────────────────────────────────────────
 
     /// TextBox（含标题）。
     fn textbox_rect(&self) -> Rect {
-        Rect::new(PAD, CTRL_Y0, 280.0, 60.0)
+        self.slot_rect(&self.input_layout(), Slot::TextBox)
     }
     fn password_rect(&self) -> Rect {
-        Rect::new(PAD, CTRL_Y0 + 68.0, 280.0, 60.0)
+        self.slot_rect(&self.input_layout(), Slot::Password)
     }
     fn checkbox_rect(&self) -> Rect {
-        Rect::new(PAD, CTRL_Y0 + 136.0, 220.0, 40.0)
+        self.slot_rect(&self.input_layout(), Slot::CheckBox)
     }
     fn number_rect(&self) -> Rect {
-        Rect::new(PAD + 300.0, CTRL_Y0, 220.0, 60.0)
+        self.slot_rect(&self.input_layout(), Slot::Number)
     }
     fn suggest_rect(&self) -> Rect {
-        Rect::new(PAD + 300.0, CTRL_Y0 + 68.0, 280.0, 60.0)
+        self.slot_rect(&self.input_layout(), Slot::Suggest)
+    }
+    /// Slider（滑杆）—— Suggest 下方。
+    fn slider_rect(&self) -> Rect {
+        self.slot_rect(&self.input_layout(), Slot::Slider)
     }
     /// 命令条触发点 —— 放在 TextBox 下方 50px 处的隐形一线。UWP 契约：命令条画在
     /// **选中区域上方**；`CommandBarFlyout::place` 会把 bar 摆到 anchor 上方（带 4px 间隙）。
@@ -495,14 +637,15 @@ impl GalleryApp {
     fn command_bar_rect(&self) -> Rect {
         self.command_bar.place(self.command_bar_anchor(), self.screen())
     }
-    /// 命令结果提示（CommandBar 动作回显）。
+    /// 命令结果提示（CommandBar 动作回显）—— 锚定右列 Suggest 下方。
     fn command_result_rect(&self) -> Rect {
-        Rect::new(PAD + 300.0, CTRL_Y0 + 136.0, 360.0, 40.0)
+        let s = self.suggest_rect();
+        Rect::new(s.origin.x, s.origin.y + s.size.height + 8.0, s.size.width, 40.0)
     }
 
     /// 虚拟化长列表视口（Input 页下方）。
     fn virtual_list_rect(&self) -> Rect {
-        Rect::new(PAD, CTRL_Y0 + 230.0, 320.0, 190.0)
+        self.slot_rect(&self.input_layout(), Slot::VirtualList)
     }
 
     /// 虚拟化长列表布局器（1000 项 × 40px）。
@@ -531,6 +674,24 @@ impl GalleryApp {
             FocusedInput::AutoSuggest
         } else {
             FocusedInput::None
+        }
+    }
+
+    /// 聚焦文本编辑控件的 TextField 引用（TextBox/PasswordBox；其余返回 None）。
+    fn focused_field(&self) -> Option<&kanesumi_controls::TextField> {
+        match self.focused_input() {
+            FocusedInput::TextBox => Some(&self.textbox.field),
+            FocusedInput::Password => Some(self.password.field()),
+            _ => None,
+        }
+    }
+
+    /// 聚焦文本编辑控件的 TextField 可变引用（TextBox/PasswordBox；其余返回 None）。
+    fn focused_field_mut(&mut self) -> Option<&mut kanesumi_controls::TextField> {
+        match self.focused_input() {
+            FocusedInput::TextBox => Some(&mut self.textbox.field),
+            FocusedInput::Password => Some(self.password.field_mut()),
+            _ => None,
         }
     }
 
@@ -713,60 +874,67 @@ impl GalleryApp {
 
     /// 命中常规控件（弹层优先，由调用方处理）。
     /// 页导航栏永远可点；页内控件仅当当前页匹配时可点。
+    ///
+    /// Controls/Input 页走引擎 LaidTree 的 `hit_at` —— 与渲染共用同一棵树
+    /// （画在哪里，点就得在哪里；容器裁剪自动生效）。子目标特判保留
+    /// （Number 上下按钮、Slider 精确命中）。
     fn hit_regular(&self, p: Point) -> Option<Target> {
         if self.nav_rect().contains(p) {
             return Some(Target::Nav);
         }
-        // 页内控件仅当在 Controls 页时活跃（其它页只做展示）。
-        if self.page == GalleryPage::Controls {
-            if self.button_rect().contains(p) {
-                return Some(Target::Button);
-            } else if self.accent_rect().contains(p) {
-                return Some(Target::Accent);
-            } else if self.icon_rect().contains(p) {
-                return Some(Target::Icon);
-            } else if self.switch_rect().contains(p) {
-                return Some(Target::Switch);
-            } else if self.tabs_rect().contains(p) {
-                return Some(Target::Tabs);
-            } else if self.list_rect().contains(p) {
-                return Some(Target::List);
-            } else if self.dropdown_trigger().contains(p) {
-                return Some(Target::Dropdown);
-            } else if self.selector_trigger().contains(p) {
-                return Some(Target::Selector);
-            } else {
-                return None;
-            }
-        }
-        // Input 页
-        if self.page == GalleryPage::Input {
-            if self.textbox_rect().contains(p) {
-                return Some(Target::TextBox);
-            } else if self.password_rect().contains(p) {
-                return Some(Target::PasswordBox);
-            } else if self.checkbox_rect().contains(p) {
-                return Some(Target::CheckBox);
-            } else if self.number_rect().contains(p) {
-                let theme = &self.theme;
-                let r = self.number_rect();
-                if self.number.up_button_rect(theme, r).contains(p) {
-                    return Some(Target::NumberUp);
-                } else if self.number.down_button_rect(theme, r).contains(p) {
-                    return Some(Target::NumberDown);
-                }
-                return Some(Target::TextBox); // 数字文本区 → 聚焦编辑
-            } else if self.suggest_rect().contains(p) {
-                return Some(Target::AutoSuggest);
-            } else if self.virtual_list_rect().contains(p) {
-                return Some(Target::VirtualList);
-            }
-        }
-        // 命令条（Input 页，任何位置之上）
+        // 命令条（Input 页浮出，任何位置之上）—— 弹层，不在布局树内。
         if self.command_bar_open && self.command_bar_rect().contains(p) {
             return Some(Target::CommandBar);
         }
-        None
+        match self.page {
+            GalleryPage::Controls => {
+                let tree = self.controls_layout();
+                let slot = tree.hit_at(p).map(|l| l.slot)?;
+                let target = match slot {
+                    Slot::Button => Target::Button,
+                    Slot::Accent => Target::Accent,
+                    Slot::Icon => Target::Icon,
+                    Slot::Switch => Target::Switch,
+                    Slot::Tabs => Target::Tabs,
+                    Slot::List => Target::List,
+                    Slot::Dropdown => Target::Dropdown,
+                    Slot::Selector => Target::Selector,
+                    _ => return None,
+                };
+                Some(target)
+            }
+            GalleryPage::Input => {
+                let tree = self.input_layout();
+                let slot = tree.hit_at(p).map(|l| l.slot)?;
+                match slot {
+                    Slot::TextBox => Some(Target::TextBox),
+                    Slot::Password => Some(Target::PasswordBox),
+                    Slot::CheckBox => Some(Target::CheckBox),
+                    Slot::Number => {
+                        let theme = &self.theme;
+                        let r = self.number_rect();
+                        if self.number.up_button_rect(theme, r).contains(p) {
+                            Some(Target::NumberUp)
+                        } else if self.number.down_button_rect(theme, r).contains(p) {
+                            Some(Target::NumberDown)
+                        } else {
+                            Some(Target::TextBox) // 数字文本区 → 聚焦编辑
+                        }
+                    }
+                    Slot::Suggest => Some(Target::AutoSuggest),
+                    Slot::Slider => {
+                        if self.slider.hit_test(self.slider_rect(), p) {
+                            Some(Target::Slider)
+                        } else {
+                            None
+                        }
+                    }
+                    Slot::VirtualList => Some(Target::VirtualList),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 
     /// 更新悬停态（Motion / Enter）。
@@ -786,6 +954,13 @@ impl GalleryApp {
         // A1：Switch 拖动 —— pressed 在 switch 上时，motion 直接喂 drag_to（不走 hover）
         if self.pressed == Some(Target::Switch) {
             self.switch.drag_to(p);
+            return;
+        }
+        // Slider 拖动 —— pressed 在 slider 上时，motion 喂 drag_to（连续更新）。
+        if self.pressed == Some(Target::Slider) {
+            if let Some(v) = self.slider.drag_to(self.slider_rect(), p) {
+                self.slider_value = format!("{v:.0}");
+            }
             return;
         }
 
@@ -856,6 +1031,7 @@ impl GalleryApp {
         self.dropdown.hovered = None;
         self.dropdown.close_submenu();
         self.selector.hovered = None;
+        self.slider.state = ControlState::Normal;
         self.command_bar.hovered = None;
         self.command_bar.hover(Point::new(-1000.0, -1000.0));
     }
@@ -1017,6 +1193,12 @@ impl GalleryApp {
                 self.password.blur();
                 self.number.blur();
             }
+            Some(Target::Slider) => {
+                // 点/拖滑杆 → 置值（返回新值则刷新回显）。
+                if let Some(v) = self.slider.press(self.slider_rect(), p) {
+                    self.slider_value = format!("{v:.0}");
+                }
+            }
             Some(Target::CheckBox) => {
                 self.checkbox.toggle();
             }
@@ -1101,6 +1283,7 @@ impl GalleryApp {
                 .down_button_rect(&self.theme, self.number_rect())
                 .contains(p),
             Target::AutoSuggest => self.suggest_rect().contains(p),
+            Target::Slider => self.slider.hit_test(self.slider_rect(), p),
             Target::CommandBar => self.command_bar_rect().contains(p),
             Target::VirtualList => self.virtual_list_rect().contains(p),
         };
@@ -1108,6 +1291,10 @@ impl GalleryApp {
             // A1：Switch 释放到轨道外 = 取消拖动（不 commit）
             if t == Target::Switch {
                 self.switch.cancel();
+            }
+            // Slider 释放到命中区外 = 结束拖动
+            if t == Target::Slider {
+                self.slider.release();
             }
             self.update_hover(p);
             return;
@@ -1135,6 +1322,9 @@ impl GalleryApp {
             Target::Switch => {
                 // A1：release 提交拖动结果（未拖动 = 点动 toggle；拖动 = 按 knob 过半判）
                 let _ = self.switch.release();
+            }
+            Target::Slider => {
+                self.slider.release();
             }
             Target::Tabs => {
                 if let Some(i) = self.tabs.tab_at(&self.engine, self.tabs_rect(), p) {
@@ -1312,7 +1502,7 @@ impl GalleryApp {
         let label_style = self.theme.typography.caption;
         let colors = &self.theme.colors;
 
-        // 组标签
+        // 组标签（锚定各列起点，resize 后自动跟随）
         scene.text(
             "文本输入".into(),
             Rect::new(PAD, CTRL_Y0 - 18.0, 200.0, label_style.line_height),
@@ -1322,7 +1512,7 @@ impl GalleryApp {
         );
         scene.text(
             "数值 / 建议".into(),
-            Rect::new(PAD + 300.0, CTRL_Y0 - 18.0, 200.0, label_style.line_height),
+            Rect::new(self.number_rect().origin.x, CTRL_Y0 - 18.0, 200.0, label_style.line_height),
             colors.on_surface_variant,
             label_style,
             TextAlign::Left,
@@ -1340,11 +1530,12 @@ impl GalleryApp {
         self.checkbox
             .render(&self.theme, engine, self.checkbox_rect(), scene);
         let cbs = format!("状态: {:?}", self.checkbox.state);
+        let cbr = self.checkbox_rect();
         scene.text(
             cbs,
             Rect::new(
-                PAD + 200.0,
-                self.checkbox_rect().origin.y + (40.0 - style.line_height) / 2.0,
+                cbr.right() + 8.0,
+                cbr.origin.y + (cbr.size.height - style.line_height) / 2.0,
                 160.0,
                 style.line_height,
             ),
@@ -1360,6 +1551,24 @@ impl GalleryApp {
         // AutoSuggestBox
         self.suggest
             .render(&self.theme, engine, self.suggest_rect(), scene);
+
+        // Slider（连续数值，参 CONTROL_SPEC §43）+ 值回显
+        self.slider
+            .render(&self.theme, engine, self.slider_rect(), scene);
+        let sv = format!("{:.0}", self.slider.value);
+        scene.text(
+            sv,
+            Rect::new(
+                self.slider_rect().right() + 8.0,
+                self.slider_rect().origin.y + self.slider_rect().size.height / 2.0
+                    - style.line_height / 2.0,
+                48.0,
+                style.line_height,
+            ),
+            colors.on_surface_variant,
+            style,
+            TextAlign::Left,
+        );
 
         // CommandBar 触发：选中文本框内容时，在选区下方浮出命令条
         let has_selection = self.textbox.focused && self.textbox.field.selection().is_some();
@@ -1575,12 +1784,12 @@ impl App for GalleryApp {
     fn handle_input(&mut self, event: InputEvent) {
         match event {
             InputEvent::PointerMoved { x, y } => self.update_hover(Point::new(x, y)),
-            InputEvent::PointerPressed { x, y, button } => {
+            InputEvent::PointerPressed { x, y, button, .. } => {
                 if button == PointerButton::Left {
                     self.press(Point::new(x, y));
                 }
             }
-            InputEvent::PointerReleased { x, y, button } => {
+            InputEvent::PointerReleased { x, y, button, .. } => {
                 if button == PointerButton::Left {
                     self.release(Point::new(x, y));
                 }
@@ -1600,11 +1809,51 @@ impl App for GalleryApp {
                         .scroll_by(&self.theme, self.list_rect().size.height, y);
                 }
             }
-            InputEvent::KeyPressed { key } => {
+            InputEvent::KeyPressed { key, modifiers } => {
                 // 键盘路由：聚焦的输入控件优先（TextBox / PasswordBox / NumberBox / AutoSuggestBox）
                 let focused = self.focused_input();
 
                 use kanesumi_harness::Key as HarnessKey;
+                // Ctrl 组合（宿主组合修饰键，参 harness `key_to_text_input` 契约）：
+                // Ctrl+A/C/V/Z → 全选/复制/粘贴/撤销（App 内剪贴板；跨应用待 data_device）。
+                // 仅对文本编辑控件生效；Ctrl 之外的组合（Ctrl+Tab 等）留待应用层扩展。
+                if modifiers.ctrl {
+                    match key {
+                        HarnessKey::Char('a') | HarnessKey::Char('A') => {
+                            if let Some(f) = self.focused_field_mut() {
+                                f.select_all();
+                            }
+                            return;
+                        }
+                        HarnessKey::Char('z') | HarnessKey::Char('Z') => {
+                            if let Some(f) = self.focused_field_mut() {
+                                f.undo();
+                            }
+                            return;
+                        }
+                        HarnessKey::Char('c') | HarnessKey::Char('C') => {
+                            if let Some(f) = self.focused_field()
+                                && let Some((s, e)) = f.selection()
+                            {
+                                let t = f.text();
+                                let sel: String =
+                                    t.chars().skip(s).take(e.saturating_sub(s)).collect();
+                                self.clipboard = sel;
+                            }
+                            return;
+                        }
+                        HarnessKey::Char('v') | HarnessKey::Char('V') => {
+                            let text = self.clipboard.clone();
+                            if let Some(f) = self.focused_field_mut()
+                                && !text.is_empty()
+                            {
+                                f.insert_str(&text);
+                            }
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
                 // 统一转 TextInputKey；Up/Down 保留给 suggest 导航，其余交给文本编辑。
                 let mapped = match key {
                     HarnessKey::Char(c) => Some(TextInputKey::Char(c)),
@@ -1669,6 +1918,9 @@ impl App for GalleryApp {
                 if self.pressed == Some(Target::Switch) {
                     self.switch.cancel();
                 }
+                if self.pressed == Some(Target::Slider) {
+                    self.slider.release();
+                }
                 self.clear_hover();
                 self.pressed = None;
                 self.tile_hovered = None;
@@ -1680,6 +1932,8 @@ impl App for GalleryApp {
     }
 
     fn render(&mut self, engine: &TextEngine, size: Size) -> Scene {
+        // 以当前视口为布局根约束（resize 后这里最先更新，命中/弹层随之同步）。
+        self.viewport = size;
         let mut scene = Scene::default();
         let colors = &self.theme.colors;
 
@@ -1789,11 +2043,13 @@ mod tests {
             x: p.x,
             y: p.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         app.handle_input(InputEvent::PointerReleased {
             x: p.x,
             y: p.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
     }
 
@@ -1829,11 +2085,13 @@ mod tests {
             x: p.x,
             y: p.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         g.handle_input(InputEvent::PointerReleased {
             x: p.x,
             y: p.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         assert_eq!(g.tabs.selected, 1, "点击第二 tab 应选中");
     }
@@ -1848,11 +2106,13 @@ mod tests {
             x: p.x,
             y: p.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         g.handle_input(InputEvent::PointerReleased {
             x: p.x,
             y: p.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         assert_eq!(g.list.selected, Some(2));
     }
@@ -1887,11 +2147,13 @@ mod tests {
             x: item.x,
             y: item.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         g.handle_input(InputEvent::PointerReleased {
             x: item.x,
             y: item.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         g.update(1.0);
         assert!(!g.dropdown.anim.is_visible(), "点选菜单项应关闭");
@@ -1910,11 +2172,13 @@ mod tests {
             x: item.x,
             y: item.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         g.handle_input(InputEvent::PointerReleased {
             x: item.x,
             y: item.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         g.update(1.0);
         assert_eq!(g.selector.selected, Some(1), "应选中第 2 项");
@@ -1952,7 +2216,7 @@ mod tests {
             x: center.x,
             y: center.y,
         });
-        g.handle_input(InputEvent::Scroll { x: 0.0, y: 100.0 });
+        g.handle_input(InputEvent::Scroll {x: 0.0, y: 100.0, modifiers: kanesumi_harness::Modifiers::NONE});
         assert!(
             g.list.scroll > before,
             "滚轮应滚动列表，before={before} after={}",
@@ -1978,7 +2242,7 @@ mod tests {
     #[test]
     fn scroll_outside_list_is_ignored() {
         let mut g = app();
-        g.handle_input(InputEvent::Scroll { x: 0.0, y: 100.0 });
+        g.handle_input(InputEvent::Scroll {x: 0.0, y: 100.0, modifiers: kanesumi_harness::Modifiers::NONE});
         assert_eq!(g.list.scroll, 0.0, "指针不在列表上时滚动无效");
     }
 
@@ -2001,11 +2265,13 @@ mod tests {
             x: center.x,
             y: center.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         g.handle_input(InputEvent::PointerReleased {
             x: center.x,
             y: center.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         assert_eq!(g.decl_count, before + 1, "声明式按钮点击应计数");
     }
@@ -2051,11 +2317,13 @@ mod tests {
             x: c.x,
             y: c.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         g.handle_input(InputEvent::PointerReleased {
             x: c.x,
             y: c.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         assert_eq!(g.tile_page, 1, "点下一页应翻到页 1");
     }
@@ -2090,11 +2358,13 @@ mod tests {
             x: p.x,
             y: p.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         g.handle_input(InputEvent::PointerReleased {
             x: p.x,
             y: p.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         assert_eq!(g.page, GalleryPage::DesignTokens, "从 Tiles 应能切到 DesignTokens");
     }
@@ -2112,11 +2382,13 @@ mod tests {
             x: p.x,
             y: p.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         g.handle_input(InputEvent::PointerReleased {
             x: p.x,
             y: p.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         assert_eq!(g.page, GalleryPage::DesignTokens, "点 nav 第一项应切到 Tokens");
         assert_eq!(g.nav.selected, 0);
@@ -2153,12 +2425,160 @@ mod tests {
         // 键盘输入
         g.handle_input(InputEvent::KeyPressed {
             key: kanesumi_harness::Key::Char('X'),
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         g.handle_input(InputEvent::KeyPressed {
             key: kanesumi_harness::Key::Char('Y'),
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         // 聚焦全选 → 输入替换内容
         assert!(g.textbox.field.text().ends_with("XY"), "输入应生效");
+    }
+
+    #[test]
+    fn textbox_ctrl_shortcuts_work() {
+        use kanesumi_harness::{Key as HarnessKey, Modifiers as HarnessModifiers};
+        let mut g = app();
+        input_page(&mut g);
+        let r = g.textbox_rect();
+        click(&mut g, r);
+        assert!(g.textbox.focused);
+        // Ctrl+A 全选 → Ctrl+C 复制到 App 剪贴板 → 移动光标 → Ctrl+V 粘贴
+        let ctrl = HarnessModifiers {
+            ctrl: true,
+            ..HarnessModifiers::NONE
+        };
+        g.handle_input(InputEvent::KeyPressed {
+            key: HarnessKey::Char('a'),
+            modifiers: ctrl,
+        });
+        let field = &g.textbox.field;
+        let sel = field.selection();
+        assert!(sel.is_some(), "Ctrl+A 应产生选区");
+        assert_eq!(sel.unwrap(), (0, field.text().len()), "Ctrl+A 应全选");
+        // Ctrl+C
+        g.handle_input(InputEvent::KeyPressed {
+            key: HarnessKey::Char('c'),
+            modifiers: ctrl,
+        });
+        let copied = g.clipboard.clone();
+        assert_eq!(copied, g.textbox.field.text(), "Ctrl+C 应复制全部文本");
+        // 移动光标到文本中间后 Ctrl+V 粘贴（插入而非替换）
+        g.textbox.field.move_left(false);
+        g.textbox.field.move_left(false);
+        g.handle_input(InputEvent::KeyPressed {
+            key: HarnessKey::Char('v'),
+            modifiers: ctrl,
+        });
+        let text = g.textbox.field.text();
+        assert!(
+            text.len() > copied.len(),
+            "Ctrl+V 应插入剪贴板文本（长度增长）"
+        );
+        // Ctrl+Z 撤销粘贴
+        g.handle_input(InputEvent::KeyPressed {
+            key: HarnessKey::Char('z'),
+            modifiers: ctrl,
+        });
+        assert_eq!(
+            g.textbox.field.text().len(),
+            copied.len(),
+            "Ctrl+Z 应撤销粘贴，回到原长度"
+        );
+        // Ctrl+A/C/V 不带修饰键时是普通字符输入
+        let before_len = g.textbox.field.text().len();
+        g.handle_input(InputEvent::KeyPressed {
+            key: HarnessKey::Char('a'),
+            modifiers: HarnessModifiers::NONE,
+        });
+        assert!(
+            g.textbox.field.text().len() == before_len + 1,
+            "无修饰键的 'a' 应作为字符输入（长度 +1）"
+        );
+    }
+
+    #[test]
+    fn slider_click_sets_value() {
+        let mut g = app();
+        input_page(&mut g);
+        let r = g.slider_rect();
+        // 点轨道中点 → 值约 50（吸附到 5 的倍数）
+        let mid = Point::new(r.origin.x + r.size.width / 2.0, r.origin.y + r.size.height / 2.0);
+        g.handle_input(InputEvent::PointerPressed {
+            x: mid.x,
+            y: mid.y,
+            button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
+        });
+        g.handle_input(InputEvent::PointerReleased {
+            x: mid.x,
+            y: mid.y,
+            button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
+        });
+        assert!((g.slider.value - 50.0).abs() <= 5.0, "中点 → 约 50，got {}", g.slider.value);
+        assert_eq!(g.slider_value, format!("{:.0}", g.slider.value), "回显同步");
+    }
+
+    #[test]
+    fn slider_drag_continues_and_releases() {
+        let mut g = app();
+        input_page(&mut g);
+        let r = g.slider_rect();
+        let y = r.origin.y + r.size.height / 2.0;
+        // 按下左侧（低值）
+        let left = Point::new(r.origin.x + 20.0, y);
+        g.handle_input(InputEvent::PointerPressed {
+            x: left.x,
+            y: left.y,
+            button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
+        });
+        let v0 = g.slider.value;
+        assert!(v0 < 20.0, "左侧按下 → 低值，got {v0}");
+        // 拖动到右侧（高值）
+        let right = Point::new(r.origin.x + r.size.width - 20.0, y);
+        g.handle_input(InputEvent::PointerMoved { x: right.x, y: right.y });
+        assert!(
+            g.slider.value > 70.0,
+            "拖动到右侧 → 高值，got {}",
+            g.slider.value
+        );
+        // 释放 → 拖动结束（再次 drag 无效）
+        g.handle_input(InputEvent::PointerReleased {
+            x: right.x,
+            y: right.y,
+            button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
+        });
+        let settled = g.slider.value;
+        g.handle_input(InputEvent::PointerMoved {
+            x: r.origin.x + 10.0,
+            y,
+        });
+        assert_eq!(g.slider.value, settled, "释放后拖动不再影响值");
+    }
+
+    #[test]
+    fn slider_outside_hit_ignored() {
+        let mut g = app();
+        input_page(&mut g);
+        let before = g.slider.value;
+        // 点 slider 命中区外（其下方）
+        let p = Point::new(g.slider_rect().origin.x + 40.0, g.slider_rect().bottom() + 6.0);
+        g.handle_input(InputEvent::PointerPressed {
+            x: p.x,
+            y: p.y,
+            button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
+        });
+        g.handle_input(InputEvent::PointerReleased {
+            x: p.x,
+            y: p.y,
+            button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
+        });
+        assert_eq!(g.slider.value, before, "命中区外点击不应改变值");
     }
 
     #[test]
@@ -2170,9 +2590,11 @@ mod tests {
         assert!(g.password.focused());
         g.handle_input(InputEvent::KeyPressed {
             key: kanesumi_harness::Key::Char('a'),
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         g.handle_input(InputEvent::KeyPressed {
             key: kanesumi_harness::Key::Char('b'),
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         assert_eq!(g.password.password(), "ab");
         assert_eq!(g.password.boxed.field.display_text(), "●●");
@@ -2212,6 +2634,7 @@ mod tests {
         // 输入"苹"（聚焦全选 → 替换）
         g.handle_input(InputEvent::KeyPressed {
             key: kanesumi_harness::Key::Char('苹'),
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         assert_eq!(g.suggest.shown, vec!["苹果"], "过滤建议");
     }
@@ -2336,11 +2759,13 @@ mod tests {
             x: copy_btn.x,
             y: copy_btn.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         g.handle_input(InputEvent::PointerReleased {
             x: copy_btn.x,
             y: copy_btn.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         assert_eq!(g.command_result.as_deref(), Some("已复制"));
         assert!(!g.command_bar_open, "点命令按钮后关闭命令条");
@@ -2392,7 +2817,7 @@ mod tests {
             x: center.x,
             y: center.y,
         });
-        g.handle_input(InputEvent::Scroll { x: 0.0, y: 100.0 });
+        g.handle_input(InputEvent::Scroll {x: 0.0, y: 100.0, modifiers: kanesumi_harness::Modifiers::NONE});
         assert!(g.virtual_list.offset > before, "虚拟列表应滚动");
         // 点击第一可见行 → 选中
         let rel = Point::new(20.0, 10.0);
@@ -2401,11 +2826,13 @@ mod tests {
             x: p.x,
             y: p.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         g.handle_input(InputEvent::PointerReleased {
             x: p.x,
             y: p.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         assert!(g.virtual_selected.is_some(), "点击应选中虚拟化条目");
     }
@@ -2450,11 +2877,13 @@ mod tests {
             x: close_pos.x,
             y: close_pos.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         g.handle_input(InputEvent::PointerReleased {
             x: close_pos.x,
             y: close_pos.y,
             button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
         });
         assert_eq!(
             g.dialog_result,

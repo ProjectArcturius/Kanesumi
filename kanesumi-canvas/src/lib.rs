@@ -7,9 +7,11 @@
 
 pub mod glyph;
 pub mod icon;
+pub mod layout;
 pub mod scene;
 pub mod text;
 
 pub use icon::{Icon, rasterize_svg};
+pub use layout::{CrossAlign, LaidKind, LaidNode, LaidTree, LayoutLeaf, LayoutNode, layout};
 pub use scene::{Scene, SceneCommand, TextAlign};
 pub use text::{Line, TextEngine, TextLoadError};

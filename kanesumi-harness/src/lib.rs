@@ -14,8 +14,8 @@ pub mod platform;
 pub mod render;
 
 pub use app::{
-    App, AppConfig, ImeAction, ImeContentHint, ImeContext, InputEvent, Key, PendingImeBatch,
-    PointerButton, compute_ime_action,
+    App, AppConfig, ImeAction, ImeContentHint, ImeContext, InputEvent, Key, Modifiers,
+    PendingImeBatch, PointerButton, compute_ime_action,
 };
 pub use role::{EtherRole, RoleParseError, SurfaceKind};
 
