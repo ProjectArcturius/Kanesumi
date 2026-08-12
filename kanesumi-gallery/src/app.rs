@@ -12,8 +12,8 @@ use kanesumi_controls::{
     CommandBarAction, ControlState, MenuItem, MetroAutoSuggestBox, MetroButton, MetroCheckBox,
     MetroCommandBarFlyout, MetroDialog, MetroDropdownMenu, MetroIconButton, MetroList,
     MetroNumberBox, MetroPasswordBox, MetroProgressBar, MetroProgressRing, MetroRepeater,
-    MetroScrollView, MetroSelectorFlyout, MetroSlider, MetroSwitch, MetroTab, MetroTabRow, MetroTextBox,
-    MetroTile, TextInputKey, TileSize,
+    MetroScrollView, MetroSelectorFlyout, MetroSlider, MetroSwitch, MetroTab, MetroTabRow,
+    MetroTextBox, MetroTile, TextInputKey, TileSize,
 };
 use kanesumi_core::{Color, MetroTheme, Point, Rect, Size, TextStyle};
 use kanesumi_harness::{App, AppConfig, AppMenuHandle, EtherRole, InputEvent, PointerButton};
@@ -182,19 +182,14 @@ impl LayoutLeaf for SizedSlot {
     fn measure(&self, _engine: &TextEngine, _available: Size) -> Size {
         self.size
     }
-    fn render(
-        &self,
-        _theme: &MetroTheme,
-        _engine: &TextEngine,
-        _rect: Rect,
-        _scene: &mut Scene,
-    ) {
+    fn render(&self, _theme: &MetroTheme, _engine: &TextEngine, _rect: Rect, _scene: &mut Scene) {
         // Gallery 自行渲染控件（带状态），这里不产生命令。
     }
 }
 
 /// Gallery 应用状态。
-pub struct GalleryApp {    theme: MetroTheme,
+pub struct GalleryApp {
+    theme: MetroTheme,
     engine: TextEngine,
     config: AppConfig,
     /// 当前视口尺寸（render 每帧以实际 `size` 更新）。布局矩形一律以此为根约束，
@@ -388,12 +383,26 @@ impl GalleryApp {
             textbox: MetroTextBox::with_placeholder("输入文本…").with_text("Kanesumi"),
             password: MetroPasswordBox::with_placeholder("••••••"),
             checkbox: MetroCheckBox::new("启用 Wi-Fi").with_checked(true),
-            number: MetroNumberBox::with_header("音量").with_min(0.0).with_max(100.0).with_step(5.0),
+            number: MetroNumberBox::with_header("音量")
+                .with_min(0.0)
+                .with_max(100.0)
+                .with_step(5.0),
             suggest: MetroAutoSuggestBox::with_placeholder("搜索水果…").with_suggestions(
-                ["苹果", "香蕉", "菠萝", "橙子", "西瓜", "火龙果", "百香果", "芒果", "葡萄", "樱桃"]
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect(),
+                [
+                    "苹果",
+                    "香蕉",
+                    "菠萝",
+                    "橙子",
+                    "西瓜",
+                    "火龙果",
+                    "百香果",
+                    "芒果",
+                    "葡萄",
+                    "樱桃",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             ),
             slider: MetroSlider::new()
                 .with_header("亮度")
@@ -489,41 +498,73 @@ impl GalleryApp {
         let body = self.theme.typography.body;
         let button_w = self.button.measure(&self.engine, body).width;
         let accent_w = self.accent.measure(&self.engine, body).width;
-        LayoutNode::column_with(8.0, CrossAlign::Start, vec![
-            LayoutNode::row_with(8.0, CrossAlign::Start, vec![
-                self.leaf(Slot::Button, button_w, 38.0),
-                self.leaf(Slot::Accent, accent_w, 38.0),
-                self.leaf(Slot::Icon, 68.0, 56.0),
-            ]),
-            self.leaf(Slot::Switch, 200.0, 60.0),
-            self.leaf(Slot::Tabs, 420.0, 48.0),
-            LayoutNode::row_with(8.0, CrossAlign::Start, vec![
-                self.leaf(Slot::List, 260.0, 280.0),
-                LayoutNode::column_with(8.0, CrossAlign::Start, vec![
-                    self.leaf(Slot::Dropdown, 130.0, 32.0),
-                    self.leaf(Slot::Selector, 180.0, 32.0),
-                ]),
-            ]),
-        ])
+        LayoutNode::column_with(
+            8.0,
+            CrossAlign::Start,
+            vec![
+                LayoutNode::row_with(
+                    8.0,
+                    CrossAlign::Start,
+                    vec![
+                        self.leaf(Slot::Button, button_w, 38.0),
+                        self.leaf(Slot::Accent, accent_w, 38.0),
+                        self.leaf(Slot::Icon, 68.0, 56.0),
+                    ],
+                ),
+                self.leaf(Slot::Switch, 200.0, 60.0),
+                self.leaf(Slot::Tabs, 420.0, 48.0),
+                LayoutNode::row_with(
+                    8.0,
+                    CrossAlign::Start,
+                    vec![
+                        self.leaf(Slot::List, 260.0, 280.0),
+                        LayoutNode::column_with(
+                            8.0,
+                            CrossAlign::Start,
+                            vec![
+                                self.leaf(Slot::Dropdown, 130.0, 32.0),
+                                self.leaf(Slot::Selector, 180.0, 32.0),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
     }
 
     /// Input 页布局树：两列（文本输入 | 数值/建议）→ 虚拟列表。
     fn build_input_tree(&self) -> LayoutNode<SizedSlot> {
-        LayoutNode::column_with(8.0, CrossAlign::Start, vec![
-            LayoutNode::row_with(8.0, CrossAlign::Start, vec![
-                self.leaf(Slot::TextBox, 280.0, 60.0),
-                self.leaf(Slot::Number, 220.0, 60.0),
-            ]),
-            LayoutNode::row_with(8.0, CrossAlign::Start, vec![
-                self.leaf(Slot::Password, 280.0, 60.0),
-                self.leaf(Slot::Suggest, 280.0, 60.0),
-            ]),
-            LayoutNode::row_with(8.0, CrossAlign::Start, vec![
-                self.leaf(Slot::CheckBox, 220.0, 40.0),
-                self.leaf(Slot::Slider, 280.0, 56.0),
-            ]),
-            self.leaf(Slot::VirtualList, 320.0, 190.0),
-        ])
+        LayoutNode::column_with(
+            8.0,
+            CrossAlign::Start,
+            vec![
+                LayoutNode::row_with(
+                    8.0,
+                    CrossAlign::Start,
+                    vec![
+                        self.leaf(Slot::TextBox, 280.0, 60.0),
+                        self.leaf(Slot::Number, 220.0, 60.0),
+                    ],
+                ),
+                LayoutNode::row_with(
+                    8.0,
+                    CrossAlign::Start,
+                    vec![
+                        self.leaf(Slot::Password, 280.0, 60.0),
+                        self.leaf(Slot::Suggest, 280.0, 60.0),
+                    ],
+                ),
+                LayoutNode::row_with(
+                    8.0,
+                    CrossAlign::Start,
+                    vec![
+                        self.leaf(Slot::CheckBox, 220.0, 40.0),
+                        self.leaf(Slot::Slider, 280.0, 56.0),
+                    ],
+                ),
+                self.leaf(Slot::VirtualList, 320.0, 190.0),
+            ],
+        )
     }
 
     /// 控件页布局树产物（在内容区内展开）。
@@ -537,11 +578,7 @@ impl GalleryApp {
 
     /// Input 页布局树产物（在内容区内展开）。
     fn input_layout(&self) -> LaidTree<SizedSlot> {
-        layout(
-            &self.build_input_tree(),
-            &self.engine,
-            self.content_rect(),
-        )
+        layout(&self.build_input_tree(), &self.engine, self.content_rect())
     }
 
     /// 从布局树按身份取矩形（渲染与命中共用同一棵树）。
@@ -646,8 +683,8 @@ impl GalleryApp {
     ///   完全落在 tb 之外，也远离 NAV。gallery demo 视觉链依然清楚（bar 就在文本下方）。
     fn command_bar_anchor(&self) -> Rect {
         let tb = self.textbox_rect();
-        let bar_h = kanesumi_controls::COMMANDBAR_BUTTON_SIZE
-            + 2.0 * kanesumi_controls::COMMANDBAR_BORDER;
+        let bar_h =
+            kanesumi_controls::COMMANDBAR_BUTTON_SIZE + 2.0 * kanesumi_controls::COMMANDBAR_BORDER;
         // bar_y_after_flip_up = anchor.y - gap(4) - bar_h → 要求 ≥ tb.bottom + 4 →
         // anchor.y ≥ tb.bottom + 4 + 4 + bar_h。
         let anchor_y = tb.bottom() + 8.0 + bar_h;
@@ -655,12 +692,18 @@ impl GalleryApp {
     }
     /// 命令条面板（由 place 定位）。
     fn command_bar_rect(&self) -> Rect {
-        self.command_bar.place(self.command_bar_anchor(), self.screen())
+        self.command_bar
+            .place(self.command_bar_anchor(), self.screen())
     }
     /// 命令结果提示（CommandBar 动作回显）—— 锚定右列 Suggest 下方。
     fn command_result_rect(&self) -> Rect {
         let s = self.suggest_rect();
-        Rect::new(s.origin.x, s.origin.y + s.size.height + 8.0, s.size.width, 40.0)
+        Rect::new(
+            s.origin.x,
+            s.origin.y + s.size.height + 8.0,
+            s.size.width,
+            40.0,
+        )
     }
 
     /// 虚拟化长列表视口（Input 页下方）。
@@ -741,7 +784,9 @@ impl GalleryApp {
     fn route_ime_delete(&mut self, before_bytes: u32, after_bytes: u32) {
         match self.focused_input() {
             FocusedInput::TextBox => {
-                self.textbox.field.delete_surrounding(before_bytes, after_bytes);
+                self.textbox
+                    .field
+                    .delete_surrounding(before_bytes, after_bytes);
             }
             FocusedInput::Password => {
                 self.password
@@ -799,19 +844,27 @@ impl GalleryApp {
 
     /// 命中当前页磁贴：返回 tiles 索引。
     fn tile_at(&self, p: Point) -> Option<usize> {
-        self.tile_rects
-            .iter()
-            .position(|r| r.contains(p))
+        self.tile_rects.iter().position(|r| r.contains(p))
     }
 
     /// 上一页按钮矩形。
     fn tile_nav_prev_rect(&self, content: Rect) -> Rect {
-        Rect::new(content.origin.x, content.origin.y + self.tile_wall().page_height() + 16.0, 96.0, 32.0)
+        Rect::new(
+            content.origin.x,
+            content.origin.y + self.tile_wall().page_height() + 16.0,
+            96.0,
+            32.0,
+        )
     }
 
     /// 下一页按钮矩形。
     fn tile_nav_next_rect(&self, content: Rect) -> Rect {
-        Rect::new(content.origin.x + 104.0, content.origin.y + self.tile_wall().page_height() + 16.0, 96.0, 32.0)
+        Rect::new(
+            content.origin.x + 104.0,
+            content.origin.y + self.tile_wall().page_height() + 16.0,
+            96.0,
+            32.0,
+        )
     }
 
     /// 每帧同步磁贴状态（hover/pressed → Normal）。
@@ -842,7 +895,12 @@ impl GalleryApp {
     /// Tiles 页：MetroTile + TileWall 磁贴墙演示（TILES_DESIGN §2/§3/§4/§6）。
     /// 页 0 展示三档尺寸 + Live 内容；页 1 演示整页翻页；下方翻页按钮。
     fn render_page_tiles(&mut self, engine: &TextEngine, content: Rect, scene: &mut Scene) {
-        let origin = Rect::new(content.origin.x, content.origin.y, content.size.width, content.size.height);
+        let origin = Rect::new(
+            content.origin.x,
+            content.origin.y,
+            content.size.width,
+            content.size.height,
+        );
 
         // 当前页磁贴矩形 + 状态同步
         self.tile_rects = self.tile_rects_for_page(self.tile_page, origin);
@@ -1072,17 +1130,16 @@ impl GalleryApp {
                 self.sync_tile_states();
             } else {
                 let content = self.content_rect();
-                self.tile_nav_pressed = if self.tile_nav_prev_rect(content).contains(p)
-                    && self.tile_page > 0
-                {
-                    Some(true)
-                } else if self.tile_nav_next_rect(content).contains(p)
-                    && self.tile_page < TILE_MAX_PAGE
-                {
-                    Some(false)
-                } else {
-                    None
-                };
+                self.tile_nav_pressed =
+                    if self.tile_nav_prev_rect(content).contains(p) && self.tile_page > 0 {
+                        Some(true)
+                    } else if self.tile_nav_next_rect(content).contains(p)
+                        && self.tile_page < TILE_MAX_PAGE
+                    {
+                        Some(false)
+                    } else {
+                        None
+                    };
             }
             return;
         }
@@ -1297,7 +1354,10 @@ impl GalleryApp {
             Target::TextBox => self.textbox_rect().contains(p),
             Target::PasswordBox => self.password_rect().contains(p),
             Target::CheckBox => self.checkbox_rect().contains(p),
-            Target::NumberUp => self.number.up_button_rect(&self.theme, self.number_rect()).contains(p),
+            Target::NumberUp => self
+                .number
+                .up_button_rect(&self.theme, self.number_rect())
+                .contains(p),
             Target::NumberDown => self
                 .number
                 .down_button_rect(&self.theme, self.number_rect())
@@ -1417,12 +1477,7 @@ impl GalleryApp {
 
     /// Animation 页：ProgressBar（不确定）+ ProgressRing（不确定）—— 两个
     /// UWP 时代运动的代表控件，各自演示 sokuou 时长与 UWP 缓动。
-    fn render_page_animation(
-        &self,
-        engine: &TextEngine,
-        content: Rect,
-        scene: &mut Scene,
-    ) {
+    fn render_page_animation(&self, engine: &TextEngine, content: Rect, scene: &mut Scene) {
         use kanesumi_structure::{LayoutDirection, Ui};
         let mut ui = Ui::new(content, LayoutDirection::Vertical).with_spacing(28.0);
 
@@ -1532,7 +1587,12 @@ impl GalleryApp {
         );
         scene.text(
             "数值 / 建议".into(),
-            Rect::new(self.number_rect().origin.x, CTRL_Y0 - 18.0, 200.0, label_style.line_height),
+            Rect::new(
+                self.number_rect().origin.x,
+                CTRL_Y0 - 18.0,
+                200.0,
+                label_style.line_height,
+            ),
             colors.on_surface_variant,
             label_style,
             TextAlign::Left,
@@ -1618,12 +1678,7 @@ impl GalleryApp {
         };
         scene.text(
             hint.into(),
-            Rect::new(
-                PAD,
-                CTRL_Y0 + 200.0,
-                500.0,
-                style.line_height,
-            ),
+            Rect::new(PAD, CTRL_Y0 + 200.0, 500.0, style.line_height),
             colors.on_surface_variant,
             style,
             TextAlign::Left,
@@ -1632,17 +1687,16 @@ impl GalleryApp {
         // 虚拟化长列表（MetroRepeater + MetroScrollView 引擎演示）
         let vrect = self.virtual_list_rect();
         self.virtual_list.viewport_size = vrect.size;
-        self.virtual_list.content_size = Size::new(
-            vrect.size.width,
-            self.virtual_repeater().content_length(),
-        );
+        self.virtual_list.content_size =
+            Size::new(vrect.size.width, self.virtual_repeater().content_length());
         self.virtual_list.update(0.0);
 
         // 边框 + 视口裁剪
         scene.stroke_rect(colors.divider, vrect, 1.0);
-        scene.clip(Some(vrect));
+        scene.push_clip(vrect);
         let repeater = self.virtual_repeater();
-        if let Some((first, last)) = repeater.visible_range(vrect.size.height, self.virtual_list.offset)
+        if let Some((first, last)) =
+            repeater.visible_range(vrect.size.height, self.virtual_list.offset)
         {
             for i in first..=last {
                 let mut row = repeater.item_rect(i, vrect.size, self.virtual_list.offset);
@@ -1666,7 +1720,7 @@ impl GalleryApp {
                 );
             }
         }
-        scene.clip(None);
+        scene.pop_clip();
         // 滚动条（可滚时显示）
         if self.virtual_list.scrollbar_visible() {
             let track = self.virtual_list.scrollbar_track_rect();
@@ -1689,7 +1743,12 @@ impl GalleryApp {
         // 标签
         scene.text(
             "虚拟化长列表（1000 项 · 只渲染可见行）".into(),
-            Rect::new(vrect.origin.x, vrect.bottom() + 4.0, 320.0, label_style.line_height),
+            Rect::new(
+                vrect.origin.x,
+                vrect.bottom() + 4.0,
+                320.0,
+                label_style.line_height,
+            ),
             colors.on_surface_variant,
             label_style,
             TextAlign::Left,
@@ -1698,12 +1757,7 @@ impl GalleryApp {
 
     /// Structure 页：MetroShell 微缩演示 —— 顶部 AppBar + 内容区。
     /// 用现成 `MetroShell::render` 在内容 rect 内画一个"页中页"。
-    fn render_page_structure(
-        &self,
-        engine: &TextEngine,
-        content: Rect,
-        scene: &mut Scene,
-    ) {
+    fn render_page_structure(&self, engine: &TextEngine, content: Rect, scene: &mut Scene) {
         use kanesumi_structure::MetroShell;
         let shell: MetroShell<GalleryPage> =
             MetroShell::new(GalleryPage::Structure, "MetroShell 示例");
@@ -1760,9 +1814,11 @@ impl App for GalleryApp {
                 &self.engine,
                 self.textbox_body_rect(),
             )),
-            FocusedInput::Password => {
-                Some(self.password.ime_context(&self.theme, &self.engine, self.password_rect()))
-            }
+            FocusedInput::Password => Some(self.password.ime_context(
+                &self.theme,
+                &self.engine,
+                self.password_rect(),
+            )),
             _ => None,
         }
     }
@@ -1779,13 +1835,11 @@ impl App for GalleryApp {
                 .push(MenuItem::separator(MENU_FILE_SEP))
                 .push(MenuItem::item(MENU_FILE_QUIT, "退出")),
         );
-        tree.push(
-            MenuItem::submenu(MENU_VIEW, "视图").push(MenuItem::check(
-                MENU_VIEW_DEMO,
-                "显示全局菜单演示",
-                self.appmenu_checked,
-            )),
-        );
+        tree.push(MenuItem::submenu(MENU_VIEW, "视图").push(MenuItem::check(
+            MENU_VIEW_DEMO,
+            "显示全局菜单演示",
+            self.appmenu_checked,
+        )));
         tree.push(
             MenuItem::submenu(MENU_HELP, "帮助").push(MenuItem::item(MENU_HELP_DOCS, "使用文档")),
         );
@@ -2282,7 +2336,11 @@ mod tests {
             x: center.x,
             y: center.y,
         });
-        g.handle_input(InputEvent::Scroll {x: 0.0, y: 100.0, modifiers: kanesumi_harness::Modifiers::NONE});
+        g.handle_input(InputEvent::Scroll {
+            x: 0.0,
+            y: 100.0,
+            modifiers: kanesumi_harness::Modifiers::NONE,
+        });
         assert!(
             g.list.scroll > before,
             "滚轮应滚动列表，before={before} after={}",
@@ -2308,7 +2366,11 @@ mod tests {
     #[test]
     fn scroll_outside_list_is_ignored() {
         let mut g = app();
-        g.handle_input(InputEvent::Scroll {x: 0.0, y: 100.0, modifiers: kanesumi_harness::Modifiers::NONE});
+        g.handle_input(InputEvent::Scroll {
+            x: 0.0,
+            y: 100.0,
+            modifiers: kanesumi_harness::Modifiers::NONE,
+        });
         assert_eq!(g.list.scroll, 0.0, "指针不在列表上时滚动无效");
     }
 
@@ -2419,7 +2481,10 @@ mod tests {
         // 点 nav 第一项（DesignTokens）应能切回
         let nav = g.nav_rect();
         let w0 = g.nav.header_width(&g.engine, 0);
-        let p = Point::new(nav.origin.x + w0 / 2.0, nav.origin.y + nav.size.height / 2.0);
+        let p = Point::new(
+            nav.origin.x + w0 / 2.0,
+            nav.origin.y + nav.size.height / 2.0,
+        );
         g.handle_input(InputEvent::PointerPressed {
             x: p.x,
             y: p.y,
@@ -2432,7 +2497,11 @@ mod tests {
             button: PointerButton::Left,
             modifiers: kanesumi_harness::Modifiers::NONE,
         });
-        assert_eq!(g.page, GalleryPage::DesignTokens, "从 Tiles 应能切到 DesignTokens");
+        assert_eq!(
+            g.page,
+            GalleryPage::DesignTokens,
+            "从 Tiles 应能切到 DesignTokens"
+        );
     }
 
     #[test]
@@ -2443,7 +2512,10 @@ mod tests {
         // 点击第一个 nav tab（DesignTokens）
         let nav = g.nav_rect();
         let w0 = g.nav.header_width(&g.engine, 0);
-        let p = Point::new(nav.origin.x + w0 / 2.0, nav.origin.y + nav.size.height / 2.0);
+        let p = Point::new(
+            nav.origin.x + w0 / 2.0,
+            nav.origin.y + nav.size.height / 2.0,
+        );
         g.handle_input(InputEvent::PointerPressed {
             x: p.x,
             y: p.y,
@@ -2456,7 +2528,11 @@ mod tests {
             button: PointerButton::Left,
             modifiers: kanesumi_harness::Modifiers::NONE,
         });
-        assert_eq!(g.page, GalleryPage::DesignTokens, "点 nav 第一项应切到 Tokens");
+        assert_eq!(
+            g.page,
+            GalleryPage::DesignTokens,
+            "点 nav 第一项应切到 Tokens"
+        );
         assert_eq!(g.nav.selected, 0);
     }
 
@@ -2470,7 +2546,10 @@ mod tests {
         // button 初态 = Normal
         let before = g.button.state;
         click(&mut g, rect);
-        assert_eq!(g.button.state, before, "非 Controls 页 button 点击应不改状态");
+        assert_eq!(
+            g.button.state, before,
+            "非 Controls 页 button 点击应不改状态"
+        );
     }
 
     // ── Input 页 ──────────────────────────────────────────────────
@@ -2569,7 +2648,10 @@ mod tests {
         input_page(&mut g);
         let r = g.slider_rect();
         // 点轨道中点 → 值约 50（吸附到 5 的倍数）
-        let mid = Point::new(r.origin.x + r.size.width / 2.0, r.origin.y + r.size.height / 2.0);
+        let mid = Point::new(
+            r.origin.x + r.size.width / 2.0,
+            r.origin.y + r.size.height / 2.0,
+        );
         g.handle_input(InputEvent::PointerPressed {
             x: mid.x,
             y: mid.y,
@@ -2582,7 +2664,11 @@ mod tests {
             button: PointerButton::Left,
             modifiers: kanesumi_harness::Modifiers::NONE,
         });
-        assert!((g.slider.value - 50.0).abs() <= 5.0, "中点 → 约 50，got {}", g.slider.value);
+        assert!(
+            (g.slider.value - 50.0).abs() <= 5.0,
+            "中点 → 约 50，got {}",
+            g.slider.value
+        );
         assert_eq!(g.slider_value, format!("{:.0}", g.slider.value), "回显同步");
     }
 
@@ -2604,7 +2690,10 @@ mod tests {
         assert!(v0 < 20.0, "左侧按下 → 低值，got {v0}");
         // 拖动到右侧（高值）
         let right = Point::new(r.origin.x + r.size.width - 20.0, y);
-        g.handle_input(InputEvent::PointerMoved { x: right.x, y: right.y });
+        g.handle_input(InputEvent::PointerMoved {
+            x: right.x,
+            y: right.y,
+        });
         assert!(
             g.slider.value > 70.0,
             "拖动到右侧 → 高值，got {}",
@@ -2631,7 +2720,10 @@ mod tests {
         input_page(&mut g);
         let before = g.slider.value;
         // 点 slider 命中区外（其下方）
-        let p = Point::new(g.slider_rect().origin.x + 40.0, g.slider_rect().bottom() + 6.0);
+        let p = Point::new(
+            g.slider_rect().origin.x + 40.0,
+            g.slider_rect().bottom() + 6.0,
+        );
         g.handle_input(InputEvent::PointerPressed {
             x: p.x,
             y: p.y,
@@ -2727,7 +2819,9 @@ mod tests {
         assert!(g.textbox.field.has_preedit());
         assert_eq!(g.textbox.field.preedit(), "nǐ");
         // 提交：替换选区
-        g.handle_input(InputEvent::Commit { text: "你好".into() });
+        g.handle_input(InputEvent::Commit {
+            text: "你好".into(),
+        });
         assert_eq!(g.textbox.field.text(), "你好");
         assert!(!g.textbox.field.has_preedit(), "提交清组合态");
         // 空 preedit 清除组合态
@@ -2756,7 +2850,9 @@ mod tests {
         });
         assert!(g.password.field().has_preedit(), "组合态路由到密码框");
         assert!(!g.textbox.field.has_preedit(), "TextBox 不受影响");
-        g.handle_input(InputEvent::Commit { text: "hunter2".into() });
+        g.handle_input(InputEvent::Commit {
+            text: "hunter2".into(),
+        });
         assert_eq!(g.password.password(), "hunter2");
         // 失焦后 IME 事件被忽略
         g.textbox.blur();
@@ -2883,7 +2979,11 @@ mod tests {
             x: center.x,
             y: center.y,
         });
-        g.handle_input(InputEvent::Scroll {x: 0.0, y: 100.0, modifiers: kanesumi_harness::Modifiers::NONE});
+        g.handle_input(InputEvent::Scroll {
+            x: 0.0,
+            y: 100.0,
+            modifiers: kanesumi_harness::Modifiers::NONE,
+        });
         assert!(g.virtual_list.offset > before, "虚拟列表应滚动");
         // 点击第一可见行 → 选中
         let rel = Point::new(20.0, 10.0);

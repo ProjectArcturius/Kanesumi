@@ -1,5 +1,5 @@
 use kanesumi_canvas::text::TextEngine;
-use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_canvas::{Scene, TextAlign, TextLayoutOptions, TextOverflow};
 use kanesumi_core::typography::TextStyle;
 use kanesumi_core::{Color, MetroTheme, Rect, Size};
 
@@ -10,6 +10,9 @@ pub struct MetroText {
     pub style: TextStyle,
     pub color: Color,
     pub align: TextAlign,
+    pub wrap: bool,
+    pub max_lines: Option<usize>,
+    pub overflow: TextOverflow,
 }
 
 impl MetroText {
@@ -19,6 +22,9 @@ impl MetroText {
             style,
             color,
             align: TextAlign::Left,
+            wrap: true,
+            max_lines: None,
+            overflow: TextOverflow::Clip,
         }
     }
 
@@ -32,42 +38,47 @@ impl MetroText {
         self
     }
 
+    pub fn single_line(mut self) -> Self {
+        self.wrap = false;
+        self.max_lines = Some(1);
+        self
+    }
+
+    pub fn with_max_lines(mut self, max_lines: usize) -> Self {
+        self.max_lines = Some(max_lines);
+        self
+    }
+
+    pub fn with_overflow(mut self, overflow: TextOverflow) -> Self {
+        self.overflow = overflow;
+        self
+    }
+
     /// 在 `max_width` 内排版，返回内容尺寸（宽度 = 行宽上限，高度 = 行数 × 行高）。
     pub fn measure(&self, engine: &TextEngine, max_width: f32) -> Size {
-        let lines = engine.layout(&self.content, self.style.size, max_width);
-        let width = lines
-            .iter()
-            .map(|l| l.width)
-            .fold(0.0, f32::max)
-            .min(max_width);
-        let height = lines.len() as f32 * self.style.line_height;
-        Size::new(width, height)
+        let mut options =
+            TextLayoutOptions::wrapped(max_width, f32::INFINITY, self.style.line_height);
+        options.letter_spacing_em = self.style.letter_spacing_em;
+        options.max_lines = self.max_lines;
+        options.wrap = self.wrap;
+        options.overflow = self.overflow;
+        engine
+            .layout_box(&self.content, self.style.size, options)
+            .size
     }
 
     /// 在 `block` 内渲染。行内对齐按 `self.align`，行间垂直方向自上而下排布。
-    pub fn render(&self, engine: &TextEngine, block: Rect, scene: &mut Scene) {
-        let style = self.style;
-        let lines = engine.layout(&self.content, style.size, block.size.width);
-        for (i, line) in lines.iter().enumerate() {
-            let x = match self.align {
-                TextAlign::Left => block.origin.x,
-                TextAlign::Center => block.origin.x + (block.size.width - line.width) / 2.0,
-                TextAlign::Right => block.origin.x + block.size.width - line.width,
-            };
-            let rect = Rect::new(
-                x,
-                block.origin.y + i as f32 * style.line_height,
-                line.width,
-                style.line_height,
-            );
-            scene.text(
-                line.content.clone(),
-                rect,
-                self.color,
-                style,
-                TextAlign::Left,
-            );
-        }
+    pub fn render(&self, _engine: &TextEngine, block: Rect, scene: &mut Scene) {
+        scene.text_with_options(
+            self.content.clone(),
+            block,
+            self.color,
+            self.style,
+            self.align,
+            self.wrap,
+            self.max_lines,
+            self.overflow,
+        );
     }
 }
 

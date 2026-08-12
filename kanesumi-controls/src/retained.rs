@@ -43,6 +43,10 @@ pub struct RetainedScene {
     hits: Vec<crate::decl::DeclHit>,
     /// 最近一次 update 的变化列表（damage hint）。
     last_changes: Vec<DeclChange>,
+    /// 布局环境也是缓存身份的一部分。窗口尺寸变化时即使声明树相同也必须重排。
+    last_rect: Option<Rect>,
+    last_theme: Option<MetroTheme>,
+    last_text_engine: Option<u64>,
 }
 
 impl RetainedScene {
@@ -61,7 +65,11 @@ impl RetainedScene {
         root: &Decl,
         rect: Rect,
     ) -> (&[SceneCommand], &[DeclChange]) {
+        let environment_changed = self.last_rect != Some(rect)
+            || self.last_theme != Some(*theme)
+            || self.last_text_engine != Some(engine.identity());
         let changes = match &self.last {
+            Some(_) if environment_changed => vec![DeclChange::Changed(DeclPath(vec![]))],
             Some(last) => diff_decl(last, root),
             None => {
                 // 首帧：全量
@@ -71,6 +79,9 @@ impl RetainedScene {
                 self.rebuild_segments(root);
                 self.last_changes.clear();
                 self.last = Some(root.clone());
+                self.last_rect = Some(rect);
+                self.last_theme = Some(*theme);
+                self.last_text_engine = Some(engine.identity());
                 return (&self.commands, &self.last_changes);
             }
         };
@@ -86,6 +97,9 @@ impl RetainedScene {
         let (_, hits) = render_decl(theme, engine, root, rect);
         self.hits = hits;
         self.last = Some(root.clone());
+        self.last_rect = Some(rect);
+        self.last_theme = Some(*theme);
+        self.last_text_engine = Some(engine.identity());
         (&self.commands, &self.last_changes)
     }
 
@@ -259,5 +273,17 @@ mod tests {
         // 全量输出
         let (plain, _) = render_decl(&theme, &engine, &tree, Rect::new(0.0, 0.0, 300.0, 80.0));
         assert_eq!(cmds, &plain.commands[..], "retained 与全量渲染命令一致");
+    }
+
+    #[test]
+    fn resize_invalidates_cached_commands() {
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
+        let tree = Decl::row(vec![Decl::button("A", DeclAction::Custom(1))]);
+        let mut retained = RetainedScene::new();
+        retained.update(&theme, &engine, &tree, Rect::new(0.0, 0.0, 200.0, 40.0));
+        let (_, changes) = retained.update(&theme, &engine, &tree, Rect::new(0.0, 0.0, 80.0, 40.0));
+        assert!(!changes.is_empty(), "边界变化必须使 retained 场景失效");
+        assert!(retained.hits()[0].rect.right() <= 80.0);
     }
 }

@@ -159,7 +159,7 @@ impl MetroRatingControl {
                         sr.size.width * fill_frac as f32,
                         sr.size.height,
                     );
-                    scene.clip(Some(clip));
+                    scene.push_clip(clip);
                     scene.text(
                         "★".into(),
                         star_text_rect(&sr, &style),
@@ -167,7 +167,7 @@ impl MetroRatingControl {
                         style,
                         TextAlign::Center,
                     );
-                    scene.clip(None);
+                    scene.pop_clip();
                 }
             }
         }
@@ -303,7 +303,7 @@ mod tests {
         let clips = scene
             .commands
             .iter()
-            .filter(|c| matches!(c, SceneCommand::ClipRect { rect: Some(_) }))
+            .filter(|c| matches!(c, SceneCommand::PushClip { .. }))
             .count();
         assert_eq!(clips, 1, "部分星裁剪 set 一次");
     }

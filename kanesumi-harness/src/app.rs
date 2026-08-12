@@ -54,7 +54,13 @@ impl FloatingLayer {
         width: f32,
         height: f32,
     ) -> Self {
-        Self { app_id, layer, anchor, width, height }
+        Self {
+            app_id,
+            layer,
+            anchor,
+            width,
+            height,
+        }
     }
 }
 
@@ -66,6 +72,8 @@ pub struct AppConfig {
     pub role: EtherRole,
     pub width: f32,
     pub height: f32,
+    pub min_width: f32,
+    pub min_height: f32,
 }
 
 impl AppConfig {
@@ -82,7 +90,16 @@ impl AppConfig {
             role,
             width,
             height,
+            min_width: width,
+            min_height: height,
         }
+    }
+
+    /// 声明 xdg-shell 最小逻辑尺寸。未调用时保持启动尺寸，避免旧应用被压到布局下限以下。
+    pub const fn with_min_size(mut self, width: f32, height: f32) -> Self {
+        self.min_width = width;
+        self.min_height = height;
+        self
     }
 }
 
@@ -159,7 +176,11 @@ pub enum InputEvent {
     /// 滚轮 / 触摸板滚动。`dx`/`dy` 为逻辑像素增量；**正方向 = 表面坐标 +y（下）**，
     /// 即向下滚为正。外壳把 Wayland Axis 的 `discrete`（整格 ~50px）或 `absolute`
     /// （触摸板连续）转换为像素增量。
-    Scroll { x: f32, y: f32, modifiers: Modifiers },
+    Scroll {
+        x: f32,
+        y: f32,
+        modifiers: Modifiers,
+    },
     /// 键按下（表面持有键盘焦点时）。释放事件不推（App 一般只关心按下）。
     KeyPressed { key: Key, modifiers: Modifiers },
     /// 指针离开表面。
@@ -431,7 +452,6 @@ mod tests {
             commit: Some("你好".into()),
             delete_before: 3,
             delete_after: 6,
-            ..Default::default()
         };
         let events = b.apply();
         assert!(matches!(

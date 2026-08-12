@@ -164,11 +164,7 @@ impl MetroTextBox {
 
     /// 边框厚度：聚焦 2px，其余 1px（TextControlBorderThemeThickness/Focused）。
     pub fn border_thickness(&self) -> f32 {
-        if self.focused {
-            2.0
-        } else {
-            1.0
-        }
+        if self.focused { 2.0 } else { 1.0 }
     }
 
     /// 控件最小高（UWP TextControlThemeMinHeight 32）。
@@ -181,30 +177,37 @@ impl MetroTextBox {
         self.field.display_chars()
     }
 
-    /// 光标前的显示文本（度量光标 x 用）。
-    fn prefix_display(&self) -> String {
+    /// 当前显示流。组合态插入文本光标处并参与整行塑形，避免切段破坏上下文形态。
+    fn display_stream(&self) -> (String, Option<(usize, usize)>) {
         let chars = self.display_chars();
-        chars[..self.field.cursor().min(chars.len())].iter().collect()
+        if !self.field.has_preedit() {
+            return (chars.iter().collect(), None);
+        }
+        let cursor = self.field.cursor().min(chars.len());
+        let preedit = self.field.preedit_display();
+        let preedit_len = preedit.chars().count();
+        let mut stream: String = chars[..cursor].iter().collect();
+        stream.push_str(&preedit);
+        stream.extend(chars[cursor..].iter());
+        (stream, Some((cursor, cursor + preedit_len)))
     }
 
-    /// 组合态光标前的显示文本（掩码语义一致，度量光标 x 位移用）。
-    fn preedit_prefix_display(&self) -> String {
-        let chars: Vec<char> = self.field.preedit_display().chars().collect();
-        let pc = self.field.preedit_caret_char().min(chars.len());
-        chars[..pc].iter().collect()
+    fn visual_caret_index(&self) -> usize {
+        let cursor = self.field.cursor();
+        if self.field.has_preedit() {
+            cursor + self.field.preedit_caret_char()
+        } else {
+            cursor
+        }
     }
 
     /// 光标 x（相对 body 左缘，含滚动偏移）。
     pub fn caret_x(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> f32 {
         let content = self.content_rect(theme, body);
         let size = theme.typography.body.size;
-        let prefix = self.prefix_display();
-        let mut w = engine.measure(&prefix, size);
-        // IME 组合态：光标在 preedit 内 → 后移 preedit 前缀宽。
-        if self.field.has_preedit() {
-            w += engine.measure(&self.preedit_prefix_display(), size);
-        }
-        content.origin.x - self.scroll + w
+        let (stream, _) = self.display_stream();
+        let geometry = engine.line_geometry(&stream, size, 0.0);
+        content.origin.x - self.scroll + geometry.caret_x(self.visual_caret_index())
     }
 
     /// 光标矩形（表面绝对坐标，未做右缘夹紧 —— IME 需要真实位置，参 CONTROL_SPEC §34）。
@@ -242,30 +245,10 @@ impl MetroTextBox {
     ) -> bool {
         let content = self.content_rect(theme, body);
         let size = theme.typography.body.size;
-        let chars = self.display_chars();
         let click_x = (pos.x + self.scroll - content.origin.x).max(0.0);
-        // 点击最左（第一个字符中点之前）→ 光标 0（UWP TextBox 点框左缘 = 行首）
-        if let Some(&first) = chars.first() {
-            let first_mid = engine.glyph_metrics(first, size).advance_width / 2.0;
-            if click_x < first_mid {
-                self.field.set_cursor(0);
-                return true;
-            }
-        }
-        let mut best = chars.len();
-        let mut best_dist = f32::MAX;
-        let mut acc = 0.0;
-        for (i, c) in chars.iter().enumerate() {
-            let cw = engine.glyph_metrics(*c, size).advance_width;
-            let mid = acc + cw / 2.0;
-            let d = (click_x - mid).abs();
-            if d < best_dist {
-                best_dist = d;
-                best = i + 1;
-            }
-            acc += cw;
-        }
-        self.field.set_cursor(best);
+        let text = self.field.display_text();
+        let geometry = engine.line_geometry(&text, size, 0.0);
+        self.field.set_cursor(geometry.caret_at_x(click_x));
         true
     }
 
@@ -322,15 +305,17 @@ impl MetroTextBox {
 
         // 选区高亮（TextControlSelectionHighlightColor → 强调色 35%）
         if let Some((lo, hi)) = self.field.selection() {
-            let chars = self.display_chars();
-            let lo = lo.min(chars.len());
-            let hi = hi.min(chars.len());
-            let pre: String = chars[..lo].iter().collect();
-            let sel: String = chars[lo..hi].iter().collect();
-            let x0 = content.origin.x - self.scroll + engine.measure(&pre, style.size);
-            let w = engine.measure(&sel, style.size);
-            let sel_rect = Rect::new(x0, content.origin.y, w, content.size.height);
-            scene.fill_rect(colors.primary.with_alpha(0.35 * alpha), sel_rect);
+            let text = self.field.display_text();
+            let geometry = engine.line_geometry(&text, style.size, style.letter_spacing_em);
+            for (x0, x1) in geometry.selection_spans(lo, hi) {
+                let sel_rect = Rect::new(
+                    content.origin.x - self.scroll + x0,
+                    content.origin.y,
+                    x1 - x0,
+                    content.size.height,
+                );
+                scene.fill_rect(colors.primary.with_alpha(0.35 * alpha), sel_rect);
+            }
         }
 
         // 文本 / 占位
@@ -419,8 +404,7 @@ impl MetroTextBox {
         scene.stroke_rounded_rect(stroke, inner, stroke_w, theme.tokens.corner_radius);
     }
 
-    /// 组合态显示流：光标前文本 + preedit（虚线下划线）+ 光标后文本。
-    /// 光标位移逻辑与 `caret_x` 共用 `preedit_prefix_display`，度量一致。
+    /// 组合态显示流整行塑形；preedit 下划线按同一视觉 cluster 几何绘制。
     fn render_text_with_preedit(
         &self,
         theme: &MetroTheme,
@@ -437,38 +421,31 @@ impl MetroTextBox {
         } else {
             1.0
         };
-        let chars = self.display_chars();
-        let cursor = self.field.cursor().min(chars.len());
-        let pre: String = chars[..cursor].iter().collect();
-        let suf: String = chars[cursor..].iter().collect();
-        let preedit = self.field.preedit_display();
+        let (stream, preedit_range) = self.display_stream();
         let fg = colors.on_surface;
         let color = fg.with_alpha(fg.a * alpha);
         let x0 = content.origin.x - self.scroll;
         let y = content.origin.y;
         let h = style.line_height;
-
-        let mut x = x0;
-        if !pre.is_empty() {
-            let w = engine.measure(&pre, size);
-            scene.text(pre, Rect::new(x, y, w, h), color, style, TextAlign::Left);
-            x += w;
-        }
-        if !preedit.is_empty() {
-            let w = engine.measure(&preedit, size);
-            scene.text(
-                preedit,
-                Rect::new(x, y, w, h),
-                color,
-                style,
-                TextAlign::Left,
-            );
-            self.render_preedit_underline(theme, engine, x, y, w, scene);
-            x += w;
-        }
-        if !suf.is_empty() {
-            let w = engine.measure(&suf, size);
-            scene.text(suf, Rect::new(x, y, w, h), color, style, TextAlign::Left);
+        scene.text(
+            stream.clone(),
+            Rect::new(x0, y, content.size.width + self.scroll, h),
+            color,
+            style,
+            TextAlign::Left,
+        );
+        if let Some((start, end)) = preedit_range {
+            let geometry = engine.line_geometry(&stream, size, style.letter_spacing_em);
+            for (span_start, span_end) in geometry.selection_spans(start, end) {
+                self.render_preedit_underline(
+                    theme,
+                    engine,
+                    x0 + span_start,
+                    y,
+                    span_end - span_start,
+                    scene,
+                );
+            }
         }
     }
 
@@ -571,7 +548,12 @@ mod tests {
         }
         let tb = MetroTextBox::with_placeholder("搜索…");
         let mut scene = Scene::default();
-        tb.render(&theme(), &engine(), Rect::new(0.0, 0.0, 200.0, 32.0), &mut scene);
+        tb.render(
+            &theme(),
+            &engine(),
+            Rect::new(0.0, 0.0, 200.0, 32.0),
+            &mut scene,
+        );
         let texts: Vec<&String> = scene
             .commands
             .iter()
@@ -580,7 +562,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(texts.iter().any(|t| t.as_str() == "搜索…"), "空框显示占位文本");
+        assert!(
+            texts.iter().any(|t| t.as_str() == "搜索…"),
+            "空框显示占位文本"
+        );
     }
 
     #[test]
@@ -590,7 +575,12 @@ mod tests {
         }
         let tb = MetroTextBox::with_placeholder("搜索…").with_text("Ether");
         let mut scene = Scene::default();
-        tb.render(&theme(), &engine(), Rect::new(0.0, 0.0, 200.0, 32.0), &mut scene);
+        tb.render(
+            &theme(),
+            &engine(),
+            Rect::new(0.0, 0.0, 200.0, 32.0),
+            &mut scene,
+        );
         let texts: Vec<String> = scene
             .commands
             .iter()
@@ -612,7 +602,12 @@ mod tests {
         tb.focus();
         tb.update(0.1); // 闪烁相位 < 0.5 → 可见
         let mut scene = Scene::default();
-        tb.render(&theme(), &engine(), Rect::new(0.0, 0.0, 200.0, 32.0), &mut scene);
+        tb.render(
+            &theme(),
+            &engine(),
+            Rect::new(0.0, 0.0, 200.0, 32.0),
+            &mut scene,
+        );
         // 光标 = 一个 2px 宽的 FillRect（色为 on_surface 0.9）
         let carets = scene
             .commands
@@ -654,7 +649,10 @@ mod tests {
         let x_empty = empty.caret_x(&th, &e, body);
         let x_text = tb.caret_x(&th, &e, body);
         assert!(x_text > x_empty, "有内容时光标更靠右");
-        assert!((x_empty - (1.0 + 10.0)).abs() < 0.1, "空框光标 = 边框+左Padding");
+        assert!(
+            (x_empty - (1.0 + 10.0)).abs() < 0.1,
+            "空框光标 = 边框+左Padding"
+        );
     }
 
     #[test]
@@ -705,7 +703,12 @@ mod tests {
         let mut tb = MetroTextBox::from_text("x");
         tb.state = ControlState::Disabled;
         let mut scene = Scene::default();
-        tb.render(&theme(), &engine(), Rect::new(0.0, 0.0, 200.0, 32.0), &mut scene);
+        tb.render(
+            &theme(),
+            &engine(),
+            Rect::new(0.0, 0.0, 200.0, 32.0),
+            &mut scene,
+        );
         // 首命令是底色填充，alpha < 1
         let Some(SceneCommand::FillRect { color, .. }) = scene.commands.first() else {
             panic!("首命令应为底色");
@@ -724,7 +727,7 @@ mod tests {
     // ── IME 组合态渲染（阶段 B，参 IME_WIRING_PLAN） ────────────
 
     #[test]
-    fn render_splits_preedit_and_underlines() {
+    fn render_shapes_preedit_in_full_stream_and_underlines() {
         if !font_available() {
             return;
         }
@@ -732,7 +735,12 @@ mod tests {
         tb.field.set_cursor(2);
         tb.field.set_preedit("nǐ", Some(0));
         let mut scene = Scene::default();
-        tb.render(&theme(), &engine(), Rect::new(0.0, 0.0, 200.0, 32.0), &mut scene);
+        tb.render(
+            &theme(),
+            &engine(),
+            Rect::new(0.0, 0.0, 200.0, 32.0),
+            &mut scene,
+        );
         let texts: Vec<String> = scene
             .commands
             .iter()
@@ -741,9 +749,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(texts.iter().any(|t| t == "Et"), "光标前文本");
-        assert!(texts.iter().any(|t| t == "nǐ"), "preedit 独立成段");
-        assert!(texts.iter().any(|t| t == "her"), "光标后文本");
+        assert!(texts.iter().any(|t| t == "Etnǐher"), "组合态整行塑形");
         // 虚线下划线 = preedit 下的一段 1px FillRect（on_surface 60%）
         let underlines: Vec<&Rect> = scene
             .commands
@@ -767,7 +773,12 @@ mod tests {
         }
         let tb = MetroTextBox::from_text("Ether");
         let mut scene = Scene::default();
-        tb.render(&theme(), &engine(), Rect::new(0.0, 0.0, 200.0, 32.0), &mut scene);
+        tb.render(
+            &theme(),
+            &engine(),
+            Rect::new(0.0, 0.0, 200.0, 32.0),
+            &mut scene,
+        );
         let underlines = scene
             .commands
             .iter()
@@ -793,6 +804,31 @@ mod tests {
         tb.field.set_preedit("cd", Some(2)); // 光标到组合态尾
         let at_end = tb.caret_x(&th, &e, body);
         assert!(at_end > with_preedit, "光标随 preedit_cursor 移动");
+    }
+
+    #[test]
+    fn rtl_caret_and_click_follow_visual_geometry() {
+        if !font_available() {
+            return;
+        }
+        let e = engine();
+        let th = theme();
+        let body = Rect::new(0.0, 0.0, 200.0, 32.0);
+        let content = MetroTextBox::new().content_rect(&th, body);
+        let mut tb = MetroTextBox::from_text("אבג");
+        tb.field.move_end(false);
+        let logical_end = tb.caret_x(&th, &e, body);
+        tb.field.move_home(false);
+        let logical_start = tb.caret_x(&th, &e, body);
+        assert!(logical_end < logical_start, "RTL 逻辑尾应位于视觉左侧");
+
+        tb.place_caret_at(
+            &th,
+            &e,
+            body,
+            Point::new(content.origin.x, content.center().y),
+        );
+        assert_eq!(tb.field.cursor(), 3, "RTL 视觉左缘对应逻辑尾");
     }
 
     #[test]

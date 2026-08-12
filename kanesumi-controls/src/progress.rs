@@ -113,9 +113,9 @@ impl MetroProgressBar {
             CornerRadius::Capsule,
         );
 
-        // 指示条裁剪到轨道内（box 语义，参 scene.rs ClipRect）—— 不确定模式指示条
+        // 指示条裁剪到轨道内（box 语义，参 scene.rs PushClip）—— 不确定模式指示条
         // 从轨道外滑入，必须裁剪到轨道边界，禁止溢出到控件外。
-        scene.clip(Some(bar_rect));
+        scene.push_clip(bar_rect);
 
         // V17: Paused/Error 过渡色 —— error_blend 从 primary lerp 到 ERROR_COLOR；
         // paused_fade 把 alpha 从 1.0 拉到 0.6（差 0.4）。
@@ -156,7 +156,7 @@ impl MetroProgressBar {
             }
         }
         // 清除裁剪
-        scene.clip(None);
+        scene.pop_clip();
     }
 }
 
@@ -410,7 +410,11 @@ mod tests {
         bar.render(&theme, &engine, Rect::new(0.0, 0.0, 200.0, 4.0), &mut scene);
         // 找指示条命令：alpha 应 ≈ 0.6
         let ind = scene.commands.iter().find_map(|c| match c {
-            SceneCommand::FillRect { color, .. } if color.r > 0.1 || color.g > 0.1 || color.b > 0.1 => Some(color.a),
+            SceneCommand::FillRect { color, .. }
+                if color.r > 0.1 || color.g > 0.1 || color.b > 0.1 =>
+            {
+                Some(color.a)
+            }
             _ => None,
         });
         assert!(ind.is_some(), "应有指示条");
@@ -425,9 +429,13 @@ mod tests {
         let theme = MetroTheme::ether_dark();
         let mut bar = MetroProgressBar::new();
         bar.set_value(0.5);
-        for _ in 0..30 { bar.update(1.0 / 60.0); }
+        for _ in 0..30 {
+            bar.update(1.0 / 60.0);
+        }
         bar.error = true;
-        for _ in 0..30 { bar.update(1.0 / 60.0); }
+        for _ in 0..30 {
+            bar.update(1.0 / 60.0);
+        }
         let mut scene = Scene::default();
         bar.render(&theme, &engine, Rect::new(0.0, 0.0, 200.0, 4.0), &mut scene);
         // V18：指示条须与轨道区分。轨道 = surface_variant（灰 r≈0.18），
@@ -449,11 +457,17 @@ mod tests {
         let theme = MetroTheme::ether_dark();
         let mut bar = MetroProgressBar::new();
         bar.set_value(0.5);
-        for _ in 0..30 { bar.update(1.0 / 60.0); }
+        for _ in 0..30 {
+            bar.update(1.0 / 60.0);
+        }
         bar.paused = true;
-        for _ in 0..30 { bar.update(1.0 / 60.0); }
+        for _ in 0..30 {
+            bar.update(1.0 / 60.0);
+        }
         bar.paused = false;
-        for _ in 0..30 { bar.update(1.0 / 60.0); }
+        for _ in 0..30 {
+            bar.update(1.0 / 60.0);
+        }
         let mut scene = Scene::default();
         bar.render(&theme, &engine, Rect::new(0.0, 0.0, 200.0, 4.0), &mut scene);
         // V18：过滤指示条（非灰轨道）。primary orange r≈0.9 > 0.5，
@@ -464,7 +478,10 @@ mod tests {
         });
         assert!(ind_a.is_some());
         let a = ind_a.unwrap();
-        assert!((a - 1.0).abs() < 0.02, "unpause 后 alpha 回到 1.0，实际 {a}");
+        assert!(
+            (a - 1.0).abs() < 0.02,
+            "unpause 后 alpha 回到 1.0，实际 {a}"
+        );
     }
 
     #[test]

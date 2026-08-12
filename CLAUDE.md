@@ -65,6 +65,13 @@ kanesumi-core       (无依赖 — 设计 tokens / 主题 / MetroText / 交互�
 - **`lib.rs`**：`MetroShell<PageId>`（主题 + 导航 + AppBar 宿主）、`MetroAppBar`（标题 + 高度）、
   `MetroScaffold`（内容容器 + 内边距）。`render(engine, window)` 渲染背景 + AppBar，返回内容矩形。
 
+### 稳固构图（2026-08-12）
+
+完整契约见 `docs/COMPOSITION.md`。布局统一遵循约束 Measure/Arrange；文本走 BiDi +
+OpenType shaping + fallback，显式 wrap/max-lines/ellipsis；Scene 裁剪只用成对
+`PushClip`/`PopClip`；Wayland 外壳按 surface 支持整数与分数缩放。绘制、命中、弹层锚点
+和 IME caret 必须消费同一布局产物。
+
 ### 声明式 DSL（kanesumi-controls/src/decl.rs，2026-08-10）
 
 - **`Decl`** 元素树（纯数据、跨平台）：`Row`/`Column`（布局容器）/`Button`/`Text`/`Box`。

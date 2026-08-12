@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use kanesumi_canvas::text::TextEngine;
+use kanesumi_canvas::text::{TextEngine, TextLayoutOptions};
 use kanesumi_canvas::{Scene, SceneCommand, TextAlign};
 use kanesumi_core::{Color, Point, Rect, TextStyle};
 use wayland_client::protocol::wl_surface::WlSurface;
@@ -36,6 +36,11 @@ struct TextVertex {
 // ── WGSL ─────────────────────────────────────────────────────────────────
 
 const SOLID_SHADER: &str = r#"
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let low = c / vec3<f32>(12.92);
+    let high = pow((c + vec3<f32>(0.055)) / vec3<f32>(1.055), vec3<f32>(2.4));
+    return select(high, low, c <= vec3<f32>(0.04045));
+}
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) color: vec4<f32>,
@@ -49,11 +54,16 @@ fn vs(@location(0) pos: vec2<f32>, @location(1) color: vec4<f32>) -> VsOut {
 }
 @fragment
 fn fs(in: VsOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(in.color.rgb * in.color.a, in.color.a);
+    return vec4<f32>(srgb_to_linear(in.color.rgb) * in.color.a, in.color.a);
 }
 "#;
 
 const TEXT_SHADER: &str = r#"
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let low = c / vec3<f32>(12.92);
+    let high = pow((c + vec3<f32>(0.055)) / vec3<f32>(1.055), vec3<f32>(2.4));
+    return select(high, low, c <= vec3<f32>(0.04045));
+}
 @group(0) @binding(0) var glyph_tex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
 struct VsOut {
@@ -72,13 +82,18 @@ fn vs(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) colo
 @fragment
 fn fs(in: VsOut) -> @location(0) vec4<f32> {
     let cov = textureSample(glyph_tex, samp, in.uv).r;
-    return vec4<f32>(in.color.rgb * in.color.a * cov, in.color.a * cov);
+    return vec4<f32>(srgb_to_linear(in.color.rgb) * in.color.a * cov, in.color.a * cov);
 }
 "#;
 
 /// 图标管线：RGBA8 纹理采样。`in.color` 承载 tint：白色 (1,1,1) = 原色；
 /// 其他 = 染色（以图标 alpha 为形状蒙版替换颜色）。输出预乘供混合。
 const IMAGE_SHADER: &str = r#"
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let low = c / vec3<f32>(12.92);
+    let high = pow((c + vec3<f32>(0.055)) / vec3<f32>(1.055), vec3<f32>(2.4));
+    return select(high, low, c <= vec3<f32>(0.04045));
+}
 @group(0) @binding(0) var img_tex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
 struct VsOut {
@@ -98,14 +113,14 @@ fn vs(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) colo
 fn fs(in: VsOut) -> @location(0) vec4<f32> {
     let src = textureSample(img_tex, samp, in.uv);
     let is_tint = in.color.r != 1.0 || in.color.g != 1.0 || in.color.b != 1.0;
-    let rgb = select(src.rgb * src.a, in.color.rgb * src.a, is_tint);
+    let rgb = select(src.rgb * src.a, srgb_to_linear(in.color.rgb) * src.a, is_tint);
     return vec4<f32>(rgb, src.a);
 }
 "#;
 
 // ── 字形缓存 ─────────────────────────────────────────────────────────────
 
-/// 单个字形：R8 覆盖纹理 + 绑定组 + 度量。key = (char, 物理字号取整)。
+/// 单个字形：R8 覆盖纹理 + 绑定组。缓存身份含字体、glyph ID 与精确物理字号。
 struct GlyphEntry {
     #[allow(dead_code)]
     texture: wgpu::Texture,
@@ -114,9 +129,43 @@ struct GlyphEntry {
 
 /// 一段文本字形绘制区间：glyph key + 顶点范围（6 顶点/quad）。
 struct TextRun {
-    glyph_key: u32,
+    glyph_key: GlyphKey,
     start: u32,
     count: u32,
+}
+
+struct ImageRun {
+    image_key: u32,
+    start: u32,
+    count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct GlyphKey {
+    engine_id: u64,
+    font_id: u32,
+    glyph_id: u16,
+    size_bits: u32,
+}
+
+fn scissor_rect(
+    clip: Option<Rect>,
+    scale: f32,
+    buffer_width: u32,
+    buffer_height: u32,
+) -> (u32, u32, u32, u32) {
+    let max_x = buffer_width.max(1) as f32;
+    let max_y = buffer_height.max(1) as f32;
+    match clip {
+        Some(clip) => {
+            let x = (clip.origin.x * scale).floor().clamp(0.0, max_x - 1.0) as u32;
+            let y = (clip.origin.y * scale).floor().clamp(0.0, max_y - 1.0) as u32;
+            let right = (clip.right() * scale).ceil().clamp(x as f32 + 1.0, max_x) as u32;
+            let bottom = (clip.bottom() * scale).ceil().clamp(y as f32 + 1.0, max_y) as u32;
+            (x, y, right - x, bottom - y)
+        }
+        None => (0, 0, buffer_width.max(1), buffer_height.max(1)),
+    }
 }
 
 // ── 光栅化器 ─────────────────────────────────────────────────────────────
@@ -136,7 +185,7 @@ pub struct Renderer {
     image_pipeline: wgpu::RenderPipeline,
     text_bgl: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    glyphs: HashMap<u32, GlyphEntry>,
+    glyphs: HashMap<GlyphKey, GlyphEntry>,
     /// 图标纹理缓存：key = (width,height) + rgba 内容 FNV 哈希。同一图标去重复用。
     images: HashMap<u32, GlyphEntry>,
     /// 持久顶点缓冲（避免每帧 create_buffer 的 GPU 分配开销，§4.1 保留视觉树）。
@@ -231,8 +280,15 @@ impl Renderer {
         backends: &[wgpu::Backends],
     ) -> Result<Self, RendererError> {
         for (i, backend) in backends.iter().enumerate() {
-            match Self::new_with_backend(conn, wl_surface, width, height, scale, transparent, *backend)
-            {
+            match Self::new_with_backend(
+                conn,
+                wl_surface,
+                width,
+                height,
+                scale,
+                transparent,
+                *backend,
+            ) {
                 Ok(r) => return Ok(r),
                 Err(e) if i + 1 < backends.len() => {
                     log::warn!("wgpu 后端 {:?} 初始化失败（{e:?}），尝试下一候选", backend);
@@ -335,8 +391,8 @@ impl Renderer {
             format,
             view_formats: vec![format],
             alpha_mode,
-            width: pw.max(1.0) as u32,
-            height: ph.max(1.0) as u32,
+            width: pw.round().max(1.0) as u32,
+            height: ph.round().max(1.0) as u32,
             desired_maximum_frame_latency: 2,
             present_mode: wgpu::PresentMode::Fifo,
         };
@@ -551,8 +607,8 @@ impl Renderer {
         self.height = height;
         self.scale = scale;
         let (pw, ph) = (width * scale, height * scale);
-        self.config.width = pw.max(1.0) as u32;
-        self.config.height = ph.max(1.0) as u32;
+        self.config.width = pw.round().max(1.0) as u32;
+        self.config.height = ph.round().max(1.0) as u32;
         self.surface.configure(&self.device, &self.config);
         self.msaa_view = create_msaa_view(&self.device, &self.config);
     }
@@ -573,7 +629,7 @@ impl Renderer {
 
     /// 把一帧 Scene 光栅化到当前表面并提交。
     pub fn render(&mut self, engine: &TextEngine, scene: &Scene) {
-        let (pw, ph) = (self.width * self.scale, self.height * self.scale);
+        let (pw, ph) = (self.config.width as f32, self.config.height as f32);
         if pw < 1.0 || ph < 1.0 {
             return;
         }
@@ -585,13 +641,13 @@ impl Renderer {
         let mut solid: Vec<SolidVertex> = Vec::new();
         let mut text: Vec<TextVertex> = Vec::new();
         let mut text_runs: Vec<TextRun> = Vec::new();
-        let mut pending_glyphs: Vec<(u32, Vec<u8>, fontdue::Metrics)> = Vec::new();
+        let mut pending_glyphs: Vec<(GlyphKey, Vec<u8>, fontdue::Metrics)> = Vec::new();
         let mut image: Vec<TextVertex> = Vec::new();
-        let mut image_runs: Vec<TextRun> = Vec::new();
+        let mut image_runs: Vec<ImageRun> = Vec::new();
         let mut pending_images: Vec<(u32, Vec<u8>, u32, u32)> = Vec::new();
-        // 裁剪栈（box 语义，嵌套容器用）：`ClipRect(Some(r))` push，`ClipRect(None)` pop。
+        // 裁剪栈（box 语义，嵌套容器用）：`PushClip` / `PopClip` 严格配对。
         // 有效裁剪 = 栈内全部矩形的交集（子容器不放大父裁剪，只收窄）。
-        let mut clip_stack: Vec<Rect> = Vec::new();
+        let mut clip_stack: Vec<Option<Rect>> = Vec::new();
 
         // V18：按 Scene 命令原始顺序记录绘制步（保 painter's algorithm 跨类型）。
         // 旧代码把所有 FillRect 汇入一次 solid draw、所有 Text 汇入一次 text draw、
@@ -644,7 +700,9 @@ impl Renderer {
             if after == before {
                 return;
             }
-            if let Some(Step::Text { run_end, clip: c, .. }) = steps.last_mut()
+            if let Some(Step::Text {
+                run_end, clip: c, ..
+            }) = steps.last_mut()
                 && *c == clip
             {
                 *run_end = after;
@@ -660,7 +718,9 @@ impl Renderer {
             if after == before {
                 return;
             }
-            if let Some(Step::Image { run_end, clip: c, .. }) = steps.last_mut()
+            if let Some(Step::Image {
+                run_end, clip: c, ..
+            }) = steps.last_mut()
                 && *c == clip
             {
                 *run_end = after;
@@ -673,24 +733,36 @@ impl Renderer {
             }
         }
 
-        // 有效裁剪：栈内矩形交集的包围盒；空栈 = None。
-        let effective_clip = |stack: &[Rect]| -> Option<Rect> {
-            let mut it = stack.iter().copied();
-            let first = it.next()?;
-            let mut acc = first;
-            for r in it {
-                acc = intersect(acc, r)?;
-            }
-            Some(acc)
+        let surface_bounds = Rect::new(0.0, 0.0, self.width, self.height);
+        let effective_clip = |stack: &[Option<Rect>]| {
+            stack
+                .last()
+                .copied()
+                .flatten()
+                .and_then(|clip| intersect(clip, surface_bounds))
+        };
+        let is_fully_clipped = |stack: &[Option<Rect>]| {
+            matches!(stack.last(), Some(None))
+                || stack
+                    .last()
+                    .copied()
+                    .flatten()
+                    .is_some_and(|clip| intersect(clip, surface_bounds).is_none())
         };
 
         for cmd in &scene.commands {
             match cmd {
-                SceneCommand::ClipRect { rect } => {
-                    if let Some(r) = rect {
-                        clip_stack.push(*r);
-                    } else {
-                        clip_stack.pop();
+                SceneCommand::PushClip { rect } => {
+                    let effective = match clip_stack.last().copied() {
+                        Some(Some(parent)) => intersect(parent, *rect),
+                        Some(None) => None,
+                        None => Some(*rect),
+                    };
+                    clip_stack.push(effective);
+                }
+                SceneCommand::PopClip => {
+                    if clip_stack.pop().is_none() {
+                        log::warn!("Kanesumi Scene 收到未配对的 PopClip");
                     }
                 }
                 SceneCommand::FillRect {
@@ -698,14 +770,12 @@ impl Renderer {
                     rect,
                     corner_radius,
                 } => {
+                    if is_fully_clipped(&clip_stack) {
+                        continue;
+                    }
                     let before = solid.len() as u32;
                     let clip = effective_clip(&clip_stack);
-                    if let Some(c) = &clip {
-                        let Some(r) = intersect(*rect, *c) else { continue };
-                        emit_fill(&mut solid, &ndc, r, *corner_radius, *color);
-                    } else {
-                        emit_fill(&mut solid, &ndc, *rect, *corner_radius, *color);
-                    }
+                    emit_fill(&mut solid, &ndc, *rect, *corner_radius, *color);
                     push_solid(&mut steps, before, solid.len() as u32, clip);
                 }
                 SceneCommand::StrokeRect {
@@ -714,14 +784,12 @@ impl Renderer {
                     thickness,
                     corner_radius,
                 } => {
+                    if is_fully_clipped(&clip_stack) {
+                        continue;
+                    }
                     let before = solid.len() as u32;
                     let clip = effective_clip(&clip_stack);
-                    if let Some(c) = &clip {
-                        let Some(r) = intersect(*rect, *c) else { continue };
-                        emit_stroke(&mut solid, &ndc, r, *corner_radius, *thickness, *color);
-                    } else {
-                        emit_stroke(&mut solid, &ndc, *rect, *corner_radius, *thickness, *color);
-                    }
+                    emit_stroke(&mut solid, &ndc, *rect, *corner_radius, *thickness, *color);
                     push_solid(&mut steps, before, solid.len() as u32, clip);
                 }
                 SceneCommand::Arc {
@@ -732,6 +800,9 @@ impl Renderer {
                     start_deg,
                     end_deg,
                 } => {
+                    if is_fully_clipped(&clip_stack) {
+                        continue;
+                    }
                     let before = solid.len() as u32;
                     emit_arc(
                         &mut solid, &ndc, *center, *radius, *thickness, *color, *start_deg,
@@ -750,7 +821,18 @@ impl Renderer {
                     color,
                     style,
                     align,
+                    wrap,
+                    max_lines,
+                    overflow,
                 } => {
+                    if is_fully_clipped(&clip_stack) || rect.is_empty() {
+                        continue;
+                    }
+                    let text_clip = match effective_clip(&clip_stack) {
+                        Some(parent) => intersect(parent, *rect),
+                        None => intersect(surface_bounds, *rect),
+                    };
+                    let Some(text_clip) = text_clip else { continue };
                     let before = text_runs.len() as u32;
                     self.emit_text(
                         engine,
@@ -763,13 +845,11 @@ impl Renderer {
                         *color,
                         *style,
                         *align,
+                        *wrap,
+                        *max_lines,
+                        *overflow,
                     );
-                    push_text(
-                        &mut steps,
-                        before,
-                        text_runs.len() as u32,
-                        effective_clip(&clip_stack),
-                    );
+                    push_text(&mut steps, before, text_runs.len() as u32, Some(text_clip));
                 }
                 SceneCommand::Image {
                     rgba,
@@ -778,37 +858,28 @@ impl Renderer {
                     rect,
                     tint,
                 } => {
+                    if is_fully_clipped(&clip_stack) {
+                        continue;
+                    }
                     let before = image_runs.len() as u32;
                     let clip = effective_clip(&clip_stack);
-                    if let Some(c) = &clip {
-                        let Some(r) = intersect(*rect, *c) else { continue };
-                        emit_image(
-                            &ndc,
-                            &mut image,
-                            &mut image_runs,
-                            &mut pending_images,
-                            rgba,
-                            *width,
-                            *height,
-                            r,
-                            *tint,
-                        );
-                    } else {
-                        emit_image(
-                            &ndc,
-                            &mut image,
-                            &mut image_runs,
-                            &mut pending_images,
-                            rgba,
-                            *width,
-                            *height,
-                            *rect,
-                            *tint,
-                        );
-                    }
+                    emit_image(
+                        &ndc,
+                        &mut image,
+                        &mut image_runs,
+                        &mut pending_images,
+                        rgba,
+                        *width,
+                        *height,
+                        *rect,
+                        *tint,
+                    );
                     push_image(&mut steps, before, image_runs.len() as u32, clip);
                 }
                 SceneCommand::Triangle { p0, p1, p2, color } => {
+                    if is_fully_clipped(&clip_stack) {
+                        continue;
+                    }
                     // 自绘几何 glyph（Metro chevron/箭头/收合指示等）——三顶点直接入 solid。
                     // 裁剪经 Draw 阶段 scissor（Step.clip）统一处理。
                     let before = solid.len() as u32;
@@ -922,33 +993,30 @@ impl Renderer {
             // 四步 clip 全覆盖：Solid/Text/Image 统一裁剪 —— 文字/几何 glyph 也被
             // 裁进容器（修复文字溢出、字体出框，参 layout.rs box 语义）。
             let set_scissor = |pass: &mut wgpu::RenderPass, clip: Option<Rect>| {
-                match clip {
-                    Some(c) => {
-                        let x = (c.origin.x * self.scale).round().clamp(0.0, pw) as u32;
-                        let y = (c.origin.y * self.scale).round().clamp(0.0, ph) as u32;
-                        let right = (c.right() * self.scale).round().clamp(x as f32, pw);
-                        let bottom = (c.bottom() * self.scale).round().clamp(y as f32, ph);
-                        let w = (right - x as f32).max(1.0) as u32;
-                        let h = (bottom - y as f32).max(1.0) as u32;
-                        pass.set_scissor_rect(x, y, w, h);
-                    }
-                    None => {
-                        pass.set_scissor_rect(0, 0, pw as u32, ph as u32);
-                    }
-                }
+                let (x, y, width, height) =
+                    scissor_rect(clip, self.scale, self.config.width, self.config.height);
+                pass.set_scissor_rect(x, y, width, height);
             };
 
             for step in &steps {
                 match step {
                     Step::Solid { start, count, clip } => {
-                        let Some(buf) = solid_buf.as_ref() else { continue };
+                        let Some(buf) = solid_buf.as_ref() else {
+                            continue;
+                        };
                         pass.set_pipeline(&self.solid_pipeline);
                         pass.set_vertex_buffer(0, buf.slice(..));
                         set_scissor(&mut pass, *clip);
                         pass.draw(*start..*start + *count, 0..1);
                     }
-                    Step::Text { run_start, run_end, clip } => {
-                        let Some(buf) = text_buf.as_ref() else { continue };
+                    Step::Text {
+                        run_start,
+                        run_end,
+                        clip,
+                    } => {
+                        let Some(buf) = text_buf.as_ref() else {
+                            continue;
+                        };
                         pass.set_pipeline(&self.text_pipeline);
                         pass.set_vertex_buffer(0, buf.slice(..));
                         set_scissor(&mut pass, *clip);
@@ -960,13 +1028,19 @@ impl Renderer {
                             pass.draw(run.start..run.start + run.count, 0..1);
                         }
                     }
-                    Step::Image { run_start, run_end, clip } => {
-                        let Some(buf) = image_buf.as_ref() else { continue };
+                    Step::Image {
+                        run_start,
+                        run_end,
+                        clip,
+                    } => {
+                        let Some(buf) = image_buf.as_ref() else {
+                            continue;
+                        };
                         pass.set_pipeline(&self.image_pipeline);
                         pass.set_vertex_buffer(0, buf.slice(..));
                         set_scissor(&mut pass, *clip);
                         for run in &image_runs[*run_start as usize..*run_end as usize] {
-                            let Some(tex) = self.images.get(&run.glyph_key) else {
+                            let Some(tex) = self.images.get(&run.image_key) else {
                                 continue;
                             };
                             pass.set_bind_group(0, &tex.bind_group, &[]);
@@ -975,6 +1049,9 @@ impl Renderer {
                     }
                 }
             }
+            // wgpu-hal GLES 在 MSAA resolve 的 glBlitFramebuffer 前不会重置动态 scissor。
+            // pass 结束前恢复全表面，否则 resolve 只复制最后一个文本框的区域。
+            pass.set_scissor_rect(0, 0, self.config.width, self.config.height);
         }
 
         self.queue.submit(Some(encoder.finish()));
@@ -989,31 +1066,33 @@ impl Renderer {
         ndc: &dyn Fn(f32, f32) -> [f32; 2],
         verts: &mut Vec<TextVertex>,
         runs: &mut Vec<TextRun>,
-        pending: &mut Vec<(u32, Vec<u8>, fontdue::Metrics)>,
+        pending: &mut Vec<(GlyphKey, Vec<u8>, fontdue::Metrics)>,
         content: &str,
         rect: Rect,
         color: Color,
         style: TextStyle,
         align: TextAlign,
+        wrap: bool,
+        max_lines: Option<usize>,
+        overflow: kanesumi_canvas::TextOverflow,
     ) {
         // 光栅化用物理字号（保字形清晰），quad 坐标用逻辑（与 fill_rect 同坐标系）。
         // 修复：scale>1 时若混用物理坐标进逻辑 NDC，文字会放大错位。
         let size_phys = style.size * self.scale;
         // V17：布局须知字距，否则负字距（TabRow −0.025em）会把可容纳文本判为"装不下"
         // → 单词硬断 / CJK 一字一行 → 第二行溢出 rect 底部（"字体出框"）。
-        let lines = engine.layout_with_spacing(
-            content,
-            style.size,
-            style.letter_spacing_em,
-            rect.size.width,
-        );
+        let mut options =
+            TextLayoutOptions::wrapped(rect.size.width, rect.size.height, style.line_height);
+        options.letter_spacing_em = style.letter_spacing_em;
+        options.max_lines = max_lines;
+        options.wrap = wrap;
+        options.overflow = overflow;
+        let layout = engine.layout_box(content, style.size, options);
         let line_advance = style.line_height;
         let ascent_log = engine.ascent(size_phys) / self.scale;
-        // V16: 字距（em → 逻辑像素），每字符 pen 推进时加。
-        let letter_spacing_log = style.letter_spacing_em * style.size;
 
         let mut line_y = rect.origin.y;
-        for line in &lines {
+        for line in &layout.lines {
             // 对齐决定行首 x（逻辑）
             let line_w = line.width;
             let x_log = match align {
@@ -1023,20 +1102,24 @@ impl Renderer {
             };
             let baseline = line_y + ascent_log;
             let mut pen = x_log;
-            for c in line.content.chars() {
-                let (metrics, bitmap) = engine.rasterize(c, size_phys);
+            for glyph in engine.shape_line(&line.content, style.size, style.letter_spacing_em) {
+                let (metrics, bitmap) =
+                    engine.rasterize_glyph(glyph.font_id, glyph.glyph_id, size_phys);
                 if metrics.width == 0 || metrics.height == 0 {
-                    pen += metrics.advance_width / self.scale + letter_spacing_log;
+                    pen += glyph.x_advance;
                     continue;
                 }
-                let key = glyph_key(c, size_phys.round() as u32);
+                let key = glyph_key(engine.identity(), glyph.font_id, glyph.glyph_id, size_phys);
                 // 物理 metrics → 逻辑坐标（÷ scale）。
                 // fontdue: ymin = 字形底相对基线的偏移，fontdue Y+ 向上（PostScript 惯例）。
                 //   descender 字母（y/p/g）ymin < 0（底在基线下方）；只有 ascender 的字母 ymin = 0。
                 // 屏幕 Y+ 向下：字形顶 y0 = baseline − ymin − height。
                 let inv = 1.0 / self.scale;
-                let x0 = pen + metrics.xmin as f32 * inv;
-                let y0 = baseline - metrics.ymin as f32 * inv - metrics.height as f32 * inv;
+                let x0 = pen + glyph.x_offset + metrics.xmin as f32 * inv;
+                let y0 = baseline
+                    - glyph.y_offset
+                    - metrics.ymin as f32 * inv
+                    - metrics.height as f32 * inv;
                 let (w, h) = (metrics.width as f32 * inv, metrics.height as f32 * inv);
                 let (x1, y1) = (x0 + w, y0 + h);
                 let start = verts.len() as u32;
@@ -1055,14 +1138,14 @@ impl Renderer {
                     count: 6,
                 });
                 pending.push((key, bitmap, metrics));
-                pen += metrics.advance_width * inv + letter_spacing_log;
+                pen += glyph.x_advance;
             }
             line_y += line_advance;
         }
     }
 
     /// 确保字形纹理存在。
-    fn ensure_glyph(&mut self, key: u32, bitmap: &[u8], metrics: &fontdue::Metrics) {
+    fn ensure_glyph(&mut self, key: GlyphKey, bitmap: &[u8], metrics: &fontdue::Metrics) {
         if self.glyphs.contains_key(&key) {
             return;
         }
@@ -1193,9 +1276,13 @@ impl Renderer {
     }
 }
 
-/// (char, 物理字号) → 稳定 u32 键。
-fn glyph_key(c: char, size_px: u32) -> u32 {
-    (c as u32) << 16 | (size_px & 0xFFFF)
+fn glyph_key(engine_id: u64, font_id: u32, glyph_id: u16, size_px: f32) -> GlyphKey {
+    GlyphKey {
+        engine_id,
+        font_id,
+        glyph_id,
+        size_bits: size_px.to_bits(),
+    }
 }
 
 // ── 形状三角化（逻辑坐标 → 已转 NDC 的顶点）────────────────────────────
@@ -1559,7 +1646,7 @@ fn fnv1a(data: &[u8]) -> u32 {
 fn emit_image(
     ndc: &dyn Fn(f32, f32) -> [f32; 2],
     verts: &mut Vec<TextVertex>,
-    runs: &mut Vec<TextRun>,
+    runs: &mut Vec<ImageRun>,
     pending: &mut Vec<(u32, Vec<u8>, u32, u32)>,
     rgba: &[u8],
     width: u32,
@@ -1579,10 +1666,28 @@ fn emit_image(
         [1.0, 1.0],
         c,
     );
-    runs.push(TextRun {
-        glyph_key: key,
+    runs.push(ImageRun {
+        image_key: key,
         start,
         count: 6,
     });
     pending.push((key, rgba.to_vec(), width, height));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_scissor_uses_rounded_configured_buffer() {
+        assert_eq!(scissor_rect(None, 1.5, 152, 77), (0, 0, 152, 77));
+    }
+
+    #[test]
+    fn fractional_edge_clip_keeps_last_physical_pixel() {
+        assert_eq!(
+            scissor_rect(Some(Rect::new(100.75, 0.0, 0.25, 1.0)), 1.5, 152, 2),
+            (151, 0, 1, 2),
+        );
+    }
 }

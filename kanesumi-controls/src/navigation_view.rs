@@ -132,6 +132,11 @@ impl MetroNavigationView {
         }
     }
 
+    /// 给定宿主内实际可用 Pane 宽。窄窗口绝不把 320px 内在宽画出宿主边界。
+    pub fn effective_pane_width(&self, rect: Rect) -> f32 {
+        self.pane_width().min(rect.size.width.max(0.0))
+    }
+
     /// Toggle 按钮 rect。
     pub fn toggle_rect(&self, rect: Rect) -> Rect {
         match self.mode {
@@ -150,13 +155,13 @@ impl MetroNavigationView {
             NavigationPaneMode::Left => Rect::new(
                 rect.origin.x,
                 rect.origin.y + NAV_TOGGLE,
-                self.pane_width(),
-                rect.size.height - NAV_TOGGLE,
+                self.effective_pane_width(rect),
+                (rect.size.height - NAV_TOGGLE).max(0.0),
             ),
             NavigationPaneMode::Top => Rect::new(
                 rect.origin.x + NAV_TOGGLE,
                 rect.origin.y,
-                rect.size.width - NAV_TOGGLE,
+                (rect.size.width - NAV_TOGGLE).max(0.0),
                 NAV_TOP_HEIGHT,
             ),
         }
@@ -189,16 +194,20 @@ impl MetroNavigationView {
     pub fn top_item_rects(&self, engine: &TextEngine, rect: Rect) -> Vec<Rect> {
         let area = self.item_area(rect);
         match self.mode {
-            NavigationPaneMode::Left => (0..self.items.len())
-                .map(|i| {
-                    Rect::new(
-                        area.origin.x,
-                        area.origin.y + i as f32 * NAV_ITEM_H,
-                        area.size.width,
-                        NAV_ITEM_H,
-                    )
-                })
-                .collect(),
+            NavigationPaneMode::Left => {
+                let mut y = area.origin.y;
+                self.items
+                    .iter()
+                    .map(|item| {
+                        let rect = Rect::new(area.origin.x, y, area.size.width, NAV_ITEM_H);
+                        y += NAV_ITEM_H;
+                        if self.pane_expanded && !item.children.is_empty() {
+                            y += item.children.len() as f32 * NAV_ITEM_H;
+                        }
+                        rect
+                    })
+                    .collect()
+            }
             NavigationPaneMode::Top => {
                 let mut x = area.origin.x;
                 (0..self.items.len())
@@ -219,13 +228,13 @@ impl MetroNavigationView {
             NavigationPaneMode::Left => Rect::new(
                 rect.origin.x + NAV_HEADER_MARGIN.0,
                 rect.origin.y + NAV_HEADER_MARGIN.1,
-                rect.size.width - self.pane_width() - NAV_HEADER_MARGIN.0,
+                (rect.size.width - self.effective_pane_width(rect) - NAV_HEADER_MARGIN.0).max(0.0),
                 NAV_ITEM_H,
             ),
             NavigationPaneMode::Top => Rect::new(
                 rect.origin.x + NAV_TOGGLE,
                 rect.origin.y + NAV_TOP_HEIGHT,
-                rect.size.width - NAV_TOGGLE,
+                (rect.size.width - NAV_TOGGLE).max(0.0),
                 NAV_ITEM_H,
             ),
         }
@@ -238,7 +247,7 @@ impl MetroNavigationView {
             hr.origin.x,
             hr.bottom(),
             hr.size.width,
-            rect.bottom() - hr.bottom(),
+            (rect.bottom() - hr.bottom()).max(0.0),
         )
     }
 
@@ -260,7 +269,12 @@ impl MetroNavigationView {
     }
 
     /// 应用点击：Toggle / Select。
-    pub fn handle_click(&mut self, engine: &TextEngine, rect: Rect, pos: Point) -> NavigationAction {
+    pub fn handle_click(
+        &mut self,
+        engine: &TextEngine,
+        rect: Rect,
+        pos: Point,
+    ) -> NavigationAction {
         match self.hit(engine, rect, pos) {
             NavigationAction::Select(path) => {
                 self.selected = Some(path.clone());
@@ -285,6 +299,7 @@ impl MetroNavigationView {
         let colors = &theme.colors;
         let style = Self::item_style();
 
+        scene.push_clip(rect);
         // Toggle（☰ 自绘三横）
         let tr = self.toggle_rect(rect);
         if self.toggle_hovered {
@@ -380,7 +395,7 @@ impl MetroNavigationView {
                     let cr = Rect::new(
                         rect.origin.x + 16.0,
                         base_y + j as f32 * NAV_ITEM_H,
-                        self.pane_width() - 16.0,
+                        (self.effective_pane_width(rect) - 16.0).max(0.0),
                         NAV_ITEM_H,
                     );
                     let csel = self.selected.as_deref() == Some([i, j].as_slice());
@@ -402,6 +417,7 @@ impl MetroNavigationView {
                 }
             }
         }
+        scene.pop_clip();
     }
 }
 

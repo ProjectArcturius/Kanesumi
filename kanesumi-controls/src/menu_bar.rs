@@ -100,13 +100,22 @@ impl MetroMenuBar {
             .sum()
     }
 
-    /// 每 header 的 (x, width)（相对屏幕，从 `rect.origin.x` 起排）。
-    fn header_geoms(&self, engine: &TextEngine, rect: Rect) -> Vec<(f32, f32)> {
+    /// 可见 header 矩形。只保留完整落在宿主内的项，渲染、命中与弹层锚点共用。
+    pub fn header_rects(&self, engine: &TextEngine, rect: Rect) -> Vec<Rect> {
+        let rect = rect.normalized();
         let mut out = Vec::with_capacity(self.items.len());
         let mut cursor = rect.origin.x;
         for i in 0..self.items.len() {
             let w = self.header_width(engine, i);
-            out.push((cursor, w));
+            if cursor + w > rect.right() + f32::EPSILON {
+                break;
+            }
+            out.push(Rect::new(
+                cursor,
+                rect.origin.y,
+                w,
+                self.header_height.min(rect.size.height),
+            ));
             cursor += w;
         }
         out
@@ -117,8 +126,8 @@ impl MetroMenuBar {
         if p.y < rect.origin.y || p.y >= rect.origin.y + self.header_height {
             return None;
         }
-        for (i, (x, w)) in self.header_geoms(engine, rect).iter().enumerate() {
-            if p.x >= *x && p.x < *x + *w {
+        for (i, header) in self.header_rects(engine, rect).iter().enumerate() {
+            if header.contains(p) {
                 return Some(i);
             }
         }
@@ -136,9 +145,9 @@ impl MetroMenuBar {
                 f.close();
             }
         }
-        let geoms = self.header_geoms(engine, rect);
-        let (hx, hw) = geoms[index];
-        let trigger = Rect::new(hx, rect.origin.y, hw, self.header_height);
+        let Some(trigger) = self.header_rects(engine, rect).get(index).copied() else {
+            return;
+        };
         let size = self.flyouts[index].panel_size(engine);
         let placement = place_popup(trigger, size, screen, popup_gap());
         self.flyouts[index].open(placement.rect);
@@ -157,10 +166,10 @@ impl MetroMenuBar {
             f.update(dt);
         }
         // flyout 动画走完转 Closed 后，同步 open_index。
-        if let Some(i) = self.open_index {
-            if !self.flyouts[i].anim.is_visible() {
-                self.open_index = None;
-            }
+        if let Some(i) = self.open_index
+            && !self.flyouts[i].anim.is_visible()
+        {
+            self.open_index = None;
         }
     }
 
@@ -189,11 +198,11 @@ impl MetroMenuBar {
         self.hovered_header = hit;
 
         if let Some(idx) = hit {
-            if let Some(open) = self.open_index {
-                if open != idx {
-                    // hover-swap
-                    self.open(idx, engine, rect, screen);
-                }
+            if let Some(open) = self.open_index
+                && open != idx
+            {
+                // hover-swap
+                self.open(idx, engine, rect, screen);
             }
             return;
         }
@@ -208,6 +217,7 @@ impl MetroMenuBar {
     /// - 命中 header → 记录 pressed，release 时切换（避免 press-drag 意外提交）；
     /// - 命中 flyout 项 → 不在此处提交（按 release 走）；
     /// - 命中弹层外空白 → close_all（模拟点击外部关闭）。
+    ///
     /// 返回 `true` 表示 MenuBar 消费了该按下（宿主别再向下路由）。
     pub fn press(&mut self, engine: &TextEngine, rect: Rect, p: Point) -> bool {
         if let Some(idx) = self.header_at(engine, rect, p) {
@@ -252,11 +262,11 @@ impl MetroMenuBar {
             return None;
         }
         // Flyout 项释放
-        if let Some(i) = self.open_index {
-            if let Some(j) = self.flyouts[i].item_at(p) {
-                self.close_all();
-                return Some((i, j));
-            }
+        if let Some(i) = self.open_index
+            && let Some(j) = self.flyouts[i].item_at(p)
+        {
+            self.close_all();
+            return Some((i, j));
         }
         None
     }
@@ -273,11 +283,10 @@ impl MetroMenuBar {
     ) {
         let colors = &theme.colors;
         let style = Self::header_style();
-        let geoms = self.header_geoms(engine, rect);
+        let geoms = self.header_rects(engine, rect);
 
-        for (i, (x, w)) in geoms.iter().enumerate() {
-            let hrect = Rect::new(*x, rect.origin.y, *w, self.header_height);
-
+        scene.push_clip(rect);
+        for (i, hrect) in geoms.iter().copied().enumerate() {
             // 背景高亮：Selected（flyout 开）≡ Pressed 亮度；PointerOver 更淡。
             // 用 on_surface 的低 alpha（Fluent SubtleFill 语义映射到 Kanesumi 纯色）。
             let bg_alpha = if self.open_index == Some(i) || self.pressed_header == Some(i) {
@@ -294,7 +303,7 @@ impl MetroMenuBar {
             // Label —— 竖直居中，靠左（padding 10）。
             let label_w = engine.measure(&self.items[i].label, style.size);
             let text_rect = Rect::new(
-                *x + HEADER_PAD_X,
+                hrect.origin.x + HEADER_PAD_X,
                 rect.origin.y + (self.header_height - style.line_height) / 2.0,
                 label_w,
                 style.line_height,
@@ -307,6 +316,7 @@ impl MetroMenuBar {
                 TextAlign::Left,
             );
         }
+        scene.pop_clip();
 
         // Flyout —— 每帧渲染一个（open_index 唯一），走 dropdown_menu 完整通路
         // （遮罩 + 面板 + 项）。fill 走 painter's algorithm（V18 render.rs），
@@ -360,10 +370,7 @@ mod tests {
                     MenuItem::new("粘贴"),
                 ],
             ),
-            MenuBarItem::new(
-                "视图",
-                vec![MenuItem::new("全屏"), MenuItem::new("放大")],
-            ),
+            MenuBarItem::new("视图", vec![MenuItem::new("全屏"), MenuItem::new("放大")]),
         ])
     }
 
@@ -388,20 +395,44 @@ mod tests {
     }
 
     #[test]
+    fn narrow_host_only_exposes_fully_visible_headers() {
+        let Some(engine) = find_engine() else { return };
+        let bar = menubar();
+        let first = bar.header_width(&engine, 0);
+        let rects = bar.header_rects(&engine, Rect::new(10.0, 0.0, first + 2.0, 40.0));
+        assert_eq!(rects.len(), 1);
+        assert!(rects[0].right() <= 12.0 + first);
+        assert_eq!(
+            bar.header_at(
+                &engine,
+                Rect::new(10.0, 0.0, first + 2.0, 40.0),
+                rects[0].center()
+            ),
+            Some(0)
+        );
+    }
+
+    #[test]
     fn header_at_maps_x() {
         let Some(engine) = find_engine() else { return };
         let bar = menubar();
         let w0 = bar.header_width(&engine, 0);
         let w1 = bar.header_width(&engine, 1);
         // 第一 header 中心
-        assert_eq!(bar.header_at(&engine, barrect(), Point::new(w0 / 2.0, 20.0)), Some(0));
+        assert_eq!(
+            bar.header_at(&engine, barrect(), Point::new(w0 / 2.0, 20.0)),
+            Some(0)
+        );
         // 第二 header 中心
         assert_eq!(
             bar.header_at(&engine, barrect(), Point::new(w0 + w1 / 2.0, 20.0)),
             Some(1)
         );
         // rect 外
-        assert_eq!(bar.header_at(&engine, barrect(), Point::new(w0 / 2.0, 100.0)), None);
+        assert_eq!(
+            bar.header_at(&engine, barrect(), Point::new(w0 / 2.0, 100.0)),
+            None
+        );
     }
 
     #[test]
@@ -494,7 +525,10 @@ mod tests {
             .filter(|c| matches!(c, kanesumi_canvas::SceneCommand::Text { .. }))
             .count();
         // 3 header label + 3 flyout item + 1 selected header 高亮 fill 至少
-        assert!(texts >= 6, "至少 3 header + 3 flyout item 文本，实际 {texts}");
+        assert!(
+            texts >= 6,
+            "至少 3 header + 3 flyout item 文本，实际 {texts}"
+        );
     }
 
     #[test]

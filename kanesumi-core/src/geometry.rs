@@ -25,6 +25,23 @@ impl Size {
     }
 
     pub const ZERO: Size = Size::new(0.0, 0.0);
+
+    /// 归一化外部尺寸：NaN / 负值归零，正无穷保留为无界约束。
+    pub fn normalized(self) -> Self {
+        Self::new(normalize_extent(self.width), normalize_extent(self.height))
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.width <= 0.0 || self.height <= 0.0
+    }
+}
+
+fn normalize_extent(value: f32) -> f32 {
+    if value.is_nan() || value <= 0.0 {
+        0.0
+    } else {
+        value
+    }
 }
 
 /// 圆角规格 —— 直角几何铁律（参 PLAN.md §4-5）。
@@ -83,6 +100,44 @@ impl Rect {
         self.origin.y + self.size.height
     }
 
+    /// 归一化矩形。位置非有限时回到原点，尺寸遵循 `Size::normalized`。
+    pub fn normalized(self) -> Self {
+        let x = if self.origin.x.is_finite() {
+            self.origin.x
+        } else {
+            0.0
+        };
+        let y = if self.origin.y.is_finite() {
+            self.origin.y
+        } else {
+            0.0
+        };
+        Self::new(
+            x,
+            y,
+            self.size.normalized().width,
+            self.size.normalized().height,
+        )
+    }
+
+    pub fn inset(self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        let rect = self.normalized();
+        let left = left.max(0.0);
+        let top = top.max(0.0);
+        let right = right.max(0.0);
+        let bottom = bottom.max(0.0);
+        Self::new(
+            rect.origin.x + left,
+            rect.origin.y + top,
+            (rect.size.width - left - right).max(0.0),
+            (rect.size.height - top - bottom).max(0.0),
+        )
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.size.is_empty()
+    }
+
     /// 中心点。
     pub fn center(self) -> Point {
         Point::new(
@@ -93,7 +148,11 @@ impl Rect {
 
     /// 半开区间包含判定：左/上闭，右/下开。
     pub fn contains(self, p: Point) -> bool {
-        p.x >= self.origin.x && p.x < self.right() && p.y >= self.origin.y && p.y < self.bottom()
+        !self.is_empty()
+            && p.x >= self.origin.x
+            && p.x < self.right()
+            && p.y >= self.origin.y
+            && p.y < self.bottom()
     }
 
     /// 与 `other` 的交集（半开区间）。不相交时返回 `None`（或退化矩形）。
@@ -129,5 +188,22 @@ mod tests {
         assert!(r.contains(Point::new(9.999, 9.999)));
         assert!(!r.contains(Point::new(10.0, 0.0)));
         assert!(!r.contains(Point::new(0.0, -1.0)));
+    }
+
+    #[test]
+    fn invalid_geometry_normalizes_without_negative_extent() {
+        let size = Size::new(f32::NAN, -4.0).normalized();
+        assert_eq!(size, Size::ZERO);
+        let rect = Rect::new(f32::INFINITY, f32::NAN, -20.0, 10.0).normalized();
+        assert_eq!(rect, Rect::new(0.0, 0.0, 0.0, 10.0));
+        assert!(!rect.contains(Point::ORIGIN));
+    }
+
+    #[test]
+    fn inset_clamps_at_empty() {
+        assert_eq!(
+            Rect::new(10.0, 20.0, 30.0, 40.0).inset(20.0, 8.0, 20.0, 8.0),
+            Rect::new(30.0, 28.0, 0.0, 24.0)
+        );
     }
 }

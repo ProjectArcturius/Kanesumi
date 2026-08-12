@@ -16,7 +16,7 @@
 
 use kanesumi_canvas::layout::{CrossAlign, LayoutLeaf, LayoutNode, layout};
 use kanesumi_canvas::text::TextEngine;
-use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_canvas::{Scene, TextAlign, TextOverflow};
 use kanesumi_core::{MetroTheme, Rect, Size, TextStyle};
 
 use crate::button::MetroButton;
@@ -182,8 +182,14 @@ enum DeclLeaf {
         action: DeclAction,
         style: TextStyle,
     },
-    Text { content: String, style: TextStyle },
-    Box { width: f32, height: f32 },
+    Text {
+        content: String,
+        style: TextStyle,
+    },
+    Box {
+        width: f32,
+        height: f32,
+    },
 }
 
 impl DeclLeaf {
@@ -234,22 +240,16 @@ impl LayoutLeaf for DeclLeaf {
             DeclLeaf::Text { content, .. } => {
                 // 与 `measure` 同源换行（canvas TextEngine::layout 唯一真源），
                 // 逐行下发 → 量测与绘制永远一致（参 layout.rs「量测即排版」）。
-                let lines = engine.layout(content, style.size, rect.size.width);
-                for (i, line) in lines.iter().enumerate() {
-                    let line_rect = Rect::new(
-                        rect.origin.x,
-                        rect.origin.y + i as f32 * style.line_height,
-                        line.width,
-                        style.line_height,
-                    );
-                    scene.text(
-                        line.content.clone(),
-                        line_rect,
-                        theme.colors.on_surface,
-                        style,
-                        TextAlign::Left,
-                    );
-                }
+                scene.text_with_options(
+                    content.clone(),
+                    rect,
+                    theme.colors.on_surface,
+                    style,
+                    TextAlign::Left,
+                    true,
+                    None,
+                    TextOverflow::Clip,
+                );
             }
             DeclLeaf::Box { .. } => {
                 scene.fill_rect(theme.colors.surface_variant, rect);
@@ -509,7 +509,9 @@ mod tests {
         assert_eq!(hits.len(), 1, "只有按钮可命中");
         assert_eq!(hits[0].action, DeclAction::OpenDialog);
         // 按钮取内在高度（line_height + 11），非均分 80/2=40
-        let intr = MetroButton::new("b").measure(&engine, theme.typography.body).height;
+        let intr = MetroButton::new("b")
+            .measure(&engine, theme.typography.body)
+            .height;
         assert!(
             (hits[0].rect.size.height - intr).abs() < 0.5,
             "按钮内在高度，实际 {}",
@@ -595,17 +597,17 @@ mod tests {
 
     #[test]
     fn render_decl_emits_clip_for_container() {
-        // 容器应发出 ClipRect（box 语义）—— 文本溢出从此被裁剪。
+        // 容器应发出 PushClip（box 语义）—— 文本溢出从此被裁剪。
         let Some(engine) = find_engine() else { return };
         let theme = MetroTheme::ether_dark();
         let tree = Decl::column(vec![Decl::text("超长文本超长文本超长文本超长文本")]);
         let (scene, _) = render_decl(&theme, &engine, &tree, Rect::new(0.0, 0.0, 80.0, 40.0));
         assert!(
-            scene.commands.iter().any(|c| matches!(
-                c,
-                kanesumi_canvas::SceneCommand::ClipRect { rect: Some(_) }
-            )),
-            "容器应发 ClipRect"
+            scene
+                .commands
+                .iter()
+                .any(|c| matches!(c, kanesumi_canvas::SceneCommand::PushClip { .. })),
+            "容器应发 PushClip"
         );
     }
 

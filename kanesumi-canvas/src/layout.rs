@@ -17,6 +17,51 @@ use kanesumi_core::theme::MetroTheme;
 use crate::scene::Scene;
 use crate::text::TextEngine;
 
+/// 双轴布局约束。对应 UWP `availableSize` 与 macOS intrinsic size 的上下界。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Constraints {
+    pub min: Size,
+    pub max: Size,
+}
+
+impl Constraints {
+    pub const fn new(min: Size, max: Size) -> Self {
+        Self { min, max }
+    }
+
+    pub const fn loose(max: Size) -> Self {
+        Self::new(Size::ZERO, max)
+    }
+
+    pub const fn tight(size: Size) -> Self {
+        Self::new(size, size)
+    }
+
+    pub const fn unbounded() -> Self {
+        Self::loose(Size::new(f32::INFINITY, f32::INFINITY))
+    }
+
+    pub fn normalized(self) -> Self {
+        let min = self.min.normalized();
+        let max = self.max.normalized();
+        Self::new(
+            Size::new(min.width.min(max.width), min.height.min(max.height)),
+            max,
+        )
+    }
+
+    pub fn constrain(self, size: Size) -> Size {
+        let constraints = self.normalized();
+        let size = size.normalized();
+        Size::new(
+            size.width
+                .clamp(constraints.min.width, constraints.max.width),
+            size.height
+                .clamp(constraints.min.height, constraints.max.height),
+        )
+    }
+}
+
 /// 交叉轴对齐 —— 等价 UWP `VerticalAlignment`/`HorizontalAlignment` 简化版。
 /// 容器子元素沿交叉轴（Row → Y，Column → X）的对齐方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -65,6 +110,14 @@ pub enum LayoutNode<L: LayoutLeaf> {
     Leaf(L),
     /// 弹性占位：arrange 时按 `grow` 权重分掉容器主轴剩余空间。
     Spacer { grow: f32 },
+    /// 子树弹性策略。`grow` 消费剩余空间，`shrink` 在不足时参与压缩，`min_main`
+    /// 是压缩下限。对应 UWP Star sizing 与 AppKit compression resistance 的合流。
+    Flexible {
+        grow: f32,
+        shrink: f32,
+        min_main: f32,
+        child: Box<LayoutNode<L>>,
+    },
 }
 
 impl<L: LayoutLeaf> LayoutNode<L> {
@@ -107,6 +160,15 @@ impl<L: LayoutLeaf> LayoutNode<L> {
     pub fn spacer(grow: f32) -> Self {
         LayoutNode::Spacer { grow }
     }
+
+    pub fn flexible(child: LayoutNode<L>, grow: f32, shrink: f32, min_main: f32) -> Self {
+        LayoutNode::Flexible {
+            grow: grow.max(0.0),
+            shrink: shrink.max(0.0),
+            min_main: min_main.max(0.0),
+            child: Box::new(child),
+        }
+    }
 }
 
 /// 布局树产物 —— 单次 `layout()` 的扁平节点表（DFS 先序）。
@@ -142,10 +204,18 @@ pub enum LaidKind<L: LayoutLeaf> {
 ///
 /// `root` 在 `root_rect` 内展开。容器约束沿树下传（子可用空间 = 父分配矩形），
 /// 期望尺寸沿树回收（父按内在尺寸 + spacing + Spacer.grow 分配主轴）。
-pub fn layout<L: LayoutLeaf>(root: &LayoutNode<L>, engine: &TextEngine, root_rect: Rect) -> LaidTree<L> {
+pub fn layout<L: LayoutLeaf>(
+    root: &LayoutNode<L>,
+    engine: &TextEngine,
+    root_rect: Rect,
+) -> LaidTree<L> {
+    let root_rect = root_rect.normalized();
     let mut nodes = Vec::new();
     let root_idx = arrange(root, engine, root_rect, &mut nodes);
-    LaidTree { nodes, root: root_idx }
+    LaidTree {
+        nodes,
+        root: root_idx,
+    }
 }
 
 impl<L: LayoutLeaf> LaidTree<L> {
@@ -155,22 +225,16 @@ impl<L: LayoutLeaf> LaidTree<L> {
         self.render_rec(self.root, theme, engine, scene);
     }
 
-    fn render_rec(
-        &self,
-        idx: usize,
-        theme: &MetroTheme,
-        engine: &TextEngine,
-        scene: &mut Scene,
-    ) {
+    fn render_rec(&self, idx: usize, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
         let node = &self.nodes[idx];
         match &node.kind {
             LaidKind::Container { children } => {
-                // box 语义：内容裁剪到容器矩形内（参 scene.rs ClipRect）。
-                scene.clip(Some(node.rect));
+                // box 语义：内容裁剪到容器矩形内（参 scene.rs PushClip）。
+                scene.push_clip(node.rect);
                 for &c in children {
                     self.render_rec(c, theme, engine, scene);
                 }
-                scene.clip(None);
+                scene.pop_clip();
             }
             LaidKind::Leaf(l) => l.render(theme, engine, node.rect, scene),
             LaidKind::Spacer => {}
@@ -217,12 +281,35 @@ impl<L: LayoutLeaf> LaidTree<L> {
         &self.nodes
     }
 
-    /// DFS 序叶子迭代：`(矩形, 叶子)`。命中表 / 外观提取用 —— 与渲染共用同一树。
+    /// DFS 序可见叶子：矩形已与全部祖先容器裁剪求交。命中表不得包含不可见区域。
     pub fn leaves(&self) -> impl Iterator<Item = (Rect, &L)> {
-        self.nodes.iter().filter_map(|n| match &n.kind {
-            LaidKind::Leaf(l) => Some((n.rect, l)),
-            _ => None,
-        })
+        let mut leaves = Vec::new();
+        self.collect_visible_leaves(self.root, None, &mut leaves);
+        leaves.into_iter()
+    }
+
+    fn collect_visible_leaves<'a>(
+        &'a self,
+        idx: usize,
+        clip: Option<Rect>,
+        out: &mut Vec<(Rect, &'a L)>,
+    ) {
+        let node = &self.nodes[idx];
+        let Some(effective) = (match clip {
+            Some(parent) => parent.intersect(node.rect),
+            None => Some(node.rect),
+        }) else {
+            return;
+        };
+        match &node.kind {
+            LaidKind::Container { children } => {
+                for &child in children {
+                    self.collect_visible_leaves(child, Some(effective), out);
+                }
+            }
+            LaidKind::Leaf(leaf) => out.push((effective, leaf)),
+            LaidKind::Spacer => {}
+        }
     }
 }
 
@@ -246,45 +333,41 @@ fn arrange<L: LayoutLeaf>(
             });
             // 量测：每个子以 (主轴无界, 交叉轴 = 父交叉) 量内在尺寸。
             let mut measured = Vec::with_capacity(children.len());
-            let mut grow_total = 0.0f32;
             for c in children {
                 match c {
-                    LayoutNode::Spacer { grow } => {
-                        grow_total += grow.max(0.0);
-                        measured.push(Size::ZERO);
-                    }
+                    LayoutNode::Spacer { .. } => measured.push(Size::ZERO),
                     _ => {
-                        measured.push(measure(c, engine, Size::new(f32::INFINITY, rect.size.height)));
+                        measured.push(measure(
+                            c,
+                            engine,
+                            Size::new(f32::INFINITY, rect.size.height),
+                        ));
                     }
                 }
             }
             let gaps = spacing * children.len().saturating_sub(1) as f32;
-            let fixed: f32 = measured.iter().map(|s| s.width).sum();
-            let remaining = (rect.size.width - fixed - gaps).max(0.0);
+            let widths = distribute_main(
+                children,
+                &measured.iter().map(|s| s.width).collect::<Vec<_>>(),
+                (rect.size.width - gaps).max(0.0),
+            );
 
             let mut cursor = rect.origin.x;
             let mut child_indices = Vec::with_capacity(children.len());
             for (i, child) in children.iter().enumerate() {
-                let w = match child {
-                    LayoutNode::Spacer { grow } => {
-                        if grow_total > 0.0 {
-                            remaining * (grow.max(0.0) / grow_total)
-                        } else {
-                            0.0
-                        }
-                    }
-                    _ => measured[i].width,
-                };
+                let w = widths[i];
+                let arranged = measure(child, engine, Size::new(w, rect.size.height));
                 let (ch, cy) = match cross {
                     CrossAlign::Stretch => (rect.size.height, rect.origin.y),
-                    CrossAlign::Start => (measured[i].height, rect.origin.y),
+                    CrossAlign::Start => (arranged.height.min(rect.size.height), rect.origin.y),
                     CrossAlign::Center => (
-                        measured[i].height,
-                        rect.origin.y + (rect.size.height - measured[i].height) / 2.0,
+                        arranged.height.min(rect.size.height),
+                        rect.origin.y
+                            + (rect.size.height - arranged.height.min(rect.size.height)) / 2.0,
                     ),
                     CrossAlign::End => (
-                        measured[i].height,
-                        rect.origin.y + rect.size.height - measured[i].height,
+                        arranged.height.min(rect.size.height),
+                        rect.origin.y + rect.size.height - arranged.height.min(rect.size.height),
                     ),
                 };
                 let child_rect = Rect::new(cursor, cy, w, ch);
@@ -305,45 +388,41 @@ fn arrange<L: LayoutLeaf>(
                 kind: LaidKind::Container { children: vec![] },
             });
             let mut measured = Vec::with_capacity(children.len());
-            let mut grow_total = 0.0f32;
             for c in children {
                 match c {
-                    LayoutNode::Spacer { grow } => {
-                        grow_total += grow.max(0.0);
-                        measured.push(Size::ZERO);
-                    }
+                    LayoutNode::Spacer { .. } => measured.push(Size::ZERO),
                     _ => {
-                        measured.push(measure(c, engine, Size::new(rect.size.width, f32::INFINITY)));
+                        measured.push(measure(
+                            c,
+                            engine,
+                            Size::new(rect.size.width, f32::INFINITY),
+                        ));
                     }
                 }
             }
             let gaps = spacing * children.len().saturating_sub(1) as f32;
-            let fixed: f32 = measured.iter().map(|s| s.height).sum();
-            let remaining = (rect.size.height - fixed - gaps).max(0.0);
+            let heights = distribute_main(
+                children,
+                &measured.iter().map(|s| s.height).collect::<Vec<_>>(),
+                (rect.size.height - gaps).max(0.0),
+            );
 
             let mut cursor = rect.origin.y;
             let mut child_indices = Vec::with_capacity(children.len());
             for (i, child) in children.iter().enumerate() {
-                let h = match child {
-                    LayoutNode::Spacer { grow } => {
-                        if grow_total > 0.0 {
-                            remaining * (grow.max(0.0) / grow_total)
-                        } else {
-                            0.0
-                        }
-                    }
-                    _ => measured[i].height,
-                };
+                let h = heights[i];
+                let arranged = measure(child, engine, Size::new(rect.size.width, h));
                 let (cw, cx) = match cross {
                     CrossAlign::Stretch => (rect.size.width, rect.origin.x),
-                    CrossAlign::Start => (measured[i].width, rect.origin.x),
+                    CrossAlign::Start => (arranged.width.min(rect.size.width), rect.origin.x),
                     CrossAlign::Center => (
-                        measured[i].width,
-                        rect.origin.x + (rect.size.width - measured[i].width) / 2.0,
+                        arranged.width.min(rect.size.width),
+                        rect.origin.x
+                            + (rect.size.width - arranged.width.min(rect.size.width)) / 2.0,
                     ),
                     CrossAlign::End => (
-                        measured[i].width,
-                        rect.origin.x + rect.size.width - measured[i].width,
+                        arranged.width.min(rect.size.width),
+                        rect.origin.x + rect.size.width - arranged.width.min(rect.size.width),
                     ),
                 };
                 let child_rect = Rect::new(cx, cursor, cw, h);
@@ -366,13 +445,88 @@ fn arrange<L: LayoutLeaf>(
                 kind: LaidKind::Spacer,
             });
         }
+        LayoutNode::Flexible { child, .. } => return arrange(child, engine, rect, out),
     }
     idx
 }
 
+fn distribute_main<L: LayoutLeaf>(
+    children: &[LayoutNode<L>],
+    desired: &[f32],
+    available: f32,
+) -> Vec<f32> {
+    let mut sizes: Vec<f32> = desired.iter().map(|v| v.max(0.0)).collect();
+    let total: f32 = sizes.iter().sum();
+    if total < available {
+        let grow_total: f32 = children.iter().map(main_grow).sum();
+        if grow_total > 0.0 {
+            let extra = available - total;
+            for (size, child) in sizes.iter_mut().zip(children) {
+                *size += extra * main_grow(child) / grow_total;
+            }
+        }
+        return sizes;
+    }
+
+    let mut deficit = total - available;
+    let mut active = vec![true; children.len()];
+    while deficit > 0.001 {
+        let weight_total: f32 = children
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| active[*i])
+            .map(|(i, child)| main_shrink(child) * (sizes[i] - main_min(child)).max(0.0))
+            .sum();
+        if weight_total <= 0.0 {
+            break;
+        }
+        let before = deficit;
+        for (i, child) in children.iter().enumerate() {
+            if !active[i] {
+                continue;
+            }
+            let capacity = (sizes[i] - main_min(child)).max(0.0);
+            let weight = main_shrink(child) * capacity;
+            let reduction = (before * weight / weight_total).min(capacity);
+            sizes[i] -= reduction;
+            deficit -= reduction;
+            if capacity - reduction <= 0.001 {
+                active[i] = false;
+            }
+        }
+        if (before - deficit).abs() <= 0.001 {
+            break;
+        }
+    }
+    sizes
+}
+
+fn main_grow<L: LayoutLeaf>(node: &LayoutNode<L>) -> f32 {
+    match node {
+        LayoutNode::Spacer { grow } | LayoutNode::Flexible { grow, .. } => grow.max(0.0),
+        _ => 0.0,
+    }
+}
+
+fn main_shrink<L: LayoutLeaf>(node: &LayoutNode<L>) -> f32 {
+    match node {
+        LayoutNode::Spacer { .. } => 0.0,
+        LayoutNode::Flexible { shrink, .. } => shrink.max(0.0),
+        _ => 1.0,
+    }
+}
+
+fn main_min<L: LayoutLeaf>(node: &LayoutNode<L>) -> f32 {
+    match node {
+        LayoutNode::Flexible { min_main, .. } => min_main.max(0.0),
+        _ => 0.0,
+    }
+}
+
 /// Measure：给定约束，返回期望尺寸（父布局用）。叶子委托 `LayoutLeaf::measure`。
 fn measure<L: LayoutLeaf>(node: &LayoutNode<L>, engine: &TextEngine, available: Size) -> Size {
-    match node {
+    let available = available.normalized();
+    let measured = match node {
         LayoutNode::Row {
             spacing, children, ..
         } => {
@@ -405,7 +559,9 @@ fn measure<L: LayoutLeaf>(node: &LayoutNode<L>, engine: &TextEngine, available: 
         }
         LayoutNode::Leaf(l) => l.measure(engine, available),
         LayoutNode::Spacer { .. } => Size::ZERO,
-    }
+        LayoutNode::Flexible { child, .. } => measure(child, engine, available),
+    };
+    Constraints::loose(available).constrain(measured)
 }
 
 #[cfg(test)]
@@ -450,7 +606,9 @@ mod tests {
 
     #[test]
     fn row_places_children_left_to_right() {
-        let Some(engine) = engine_or_skip() else { return };
+        let Some(engine) = engine_or_skip() else {
+            return;
+        };
         let root = LayoutNode::row(vec![leaf(40.0, 20.0, "a"), leaf(60.0, 20.0, "b")]);
         let tree = layout(&root, &engine, Rect::new(0.0, 0.0, 200.0, 40.0));
         let leaves: Vec<&FixedLeaf> = tree
@@ -467,24 +625,33 @@ mod tests {
         assert_eq!(a.tag, "a");
         let b = tree.hit_at(Point::new(70.0, 20.0)).expect("点中 b");
         assert_eq!(b.tag, "b");
-        assert!(tree.hit_at(Point::new(150.0, 20.0)).is_none(), "spacing 空隙不可命中");
+        assert!(
+            tree.hit_at(Point::new(150.0, 20.0)).is_none(),
+            "spacing 空隙不可命中"
+        );
     }
 
     #[test]
     fn column_places_children_top_down() {
-        let Some(engine) = engine_or_skip() else { return };
+        let Some(engine) = engine_or_skip() else {
+            return;
+        };
         let root = LayoutNode::column(vec![leaf(100.0, 20.0, "a"), leaf(100.0, 30.0, "b")]);
         let tree = layout(&root, &engine, Rect::new(0.0, 0.0, 200.0, 100.0));
         let a = tree.hit_at(Point::new(50.0, 10.0)).expect("点中 a");
         assert_eq!(a.tag, "a");
-        let b = tree.hit_at(Point::new(50.0, 40.0)).expect("点中 b（含 spacing）");
+        let b = tree
+            .hit_at(Point::new(50.0, 40.0))
+            .expect("点中 b（含 spacing）");
         assert_eq!(b.tag, "b");
     }
 
     #[test]
     fn container_clips_hidden_children() {
         // 容器宽 100，第一个子撑满 100，第二个子挤出去 —— 但容器 Clip 使其不可命中
-        let Some(engine) = engine_or_skip() else { return };
+        let Some(engine) = engine_or_skip() else {
+            return;
+        };
         let root = LayoutNode::Row {
             spacing: 0.0,
             cross: CrossAlign::Stretch,
@@ -493,16 +660,25 @@ mod tests {
         let tree = layout(&root, &engine, Rect::new(0.0, 0.0, 100.0, 20.0));
         // a 在 0..100 可命中；b 在 100..200 被容器 rect 裁剪 → 不可命中
         assert!(tree.hit_at(Point::new(50.0, 10.0)).is_some());
-        assert!(tree.hit_at(Point::new(150.0, 10.0)).is_none(), "容器裁剪子内容");
+        assert!(
+            tree.hit_at(Point::new(150.0, 10.0)).is_none(),
+            "容器裁剪子内容"
+        );
     }
 
     #[test]
     fn spacer_distributes_remaining() {
-        let Some(engine) = engine_or_skip() else { return };
+        let Some(engine) = engine_or_skip() else {
+            return;
+        };
         let root = LayoutNode::Row {
             spacing: 0.0,
             cross: CrossAlign::Stretch,
-            children: vec![leaf(40.0, 20.0, "a"), LayoutNode::spacer(1.0), leaf(40.0, 20.0, "b")],
+            children: vec![
+                leaf(40.0, 20.0, "a"),
+                LayoutNode::spacer(1.0),
+                leaf(40.0, 20.0, "b"),
+            ],
         };
         let tree = layout(&root, &engine, Rect::new(0.0, 0.0, 200.0, 20.0));
         // a: 0..40，spacer: 40..160，b: 160..200
@@ -510,13 +686,56 @@ mod tests {
         assert_eq!(a.tag, "a");
         let b = tree.hit_at(Point::new(180.0, 10.0)).expect("b");
         assert_eq!(b.tag, "b");
-        assert!(tree.hit_at(Point::new(100.0, 10.0)).is_none(), "spacer 不可命中");
+        assert!(
+            tree.hit_at(Point::new(100.0, 10.0)).is_none(),
+            "spacer 不可命中"
+        );
+    }
+
+    #[test]
+    fn row_shrinks_children_instead_of_arranging_past_parent() {
+        let Some(engine) = engine_or_skip() else {
+            return;
+        };
+        let root = LayoutNode::Row {
+            spacing: 8.0,
+            cross: CrossAlign::Stretch,
+            children: vec![leaf(100.0, 20.0, "a"), leaf(100.0, 20.0, "b")],
+        };
+        let tree = layout(&root, &engine, Rect::new(0.0, 0.0, 120.0, 20.0));
+        let leaves: Vec<_> = tree.leaves().collect();
+        assert_eq!(leaves.len(), 2);
+        assert!((leaves[0].0.size.width - 56.0).abs() < 0.01);
+        assert!((leaves[1].0.size.width - 56.0).abs() < 0.01);
+        assert!(leaves[1].0.right() <= 120.0);
+    }
+
+    #[test]
+    fn flexible_minimum_models_compression_resistance() {
+        let Some(engine) = engine_or_skip() else {
+            return;
+        };
+        let root = LayoutNode::row_with(
+            0.0,
+            CrossAlign::Stretch,
+            vec![
+                LayoutNode::flexible(leaf(100.0, 20.0, "resists"), 0.0, 1.0, 80.0),
+                LayoutNode::flexible(leaf(100.0, 20.0, "shrinks"), 0.0, 1.0, 0.0),
+            ],
+        );
+        let tree = layout(&root, &engine, Rect::new(0.0, 0.0, 120.0, 20.0));
+        let leaves: Vec<_> = tree.leaves().collect();
+        assert!(leaves[0].0.size.width >= 80.0, "高压缩阻力项不得越过下限");
+        assert!(leaves[1].0.size.width < leaves[0].0.size.width);
+        assert!((leaves.iter().map(|(rect, _)| rect.size.width).sum::<f32>() - 120.0).abs() < 0.01);
     }
 
     #[test]
     fn measure_reports_wrapped_height() {
         // 文本叶子在窄约束下折多行 → measure 高度随之增高（量测 = 排版）
-        let Some(engine) = engine_or_skip() else { return };
+        let Some(engine) = engine_or_skip() else {
+            return;
+        };
         let text_leaf = LayoutNode::Leaf(TextLeaf {
             content: "the quick brown fox jumps over the lazy dog".into(),
         });
@@ -533,7 +752,8 @@ mod tests {
 
     impl LayoutLeaf for TextLeaf {
         fn measure(&self, engine: &TextEngine, available: Size) -> Size {
-            let style = kanesumi_core::TextStyle::new(15.0, 22.0, kanesumi_core::FontWeight::Normal);
+            let style =
+                kanesumi_core::TextStyle::new(15.0, 22.0, kanesumi_core::FontWeight::Normal);
             let lines = engine.layout(&self.content, style.size, available.width);
             let width = lines.iter().map(|l| l.width).fold(0.0, f32::max);
             Size::new(width, lines.len() as f32 * style.line_height)

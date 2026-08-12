@@ -37,17 +37,24 @@ use smithay_client_toolkit::{
     },
 };
 use wayland_client::{
-    Connection, Dispatch, QueueHandle,
+    Connection, Dispatch, Proxy, QueueHandle,
     globals::registry_queue_init,
     protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface},
+};
+use wayland_protocols::wp::fractional_scale::v1::client::{
+    wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+    wp_fractional_scale_v1::{Event as FractionalScaleEvent, WpFractionalScaleV1},
 };
 use wayland_protocols::wp::text_input::zv3::client::{
     zwp_text_input_manager_v3::ZwpTextInputManagerV3,
     zwp_text_input_v3::{ContentHint, ContentPurpose, Event as TextInputEvent, ZwpTextInputV3},
 };
+use wayland_protocols::wp::viewporter::client::{
+    wp_viewport::WpViewport, wp_viewporter::WpViewporter,
+};
 
 use crate::app::{
-    App, AnchorKind, FloatingLayer, ImeAction, ImeContentHint, ImeContext, InputEvent, Key,
+    AnchorKind, App, FloatingLayer, ImeAction, ImeContentHint, ImeContext, InputEvent, Key,
     LayerKind, Modifiers, PendingImeBatch, PointerButton, compute_ime_action,
 };
 use crate::appmenu::AppMenuHandle;
@@ -72,10 +79,12 @@ pub fn run(app: &mut dyn App) -> ! {
     // 会话内无日志 UI：panic / Err 都写文件供排查（Ether 下客户端启动失败定位）。
     // 用裸指针穿透闭包生命周期（app 已在 run 入口 unsafe 提升为 'static）。
     let app_ptr = app as *mut dyn App;
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || -> Result<(), String> {
-        let app: &'static mut dyn App = unsafe { &mut *app_ptr };
-        run_inner(app)
-    }));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        move || -> Result<(), String> {
+            let app: &'static mut dyn App = unsafe { &mut *app_ptr };
+            run_inner(app)
+        },
+    ));
     match result {
         Ok(Ok(())) => std::process::exit(0),
         Ok(Err(e)) => {
@@ -122,7 +131,7 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         .font_path()
         .or_else(find_font)
         .ok_or_else(|| "未找到字体：设 KANESUMI_TEST_FONT 或提供 App::font_path()".to_string())?;
-    let engine = TextEngine::load(&font_path)
+    let engine = TextEngine::load_with_fallbacks(&font_path, fallback_fonts(&font_path))
         .map_err(|e| format!("加载字体失败 {}：{e}", font_path.display()))?;
 
     let mut shell = Shell::new(app, engine, &conn, &globals, &qh, role)?;
@@ -150,8 +159,9 @@ pub fn find_font() -> Option<std::path::PathBuf> {
     }
     for p in [
         // Ether 正体字体：思源黑体 SC（合成器同款，SD §IX 唯一字体）。
-        "/usr/local/share/fonts/s/SourceHanSansSC_Bold.otf",
         "/usr/local/share/fonts/s/SourceHanSansSC-Regular.otf",
+        "/usr/local/share/fonts/s/SourceHanSansTC_Regular.otf",
+        "/usr/local/share/fonts/s/SourceHanSansSC_Bold.otf",
         // 系统 CJK（含中文）。
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
@@ -166,6 +176,23 @@ pub fn find_font() -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+fn fallback_fonts(primary: &std::path::Path) -> Vec<std::path::PathBuf> {
+    [
+        "/usr/local/share/fonts/s/SourceHanSansSC-Regular.otf",
+        "/usr/local/share/fonts/s/SourceHanSansTC_Regular.otf",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto/NotoSansArabic-Regular.ttf",
+        "/usr/share/fonts/noto/NotoSansHebrew-Regular.ttf",
+        "/usr/share/fonts/noto/NotoSansSymbols2-Regular.ttf",
+        "/usr/share/fonts/TTF/NotoSansSymbols2-Regular.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    ]
+    .into_iter()
+    .map(std::path::PathBuf::from)
+    .filter(|path| path != primary && path.exists())
+    .collect()
 }
 
 /// 外壳状态：sctk 协议状态 + App + wgpu 渲染器。
@@ -192,8 +219,12 @@ struct Shell {
 
     renderer: Option<Renderer>,
 
-    /// 逻辑缩放（通常 1 或 2）。
-    scale: u32,
+    /// 主表面光栅化缩放。布局仍使用逻辑像素；支持 1.25 / 1.5 等分数比例。
+    scale: f32,
+    _fractional_scale_manager: Option<WpFractionalScaleManagerV1>,
+    _viewporter: Option<WpViewporter>,
+    _fractional_scale: Option<WpFractionalScaleV1>,
+    viewport: Option<WpViewport>,
     /// 逻辑尺寸（configure 后有效）。
     width: f32,
     height: f32,
@@ -242,6 +273,14 @@ struct FloatingSurface {
     width: f32,
     height: f32,
     configured: bool,
+    scale: f32,
+    _fractional_scale: Option<WpFractionalScaleV1>,
+    viewport: Option<WpViewport>,
+}
+
+#[derive(Debug, Clone)]
+struct FractionalScaleData {
+    surface: wl_surface::WlSurface,
 }
 
 impl Shell {
@@ -263,6 +302,29 @@ impl Shell {
         let width = cfg.width;
         let height = cfg.height;
 
+        let fractional_scale_manager = globals
+            .bind::<WpFractionalScaleManagerV1, Self, ()>(qh, 1..=1, ())
+            .ok();
+        let viewporter = globals.bind::<WpViewporter, Self, ()>(qh, 1..=1, ()).ok();
+        let fractional_supported = fractional_scale_manager.is_some() && viewporter.is_some();
+        let fractional_scale = fractional_supported.then(|| {
+            fractional_scale_manager
+                .as_ref()
+                .unwrap()
+                .get_fractional_scale(
+                    &surface,
+                    qh,
+                    FractionalScaleData {
+                        surface: surface.clone(),
+                    },
+                )
+        });
+        let viewport = fractional_supported
+            .then(|| viewporter.as_ref().unwrap().get_viewport(&surface, qh, ()));
+        if viewport.is_some() {
+            surface.set_buffer_scale(1);
+        }
+
         // 建表面：按角色分派 xdg-shell / layer-shell。
         let mut layer_shell = None;
         let mut xdg_shell = None;
@@ -277,7 +339,10 @@ impl Shell {
                     shell.create_window(surface.clone(), WindowDecorations::RequestServer, qh);
                 win.set_title(cfg.title);
                 win.set_app_id(cfg.app_id);
-                win.set_min_size(Some((width as u32, height as u32)));
+                win.set_min_size(Some((
+                    cfg.min_width.round().max(1.0) as u32,
+                    cfg.min_height.round().max(1.0) as u32,
+                )));
                 win.commit();
                 window = Some(win);
                 xdg_shell = Some(shell);
@@ -336,7 +401,16 @@ impl Shell {
             Some(s) => app
                 .floating_layers()
                 .into_iter()
-                .map(|spec| create_floating_surface(&compositor_state, s, qh, spec))
+                .map(|spec| {
+                    create_floating_surface(
+                        &compositor_state,
+                        s,
+                        qh,
+                        spec,
+                        fractional_scale_manager.as_ref(),
+                        viewporter.as_ref(),
+                    )
+                })
                 .collect::<Result<Vec<_>, String>>()?,
             None => Vec::new(),
         };
@@ -369,7 +443,11 @@ impl Shell {
             pointer: None,
             keyboard: None,
             renderer,
-            scale: 1,
+            scale: 1.0,
+            _fractional_scale_manager: fractional_scale_manager,
+            _viewporter: viewporter,
+            _fractional_scale: fractional_scale,
+            viewport,
             width,
             height,
             configured: false,
@@ -395,16 +473,12 @@ impl Shell {
 
     /// 浮层表面索引（按 wl_surface 比对；PointerHandler / CompositorHandler 分发用）。
     fn floating_idx(&self, surface: &wl_surface::WlSurface) -> Option<usize> {
-        self.floating
-            .iter()
-            .position(|f| f.surface == *surface)
+        self.floating.iter().position(|f| f.surface == *surface)
     }
 
     /// 浮层表面索引（按 layer surface 比对；LayerShellHandler configure 分发用）。
     fn floating_idx_by_layer(&self, layer: &LayerSurface) -> Option<usize> {
-        self.floating
-            .iter()
-            .position(|f| f.layer_surface == *layer)
+        self.floating.iter().position(|f| f.layer_surface == *layer)
     }
 
     /// 浮层高度同步（面板展开/收起）：App::floating_height 与当前不符 → set_size 立即
@@ -418,7 +492,13 @@ impl Shell {
             f.layer_surface.set_size(f.width as u32, h as u32);
             f.height = h;
             if let Some(r) = f.renderer.as_mut() {
-                r.resize(f.width, h, self.scale as f32);
+                r.resize(f.width, h, f.scale);
+            }
+            if let Some(viewport) = f.viewport.as_ref()
+                && h > 0.0
+            {
+                viewport
+                    .set_destination(f.width.round().max(1.0) as i32, h.round().max(1.0) as i32);
             }
         }
     }
@@ -433,8 +513,7 @@ impl Shell {
             return;
         }
         if f.renderer.is_none() {
-            match Renderer::new(&self.conn, &f.surface, f.width, f.height, self.scale as f32, true)
-            {
+            match Renderer::new(&self.conn, &f.surface, f.width, f.height, f.scale, true) {
                 Ok(r) => {
                     f.renderer = Some(r);
                     log::info!("浮层渲染器已创建（{:.0}x{:.0}，透明底）", f.width, f.height);
@@ -504,7 +583,13 @@ impl Shell {
         self.height = h;
         self.pending_height = Some(h);
         if let Some(r) = self.renderer.as_mut() {
-            r.resize(self.width, self.height, self.scale as f32);
+            r.resize(self.width, self.height, self.scale);
+        }
+        if let Some(viewport) = self.viewport.as_ref() {
+            viewport.set_destination(
+                self.width.round().max(1.0) as i32,
+                self.height.round().max(1.0) as i32,
+            );
         }
     }
 
@@ -545,7 +630,14 @@ impl Shell {
         } else {
             &self.surface
         };
-        match Renderer::new(&self.conn, wl_surface, self.width, self.height, self.scale as f32, false) {
+        match Renderer::new(
+            &self.conn,
+            wl_surface,
+            self.width,
+            self.height,
+            self.scale,
+            false,
+        ) {
             Ok(r) => {
                 self.renderer = Some(r);
                 log::info!("wgpu 渲染器已创建（{:.0}x{:.0}）", self.width, self.height);
@@ -577,8 +669,8 @@ impl Shell {
                 self.width,
                 self.height,
                 self.scale,
-                self.width * self.scale as f32,
-                self.height * self.scale as f32,
+                self.width * self.scale,
+                self.height * self.scale,
             );
             if let Some(r) = self.renderer.as_ref() {
                 lines.push_str(&format!("renderer: {}\n", r.diagnostics()));
@@ -727,15 +819,49 @@ impl Shell {
     }
 
     /// 应用新缩放：重配 wgpu 表面物理尺寸 + buffer_scale。
-    fn apply_scale(&mut self, scale: u32) {
-        if scale == 0 {
+    fn apply_scale(&mut self, scale: f32) {
+        if scale <= 0.0 || !scale.is_finite() {
             return;
         }
         self.scale = scale;
         if let Some(r) = self.renderer.as_mut() {
-            r.resize(self.width, self.height, scale as f32);
+            r.resize(self.width, self.height, scale);
         }
-        self.surface.set_buffer_scale(scale as i32);
+        if let Some(viewport) = self.viewport.as_ref() {
+            viewport.set_destination(
+                self.width.round().max(1.0) as i32,
+                self.height.round().max(1.0) as i32,
+            );
+            self.surface.set_buffer_scale(1);
+        } else {
+            self.surface.set_buffer_scale(scale.round().max(1.0) as i32);
+        }
+    }
+
+    fn apply_surface_scale(&mut self, surface: &wl_surface::WlSurface, scale: f32) {
+        if *surface == self.surface {
+            self.apply_scale(scale);
+            return;
+        }
+        let Some(index) = self.floating_idx(surface) else {
+            return;
+        };
+        let floating = &mut self.floating[index];
+        floating.scale = scale;
+        if let Some(viewport) = floating.viewport.as_ref() {
+            viewport.set_destination(
+                floating.width.round().max(1.0) as i32,
+                floating.height.round().max(1.0) as i32,
+            );
+            floating.surface.set_buffer_scale(1);
+        } else {
+            floating
+                .surface
+                .set_buffer_scale(scale.round().max(1.0) as i32);
+        }
+        if let Some(renderer) = floating.renderer.as_mut() {
+            renderer.resize(floating.width, floating.height, scale);
+        }
     }
 
     /// 应用新逻辑尺寸。
@@ -747,8 +873,65 @@ impl Shell {
             self.height = height;
         }
         if let Some(r) = self.renderer.as_mut() {
-            r.resize(self.width, self.height, self.scale as f32);
+            r.resize(self.width, self.height, self.scale);
         }
+        if let Some(viewport) = self.viewport.as_ref() {
+            viewport.set_destination(
+                self.width.round().max(1.0) as i32,
+                self.height.round().max(1.0) as i32,
+            );
+        }
+    }
+}
+
+impl Dispatch<WpFractionalScaleManagerV1, ()> for Shell {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WpFractionalScaleManagerV1,
+        _event: <WpFractionalScaleManagerV1 as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<WpFractionalScaleV1, FractionalScaleData> for Shell {
+    fn event(
+        state: &mut Self,
+        _proxy: &WpFractionalScaleV1,
+        event: <WpFractionalScaleV1 as Proxy>::Event,
+        data: &FractionalScaleData,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let FractionalScaleEvent::PreferredScale { scale } = event {
+            state.apply_surface_scale(&data.surface, scale as f32 / 120.0);
+        }
+    }
+}
+
+impl Dispatch<WpViewporter, ()> for Shell {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WpViewporter,
+        _event: <WpViewporter as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<WpViewport, ()> for Shell {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WpViewport,
+        _event: <WpViewport as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
     }
 }
 
@@ -759,11 +942,18 @@ impl CompositorHandler for Shell {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
+        surface: &wl_surface::WlSurface,
         new_factor: i32,
     ) {
-        if new_factor > 0 {
-            self.apply_scale(new_factor as u32);
+        if new_factor <= 0 {
+            return;
+        }
+        if *surface == self.surface && self.viewport.is_none() {
+            self.apply_surface_scale(surface, new_factor as f32);
+        } else if let Some(index) = self.floating_idx(surface)
+            && self.floating[index].viewport.is_none()
+        {
+            self.apply_surface_scale(surface, new_factor as f32);
         }
     }
 
@@ -821,26 +1011,16 @@ impl OutputHandler for Shell {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        output: wl_output::WlOutput,
+        _output: wl_output::WlOutput,
     ) {
-        if let Some(info) = self.output_state.info(&output)
-            && info.scale_factor > 0
-        {
-            self.apply_scale(info.scale_factor as u32);
-        }
     }
 
     fn update_output(
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        output: wl_output::WlOutput,
+        _output: wl_output::WlOutput,
     ) {
-        if let Some(info) = self.output_state.info(&output)
-            && info.scale_factor > 0
-        {
-            self.apply_scale(info.scale_factor as u32);
-        }
     }
 
     fn output_destroyed(
@@ -919,7 +1099,16 @@ impl LayerShellHandler for Shell {
                 f.height = h as f32;
             }
             if let Some(r) = f.renderer.as_mut() {
-                r.resize(f.width, f.height, self.scale as f32);
+                r.resize(f.width, f.height, f.scale);
+            }
+            if let Some(viewport) = f.viewport.as_ref()
+                && f.width > 0.0
+                && f.height > 0.0
+            {
+                viewport.set_destination(
+                    f.width.round().max(1.0) as i32,
+                    f.height.round().max(1.0) as i32,
+                );
             }
             if !f.configured {
                 f.configured = true;
@@ -948,9 +1137,18 @@ impl LayerShellHandler for Shell {
             }
         }
         if let Some(r) = self.renderer.as_mut() {
-            r.resize(self.width, self.height, self.scale as f32);
+            r.resize(self.width, self.height, self.scale);
         }
-        self.surface.set_buffer_scale(self.scale as i32);
+        if let Some(viewport) = self.viewport.as_ref() {
+            viewport.set_destination(
+                self.width.round().max(1.0) as i32,
+                self.height.round().max(1.0) as i32,
+            );
+            self.surface.set_buffer_scale(1);
+        } else {
+            self.surface
+                .set_buffer_scale(self.scale.round().max(1.0) as i32);
+        }
         if !self.configured {
             self.configured = true;
             // 首帧：render_frame 内部会请求 frame callback 并渲染。
@@ -1112,6 +1310,8 @@ fn create_floating_surface(
     shell: &LayerShell,
     qh: &QueueHandle<Shell>,
     spec: FloatingLayer,
+    fractional_scale_manager: Option<&WpFractionalScaleManagerV1>,
+    viewporter: Option<&WpViewporter>,
 ) -> Result<FloatingSurface, String> {
     let layer = match spec.layer {
         LayerKind::Top => Layer::Top,
@@ -1123,6 +1323,20 @@ fn create_floating_surface(
         AnchorKind::BottomCenter => Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
     };
     let surface = compositor_state.create_surface(qh);
+    let fractional_supported = fractional_scale_manager.is_some() && viewporter.is_some();
+    let fractional_scale = fractional_supported.then(|| {
+        fractional_scale_manager.unwrap().get_fractional_scale(
+            &surface,
+            qh,
+            FractionalScaleData {
+                surface: surface.clone(),
+            },
+        )
+    });
+    let viewport = fractional_supported.then(|| viewporter.unwrap().get_viewport(&surface, qh, ()));
+    if viewport.is_some() {
+        surface.set_buffer_scale(1);
+    }
     let ls = shell.create_layer_surface(qh, surface.clone(), layer, Some(spec.app_id), None);
     ls.set_anchor(anchor);
     ls.set_exclusive_zone(-1);
@@ -1136,6 +1350,9 @@ fn create_floating_surface(
         width: spec.width,
         height: spec.height,
         configured: false,
+        scale: 1.0,
+        _fractional_scale: fractional_scale,
+        viewport,
     })
 }
 
@@ -1188,11 +1405,22 @@ impl KeyboardHandler for Shell {
         _serial: u32,
         event: SctkKeyEvent,
     ) {
-        let key = map_key(event.keysym, event.utf8);
+        let text = event
+            .utf8
+            .as_deref()
+            .filter(|text| text.chars().count() > 1)
+            .map(str::to_owned);
+        let key = map_key(event.keysym, if text.is_some() { None } else { event.utf8 });
         self.emit_input(InputEvent::KeyPressed {
             key,
             modifiers: self.modifiers,
         });
+        // xkb 可产生多标量文本（组合序列等）；不能静默丢掉首字符后的内容。
+        if let Some(text) = text
+            && !self.ime_enabled
+        {
+            self.emit_input(InputEvent::Commit { text });
+        }
     }
 
     fn release_key(

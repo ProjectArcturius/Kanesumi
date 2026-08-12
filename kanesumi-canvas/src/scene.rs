@@ -2,6 +2,8 @@ use kanesumi_core::color::Color;
 use kanesumi_core::geometry::{CornerRadius, Point, Rect};
 use kanesumi_core::typography::TextStyle;
 
+use crate::text::TextOverflow;
+
 /// 文本对齐。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextAlign {
@@ -34,6 +36,9 @@ pub enum SceneCommand {
         color: Color,
         style: TextStyle,
         align: TextAlign,
+        wrap: bool,
+        max_lines: Option<usize>,
+        overflow: TextOverflow,
     },
     /// 圆弧（ProgressRing）。角度为度数，0° = 正上，顺时针；`start_deg != end_deg` 为弧。
     Arc {
@@ -44,11 +49,10 @@ pub enum SceneCommand {
         start_deg: f32,
         end_deg: f32,
     },
-    /// 设置裁剪矩形（`None` 清除）。后续绘制命令裁剪到该矩形内（box 语义）。
-    /// 参 PLAN.md §4-5 —— 控件内容须在自身边界盒内，禁止溢出（如进度条指示条滑出轨道）。
-    ClipRect {
-        rect: Option<Rect>,
-    },
+    /// 压入裁剪矩形。嵌套裁剪取交集，空交集保持为空，不得退化成“无裁剪”。
+    PushClip { rect: Rect },
+    /// 弹出一层裁剪。与 `PushClip` 必须成对。
+    PopClip,
     /// 位图（SVG 光栅化的图标等）。`rgba` 为直通 RGBA（非预乘），`width`/`height` 为像素；
     /// `rect` 为绘制目标（逻辑坐标）；`tint` 为染色（None = 原色，Some = 用指定色替换非透明像素）。
     Image {
@@ -124,12 +128,39 @@ impl Scene {
         style: TextStyle,
         align: TextAlign,
     ) {
-        self.commands.push(SceneCommand::Text {
+        self.text_with_options(
             content,
             rect,
             color,
             style,
             align,
+            true,
+            None,
+            TextOverflow::Clip,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_with_options(
+        &mut self,
+        content: String,
+        rect: Rect,
+        color: Color,
+        style: TextStyle,
+        align: TextAlign,
+        wrap: bool,
+        max_lines: Option<usize>,
+        overflow: TextOverflow,
+    ) {
+        self.commands.push(SceneCommand::Text {
+            content,
+            rect: rect.normalized(),
+            color,
+            style,
+            align,
+            wrap,
+            max_lines,
+            overflow,
         });
     }
 
@@ -164,14 +195,20 @@ impl Scene {
         });
     }
 
-    /// 设置裁剪矩形（None 清除）。内容裁剪到盒内（box 语义）。
-    pub fn clip(&mut self, rect: Option<Rect>) {
-        self.commands.push(SceneCommand::ClipRect { rect });
+    pub fn push_clip(&mut self, rect: Rect) {
+        self.commands.push(SceneCommand::PushClip {
+            rect: rect.normalized(),
+        });
+    }
+
+    pub fn pop_clip(&mut self) {
+        self.commands.push(SceneCommand::PopClip);
     }
 
     /// 填充三角形。三点按任意顺序（外壳不做正面/背面区分）。
     pub fn triangle(&mut self, p0: Point, p1: Point, p2: Point, color: Color) {
-        self.commands.push(SceneCommand::Triangle { p0, p1, p2, color });
+        self.commands
+            .push(SceneCommand::Triangle { p0, p1, p2, color });
     }
 
     pub fn is_empty(&self) -> bool {
@@ -257,5 +294,14 @@ mod tests {
             }
         ));
         assert_eq!(scene.commands.len(), 1);
+    }
+
+    #[test]
+    fn clip_commands_are_explicit_and_paired() {
+        let mut scene = Scene::default();
+        scene.push_clip(Rect::new(0.0, 0.0, 10.0, 10.0));
+        scene.pop_clip();
+        assert!(matches!(scene.commands[0], SceneCommand::PushClip { .. }));
+        assert!(matches!(scene.commands[1], SceneCommand::PopClip));
     }
 }

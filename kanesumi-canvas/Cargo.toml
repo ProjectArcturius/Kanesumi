@@ -13,3 +13,7 @@ fontdue = "0.9"
 resvg = "0.44"
 # UAX #14 断行 —— 为 CJK/混合文本提供正确的允许断行点集合（禁则规则）。参 V14。
 unicode-linebreak = "0.1"
+# OpenType 塑形 + BiDi + 字素簇。排版不得按 Unicode 标量逐字推进。
+rustybuzz = "0.18"
+unicode-bidi = "0.3"
+unicode-segmentation = "1.12"
