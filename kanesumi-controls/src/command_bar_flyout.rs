@@ -299,6 +299,66 @@ mod tests {
         assert!(r.right() <= screen.right() + 0.01, "命令条右缘不越屏");
     }
 
+    /// 选区贴左缘：面板左缘应夹紧到 screen.origin.x，不越屏左。
+    #[test]
+    fn place_clamps_left_edge() {
+        let bar = MetroCommandBarFlyout::text_commands();
+        let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
+        // 选区紧贴左缘，中心 x=20（远小于半个命令条宽 82）
+        let anchor = Rect::new(0.0, 300.0, 40.0, 20.0);
+        let r = bar.place(anchor, screen);
+        assert!(r.origin.x >= screen.origin.x - 0.01, "命令条不越屏左");
+        assert_eq!(r.origin.x, 0.0, "贴屏左");
+    }
+
+    /// 屏幕比面板窄：min-clamp 生效（origin.x = screen.origin.x），面板宽保持。
+    #[test]
+    fn place_clamps_when_panel_wider_than_screen() {
+        let bar = MetroCommandBarFlyout::text_commands();
+        // 面板 4×40 + 2 = 162；屏 100 → 无法容纳
+        let screen = Rect::new(0.0, 0.0, 100.0, 600.0);
+        let anchor = Rect::new(20.0, 300.0, 40.0, 20.0);
+        let r = bar.place(anchor, screen);
+        assert_eq!(r.origin.x, 0.0, "面板宽 > 屏 → 靠左夹紧");
+        assert_eq!(r.size.width, bar.panel_size().width, "宽保持（宿主负责裁剪 / 缩放）");
+    }
+
+    /// 多按钮布局（8 个自定义命令）—— panel_size 线性增长，命中覆盖全部按钮。
+    #[test]
+    fn many_buttons_layout_and_hit() {
+        let cmds: Vec<CommandButton> = (0..8)
+            .map(|i| CommandButton::new("●", format!("cmd{i}"), CommandBarAction::Custom(i)))
+            .collect();
+        let mut bar = MetroCommandBarFlyout::new(cmds);
+        assert_eq!(bar.panel_size().width, 8.0 * 40.0 + 2.0);
+        let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let anchor = Rect::new(300.0, 300.0, 200.0, 20.0);
+        bar.panel_rect = bar.place(anchor, screen);
+        // 命中每个按钮中心 —— 应各自返回对应 Custom(i)
+        for i in 0..8 {
+            let cx = bar.panel_rect.origin.x + COMMANDBAR_BORDER + (i as f32 + 0.5) * COMMANDBAR_BUTTON_SIZE;
+            let p = Point::new(cx, bar.panel_rect.origin.y + 20.0);
+            assert_eq!(
+                bar.hit_command(p),
+                Some(CommandBarAction::Custom(i)),
+                "第 {i} 个按钮命中失败"
+            );
+        }
+    }
+
+    /// 命中越过按钮序列末尾（点面板内但超出最后一个按钮的 x 范围）应返回 None。
+    /// 场景：面板宽含边框补偿，最右侧 1px 属于边框而非按钮。
+    #[test]
+    fn hit_command_returns_none_past_last_button() {
+        let mut bar = MetroCommandBarFlyout::text_commands();
+        let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let anchor = Rect::new(200.0, 300.0, 120.0, 20.0);
+        bar.panel_rect = bar.place(anchor, screen);
+        // 越过最后按钮末尾（面板 right - 边框 = 命令条按钮区末尾）
+        let past = Point::new(bar.panel_rect.right() + 5.0, bar.panel_rect.origin.y + 20.0);
+        assert_eq!(bar.hit_command(past), None, "面板外应无命中");
+    }
+
     #[test]
     fn hit_command_maps_buttons() {
         let mut bar = MetroCommandBarFlyout::text_commands();

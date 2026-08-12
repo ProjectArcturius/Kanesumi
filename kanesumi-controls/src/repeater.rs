@@ -144,7 +144,14 @@ impl MetroRepeater {
 
     /// 可见条目范围 `Some((first, last_inclusive))`；无可见项 → None（虚拟化核心）。
     ///
-    /// `offset` = 滚动偏移（主轴；垂直 = +y 下滚）。滚过内容末尾 → None。
+    /// **契约**：
+    /// - `viewport_len` ≥ 0 —— 主轴视口长度（垂直 = 高、水平 = 宽），单位逻辑像素。≤0 视为无可见。
+    /// - `offset` **应由调用方夹紧到 `[0, content_length()]`**，本函数不做防御性夹紧。
+    ///   常规做法：`MetroScrollView` / `MetroList` 各自维护滚动状态并 clamp（参 scroll_view.rs `clamp`
+    ///   / list.rs `scroll_by`）；把裸 Repeater 用作虚拟化引擎时也必须自行 clamp。
+    /// - 传入负 offset 会返回 `Some((0, ..))`（不 panic）；越界 offset 返回 `None`（已滚过末尾）。
+    ///
+    /// 返回的 `(first, last)` 为闭区间可见项索引，调用方按 `for i in first..=last` 只绘可见项即可。
     pub fn visible_range(&self, viewport_len: f32, offset: f32) -> Option<(usize, usize)> {
         if self.item_count == 0 || viewport_len <= 0.0 {
             return None;

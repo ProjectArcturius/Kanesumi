@@ -166,6 +166,13 @@ impl MetroAutoSuggestBox {
     }
 
     /// 输入变化 → 过滤建议 + 展开弹层。
+    ///
+    /// **复杂度**：每次按键 `O(N × avg_len)` —— 遍历 `suggestions` 全量做 `str::contains`。
+    /// 上限 `take(50)` 只截结果条数，**不减少扫描**（依旧遍历全部 suggestions）。
+    ///
+    /// **适用**：N ≤ ~10k 且 avg_len 小时体感无卡。若宿主注入 100k+ 建议源，或用户
+    /// 高频输入 CJK 长串，需在宿主侧提前建索引（trie / bigram / 前缀桶）并把过滤好的
+    /// 子集塞回 `suggestions`，或未来在此改为增量 filter（前缀不变时复用上一帧结果）。
     fn rebuild_shown(&mut self) {
         let q = self.field.text();
         self.shown = if q.is_empty() {
@@ -177,7 +184,7 @@ impl MetroAutoSuggestBox {
             self.suggestions
                 .iter()
                 .filter(|s| s.contains(&q))
-                .take(50) // 上限防爆栈
+                .take(50) // 结果条数上限，不影响扫描量
                 .cloned()
                 .collect()
         };

@@ -105,6 +105,12 @@ impl MetroTreeView {
     }
 
     /// 展平可见行（深度优先，折叠节点不展开子项）。
+    ///
+    /// **性能取舍**：`collect_rows` 每行 `path.clone()`（`Vec<usize>` 深拷贝）——
+    /// 深度 D、可见行 R 时总代价 `O(R · D)` 分配。典型 UWP TreeView 深度 ≤ 20，
+    /// 可见行 ≤ 100 → 微不足道。深度 > 100 的极端场景应考虑 `Rc<[usize]>` 共享
+    /// 或改为「借用 &[usize] + 索引对」以省去克隆。当前 API 直接返回 `Vec<TreeRow>`
+    /// 对调用方最友好（无生命周期束缚），故保留此权衡。
     pub fn visible_rows(&self) -> Vec<TreeRow> {
         let mut rows = Vec::new();
         self.collect_rows(&self.root, &mut Vec::new(), 0, &mut rows);

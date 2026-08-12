@@ -120,8 +120,19 @@ pub trait App {
 
 /// harness `Key` → 控件层 `TextInputKey` 转换（TextBox 等文本控件路由用）。
 ///
-/// `Unknown` / 无法映射的键 → None（宿主可不消费）。Shift 组合（如 Shift+方向 = 选区）
-/// 由宿主在调用处自行处理（此转换只做键身份映射）。
+/// **契约：仅做键身份（identity）映射，不处理修饰键。** 修饰键状态由宿主在调用处
+/// 自行维护并组合，`key_to_text_input` 完全不感知 Shift/Ctrl/Alt/Super。典型模式：
+///
+/// - **Shift + 方向 = 选区扩展**：宿主检测 Shift 按下，把
+///   `TextField::move_left/right/…` 的 `select=true` 传下去。
+/// - **Ctrl + A / Ctrl + C / Ctrl + Z / Ctrl + V**：宿主检测 Ctrl，不走本函数，
+///   直接调 `TextField::select_all` / `copy` / `undo` / `insert`。
+/// - **Ctrl + Home/End = 跳到首/尾字符**：同上，由宿主组合。
+///
+/// 键身份来自 wl_keyboard 经 xkbcommon 语义化后的 keysym，已考虑键盘布局
+/// （Dvorak / QWERTY / IME latin），不受物理 scancode 影响。
+///
+/// `Unknown` / 无法映射的键 → `None`（宿主可不消费）。
 pub fn key_to_text_input(key: Key) -> Option<kanesumi_controls::TextInputKey> {
     use kanesumi_controls::TextInputKey as K;
     match key {
