@@ -194,12 +194,16 @@ impl Renderer {
     /// GLES 合成器下）时回退 GL（Mesa llvmpipe/lavapipe 软件路径），仍失败再试
     /// `force_fallback_adapter`。参 Known Issue #8 —— Ether DRM 合成器（GlesRenderer）
     /// 下 Vulkan 客户端 surface 可能失效，GL 软件回退保证 TopBar/Dock 可渲染。
+    /// 新建渲染器。`transparent` = 表面需透明底（浮层）：alpha_mode 选 PreMultiplied，
+    /// clear 为透明，画布上只画半透明面板/控件（参 Ether 合成器对 alpha 表面的混合）。
+    /// `false` = 不透明表面（Kanesumi 主表面，背景实体）。
     pub fn new(
         conn: &Connection,
         wl_surface: &WlSurface,
         width: f32,
         height: f32,
         scale: f32,
+        transparent: bool,
     ) -> Result<Self, RendererError> {
         Self::new_with_backends(
             conn,
@@ -207,7 +211,12 @@ impl Renderer {
             width,
             height,
             scale,
-            &[wgpu::Backends::VULKAN, wgpu::Backends::GL],
+            transparent,
+            // GL 优先：Ether 合成器（smithay GlesRenderer）自动 bind EGL Wayland display，
+            // wgpu GL 后端经 EGL_WL_bind_wayland_display 可直接连；Vulkan 在 Ether DRM
+            // 下 get_physical_device_surface_capabilities 报 SURFACE_LOST（客户端 Wayland
+            // WSI 与合成器不兼容），且 fallback 会落到 lavapipe 软件 Vulkan 卡死。参 session.log。
+            &[wgpu::Backends::GL, wgpu::Backends::VULKAN],
         )
     }
 
@@ -218,10 +227,12 @@ impl Renderer {
         width: f32,
         height: f32,
         scale: f32,
+        transparent: bool,
         backends: &[wgpu::Backends],
     ) -> Result<Self, RendererError> {
         for (i, backend) in backends.iter().enumerate() {
-            match Self::new_with_backend(conn, wl_surface, width, height, scale, *backend) {
+            match Self::new_with_backend(conn, wl_surface, width, height, scale, transparent, *backend)
+            {
                 Ok(r) => return Ok(r),
                 Err(e) if i + 1 < backends.len() => {
                     log::warn!("wgpu 后端 {:?} 初始化失败（{e:?}），尝试下一候选", backend);
@@ -238,6 +249,7 @@ impl Renderer {
         width: f32,
         height: f32,
         scale: f32,
+        _transparent: bool,
         backend: wgpu::Backends,
     ) -> Result<Self, RendererError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -275,11 +287,13 @@ impl Renderer {
             force_fallback_adapter: false,
         }))
         .or_else(|| {
-            // 兼容 surface 失败（SURFACE_LOST）→ 试 fallback adapter（软件渲染）。
+            // 兼容 surface 失败（SURFACE_LOST）→ 试无 surface 约束的适配器。
+            // ⚠ 不用 force_fallback_adapter=true：会选 lavapipe 软件 Vulkan，request_device
+            //   慢到卡死（settings 在 Ether 里等几分钟无输出的元凶）。
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::LowPower,
                 compatible_surface: None,
-                force_fallback_adapter: true,
+                force_fallback_adapter: false,
             }))
         })
         .ok_or(RendererError::Adapter)?;
@@ -289,26 +303,28 @@ impl Renderer {
                 .map_err(RendererError::Device)?;
 
         let caps = surface.get_capabilities(&adapter);
-        // 用非 sRGB 格式：shader 直通写入的即 sRGB 色值（Metro 纯色）。
-        // 若选 sRGB 表面格式，硬件会再做 linear→sRGB，颜色被提亮（双伽马）。
+        // 用 sRGB 格式：与 eframe（librarian 可见）对齐。⚠ 合成器（GLES）import 非 sRGB
+        // dmabuf（XRGB8888，无 alpha）时 alpha 通道读 0 → 整个 buffer 透明（背景消失、
+        // 文字浮空）；sRGB（ARGB8888，有 alpha）→ 可见。参 session.log + Known Issue #8。
         let format = caps
             .formats
             .iter()
-            .find(|f| !f.is_srgb())
+            .find(|f| f.is_srgb())
             .copied()
             .unwrap_or(caps.formats[0]);
-        // alpha_mode：优先 Opaque（Kanesumi 表面默认不透明，含 TopBar 背景）。
-        // ⚠ 用 PreMultiplied 时合成器（GLES）会把整个表面当透明混合 → 不透明背景
-        //   也被混成透明（TopBar 背景消失、"字样飞出"）。仅显式需要透明时用 PreMultiplied。
+        // alpha_mode：优先 PreMultiplied —— 保留 alpha 通道（背景不透明像素 a=1 完全
+        // 覆盖，浮层透明区 a=0 透出桌面）。⚠ Opaque 时 wgpu 可能把 alpha 通道写 0
+        // （或选无 alpha 格式），合成器 GLES 用 (ONE, ONE_MINUS_SRC_ALPHA) 预乘混合
+        // 会把暗背景"加亮混入"桌面 → 看起来背景透明（Ether Known Issue #8 同源）。
         let alpha_mode = caps
             .alpha_modes
             .iter()
-            .find(|a| **a == wgpu::CompositeAlphaMode::Opaque)
+            .find(|a| **a == wgpu::CompositeAlphaMode::PreMultiplied)
             .copied()
             .unwrap_or_else(|| {
                 caps.alpha_modes
                     .iter()
-                    .find(|a| **a == wgpu::CompositeAlphaMode::PreMultiplied)
+                    .find(|a| **a == wgpu::CompositeAlphaMode::Opaque)
                     .copied()
                     .unwrap_or(wgpu::CompositeAlphaMode::Auto)
             });
@@ -539,6 +555,20 @@ impl Renderer {
         self.config.height = ph.max(1.0) as u32;
         self.surface.configure(&self.device, &self.config);
         self.msaa_view = create_msaa_view(&self.device, &self.config);
+    }
+
+    /// 诊断：当前表面格式 / alpha_mode / buffer 物理尺寸（排查合成器下显示透明）。
+    pub fn diagnostics(&self) -> String {
+        format!(
+            "format={:?} alpha_mode={:?} buffer={}x{} (逻辑 {:.0}x{:.0}, scale {:.0})",
+            self.config.format,
+            self.config.alpha_mode,
+            self.config.width,
+            self.config.height,
+            self.width,
+            self.height,
+            self.scale,
+        )
     }
 
     /// 把一帧 Scene 光栅化到当前表面并提交。

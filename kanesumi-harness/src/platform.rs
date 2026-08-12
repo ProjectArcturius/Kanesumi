@@ -47,8 +47,8 @@ use wayland_protocols::wp::text_input::zv3::client::{
 };
 
 use crate::app::{
-    App, ImeAction, ImeContentHint, ImeContext, InputEvent, Key, Modifiers, PendingImeBatch,
-    PointerButton, compute_ime_action,
+    App, AnchorKind, FloatingLayer, ImeAction, ImeContentHint, ImeContext, InputEvent, Key,
+    LayerKind, Modifiers, PendingImeBatch, PointerButton, compute_ime_action,
 };
 use crate::render::Renderer;
 use crate::role::{EtherRole, SurfaceKind};
@@ -57,14 +57,45 @@ use crate::role::{EtherRole, SurfaceKind};
 ///
 /// 职责：连 Wayland → 按 `EtherRole::surface_kind()` 建表面（xdg-shell / layer-shell）→
 /// wgpu 附着 → frame callback 驱动 `App::update(dt)` / `App::render(size)` → 光栅化 Scene。
+/// 诊断文件双写：/tmp + $HOME（LightDM 多会话 /tmp 可能隔离，home 跨 session 共享）。
+fn write_diag(name: &str, content: &str) {
+    let _ = std::fs::write(format!("/tmp/{name}"), content);
+    if let Ok(home) = std::env::var("HOME") {
+        let _ = std::fs::write(std::path::Path::new(&home).join(name), content);
+    }
+}
+
 pub fn run(app: &mut dyn App) -> ! {
     // `run` 永不返回（`-> !`）：`&mut dyn App` 借用可安全提升为 'static。
     let app: &'static mut dyn App = unsafe { std::mem::transmute(app) };
-    if let Err(e) = run_inner(app) {
-        eprintln!("kanesumi-harness 异常退出: {e}");
-        std::process::exit(1);
+    // 会话内无日志 UI：panic / Err 都写文件供排查（Ether 下客户端启动失败定位）。
+    // 用裸指针穿透闭包生命周期（app 已在 run 入口 unsafe 提升为 'static）。
+    let app_ptr = app as *mut dyn App;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || -> Result<(), String> {
+        let app: &'static mut dyn App = unsafe { &mut *app_ptr };
+        run_inner(app)
+    }));
+    match result {
+        Ok(Ok(())) => std::process::exit(0),
+        Ok(Err(e)) => {
+            eprintln!("kanesumi-harness 异常退出: {e}");
+            write_diag("ether-harness-crash.log", &format!("异常退出: {e}\n"));
+            std::process::exit(1);
+        }
+        Err(panic) => {
+            let msg = panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_else(|| "未知 panic".into());
+            eprintln!("kanesumi-harness panic: {msg}");
+            write_diag(
+                "ether-harness-crash.log",
+                &format!("panic: {msg}\nbacktrace: 见 stderr\n"),
+            );
+            std::process::exit(2);
+        }
     }
-    std::process::exit(0);
 }
 
 /// 主逻辑。错误以 String 上报（调用方 exit）。
@@ -191,6 +222,21 @@ struct Shell {
     conn: Connection,
     /// App 请求但尚未被 configure 确认的动态高度（layer-shell 展开用）。
     pending_height: Option<f32>,
+    /// 浮层表面（独立 layer-shell，透明底控件浮层）。
+    floating: Vec<FloatingSurface>,
+    /// 首帧诊断日志是否已输出。
+    diag_logged: bool,
+}
+
+/// 浮层表面 —— 独立 wl_surface + layer-shell + 透明底渲染器。
+/// 内容由 `App::render_floating(idx)` 提供；输入按指针所在表面路由到 `floating_input`。
+struct FloatingSurface {
+    surface: wl_surface::WlSurface,
+    layer_surface: LayerSurface,
+    renderer: Option<Renderer>,
+    width: f32,
+    height: f32,
+    configured: bool,
 }
 
 impl Shell {
@@ -280,6 +326,16 @@ impl Shell {
             })
             .ok();
 
+        // 浮层表面：独立 layer-shell surface（透明底控件浮层）。非 layer-shell 角色无浮层。
+        let floating = match &layer_shell {
+            Some(s) => app
+                .floating_layers()
+                .into_iter()
+                .map(|spec| create_floating_surface(&compositor_state, s, &qh, spec))
+                .collect::<Result<Vec<_>, String>>()?,
+            None => Vec::new(),
+        };
+
         Ok(Self {
             app,
             engine,
@@ -313,7 +369,104 @@ impl Shell {
             modifiers: Modifiers::NONE,
             conn: conn.clone(),
             pending_height: None,
+            floating,
+            diag_logged: false,
         })
+    }
+
+    /// 浮层表面索引（按 wl_surface 比对；PointerHandler / CompositorHandler 分发用）。
+    fn floating_idx(&self, surface: &wl_surface::WlSurface) -> Option<usize> {
+        self.floating
+            .iter()
+            .position(|f| f.surface == *surface)
+    }
+
+    /// 浮层表面索引（按 layer surface 比对；LayerShellHandler configure 分发用）。
+    fn floating_idx_by_layer(&self, layer: &LayerSurface) -> Option<usize> {
+        self.floating
+            .iter()
+            .position(|f| f.layer_surface == *layer)
+    }
+
+    /// 浮层高度同步（面板展开/收起）：App::floating_height 与当前不符 → set_size 立即
+    /// 生效（高度 0 = 收起，无命中无渲染）。在渲染帧内调用（App update 后）。
+    fn sync_floating_heights(&mut self) {
+        for (i, f) in self.floating.iter_mut().enumerate() {
+            let h = self.app.floating_height(i);
+            if (h - f.height).abs() < 0.5 {
+                continue;
+            }
+            f.layer_surface.set_size(f.width as u32, h as u32);
+            f.height = h;
+            if let Some(r) = f.renderer.as_mut() {
+                r.resize(f.width, h, self.scale as f32);
+            }
+        }
+    }
+
+    /// 渲染浮层帧：ensure renderer（透明底）→ App::render_floating → 光栅化 → present。
+    fn render_floating_frame(&mut self, idx: usize, qh: &QueueHandle<Self>) {
+        let (app, floating) = (&mut self.app, &mut self.floating);
+        let Some(f) = floating.get_mut(idx) else {
+            return;
+        };
+        if !f.configured {
+            return;
+        }
+        if f.renderer.is_none() {
+            match Renderer::new(&self.conn, &f.surface, f.width, f.height, self.scale as f32, true)
+            {
+                Ok(r) => {
+                    f.renderer = Some(r);
+                    log::info!("浮层渲染器已创建（{:.0}x{:.0}，透明底）", f.width, f.height);
+                }
+                Err(e) => {
+                    log::error!("浮层渲染器初始化失败（{e:?}），退出");
+                    write_diag(
+                        "ether-renderer-error.log",
+                        &format!("浮层渲染器初始化失败：{e:?}\n"),
+                    );
+                    self.running = false;
+                    return;
+                }
+            }
+        }
+        let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            app.render_floating(&self.engine, idx, Size::new(f.width, f.height))
+        }));
+        let scene = match scene {
+            Ok(s) => s,
+            Err(_) => {
+                log::error!("App::render_floating panic，跳过本帧");
+                let s = f.surface.clone();
+                s.frame(qh, s.clone());
+                return;
+            }
+        };
+        let s = f.surface.clone();
+        s.frame(qh, s.clone());
+        if let Some(r) = f.renderer.as_mut() {
+            r.render(&self.engine, &scene);
+        }
+    }
+
+    /// 浮层输入事件错误边界。
+    fn emit_floating_input(&mut self, idx: usize, event: InputEvent) {
+        let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.app.floating_input(idx, event);
+        }))
+        .is_ok();
+        if !ok {
+            log::error!("App::floating_input panic，已隔离");
+        }
+    }
+
+    /// 输入路由：`Some(i)` → 浮层 `i`；`None` → 主表面。
+    fn route_input(&mut self, idx: Option<usize>, event: InputEvent) {
+        match idx {
+            Some(i) => self.emit_floating_input(i, event),
+            None => self.emit_input(event),
+        }
     }
 
     /// 同步 App 请求的动态高度：layer-shell 角色下 `preferred_height` 与当前高度
@@ -354,13 +507,18 @@ impl Shell {
         } else {
             &self.surface
         };
-        match Renderer::new(&self.conn, wl_surface, self.width, self.height, self.scale as f32) {
+        match Renderer::new(&self.conn, wl_surface, self.width, self.height, self.scale as f32, false) {
             Ok(r) => {
                 self.renderer = Some(r);
                 log::info!("wgpu 渲染器已创建（{:.0}x{:.0}）", self.width, self.height);
             }
             Err(e) => {
                 log::error!("wgpu 渲染器初始化失败（{e:?}），退出");
+                // 会话内无日志 UI：错误写文件供排查（Ether 下 wgpu 初始化兼容问题）。
+                write_diag(
+                    "ether-renderer-error.log",
+                    &format!("wgpu 渲染器初始化失败：{e:?}\n"),
+                );
                 self.running = false;
             }
         }
@@ -371,6 +529,24 @@ impl Shell {
     fn render_frame(&mut self, qh: &QueueHandle<Self>) {
         if !self.configured {
             return;
+        }
+        // 首帧诊断：确认逻辑尺寸与 scale（排查合成器下 TopBar 显示不全/卡一半）。
+        // 写入 /tmp/ether-kanesumi-diag.txt 便于会话内查看（无日志 UI）。
+        if !self.diag_logged {
+            self.diag_logged = true;
+            let mut lines = format!(
+                "harness 主表面：逻辑 {:.0}x{:.0}，scale {}，buffer 物理 {:.0}x{:.0}\n",
+                self.width,
+                self.height,
+                self.scale,
+                self.width * self.scale as f32,
+                self.height * self.scale as f32,
+            );
+            if let Some(r) = self.renderer.as_ref() {
+                lines.push_str(&format!("renderer: {}\n", r.diagnostics()));
+            }
+            let _ = std::fs::write("/tmp/ether-kanesumi-diag.txt", lines.as_bytes());
+            log::info!("{}", lines.trim_end());
         }
         // 合成器时钟（PLAN §4.2）：frame callback 驱动，dt 限幅防卡顿后跳变。
         // §4.1 不变量 2 —— 动画由合成器 vsync 时钟推进，不依赖逻辑帧。
@@ -392,6 +568,7 @@ impl Shell {
 
         // 动态高度同步：App update 后可能请求展开/收起（TopBar 面板），先同步表面尺寸。
         self.sync_preferred_height();
+        self.sync_floating_heights();
 
         // App 状态可能已变（焦点/文本/光标）→ 幂等 reconcile IME（无变化零成本）。
         self.reconcile_ime();
@@ -561,11 +738,15 @@ impl CompositorHandler for Shell {
         &mut self,
         _conn: &Connection,
         qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
+        surface: &wl_surface::WlSurface,
         _time: u32,
     ) {
-        // vsync 到达 → 渲染下一帧。
-        self.render_frame(qh);
+        // vsync 到达 → 按表面分发渲染：主表面 / 浮层。
+        if *surface == self.surface {
+            self.render_frame(qh);
+        } else if let Some(idx) = self.floating_idx(surface) {
+            self.render_floating_frame(idx, qh);
+        }
     }
 
     fn surface_enter(
@@ -680,11 +861,32 @@ impl LayerShellHandler for Shell {
     fn configure(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _layer: &LayerSurface,
+        qh: &QueueHandle<Self>,
+        layer: &LayerSurface,
         configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
+        // 浮层 surface configure。
+        if let Some(idx) = self.floating_idx_by_layer(layer) {
+            let (w, h) = configure.new_size;
+            let f = &mut self.floating[idx];
+            if w > 0 {
+                f.width = w as f32;
+            }
+            if h > 0 {
+                f.height = h as f32;
+            }
+            if let Some(r) = f.renderer.as_mut() {
+                r.resize(f.width, f.height, self.scale as f32);
+            }
+            if !f.configured {
+                f.configured = true;
+                let s = f.surface.clone();
+                s.frame(qh, s.clone());
+            }
+            return;
+        }
+        // 主 surface configure。
         let (w, h) = configure.new_size;
         if w > 0 {
             self.width = w as f32;
@@ -710,7 +912,7 @@ impl LayerShellHandler for Shell {
         if !self.configured {
             self.configured = true;
             // 首帧：render_frame 内部会请求 frame callback 并渲染。
-            self.render_frame(_qh);
+            self.render_frame(qh);
         }
     }
 }
@@ -786,34 +988,46 @@ impl PointerHandler for Shell {
     ) {
         for event in events {
             let pos = (event.position.0 as f32, event.position.1 as f32);
+            // 按指针所在表面路由：主表面 / 浮层。
+            let target = if event.surface == self.surface {
+                None
+            } else {
+                self.floating_idx(&event.surface)
+            };
             match &event.kind {
                 PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
                     self.pointer_pos = pos;
-                    self.emit_input(InputEvent::PointerMoved { x: pos.0, y: pos.1 });
+                    self.route_input(target, InputEvent::PointerMoved { x: pos.0, y: pos.1 });
                 }
                 PointerEventKind::Leave { .. } => {
                     self.pointer_pos = (-1.0, -1.0);
-                    self.emit_input(InputEvent::PointerLeft);
+                    self.route_input(target, InputEvent::PointerLeft);
                 }
                 PointerEventKind::Press { button, .. } => {
                     self.pointer_pos = pos;
                     let button = map_button(*button);
-                    self.emit_input(InputEvent::PointerPressed {
-                        x: pos.0,
-                        y: pos.1,
-                        button,
-                        modifiers: self.modifiers,
-                    });
+                    self.route_input(
+                        target,
+                        InputEvent::PointerPressed {
+                            x: pos.0,
+                            y: pos.1,
+                            button,
+                            modifiers: self.modifiers,
+                        },
+                    );
                 }
                 PointerEventKind::Release { button, .. } => {
                     self.pointer_pos = pos;
                     let button = map_button(*button);
-                    self.emit_input(InputEvent::PointerReleased {
-                        x: pos.0,
-                        y: pos.1,
-                        button,
-                        modifiers: self.modifiers,
-                    });
+                    self.route_input(
+                        target,
+                        InputEvent::PointerReleased {
+                            x: pos.0,
+                            y: pos.1,
+                            button,
+                            modifiers: self.modifiers,
+                        },
+                    );
                 }
                 PointerEventKind::Axis {
                     horizontal,
@@ -835,16 +1049,52 @@ impl PointerHandler for Shell {
                     };
                     if dx != 0.0 || dy != 0.0 {
                         self.pointer_pos = pos;
-                        self.emit_input(InputEvent::Scroll {
-                            x: dx,
-                            y: dy,
-                            modifiers: self.modifiers,
-                        });
+                        self.route_input(
+                            target,
+                            InputEvent::Scroll {
+                                x: dx,
+                                y: dy,
+                                modifiers: self.modifiers,
+                            },
+                        );
                     }
                 }
             }
         }
     }
+}
+
+/// 创建浮层 layer-shell surface。排他区域 -1（Neutral，不占工作区）。
+fn create_floating_surface(
+    compositor_state: &CompositorState,
+    shell: &LayerShell,
+    qh: &QueueHandle<Shell>,
+    spec: FloatingLayer,
+) -> Result<FloatingSurface, String> {
+    let layer = match spec.layer {
+        LayerKind::Top => Layer::Top,
+        LayerKind::Overlay => Layer::Overlay,
+    };
+    let anchor = match spec.anchor {
+        AnchorKind::TopRight => Anchor::TOP | Anchor::RIGHT,
+        AnchorKind::TopLeft => Anchor::TOP | Anchor::LEFT,
+        AnchorKind::BottomCenter => Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
+    };
+    let surface = compositor_state.create_surface(qh);
+    let ls = shell.create_layer_surface(qh, surface.clone(), layer, Some(spec.app_id), None);
+    ls.set_anchor(anchor);
+    ls.set_exclusive_zone(-1);
+    ls.set_size(spec.width as u32, spec.height as u32);
+    ls.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+    ls.commit();
+    Ok(FloatingSurface {
+        surface,
+        layer_surface: ls,
+        renderer: None,
+        width: spec.width,
+        height: spec.height,
+        configured: false,
+    })
 }
 
 /// Wayland 按钮 → PointerButton。

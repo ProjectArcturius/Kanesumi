@@ -7,6 +7,56 @@ use crate::role::EtherRole;
 /// IME 上下文 / 内容提示 —— 定义于控件库（依赖方向 core ← controls ← harness）。
 pub use kanesumi_controls::{ImeContentHint, ImeContext};
 
+/// 浮层表面（layer-shell）层别。App 层枚举，外壳映射到 wlr-layer-shell。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerKind {
+    /// 顶部层（TopBar 同级；浮层面板位于 TopBar 之下/覆盖窗口）。
+    Top,
+    /// 覆盖层（Launcher 同级；最高，覆盖一切）。
+    Overlay,
+}
+
+/// 浮层表面（layer-shell）锚点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnchorKind {
+    /// 顶部右对齐（TopBar 控制面板）。
+    TopRight,
+    /// 顶部左对齐。
+    TopLeft,
+    /// 底部居中（Dock 上方浮层）。
+    BottomCenter,
+}
+
+/// 浮层表面 —— 与主表面解耦的独立 layer-shell surface。
+///
+/// 透明底（`transparent=true` 渲染器），控件（面板/菜单）浮在上方 —— 参 Ether 合成器
+/// `collect_layer_draws` 按 layer 渲染外部 layer surface。App 关闭面板时渲染空 Scene
+/// （透明不可见），或置 `visible=false` 跳过创建。
+///
+/// 布局：不占排他区域（Neutral），不参与工作区计算 —— 面板是临时浮层，覆盖窗口即可。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FloatingLayer {
+    /// layer-shell namespace（app_id）。合成器可按此辨识。
+    pub app_id: &'static str,
+    pub layer: LayerKind,
+    pub anchor: AnchorKind,
+    /// 逻辑尺寸（宽高）。宽 0 = 随输出自适应（Top 锚定时通常保留）。
+    pub width: f32,
+    pub height: f32,
+}
+
+impl FloatingLayer {
+    pub const fn new(
+        app_id: &'static str,
+        layer: LayerKind,
+        anchor: AnchorKind,
+        width: f32,
+        height: f32,
+    ) -> Self {
+        Self { app_id, layer, anchor, width, height }
+    }
+}
+
 /// 应用配置 —— 身份 + 启动尺寸。app_id 命名空间 `org.ether.*`（ENCS §XI）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AppConfig {
@@ -151,6 +201,27 @@ pub trait App {
     /// 与渲染区域（参 Ether compositor input/pointer.rs `topbar_height`）。
     fn preferred_height(&self) -> Option<f32> {
         None
+    }
+
+    /// 浮层表面列表（与主表面解耦的独立 layer-shell surface）。
+    /// 外壳启动时为每个浮层创建 surface + 渲染器（透明底），每帧按 `render_floating`
+    /// 产出 Scene。面板关闭时 App 应渲染空 Scene（透明不可见）。
+    fn floating_layers(&self) -> Vec<FloatingLayer> {
+        Vec::new()
+    }
+
+    /// 渲染第 `index` 个浮层表面。`size` 为该表面逻辑尺寸（configure 后有效）。
+    fn render_floating(&mut self, _engine: &TextEngine, _index: usize, _size: Size) -> Scene {
+        Scene::default()
+    }
+
+    /// 浮层表面输入事件（指针坐标 = 该表面本地逻辑坐标）。外壳按指针所在表面路由。
+    fn floating_input(&mut self, _index: usize, _event: InputEvent) {}
+
+    /// 浮层请求高度（动态显示/收起）。返回 0 = 收起（表面高度 0，无命中无渲染）。
+    /// 外壳每帧比对后经 `set_size` 立即生效（参主表面 `preferred_height` 同款机制）。
+    fn floating_height(&self, _index: usize) -> f32 {
+        0.0
     }
 
     /// 每帧 tick。`dt` 单位为秒（外壳从 frame callback 计算，参 PLAN.md §4.2 合成器时钟）。
