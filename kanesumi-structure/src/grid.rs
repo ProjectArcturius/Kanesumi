@@ -1,9 +1,193 @@
-// grid.rs —— 网格布局原语（UniformGrid + TileWall）。
+// grid.rs —— 网格布局原语（MetroGrid + UniformGrid + TileWall）。
 //
 // 狗粮化缺口（kanesumi-calculator 键盘区手算 rect 暴露）：补均匀网格布局器。
-// 应用：键盘（0 键跨 2 列）、磁贴墙（TILES_DESIGN §2/§3：1×1 / 2×2 / 4×2）。
+// 应用：键盘（0 键跨 2 列）、磁贴墙（TILES_DESIGN §2/§3：1×1 / 2×2 / 4×2）、
+// Settings 面板（MetroGrid，UWP Grid 复刻，参 CONTROL_SPEC §33）。
 
 use kanesumi_core::{Rect, Size};
+
+/// 网格轨道长度 —— UWP `RowDefinition`/`ColumnDefinition` 的三种尺寸。
+/// - `Fixed(px)`：固定像素（如按钮高 32）；
+/// - `Auto`：内容自适应，宿主量测后经 [`MetroGrid::resolve`] 传入；
+/// - `Star(w)`：比例分配剩余空间（`*` 默认 1，`2*` = 权重 2）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GridLength {
+    Fixed(f32),
+    Auto,
+    Star(f32),
+}
+
+impl GridLength {
+    /// `*` 便捷构造（权重 1）。
+    pub const fn star() -> Self {
+        Self::Star(1.0)
+    }
+
+    /// `Auto` 便捷构造。
+    pub const fn auto() -> Self {
+        Self::Auto
+    }
+}
+
+/// 子单元声明 —— 所在行列 + 跨度（UWP `Grid.Row/Column/RowSpan/ColumnSpan`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GridChild {
+    pub row: usize,
+    pub col: usize,
+    pub row_span: usize,
+    pub col_span: usize,
+}
+
+impl GridChild {
+    /// 单格单元（row, col）。
+    pub const fn at(row: usize, col: usize) -> Self {
+        Self {
+            row,
+            col,
+            row_span: 1,
+            col_span: 1,
+        }
+    }
+
+    /// 设跨度（行/列）。
+    pub const fn with_span(mut self, row_span: usize, col_span: usize) -> Self {
+        self.row_span = row_span;
+        self.col_span = col_span;
+        self
+    }
+}
+
+/// 二维网格布局 —— UWP `Grid` 复刻。行/列定义 + 子单元（含跨度）。
+///
+/// **纯布局**：不持控件状态、不自绘（同 UniformGrid），`resolve` 只算轨道尺寸，
+/// `child_rect` 由宿主据此放置内容。UWP Grid 无 gap（间距靠子元素 Margin），
+/// Kanesumi 以 `gap`（row, col）扩展可选统一间距。
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetroGrid {
+    /// 行定义（数量 = 行数）。
+    pub rows: Vec<GridLength>,
+    /// 列定义（数量 = 列数）。
+    pub cols: Vec<GridLength>,
+    /// 统一间距 (row_gap, col_gap)。UWP 无，Kanesumi 可选扩展。
+    pub gap: (f32, f32),
+}
+
+impl MetroGrid {
+    pub fn new(rows: Vec<GridLength>, cols: Vec<GridLength>) -> Self {
+        assert!(!rows.is_empty(), "Grid 至少 1 行");
+        assert!(!cols.is_empty(), "Grid 至少 1 列");
+        Self {
+            rows,
+            cols,
+            gap: (0.0, 0.0),
+        }
+    }
+
+    /// 设统一间距。
+    pub fn with_gap(mut self, row_gap: f32, col_gap: f32) -> Self {
+        self.gap = (row_gap, col_gap);
+        self
+    }
+
+    /// 解析轨道尺寸。
+    ///
+    /// - Fixed 轨道占自身像素；Auto 轨道取 `auto_rows`/`auto_cols` 对应宿主量测值；
+    /// - 剩余空间（rect − 固定 − auto − 间距）按 Star 权重比例分配；
+    /// - 无 Star 轨道时剩余空间留空（UWP 行为）。
+    ///
+    /// 返回 `(row_heights, col_widths)`，长度与定义数一致。
+    pub fn resolve(
+        &self,
+        rect: Rect,
+        auto_rows: &[f32],
+        auto_cols: &[f32],
+    ) -> (Vec<f32>, Vec<f32>) {
+        let mut row_heights = vec![0.0f32; self.rows.len()];
+        let mut col_widths = vec![0.0f32; self.cols.len()];
+
+        for (i, len) in self.rows.iter().enumerate() {
+            match len {
+                GridLength::Fixed(h) => row_heights[i] = *h,
+                GridLength::Auto => row_heights[i] = auto_rows.get(i).copied().unwrap_or(0.0),
+                GridLength::Star(_) => {}
+            }
+        }
+        for (i, len) in self.cols.iter().enumerate() {
+            match len {
+                GridLength::Fixed(w) => col_widths[i] = *w,
+                GridLength::Auto => col_widths[i] = auto_cols.get(i).copied().unwrap_or(0.0),
+                GridLength::Star(_) => {}
+            }
+        }
+
+        let gap_w = self.gap.0 * self.rows.len().saturating_sub(1) as f32;
+        let gap_h = self.gap.1 * self.cols.len().saturating_sub(1) as f32;
+        let used_w: f32 = col_widths.iter().sum();
+        let used_h: f32 = row_heights.iter().sum();
+        let star_w_total: f32 = self
+            .cols
+            .iter()
+            .filter_map(|c| match c {
+                GridLength::Star(s) => Some(*s),
+                _ => None,
+            })
+            .sum();
+        let star_h_total: f32 = self
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                GridLength::Star(s) => Some(*s),
+                _ => None,
+            })
+            .sum();
+
+        let avail_w = (rect.size.width - used_w - gap_h).max(0.0);
+        let avail_h = (rect.size.height - used_h - gap_w).max(0.0);
+        for (i, len) in self.cols.iter().enumerate() {
+            if let GridLength::Star(s) = len {
+                col_widths[i] = if star_w_total > 0.0 {
+                    avail_w * s / star_w_total
+                } else {
+                    0.0
+                };
+            }
+        }
+        for (i, len) in self.rows.iter().enumerate() {
+            if let GridLength::Star(s) = len {
+                row_heights[i] = if star_h_total > 0.0 {
+                    avail_h * s / star_h_total
+                } else {
+                    0.0
+                };
+            }
+        }
+
+        (row_heights, col_widths)
+    }
+
+    /// 子单元矩形。跨度合并多轨道 + 其间间距。
+    ///
+    /// 入参 `heights`/`widths` 来自 [`Self::resolve`]。
+    pub fn child_rect(
+        &self,
+        rect: Rect,
+        heights: &[f32],
+        widths: &[f32],
+        child: GridChild,
+    ) -> Rect {
+        let x0 = rect.origin.x
+            + widths[..child.col].iter().sum::<f32>()
+            + self.gap.1 * child.col as f32;
+        let y0 = rect.origin.y
+            + heights[..child.row].iter().sum::<f32>()
+            + self.gap.0 * child.row as f32;
+        let w = widths[child.col..child.col + child.col_span].iter().sum::<f32>()
+            + self.gap.1 * (child.col_span - 1) as f32;
+        let h = heights[child.row..child.row + child.row_span].iter().sum::<f32>()
+            + self.gap.0 * (child.row_span - 1) as f32;
+        Rect::new(x0, y0, w, h)
+    }
+}
 
 /// 均匀网格 —— 等尺寸方形单元、行优先排布、支持跨单元（span）。
 ///
@@ -167,6 +351,69 @@ impl TileWall {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── MetroGrid ───────────────────────────────────────────────
+
+    #[test]
+    fn grid_resolves_fixed_and_star() {
+        // 列：80px 固定 + `*` + 2`*`；行：`*`。宽 400 → star 分配 (400−80)=320 → 106.67 / 213.33
+        let g = MetroGrid::new(
+            vec![GridLength::star()],
+            vec![GridLength::Fixed(80.0), GridLength::star(), GridLength::Star(2.0)],
+        );
+        let (rh, cw) = g.resolve(Rect::new(0.0, 0.0, 400.0, 100.0), &[], &[]);
+        assert_eq!(cw[0], 80.0);
+        assert!((cw[1] - 106.6667).abs() < 0.01);
+        assert!((cw[2] - 213.3333).abs() < 0.01);
+        assert_eq!(rh[0], 100.0);
+    }
+
+    #[test]
+    fn grid_auto_uses_measured_sizes() {
+        let g = MetroGrid::new(
+            vec![GridLength::auto(), GridLength::Fixed(40.0)],
+            vec![GridLength::star()],
+        );
+        let (rh, _) = g.resolve(Rect::new(0.0, 0.0, 200.0, 100.0), &[24.0], &[]);
+        assert_eq!(rh[0], 24.0, "Auto 行取宿主量测值");
+        assert_eq!(rh[1], 40.0);
+    }
+
+    #[test]
+    fn grid_child_rect_honors_span() {
+        let g = MetroGrid::new(
+            vec![GridLength::Fixed(20.0), GridLength::Fixed(30.0)],
+            vec![GridLength::Fixed(50.0), GridLength::Fixed(50.0)],
+        );
+        let (rh, cw) = g.resolve(Rect::new(0.0, 0.0, 100.0, 50.0), &[], &[]);
+        let r = g.child_rect(
+            Rect::new(0.0, 0.0, 100.0, 50.0),
+            &rh,
+            &cw,
+            GridChild::at(0, 1).with_span(2, 1),
+        );
+        assert_eq!(r, Rect::new(50.0, 0.0, 50.0, 50.0), "跨 2 行占满高度");
+    }
+
+    #[test]
+    fn grid_with_gap_pads_cells() {
+        let g = MetroGrid::new(
+            vec![GridLength::Fixed(20.0), GridLength::Fixed(20.0)],
+            vec![GridLength::Fixed(20.0), GridLength::Fixed(20.0)],
+        )
+        .with_gap(4.0, 4.0);
+        let (rh, cw) = g.resolve(Rect::new(0.0, 0.0, 100.0, 100.0), &[], &[]);
+        let r = g.child_rect(
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            &rh,
+            &cw,
+            GridChild::at(1, 1),
+        );
+        assert_eq!(r.origin.x, 24.0, "x = 列宽 20 + col_gap 4");
+        assert_eq!(r.origin.y, 24.0, "y = 行高 20 + row_gap 4");
+    }
+
+    // ── UniformGrid ─────────────────────────────────────────────
 
     fn grid() -> UniformGrid {
         UniformGrid::new(Rect::new(0.0, 0.0, 304.0, 600.0), 4, 8.0)

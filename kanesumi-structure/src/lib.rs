@@ -9,7 +9,7 @@ pub mod layout;
 pub mod navigation;
 pub mod ui;
 
-pub use grid::{TileWall, UniformGrid};
+pub use grid::{GridChild, GridLength, MetroGrid, TileWall, UniformGrid};
 pub use layout::{APP_BAR_HEIGHT, ShellLayout};
 pub use navigation::{DURATION_PAGE_TRANSITION, Navigation};
 pub use ui::{LayoutDirection, Ui};
