@@ -5,6 +5,7 @@
 // 参 Ether-main PLAN.md §4.2（三层握手）/ §4.3（角色模型，harness 归属决策 2026-08-10）。
 
 pub mod app;
+pub mod appmenu;
 pub mod role;
 
 #[cfg(target_os = "linux")]
@@ -17,6 +18,9 @@ pub use app::{
     App, AppConfig, ImeAction, ImeContentHint, ImeContext, InputEvent, Key, Modifiers,
     PendingImeBatch, PointerButton, compute_ime_action,
 };
+pub use appmenu::{AppMenuHandle, MenuItem, MenuTree, MenuUpdate, ToggleType};
+#[cfg(target_os = "linux")]
+pub use appmenu::install;
 pub use role::{EtherRole, RoleParseError, SurfaceKind};
 
 // Scene 属 kanesumi-canvas（渲染命令层）。此处重导出供应用使用。

@@ -2,6 +2,7 @@ use kanesumi_canvas::Scene;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_core::{MetroTheme, Size};
 
+use crate::appmenu::{AppMenuHandle, MenuTree};
 use crate::role::EtherRole;
 
 /// IME 上下文 / 内容提示 —— 定义于控件库（依赖方向 core ← controls ← harness）。
@@ -235,6 +236,21 @@ pub trait App {
     fn ime_focus(&self) -> Option<ImeContext> {
         None
     }
+
+    /// 全局应用菜单声明。返回 `Some(tree)` = 启用 AppMenu —— 外壳（Linux）自动完成
+    /// com.canonical.dbusmenu 服务 + org_kde_kwin_appmenu Wayland 绑定 +
+    /// com.canonical.AppMenu.Registrar 兜底注册（参 appmenu 模块）；`None` = 无全局菜单。
+    /// 点击事件经 `on_menu_command(id)` 路由回应用。
+    fn app_menu(&self) -> Option<MenuTree> {
+        None
+    }
+
+    /// 全局菜单点击回调。`id` = MenuItem::id。外壳在主线程每帧排干命令通道后调用。
+    fn on_menu_command(&mut self, _id: i32) {}
+
+    /// 全局菜单句柄注入（外壳安装 AppMenu 后调用一次）。App 保存句柄用于运行时
+    /// 更新菜单勾选 / 结构（`AppMenuHandle::set_check` / `update_tree`，主题切换等）。
+    fn set_appmenu_handle(&mut self, _handle: AppMenuHandle) {}
 
     /// 渲染一帧：把当前状态解析为绘制命令。
     /// `engine` 为外壳注入的 TextEngine（排版唯一真源），App 用它量测文本、外壳用它光栅化。

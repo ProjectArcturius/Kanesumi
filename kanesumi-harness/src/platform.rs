@@ -50,6 +50,7 @@ use crate::app::{
     App, AnchorKind, FloatingLayer, ImeAction, ImeContentHint, ImeContext, InputEvent, Key,
     LayerKind, Modifiers, PendingImeBatch, PointerButton, compute_ime_action,
 };
+use crate::appmenu::AppMenuHandle;
 use crate::render::Renderer;
 use crate::role::{EtherRole, SurfaceKind};
 
@@ -224,6 +225,10 @@ struct Shell {
     pending_height: Option<f32>,
     /// 浮层表面（独立 layer-shell，透明底控件浮层）。
     floating: Vec<FloatingSurface>,
+    /// 全局应用菜单句柄（运行时更新：勾选 / 结构）。None = 未启用。
+    appmenu: Option<AppMenuHandle>,
+    /// 全局菜单命令接收端（服务线程推送点击 id）。
+    appmenu_rx: Option<std::sync::mpsc::Receiver<i32>>,
     /// 首帧诊断日志是否已输出。
     diag_logged: bool,
 }
@@ -331,9 +336,21 @@ impl Shell {
             Some(s) => app
                 .floating_layers()
                 .into_iter()
-                .map(|spec| create_floating_surface(&compositor_state, s, &qh, spec))
+                .map(|spec| create_floating_surface(&compositor_state, s, qh, spec))
                 .collect::<Result<Vec<_>, String>>()?,
             None => Vec::new(),
+        };
+
+        // 全局应用菜单：App 声明了菜单树 → 安装（D-Bus 服务 + Wayland 绑定 + Registrar）。
+        // 服务线程在后台跑，命令经通道回主线程每帧排干（App::on_menu_command）。
+        let (appmenu, appmenu_rx) = match app.app_menu() {
+            Some(tree) => {
+                let (handle, rx) = crate::appmenu::install(conn, &surface, tree, cfg.app_id);
+                // 注入句柄：App 据此运行时更新勾选 / 结构（set_check / update_tree）。
+                app.set_appmenu_handle(handle.clone());
+                (Some(handle), Some(rx))
+            }
+            None => (None, None),
         };
 
         Ok(Self {
@@ -370,6 +387,8 @@ impl Shell {
             conn: conn.clone(),
             pending_height: None,
             floating,
+            appmenu,
+            appmenu_rx,
             diag_logged: false,
         })
     }
@@ -494,6 +513,25 @@ impl Shell {
         Size::new(self.width, self.height)
     }
 
+    /// 排干全局菜单命令 → App::on_menu_command(id)。错误边界隔离（panic 不杀进程）。
+    /// 服务线程在后台把点击 id 塞进通道，这里每帧非阻塞消费。
+    fn drain_menu_commands(&mut self) {
+        let cmds: Vec<i32> = self
+            .appmenu_rx
+            .as_ref()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default();
+        for id in cmds {
+            let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.app.on_menu_command(id);
+            }))
+            .is_ok();
+            if !ok {
+                log::error!("App::on_menu_command panic，已隔离");
+            }
+        }
+    }
+
     /// 确保渲染器已创建（首个 configure 后调用；surface 已配置、尺寸已知）。
     /// 失败记日志并置 running=false（App 退出）。
     fn ensure_renderer(&mut self) {
@@ -553,6 +591,10 @@ impl Shell {
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f64().min(0.05);
         self.last_frame = now;
+
+        // 全局菜单命令（App::on_menu_command）：在 App::update 之前派发，
+        // 保证菜单触发的状态变更当帧生效。
+        self.drain_menu_commands();
 
         // 错误边界：App update/render panic 不杀进程，降级为跳过本帧（§4.1 鲁棒性）。
         // &mut dyn App 非 UnwindSafe，用 AssertUnwindSafe 显式声明（App 是单线程消费）。

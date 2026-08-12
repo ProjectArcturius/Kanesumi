@@ -16,7 +16,7 @@ use kanesumi_controls::{
     MetroTile, TextInputKey, TileSize,
 };
 use kanesumi_core::{Color, MetroTheme, Point, Rect, Size, TextStyle};
-use kanesumi_harness::{App, AppConfig, EtherRole, InputEvent, PointerButton};
+use kanesumi_harness::{App, AppConfig, AppMenuHandle, EtherRole, InputEvent, PointerButton};
 use kanesumi_structure::TileWall;
 
 use crate::pages::{GalleryPage, page_tree, palette};
@@ -44,6 +44,18 @@ const TILE_CELL: f32 = 64.0;
 const TILE_GAP: f32 = 8.0;
 /// 磁贴墙每页列数。
 const TILE_COLS: usize = 8;
+
+// ── 全局应用菜单（AppMenu 演示）菜单项 id ─────────────────────────────────
+// 段号 × 100 + 项序，稳定且全局唯一（命令路由 / 勾选定位）。参 harness appmenu。
+
+const MENU_FILE: i32 = 100;
+const MENU_FILE_ABOUT: i32 = 101;
+const MENU_FILE_SEP: i32 = 102;
+const MENU_FILE_QUIT: i32 = 103;
+const MENU_VIEW: i32 = 200;
+const MENU_VIEW_DEMO: i32 = 201;
+const MENU_HELP: i32 = 300;
+const MENU_HELP_DOCS: i32 = 301;
 
 /// 磁贴墙页数上限。
 const TILE_MAX_PAGE: usize = 1;
@@ -270,6 +282,12 @@ pub struct GalleryApp {    theme: MetroTheme,
     decl_rect: Rect,
     /// retained 渲染器（增量：只重建变化元素命令，PLAN §4.1 不变量 1）。
     decl_retained: kanesumi_controls::RetainedScene,
+
+    // ── 全局应用菜单（AppMenu 演示，参 harness appmenu 模块） ──
+    /// 运行时菜单句柄（外壳安装后注入；用于更新勾选状态）。
+    appmenu: Option<AppMenuHandle>,
+    /// 演示勾选状态（View → 显示全局菜单演示）。初始开启。
+    appmenu_checked: bool,
 }
 
 impl GalleryApp {
@@ -403,6 +421,8 @@ impl GalleryApp {
             decl_hits: Vec::new(),
             decl_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             decl_retained: kanesumi_controls::RetainedScene::new(),
+            appmenu: None,
+            appmenu_checked: true,
         }
         .apply_visual_audit_state()
     }
@@ -1744,6 +1764,52 @@ impl App for GalleryApp {
                 Some(self.password.ime_context(&self.theme, &self.engine, self.password_rect()))
             }
             _ => None,
+        }
+    }
+
+    // ── 全局应用菜单演示（AppMenu，参 harness appmenu 模块）────────────────
+
+    fn app_menu(&self) -> Option<kanesumi_harness::MenuTree> {
+        use kanesumi_harness::{MenuItem, MenuTree};
+        // 声明式菜单树：File / View / Help。外壳自动完成 D-Bus 服务 + Wayland 绑定。
+        let mut tree = MenuTree::new();
+        tree.push(
+            MenuItem::submenu(MENU_FILE, "文件")
+                .push(MenuItem::item(MENU_FILE_ABOUT, "关于 Kanesumi Gallery"))
+                .push(MenuItem::separator(MENU_FILE_SEP))
+                .push(MenuItem::item(MENU_FILE_QUIT, "退出")),
+        );
+        tree.push(
+            MenuItem::submenu(MENU_VIEW, "视图").push(MenuItem::check(
+                MENU_VIEW_DEMO,
+                "显示全局菜单演示",
+                self.appmenu_checked,
+            )),
+        );
+        tree.push(
+            MenuItem::submenu(MENU_HELP, "帮助").push(MenuItem::item(MENU_HELP_DOCS, "使用文档")),
+        );
+        Some(tree)
+    }
+
+    fn set_appmenu_handle(&mut self, handle: AppMenuHandle) {
+        self.appmenu = Some(handle);
+    }
+
+    fn on_menu_command(&mut self, id: i32) {
+        match id {
+            MENU_FILE_ABOUT => log::info!("appmenu: 关于 Kanesumi Gallery"),
+            MENU_FILE_QUIT => log::info!("appmenu: 退出（演示，不真正退出）"),
+            MENU_VIEW_DEMO => {
+                // 切换演示勾选，并同步到菜单（set_check 发 dbusmenu 信号刷新勾选）。
+                self.appmenu_checked = !self.appmenu_checked;
+                log::info!("appmenu: 显示全局菜单演示 -> {}", self.appmenu_checked);
+                if let Some(h) = &self.appmenu {
+                    h.set_check(MENU_VIEW_DEMO, self.appmenu_checked);
+                }
+            }
+            MENU_HELP_DOCS => log::info!("appmenu: 使用文档（演示）"),
+            _ => log::warn!("appmenu: 未知命令 id={id}"),
         }
     }
 

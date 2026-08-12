@@ -1,0 +1,18 @@
+[package]
+name = "kanesumi-appmenu"
+description = "Kanesumi（矩隅）· 全局应用菜单：com.canonical.dbusmenu 服务 + org_kde_kwin_appmenu 绑定 + Registrar 兜底"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["Takahashi Rinta <mc1586182829@outlook.com>"]
+
+[dependencies]
+# 跨平台仅声明式菜单树（tree.rs）；D-Bus / Wayland 服务均为 Linux 专属。
+
+[target.'cfg(target_os = "linux")'.dependencies]
+log = "0.4"
+wayland-client  = { version = "0.31", features = ["system"] }
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-scanner = "0.31"
+zbus = "5"
+async-io = "2"

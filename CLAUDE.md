@@ -25,7 +25,7 @@ KANESUMI_TEST_FONT=/path/to/font.ttf cargo run -p kanesumi-gallery  # 指定字�
 
 ## 架构
 
-本仓是 **Ether 扇区·主仓（mainline）**，Rust workspace，7 个 crate：
+本仓是 **Ether 扇区·主仓（mainline）**，Rust workspace，8 个 crate：
 
 ```
 kanesumi-core       (无依赖 — 设计 tokens / 主题 / MetroText / 交互指示 / 几何原语)
@@ -33,8 +33,11 @@ kanesumi-core       (无依赖 — 设计 tokens / 主题 / MetroText / 交互�
     ├── kanesumi-canvas    (dep: kanesumi-core — 2D 图形：Scene 渲染命令 + TextEngine 排版)
     ├── kanesumi-structure (dep: kanesumi-core + canvas — 导航状态机 + 壳布局)
     ├── kanesumi-controls  (dep: core+canvas+anim — Kanesumi 控件库)
-    ├── kanesumi-harness   (dep: core+canvas+anim+structure+controls — 应用壳：App trait / 角色解析 /
-    │                        Linux Wayland+wgpu 外壳：platform.rs + render.rs)
+    ├── kanesumi-harness   (dep: core+canvas+anim+structure+controls+appmenu — 应用壳：App trait /
+    │                       角色解析 / Linux Wayland+wgpu 外壳：platform.rs + render.rs)
+    ├── kanesumi-appmenu   (Linux-gated dep: wayland-client/wayland-backend/wayland-scanner/zbus5 —
+    │                       全局应用菜单：dbusmenu 服务 + org_kde_kwin_appmenu 绑定 + Registrar；
+    │                       独立可用，eframe 应用（ether-librarian）直接依赖)
     └── kanesumi-gallery   (dep: core+canvas+anim+structure+controls+harness — Gallery 应用，daily driver)
 ```
 
@@ -101,6 +104,42 @@ panic 不杀进程（记日志 + 跳过本帧）。合成器时钟 dt 限幅 50m
   - `handle_input(InputEvent)` —— 指针事件（Moved/Pressed/Released/Left），控件命中测试由 App 负责；
   - `font_path()` —— 默认 `None` → 外壳按 KANESUMI_TEST_FONT → 系统字体查找。
 - **App 接口测试**：`kanesumi-gallery/src/app.rs` 9 个交互测试覆盖 switch/tab/list/dialog/dropdown/selector 状态切换。
+
+### 全局应用菜单（`kanesumi-appmenu` + harness 重导出，2026-08-12）
+
+macOS 风格全局菜单接入（Ether TopBar / Plasma Global Menu）。App 声明式菜单树，一条调用自动完成
+D-Bus 服务 + Wayland 绑定 + Registrar 注册 + 点击路由。参考实现：PezMax-One `src/app_menu`。
+
+**独立 crate `kanesumi-appmenu`**（2026-08-12 自 harness 拆出，轻依赖：wayland-client/
+wayland-backend/wayland-scanner/zbus5/async-io 全 Linux-gated），eframe 应用（不经 harness）
+可直接依赖它（如 ether-librarian）：
+
+- **`tree.rs`（跨平台）**：`MenuTree` / `MenuItem` / `ToggleType` 声明式树
+  （item/separator/submenu/check/radio + `push` 链式 + `find`/`find_mut`/`walk`）。
+- **`lib.rs`（跨平台）**：`AppMenuHandle`（`set_check` / `update_tree` 运行时更新，
+  纯 mpsc）；`MENUBAR_OBJECT_PATH`（`/MenuBar`）。
+- **`install.rs`（Linux）**：
+  - `install(conn, surface, tree, app_id)` —— harness 应用（有自有 Wayland 连接）；
+  - `install_from_foreign_handles(display, surface, tree, app_id)` —— **eframe 应用**，
+    从 raw-window-handle 原始指针复用 winit 的 wl_display（参 PezMax-One `WaylandHandles`）。
+  服务线程依次（1）zbus 阻塞连接挂 `/MenuBar` com.canonical.dbusmenu；（2）`request_name(app_id)`
+  得服务名（占用则退回 unique_name）；（3）`com.canonical.AppMenu.Registrar`
+  RegisterWindow(pid, `/MenuBar`) 兜底（合成器按 PID 匹配）；（4）`org_kde_kwin_appmenu`
+  set_address（合成器原生路径）；（5）消费 `MenuUpdate` 更新勾选/结构 + 发 dbusmenu 信号。
+- **`dbusmenu.rs`（Linux）**：zbus `#[interface]` 实现（GetLayout/Event/AboutToShow/
+  信号）。序列化易错区已处理：`av` 子项与 `a{sv}` value 必须 variant 装箱、`_`→`__` 转义、
+  radio/checkmark toggle-state。返回签名是协议强制的，`#[allow(clippy::type_complexity)]`。
+- **`wayland.rs`（Linux）**：`wayland-scanner` 宏生成 KDE 私有协议客户端代码；
+  在连接上开独立 event_queue 找 `org_kde_kwin_appmenu_manager` 全局 → create(surface) →
+  set_address → flush → Box::leak 长驻（drop 会走 release() 清除关联）。
+
+**harness 集成**（`kanesumi-harness` 仅 `pub use kanesumi_appmenu::*` 重导出）：
+- App trait 钩子：`app_menu() -> Option<MenuTree>` / `set_appmenu_handle(AppMenuHandle)` /
+  `on_menu_command(id)`；`platform.rs` 自动安装 + 每帧排干命令。
+- Gallery 演示：File/View/Help 菜单 + View 勾选项运行时切换（`set_check` 发信号刷新）。
+
+**D-Bus 依赖收敛**：本 crate 用 zbus 5（默认 features = async-io + blocking-api）+
+`async-io`（block_on 驱动信号）。Ether 合成器 / settings 仍用 zbus 3，二者可共存。
 
 ### 与 Ether monorepo 的关系
 

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="appmenu">
+  <copyright><![CDATA[
+    SPDX-FileCopyrightText: 2017 David Edmundson <davidedmundson@kde.org>
+    SPDX-License-Identifier: LGPL-2.1-only OR LGPL-3.0-only OR LicenseRef-KDE-Accepted-LGPL
+
+    This file mirrors the KWin private protocol used by Plasma's Global Menu
+    applet. Source of truth:
+    https://invent.kde.org/plasma/kwin/-/blob/master/src/wayland/protocols/appmenu.xml
+  ]]></copyright>
+
+  <interface name="org_kde_kwin_appmenu_manager" version="1">
+    <description summary="Application Menu manager">
+      This interface allows a client to link a window (or wl_surface) to an
+      address on the D-Bus containing a DBusMenu-compatible interface.
+    </description>
+
+    <request name="create">
+      <description summary="Create AppMenu handle for a surface">
+        Create a new appmenu handle for a surface. The address is provided later
+        via set_address.
+      </description>
+      <arg name="id" type="new_id" interface="org_kde_kwin_appmenu"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+  </interface>
+
+  <interface name="org_kde_kwin_appmenu" version="1">
+    <description summary="Application menu">
+      The DBus service name and object path where the appmenu interface is
+      present. The path can be nested to any depth.
+    </description>
+
+    <request name="set_address">
+      <description summary="Set DBus address for the menu">
+        Set address of the D-Bus service exposing com.canonical.dbusmenu.
+      </description>
+      <arg name="service_name" type="string" summary="DBus service name (e.g. :1.123)"/>
+      <arg name="object_path" type="string" summary="DBus object path (e.g. /MenuBar)"/>
+    </request>
+
+    <request name="release" type="destructor">
+      <description summary="Release the memory for this object"/>
+    </request>
+  </interface>
+</protocol>

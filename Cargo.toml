@@ -6,6 +6,7 @@ members = [
     "kanesumi-structure",
     "kanesumi-controls",
     "kanesumi-harness",
+    "kanesumi-appmenu",
     "kanesumi-gallery",
     "kanesumi-calculator",
 ]

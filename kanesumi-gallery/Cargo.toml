@@ -15,3 +15,4 @@ kanesumi-controls = { path = "../kanesumi-controls" }
 
 # daily driver 接 harness 外壳（Linux 上 platform::run）。Phase 3 续（HANDOVER §1）。
 kanesumi-harness = { path = "../kanesumi-harness" }
+log = "0.4"
