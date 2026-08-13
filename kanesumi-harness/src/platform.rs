@@ -663,11 +663,17 @@ impl Shell {
         let Some(h) = self.app.preferred_height() else {
             return;
         };
+        // ⚠ Bottom-only 锚定主表面高度 0 非法（需上下同时锚定）→ 至少 1（Dock 收起用）。
+        let h = h.max(1.0);
         if (h - self.height).abs() < 0.5 {
             return;
         }
         if let Some(ls) = self.layer_surface.as_ref() {
             ls.set_size(0, h as u32);
+            // 排他区域随高度同步（Dock 收起 → 工作区让出全高）。
+            if self.role.surface_kind() == SurfaceKind::LayerBottom {
+                ls.set_exclusive_zone(h.round() as i32);
+            }
         }
         self.height = h;
         self.pending_height = Some(h);
