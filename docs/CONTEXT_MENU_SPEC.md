@@ -166,8 +166,10 @@ pub fn place_context_menu(anchor: Point, panel_size: Size, screen: Rect) -> Rect
 
 ```rust
 /// 右键菜单内容。`(x, y)` 为表面本地逻辑坐标（右键按下点）。
-/// 返回 `Some(items)` = 在指针位置弹出右键菜单；`None` = 无右键菜单（默认）。
-fn context_menu(&self, _x: f32, _y: f32) -> Option<Vec<MenuItem>> {
+/// 返回 `Some(items)` = harness 接管右键路由，在指针位置弹出右键菜单；
+/// `None` = 无右键菜单，事件照常投递（默认）。
+/// `&mut self`：App 可在返回菜单前更新目标状态（如文件浏览器右键先选中命中项）。
+fn context_menu(&mut self, _x: f32, _y: f32) -> Option<Vec<MenuItem>> {
     None
 }
 
@@ -178,24 +180,33 @@ fn on_context_command(&mut self, _path: &[usize]) {}
 - 默认 `None` → App 完全不感知右键（现有 App 零改动）。
 - `Some` → harness 接管右键路由，不把 `PointerPressed{Right}` 再投给 `handle_input`。
 
-## 2. Harness 路由（`platform.rs` / `app.rs`）
+## 2. Harness 路由（`platform.rs` / `context_menu.rs`）
+
+`Shell` 持一个 `ContextMenuState`，主表面输入先经 `route_main_event` 路由：
 
 ```
-PointerPressed { button: Right, x, y }
-  → App::context_menu(x, y)
-      ├─ None   → 事件照常投 handle_input（App 自处理右键）
-      └─ Some   → 打开右键菜单浮层（LayerOverlay）
-                    ├─ 定位：place_context_menu(指针点, 面板尺寸, 表面)
-                    ├─ 渲染：MetroContextMenu → render_floating
-                    ├─ 输入：floating_input → 菜单状态机（hover/click/Esc）
-                    └─ 点选 → on_context_command(path) → 关闭浮层
+主表面事件
+  ├─ 菜单开着 → 喂状态机（悬停/点选/LightDismiss/Esc/再右键关闭）
+  │              点选 → on_context_command(path) → 关闭
+  └─ 菜单关着 + PointerPressed{Right}
+        → App::context_menu(x, y)
+            ├─ None   → 事件照常投 handle_input（App 自处理右键）
+            └─ Some   → place_context_menu(指针点, 面板尺寸, 主表面)
+                          + 打开菜单并消费右键
 ```
+
+**渲染载体 = 主表面内**（`App::render` 产出 Scene 后由 harness 叠加菜单面板，
+坐标即表面本地坐标，无浮层坐标转换）。xdg-shell 窗口（Gallery / Librarian）空间足够，
+直接可用；**layer-shell 高度不足的表面（如 Dock 64px）** 需 App 侧自持
+`ContextMenuState` + 独立 OVERLAY 浮层（见 §Ⅶ.3）。
 
 ## 3. 浮层载体
 
-复用 App trait 既有 `floating_layers()` / `render_floating` / `floating_input` /
-`floating_height` 机制（layer-shell OVERLAY 独立表面）——**外壳零新增通道**，
-只在 App 侧新增一个「右键菜单管理」helper（见 §Ⅶ 实现方案）。
+- **xdg-shell / 主表面**：harness 内建路由，App 只需实现两钩子，零配置。
+- **layer-shell（Dock 等矮表面）**：菜单画进主表面会被裁剪 → App 在
+  `floating_layers()` 声明固定宽 OVERLAY 浮层，`render_floating` →
+  `MetroContextMenu::render`（画进浮层 Scene），`floating_input` → 状态机路由；
+  合成器对浮层外的点击负责关闭（Ether `menu-close` IPC 惯例）。
 
 ---
 
@@ -214,27 +225,31 @@ PointerPressed { button: Right, x, y }
   - `hit_menu(rect) / handle_input(InputEvent)`（复用 DropdownMenu 状态机）
 - 定位：`place_context_menu`（§Ⅲ）。
 
-## 2. Harness helper：右键菜单管理
+## 2. Harness 右键菜单状态机（`ContextMenuState`）
 
-`kanesumi-harness` 提供 `ContextMenuState`（App 侧持有）：
+`kanesumi-harness/src/context_menu.rs` 提供 `ContextMenuState` —— **Shell 持有**
+（§Ⅵ.2 主表面路由），App 无需自持。核心接口：
 
 ```rust
-/// 右键菜单状态机（App 持有一个，外壳注入右键事件）。
-pub struct ContextMenuState {
-    menu: MetroContextMenu,
-    open: bool,
-}
+pub struct ContextMenuState { ... }
+
 impl ContextMenuState {
-    pub fn update(&mut self, dt: f64);                      // 动画 tick
-    pub fn handle_pointer(&mut self, ev: &InputEvent, screen: Rect); // Right→open、外点→close
-    pub fn render(&self, engine: &TextEngine) -> Scene;     // 空 Scene = 关闭（浮层透明）
-    pub fn height(&self) -> f32;                            // 0 = 收起
+    pub fn route_main_event(&mut self, engine, event, screen, items) -> ContextMenuAction;
+    //   菜单开 → handle_pointer；关 + 右键 + Some(items) → 打开并 Consumed。
+    pub fn handle_pointer(&mut self, engine, event, screen) -> ContextMenuAction;
+    //   菜单开着时的事件路由（hover/Activate/Consumed）。
+    pub fn update(&mut self, dt: f64);          // 动画 tick
+    pub fn render(&self, theme, engine, scene); // 画进给定 Scene（关态零命令）
+    pub fn open(&mut self, engine, anchor, items, screen); // 直接打开
+    pub fn is_visible(&self) -> bool;
 }
 ```
 
-- App 在 `floating_layers()` 声明一个 OVERLAY 浮层（如 `FloatingLayer::overlay("context")`）。
-- `render_floating` → `ContextMenuState::render`；`floating_input` →
-  `handle_pointer` + 菜单点选 → `on_context_command`。
+## 3. layer-shell 矮表面（Dock）方案
+
+`ContextMenuState` / `MetroContextMenu` 只产 Scene、与表面解耦，可画进任意浮层 Scene。
+Dock 等矮表面：App 声明固定宽 OVERLAY 浮层 → `render_floating` 画 `MetroContextMenu`、
+`floating_input` 喂状态机；点击浮层外由合成器关闭（Ether `menu-close` IPC）。
 
 ---
 
@@ -251,11 +266,15 @@ impl ContextMenuState {
 
 # Ⅸ · 施工顺序
 
-> ✅ 2026-08-13 全部完成（本规范即实现记录）。
+> ✅ 2026-08-13 控件与状态机完成；2026-08-14 harness 接管主表面路由（§Ⅵ.2）。
 
 1. ✅ `popup.rs`：`place_context_menu`（四象限定位 + 单测）。
 2. ✅ `kanesumi-controls`：`MetroContextMenu`（复用 DropdownMenu + 遮罩留空 + 单测）。
-3. ✅ `kanesumi-harness`：App trait 两钩子（`context_menu` / `on_context_command`）+
-   `ContextMenuState` helper + Gallery 右键路由。
+3. ✅ `kanesumi-harness`：App trait 两钩子（`context_menu(&mut)` / `on_context_command`）+
+   `ContextMenuState` helper。
 4. ✅ Gallery 演示（任意位置右键 + 级联 + 命令回显）。
-5. ✅ CONTROL_MATRIX 登记。
+5. ✅ **harness 主表面右键路由**（2026-08-14）：`Shell::emit_input` 经
+   `route_main_event` 接管右键 → `context_menu` 打开 → 菜单叠加渲染进主表面 Scene →
+   点选 `on_context_command`；`context_menu` 钩子改 `&mut self`；Gallery 移除 App 侧
+   手接（测试移入 harness `route_main_event` 单测）。layer-shell 矮表面方案见 §Ⅶ.3。
+6. ✅ CONTROL_MATRIX 登记。

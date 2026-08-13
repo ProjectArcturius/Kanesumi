@@ -8,7 +8,7 @@
 use std::time::Instant;
 
 use kanesumi_canvas::text::TextEngine;
-use kanesumi_core::Size;
+use kanesumi_core::{Rect, Size};
 use smithay_client_toolkit::reexports::{
     calloop::EventLoop, calloop_wayland_source::WaylandSource,
 };
@@ -58,6 +58,7 @@ use crate::app::{
     LayerKind, Modifiers, PendingImeBatch, PointerButton, compute_ime_action,
 };
 use crate::appmenu::AppMenuHandle;
+use crate::context_menu::ContextMenuAction;
 use crate::render::Renderer;
 use crate::role::{EtherRole, SurfaceKind};
 
@@ -234,6 +235,9 @@ struct Shell {
     pointer_pos: (f32, f32),
     /// 双击检测器（Press 判定 → 追加 `InputEvent::DoubleClick`）。
     click_tracker: crate::app::ClickTracker,
+    /// 右键菜单状态机（harness 接管右键路由，参 CONTEXT_MENU_SPEC §Ⅵ.2）。
+    /// 主表面右键 → `App::context_menu` → 菜单开在主表面内；点选 → `App::on_context_command`。
+    ctx_menu: crate::context_menu::ContextMenuState,
 
     // ── IME（zwp_text_input_v3，参 IME_WIRING_PLAN 阶段 D） ─────
     /// text-input manager 全局（合成器未提供 → None，App 降级走裸 KeyPressed）。
@@ -508,6 +512,7 @@ impl Shell {
             last_frame: Instant::now(),
             pointer_pos: (-1.0, -1.0),
             click_tracker: crate::app::ClickTracker::default(),
+            ctx_menu: crate::context_menu::ContextMenuState::new(),
             text_input_manager,
             text_input: None,
             ime_enabled: false,
@@ -803,6 +808,8 @@ impl Shell {
             self.request_next_frame(qh);
             return;
         }
+        // 右键菜单动画 tick（弹出/关闭轨道，与 App 状态解耦）。
+        self.ctx_menu.update(dt);
 
         // 动态高度同步：App update 后可能请求展开/收起（TopBar 面板），先同步表面尺寸。
         self.sync_preferred_height();
@@ -828,7 +835,7 @@ impl Shell {
         let scene_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.app.render(&self.engine, size)
         }));
-        let scene = match scene_result {
+        let mut scene = match scene_result {
             Ok(s) => s,
             Err(_) => {
                 log::error!("App::render panic，跳过本帧");
@@ -836,6 +843,12 @@ impl Shell {
                 return;
             }
         };
+
+        // 右键菜单叠加（主表面渲染，App 内容之上）。
+        if self.ctx_menu.is_visible() {
+            self.ctx_menu
+                .render(&self.app.theme(), &self.engine, &mut scene);
+        }
 
         self.request_next_frame(qh);
 
@@ -868,14 +881,50 @@ impl Shell {
         s.frame(qh, s.clone());
     }
 
-    /// 输入事件错误边界：App handle_input panic 不杀进程，仅记日志。
+    /// 主表面输入：右键菜单优先路由（参 CONTEXT_MENU_SPEC §Ⅵ.2）→ 未消费才投给 App。
+    /// - 菜单关着 + 右键按下 → `App::context_menu(x, y)` 取内容：Some → 开菜单并消费；
+    ///   None → 右键照常投递（App 自处理）。
+    /// - 菜单开着 → 事件喂状态机（悬停/点选/LightDismiss/Esc/再右键），点选 → `on_context_command`。
     fn emit_input(&mut self, event: InputEvent) {
-        let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.app.handle_input(event);
-        }))
-        .is_ok();
-        if !ok {
-            log::error!("App::handle_input panic，已隔离");
+        let action = {
+            // 仅「菜单关着 + 右键按下」才请求 App 内容（&mut app 与 &mut ctx 分开借用）。
+            let items = if !self.ctx_menu.is_visible() {
+                if let InputEvent::PointerPressed {
+                    x, y, button: PointerButton::Right, ..
+                } = &event
+                {
+                    self.app.context_menu(*x, *y)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let screen = Rect::new(0.0, 0.0, self.width, self.height);
+            self.ctx_menu
+                .route_main_event(Some(&self.engine), &event, screen, items)
+        };
+        match action {
+            ContextMenuAction::PassThrough => {
+                // 未消费 → 正常投递 App（错误边界隔离）。
+                let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.app.handle_input(event);
+                }))
+                .is_ok();
+                if !ok {
+                    log::error!("App::handle_input panic，已隔离");
+                }
+            }
+            ContextMenuAction::Consumed => {}
+            ContextMenuAction::Activate(path) => {
+                let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.app.on_context_command(&path);
+                }))
+                .is_ok();
+                if !ok {
+                    log::error!("App::on_context_command panic，已隔离");
+                }
+            }
         }
     }
 

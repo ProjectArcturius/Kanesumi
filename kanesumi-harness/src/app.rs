@@ -293,9 +293,11 @@ pub trait App {
     fn set_appmenu_handle(&mut self, _handle: AppMenuHandle) {}
 
     /// 右键菜单内容。`(x, y)` 为表面本地逻辑坐标（右键按下点）。
-    /// 返回 `Some(items)` = 在指针位置弹出右键菜单；`None` = 无右键菜单（默认）。
+    /// 返回 `Some(items)` = harness 接管右键路由，在指针位置弹出右键菜单（该右键
+    /// 事件不再投递 `handle_input`）；`None` = 无右键菜单，事件照常投递（默认）。
+    /// `&mut self`：App 可在返回菜单前更新目标状态（如文件浏览器右键先选中命中项）。
     /// 参 CONTEXT_MENU_SPEC §Ⅵ。
-    fn context_menu(&self, _x: f32, _y: f32) -> Option<Vec<kanesumi_controls::MenuItem>> {
+    fn context_menu(&mut self, _x: f32, _y: f32) -> Option<Vec<kanesumi_controls::MenuItem>> {
         None
     }
 

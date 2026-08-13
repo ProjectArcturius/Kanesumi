@@ -84,6 +84,41 @@ impl ContextMenuState {
         }
     }
 
+    /// 主表面右键路由（harness 调用，参 CONTEXT_MENU_SPEC §Ⅵ.2）。返回 [`ContextMenuAction`]：
+    /// - 菜单**开着**：交给 [`ContextMenuState::handle_pointer`]（悬停/点选/LightDismiss/Esc/再右键）；
+    /// - 菜单**关着 + 右键按下**：`items = Some` → 在指针位置打开菜单并 Consumed（右键不再
+    ///   投给 App）；`items = None` → PassThrough（App 自处理右键）；
+    /// - 其余事件：PassThrough（照常投给 App）。
+    pub fn route_main_event(
+        &mut self,
+        engine: Option<&TextEngine>,
+        event: &InputEvent,
+        screen: Rect,
+        items: Option<Vec<MenuItem>>,
+    ) -> ContextMenuAction {
+        if self.is_visible() {
+            return self.handle_pointer(engine, event, screen);
+        }
+        if let InputEvent::PointerPressed {
+            x,
+            y,
+            button: PointerButton::Right,
+            ..
+        } = event
+        {
+            let Some(items) = items else {
+                return ContextMenuAction::PassThrough;
+            };
+            let Some(engine) = engine else {
+                return ContextMenuAction::PassThrough;
+            };
+            self.open(engine, Point::new(*x, *y), items, screen);
+            ContextMenuAction::Consumed
+        } else {
+            ContextMenuAction::PassThrough
+        }
+    }
+
     /// 指针/键盘事件路由。返回 [`ContextMenuAction`]：
     /// - 菜单未开：右键 PassThrough（App 自行决定是否 `context_menu`），其余 PassThrough；
     /// - 菜单开着：悬停 → Consumed；左键命中项 → Activate(path) + 关闭；
@@ -294,6 +329,88 @@ mod tests {
             s.handle_pointer(none_engine.as_ref(), &ev, SCREEN),
             ContextMenuAction::PassThrough
         );
+    }
+
+    // ── route_main_event（harness 主表面右键路由，参 CONTEXT_MENU_SPEC §Ⅵ.2） ──
+
+    #[test]
+    fn route_opens_on_right_press_with_items() {
+        let Some(engine) = engine() else { return };
+        let mut s = ContextMenuState::new();
+        let ev = InputEvent::PointerPressed {
+            x: 100.0,
+            y: 100.0,
+            button: PointerButton::Right,
+            modifiers: crate::Modifiers::NONE,
+        };
+        assert_eq!(
+            s.route_main_event(Some(&engine), &ev, SCREEN, Some(items())),
+            ContextMenuAction::Consumed,
+            "有内容 → 打开并消费右键"
+        );
+        assert!(s.is_visible(), "菜单应打开");
+    }
+
+    #[test]
+    fn route_passes_right_press_without_items() {
+        let Some(engine) = engine() else { return };
+        let mut s = ContextMenuState::new();
+        let ev = InputEvent::PointerPressed {
+            x: 100.0,
+            y: 100.0,
+            button: PointerButton::Right,
+            modifiers: crate::Modifiers::NONE,
+        };
+        assert_eq!(
+            s.route_main_event(Some(&engine), &ev, SCREEN, None),
+            ContextMenuAction::PassThrough,
+            "无内容 → 右键照常投给 App"
+        );
+        assert!(!s.is_visible());
+    }
+
+    #[test]
+    fn route_forwards_non_right_events_when_closed() {
+        let Some(engine) = engine() else { return };
+        let mut s = ContextMenuState::new();
+        let ev = InputEvent::PointerPressed {
+            x: 100.0,
+            y: 100.0,
+            button: PointerButton::Left,
+            modifiers: crate::Modifiers::NONE,
+        };
+        assert_eq!(
+            s.route_main_event(Some(&engine), &ev, SCREEN, Some(items())),
+            ContextMenuAction::PassThrough,
+            "菜单关着时非右键事件照常投递"
+        );
+    }
+
+    #[test]
+    fn route_forwards_to_state_machine_when_open() {
+        let Some(engine) = engine() else { return };
+        let mut s = ContextMenuState::new();
+        s.open(&engine, Point::new(100.0, 100.0), items(), SCREEN);
+        s.update(1.0);
+        // 菜单开着 → 悬停交给状态机（Consumed）。
+        let ev = InputEvent::PointerMoved { x: 100.0, y: 100.0 };
+        assert_eq!(
+            s.route_main_event(Some(&engine), &ev, SCREEN, None),
+            ContextMenuAction::Consumed
+        );
+        // 菜单开着 + 点面板外 → LightDismiss（Consumed）。
+        let r = s.panel_rect();
+        let ev = InputEvent::PointerPressed {
+            x: r.origin.x - 10.0,
+            y: r.origin.y - 10.0,
+            button: PointerButton::Left,
+            modifiers: crate::Modifiers::NONE,
+        };
+        assert_eq!(
+            s.route_main_event(Some(&engine), &ev, SCREEN, None),
+            ContextMenuAction::Consumed
+        );
+        assert!(!s.is_visible(), "外点关闭");
     }
 
     #[test]

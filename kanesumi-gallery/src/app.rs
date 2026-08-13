@@ -17,7 +17,7 @@ use kanesumi_controls::{
 };
 use kanesumi_core::{Color, MetroTheme, Point, Rect, Size, TextStyle};
 use kanesumi_harness::{
-    App, AppConfig, AppMenuHandle, ContextMenuAction, ContextMenuState, EtherRole, InputEvent,
+    App, AppConfig, AppMenuHandle, EtherRole, InputEvent,
     PointerButton,
 };
 use kanesumi_structure::TileWall;
@@ -287,9 +287,8 @@ pub struct GalleryApp {
     /// 演示勾选状态（View → 显示全局菜单演示）。初始开启。
     appmenu_checked: bool,
 
-    // ── 右键菜单（ContextMenu 演示，参 CONTEXT_MENU_SPEC） ──
-    /// 右键菜单状态机（handle_input 路由 + render 绘制）。
-    ctx_menu: ContextMenuState,
+    // ── 右键菜单（ContextMenu 演示，参 CONTEXT_MENU_SPEC §Ⅵ） ──
+    // 路由已由 harness 接管（context_menu / on_context_command 钩子）；本 App 不再持状态机。
     /// 最近一次右键命令结果回显（演示 on_context_command 回调）。
     ctx_result: Option<String>,
 }
@@ -441,7 +440,6 @@ impl GalleryApp {
             decl_retained: kanesumi_controls::RetainedScene::new(),
             appmenu: None,
             appmenu_checked: true,
-            ctx_menu: ContextMenuState::new(),
             ctx_result: None,
         }
         .apply_visual_audit_state()
@@ -1884,7 +1882,7 @@ impl App for GalleryApp {
 
     // ── 右键菜单（ContextMenu 演示，参 CONTEXT_MENU_SPEC §Ⅵ） ────────────
 
-    fn context_menu(&self, x: f32, y: f32) -> Option<Vec<kanesumi_controls::MenuItem>> {
+    fn context_menu(&mut self, x: f32, y: f32) -> Option<Vec<kanesumi_controls::MenuItem>> {
         let _ = (x, y);
         Some(vec![
             // 目标感知：本演示在任意位置右键都出同一套「画布」菜单（含级联 + 分隔线）。
@@ -1916,7 +1914,7 @@ impl App for GalleryApp {
     }
 
     fn update(&mut self, dt: f64) {
-        self.ctx_menu.update(dt);
+        // 右键菜单动画由 harness 推进（`Shell::ctx_menu.update`），App 无需自持。
         self.switch.update(dt);
         self.bar.update(dt);
         self.ring.update(dt);
@@ -1951,30 +1949,12 @@ impl App for GalleryApp {
     }
 
     fn handle_input(&mut self, event: InputEvent) {
-        // 右键菜单优先：菜单开着时所有指针/键盘事件先喂给菜单（悬停/点选/LightDismiss/Esc）。
-        // 点选 → on_context_command 回调；其余被消费的跳过常规路由。
-        if self.ctx_menu.is_visible() || matches!(event, InputEvent::PointerPressed { button: PointerButton::Right, .. }) {
-            let action = self
-                .ctx_menu
-                .handle_pointer(Some(&self.engine), &event, self.screen());
-            match action {
-                ContextMenuAction::Activate(path) => {
-                    self.on_context_command(&path);
-                    return;
-                }
-                ContextMenuAction::Consumed => return,
-                ContextMenuAction::PassThrough => {}
-            }
-        }
+        // 右键菜单路由已由 harness 接管（`App::context_menu` / `on_context_command`，
+        // 参 CONTEXT_MENU_SPEC §Ⅵ.2）——本处不再处理右键，右键按下不会到达这里。
         match event {
             InputEvent::PointerMoved { x, y } => self.update_hover(Point::new(x, y)),
             InputEvent::PointerPressed { x, y, button, .. } => {
-                if button == PointerButton::Right {
-                    // 右键按下 → 请求 App 提供菜单内容，在指针位置打开。
-                    if let Some(items) = self.context_menu(x, y) {
-                        self.ctx_menu.open(&self.engine, Point::new(x, y), items, self.screen());
-                    }
-                } else if button == PointerButton::Left {
+                if button == PointerButton::Left {
                     self.press(Point::new(x, y));
                 }
             }
@@ -2193,8 +2173,7 @@ impl App for GalleryApp {
             &mut scene,
         );
 
-        // 右键菜单（最上层，覆盖对话框）—— 参 CONTEXT_MENU_SPEC。关闭态零命令。
-        self.ctx_menu.render(&self.theme, engine, &mut scene);
+        // 右键菜单由 harness 叠加渲染（App 内容之上），App 不绘制。
 
         scene
     }
@@ -3132,52 +3111,6 @@ mod tests {
         );
         g.update(1.0);
         assert!(!g.dialog.is_visible(), "按钮点击后对话框关闭");
-    }
-
-    /// 右键菜单：右键 → 菜单打开 → 点第一项 → on_context_command 回调 + 菜单关闭。
-    #[test]
-    fn context_menu_opens_and_activates_on_right_click() {
-        let mut g = app();
-        let right = InputEvent::PointerPressed {
-            x: 300.0,
-            y: 300.0,
-            button: PointerButton::Right,
-            modifiers: kanesumi_harness::Modifiers::NONE,
-        };
-        g.handle_input(right);
-        assert!(g.ctx_menu.is_visible(), "右键后菜单应打开");
-        // 点第一项「复制」。
-        let r = g.ctx_menu.panel_rect();
-        let click = InputEvent::PointerPressed {
-            x: r.origin.x + 20.0,
-            y: r.origin.y + 10.0,
-            button: PointerButton::Left,
-            modifiers: kanesumi_harness::Modifiers::NONE,
-        };
-        g.handle_input(click);
-        assert_eq!(g.ctx_result.as_deref(), Some("右键: 复制"));
-        assert!(!g.ctx_menu.is_visible(), "点选后菜单关闭");
-    }
-
-    /// 右键菜单 LightDismiss：点面板外关闭。
-    #[test]
-    fn context_menu_dismisses_on_outside_click() {
-        let mut g = app();
-        g.handle_input(InputEvent::PointerPressed {
-            x: 300.0,
-            y: 300.0,
-            button: PointerButton::Right,
-            modifiers: kanesumi_harness::Modifiers::NONE,
-        });
-        assert!(g.ctx_menu.is_visible());
-        g.handle_input(InputEvent::PointerPressed {
-            x: 3.0,
-            y: 3.0,
-            button: PointerButton::Left,
-            modifiers: kanesumi_harness::Modifiers::NONE,
-        });
-        assert!(!g.ctx_menu.is_visible(), "点外关闭");
-        assert_eq!(g.ctx_result, None, "LightDismiss 不触发命令");
     }
 }
 
