@@ -64,6 +64,11 @@ impl MetroContextMenu {
         self.menu.update(dt);
     }
 
+    /// 面板逻辑尺寸（量测，不定位）。浮层表面高度 / 布局预留用。
+    pub fn panel_size(&self, engine: &TextEngine) -> kanesumi_core::Size {
+        self.menu.panel_size(engine)
+    }
+
     /// 面板是否可见（含开/关动画期间）。
     pub fn is_visible(&self) -> bool {
         self.menu.anim.is_visible()

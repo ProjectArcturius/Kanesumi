@@ -72,6 +72,12 @@ impl ContextMenuState {
         self.menu.panel_rect()
     }
 
+    /// 面板逻辑尺寸（量测，不定位）。layer-shell 矮表面（Dock）浮层高度用
+    /// （参 CONTEXT_MENU_SPEC §Ⅶ.3）。
+    pub fn panel_size(&self, engine: &TextEngine) -> kanesumi_core::Size {
+        self.menu.panel_size(engine)
+    }
+
     /// 每帧动画 tick。
     pub fn update(&mut self, dt: f64) {
         self.menu.update(dt);
@@ -240,6 +246,16 @@ mod tests {
         s.update(1.0);
         assert!(s.is_open());
         assert!(s.is_visible());
+    }
+
+    #[test]
+    fn panel_size_measures_items() {
+        let Some(engine) = engine() else { return };
+        let mut s = ContextMenuState::new();
+        // 面板尺寸反映已注入内容（Dock 浮层高度用：open 后量测）。
+        s.open(&engine, Point::new(100.0, 100.0), items(), SCREEN);
+        let sz = s.panel_size(&engine);
+        assert!(sz.width > 0.0 && sz.height > 0.0, "注入项后面板非零尺寸");
     }
 
     #[test]
