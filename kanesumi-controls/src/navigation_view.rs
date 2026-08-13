@@ -6,6 +6,7 @@
 // - Top 模式：顶栏 48，项横排。
 // 子项级联 / flyout / 动画式收窄暂略（Phase 3 续）。
 
+use kanesumi_anim::{EasingMode, MetroAnim, UwpEasing};
 use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
@@ -92,8 +93,11 @@ pub struct MetroNavigationView {
     /// 选中路径（索引）。
     pub selected: Option<Vec<usize>>,
     pub mode: NavigationPaneMode,
-    /// Left 模式 Pane 展开态（320）vs 收窄（48）。
+    /// Left 模式 Pane 展开态（320）vs 收窄（48）—— 逻辑目标。
     pub pane_expanded: bool,
+    /// Pane 展开/收窄进度 [0,1]（0 = 收窄，1 = 展开），`pane_width()` 据此插值。
+    /// 参 CONTROL_SPEC §28「动画式展开收窄」—— sokuou 时长驱动，可中断。
+    pane: MetroAnim,
     /// 头部标题（Header 区，宿主也可自绘）。
     pub header: String,
     pub toggle_hovered: bool,
@@ -102,12 +106,16 @@ pub struct MetroNavigationView {
 
 impl Default for MetroNavigationView {
     fn default() -> Self {
+        // 初始展开（进度 1.0）。
+        let mut pane = MetroAnim::new(0.25, UwpEasing::Quadratic, EasingMode::EaseOut);
+        pane.jump_to(1.0);
         Self {
             items: Vec::new(),
             footer_items: Vec::new(),
             selected: None,
             mode: NavigationPaneMode::Left,
             pane_expanded: true,
+            pane,
             header: String::new(),
             toggle_hovered: false,
             footer_selected: None,
@@ -123,13 +131,34 @@ impl MetroNavigationView {
         }
     }
 
-    /// 当前 Pane 宽（Left 模式）。
+    /// 当前 Pane 宽（Left 模式）—— 展开/收窄进度插值（320↔48 平滑过渡）。
     pub fn pane_width(&self) -> f32 {
-        if self.pane_expanded {
-            NAV_PANE_EXPANDED
-        } else {
-            NAV_PANE_COMPACT
+        let p = self.pane.value() as f32;
+        NAV_PANE_COMPACT + (NAV_PANE_EXPANDED - NAV_PANE_COMPACT) * p
+    }
+
+    /// Pane 展开进度 [0,1]（0 = 收窄，1 = 展开）。
+    pub fn pane_progress(&self) -> f32 {
+        self.pane.value() as f32
+    }
+
+    /// 设置 Pane 展开态并启动展开/收窄动画（可中断）。幂等（目标不变则无操作）。
+    pub fn set_pane_expanded(&mut self, expanded: bool) {
+        if self.pane_expanded == expanded {
+            return;
         }
+        self.pane_expanded = expanded;
+        self.pane.set_target(if expanded { 1.0 } else { 0.0 });
+    }
+
+    /// Pane 展开/收窄动画是否进行中。
+    pub fn is_animating(&self) -> bool {
+        !self.pane.is_steady()
+    }
+
+    /// 每帧推进 Pane 展开/收窄动画。宿主（App::update）调用。
+    pub fn update(&mut self, dt: f64) {
+        self.pane.update(dt);
     }
 
     /// 给定宿主内实际可用 Pane 宽。窄窗口绝不把 320px 内在宽画出宿主边界。
@@ -281,7 +310,7 @@ impl MetroNavigationView {
                 NavigationAction::Select(path)
             }
             NavigationAction::Toggle if self.mode == NavigationPaneMode::Left => {
-                self.pane_expanded = !self.pane_expanded;
+                self.set_pane_expanded(!self.pane_expanded);
                 NavigationAction::Toggle
             }
             NavigationAction::Toggle => NavigationAction::Toggle,
@@ -321,6 +350,8 @@ impl MetroNavigationView {
         }
 
         let rects = self.top_item_rects(engine, rect);
+        // Pane 展开进度：label / chevron / 子项按进度淡入（Top 模式恒全显）。
+        let pane_p = self.pane_progress();
         // 子项可见性（Left 展开 + 选中展开）——简化为展开态展示 children。
         for (i, item) in self.items.iter().enumerate() {
             let r = rects[i];
@@ -356,14 +387,20 @@ impl MetroNavigationView {
             } else {
                 x += 16.0; // 无 icon 时 label 顶到 padding 16
             }
-            // label（Compact 模式隐藏）
-            if self.pane_expanded || self.mode == NavigationPaneMode::Top {
+            // label（收窄态隐藏；展开/收窄动画期间按进度淡入淡出）
+            if pane_p > 0.0 || self.mode == NavigationPaneMode::Top {
+                let alpha = if self.mode == NavigationPaneMode::Top {
+                    1.0
+                } else {
+                    pane_p
+                };
                 let label_w = (r.right() - x - 12.0).max(0.0);
                 let fg = if selected {
                     colors.on_surface
                 } else {
                     colors.on_surface_variant
-                };
+                }
+                .with_alpha(alpha);
                 scene.text(
                     item.label.clone(),
                     Rect::new(
@@ -384,7 +421,7 @@ impl MetroNavigationView {
                         12.0,
                         12.0,
                     );
-                    glyph::chevron_right(scene, chev, colors.on_surface_variant);
+                    glyph::chevron_right(scene, chev, colors.on_surface_variant.with_alpha(alpha));
                 }
             }
 
@@ -410,7 +447,7 @@ impl MetroNavigationView {
                             cr.size.width - 16.0,
                             style.line_height,
                         ),
-                        colors.on_surface_variant,
+                        colors.on_surface_variant.with_alpha(pane_p),
                         style,
                         TextAlign::Left,
                     );
@@ -458,12 +495,13 @@ mod tests {
     #[test]
     fn pane_widths() {
         let n = nav();
-        assert_eq!(n.pane_width(), 320.0);
+        assert_eq!(n.pane_width(), NAV_PANE_EXPANDED);
         let compact = MetroNavigationView {
             pane_expanded: false,
             ..nav()
         };
-        assert_eq!(compact.pane_width(), 48.0);
+        // pane_expanded 仅为逻辑目标；宽度由 pane 动画进度决定（未推进 = 仍展开）。
+        assert_eq!(compact.pane_width(), NAV_PANE_EXPANDED);
     }
 
     #[test]
@@ -475,8 +513,35 @@ mod tests {
             n.handle_click(&engine, r, Point::new(20.0, 20.0)),
             NavigationAction::Toggle
         );
-        assert!(!n.pane_expanded, "点 toggle 收窄");
-        assert_eq!(n.pane_width(), 48.0);
+        assert!(!n.pane_expanded, "点 toggle 收窄（逻辑目标翻转）");
+        assert!(n.is_animating(), "toggle 后进入展开/收窄动画");
+        // 推进到稳态 → 宽度收敛到 48。
+        for _ in 0..120 {
+            n.update(1.0 / 60.0);
+        }
+        assert!(!n.is_animating());
+        assert_eq!(n.pane_width(), NAV_PANE_COMPACT);
+    }
+
+    #[test]
+    fn pane_width_interpolates_during_animation() {
+        let Some(engine) = find_engine() else { return };
+        let mut n = nav();
+        let r = area();
+        n.handle_click(&engine, r, Point::new(20.0, 20.0)); // 开始收窄
+        n.update(0.1);
+        let w = n.pane_width();
+        assert!(
+            w > NAV_PANE_COMPACT && w < NAV_PANE_EXPANDED,
+            "中途宽度应插值，实际 {w}"
+        );
+        // 中断：再点 toggle 展开，应可反向推进。
+        n.handle_click(&engine, r, Point::new(20.0, 20.0));
+        assert!(n.pane_expanded);
+        for _ in 0..120 {
+            n.update(1.0 / 60.0);
+        }
+        assert_eq!(n.pane_width(), NAV_PANE_EXPANDED);
     }
 
     #[test]
@@ -592,6 +657,7 @@ mod tests {
         let theme = MetroTheme::ether_dark();
         let mut n = nav();
         n.pane_expanded = false;
+        n.pane.jump_to(0.0); // 收窄稳态（宽度 48、进度 0）
         let mut scene = Scene::default();
         n.render(&theme, &engine, area(), &mut scene);
         use kanesumi_canvas::SceneCommand;
