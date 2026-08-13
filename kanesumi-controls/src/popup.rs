@@ -1,6 +1,6 @@
 use kanesumi_anim::{EasingMode, MetroAnim, MetroPresets, UwpEasing};
 use kanesumi_canvas::Scene;
-use kanesumi_core::{MetroTheme, Rect, Size};
+use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
 /// 弹层展开方向。参 CONTROL_SPEC §8（ComboBoxHelper 判据：弹出容器相对触发器 Top>0 即向下）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +60,31 @@ pub fn place_popup(trigger: Rect, panel_size: Size, screen: Rect, gap: f32) -> P
         direction,
         rect: Rect::new(x, y, panel_size.width, panel_size.height),
     }
+}
+
+/// 右键菜单定位：锚定指针点，四象限翻折，始终屏内。参 CONTEXT_MENU_SPEC §Ⅲ。
+///
+/// 锚点 = 指针坐标（无触发器）；面板右上角即指针位置，四个方向都翻折：
+/// 1. 右下（默认）→ 2. 左移（右侧不够）→ 3. 上移（下方不够）→ 4. 左上（两向不够），
+/// 每步后按屏幕夹紧。面板宽/高超过屏幕时贴屏边（以屏为基准不裁内容）。
+#[must_use]
+pub fn place_context_menu(anchor: Point, panel_size: Size, screen: Rect) -> Rect {
+    let w = panel_size.width.min(screen.size.width);
+    let h = panel_size.height.min(screen.size.height);
+    let mut x = anchor.x;
+    let mut y = anchor.y;
+    // 水平：右侧不够 → 翻左。
+    if x + w > screen.right() {
+        x = anchor.x - w;
+    }
+    // 垂直：下方不够 → 翻上。
+    if y + h > screen.bottom() {
+        y = anchor.y - h;
+    }
+    // 夹紧（面板大于屏幕时贴边）。
+    x = x.clamp(screen.origin.x, (screen.right() - w).max(screen.origin.x));
+    y = y.clamp(screen.origin.y, (screen.bottom() - h).max(screen.origin.y));
+    Rect::new(x, y, w, h)
 }
 
 /// 子菜单（父菜单某项右侧展开）横向定位：优先父项右侧；右缘越屏 → 翻到父项左侧；
@@ -337,6 +362,69 @@ mod tests {
         assert!(r.origin.x >= screen.origin.x - 0.01, "不越屏左");
         // 面板宽 > 屏 → 靠右夹紧 = right - w = -80，被 max(origin.x=0) 拉回 0
         assert!(r.origin.x <= screen.right() - 1.0 || (screen.right() - size.width) < 0.0);
+    }
+
+    #[test]
+    fn place_context_menu_defaults_to_lower_right() {
+        // 屏幕中央锚点，右侧/下方空间足够 → 面板右上角即指针位置。
+        let anchor = Point::new(300.0, 300.0);
+        let size = Size::new(160.0, 120.0);
+        let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let r = place_context_menu(anchor, size, screen);
+        assert_eq!(r.origin, Point::new(300.0, 300.0));
+    }
+
+    #[test]
+    fn place_context_menu_flips_left_when_no_room_right() {
+        // 右侧只剩 40px < 160 → 翻左到锚点左侧。
+        let anchor = Point::new(760.0, 300.0);
+        let size = Size::new(160.0, 120.0);
+        let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let r = place_context_menu(anchor, size, screen);
+        assert_eq!(r.origin.x, 760.0 - 160.0);
+    }
+
+    #[test]
+    fn place_context_menu_flips_up_when_no_room_below() {
+        // 下方只剩 20px < 120 → 翻上。
+        let anchor = Point::new(300.0, 580.0);
+        let size = Size::new(160.0, 120.0);
+        let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let r = place_context_menu(anchor, size, screen);
+        assert_eq!(r.origin.y, 580.0 - 120.0);
+    }
+
+    #[test]
+    fn place_context_menu_flips_upper_left_when_no_room() {
+        // 右下两向都不够 → 左上。
+        let anchor = Point::new(780.0, 590.0);
+        let size = Size::new(160.0, 120.0);
+        let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let r = place_context_menu(anchor, size, screen);
+        assert_eq!(r.origin, Point::new(780.0 - 160.0, 590.0 - 120.0));
+    }
+
+    #[test]
+    fn place_context_menu_clamps_to_screen_edges() {
+        // 面板大于屏幕 → 贴屏角。
+        let anchor = Point::new(400.0, 300.0);
+        let size = Size::new(900.0, 700.0);
+        let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let r = place_context_menu(anchor, size, screen);
+        assert_eq!(r.origin.x, 0.0);
+        assert_eq!(r.origin.y, 0.0);
+        assert!(r.right() <= screen.right() + 0.01);
+        assert!(r.bottom() <= screen.bottom() + 0.01);
+    }
+
+    #[test]
+    fn place_context_menu_preserves_pointer_when_space() {
+        // 锚点在屏幕角落仍有足够空间时，面板不偏移。
+        let anchor = Point::new(10.0, 10.0);
+        let size = Size::new(120.0, 80.0);
+        let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let r = place_context_menu(anchor, size, screen);
+        assert_eq!(r.origin, Point::new(10.0, 10.0));
     }
 
     #[test]

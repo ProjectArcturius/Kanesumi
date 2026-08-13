@@ -6,6 +6,7 @@
 
 pub mod app;
 pub mod appmenu;
+pub mod context_menu;
 pub mod role;
 
 #[cfg(target_os = "linux")]
@@ -18,6 +19,7 @@ pub use app::{
     App, AppConfig, ImeAction, ImeContentHint, ImeContext, InputEvent, Key, Modifiers,
     PendingImeBatch, PointerButton, compute_ime_action,
 };
+pub use context_menu::{ContextMenuAction, ContextMenuState};
 pub use appmenu::{AppMenuHandle, MenuItem, MenuTree, MenuUpdate, ToggleType};
 #[cfg(target_os = "linux")]
 pub use appmenu::install;

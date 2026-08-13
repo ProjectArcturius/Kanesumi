@@ -283,6 +283,17 @@ pub trait App {
     /// 更新菜单勾选 / 结构（`AppMenuHandle::set_check` / `update_tree`，主题切换等）。
     fn set_appmenu_handle(&mut self, _handle: AppMenuHandle) {}
 
+    /// 右键菜单内容。`(x, y)` 为表面本地逻辑坐标（右键按下点）。
+    /// 返回 `Some(items)` = 在指针位置弹出右键菜单；`None` = 无右键菜单（默认）。
+    /// 参 CONTEXT_MENU_SPEC §Ⅵ。
+    fn context_menu(&self, _x: f32, _y: f32) -> Option<Vec<kanesumi_controls::MenuItem>> {
+        None
+    }
+
+    /// 右键菜单项点击回调。`path` 为命令路径：顶层 = `[i]`；级联 = `[parent, child]`。
+    /// App 据此执行对应命令。参 CONTEXT_MENU_SPEC §Ⅵ。
+    fn on_context_command(&mut self, _path: &[usize]) {}
+
     /// 渲染一帧：把当前状态解析为绘制命令。
     /// `engine` 为外壳注入的 TextEngine（排版唯一真源），App 用它量测文本、外壳用它光栅化。
     fn render(&mut self, engine: &TextEngine, size: Size) -> Scene;

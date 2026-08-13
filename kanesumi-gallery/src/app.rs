@@ -16,7 +16,10 @@ use kanesumi_controls::{
     MetroTextBox, MetroTile, TextInputKey, TileSize,
 };
 use kanesumi_core::{Color, MetroTheme, Point, Rect, Size, TextStyle};
-use kanesumi_harness::{App, AppConfig, AppMenuHandle, EtherRole, InputEvent, PointerButton};
+use kanesumi_harness::{
+    App, AppConfig, AppMenuHandle, ContextMenuAction, ContextMenuState, EtherRole, InputEvent,
+    PointerButton,
+};
 use kanesumi_structure::TileWall;
 
 use crate::pages::{GalleryPage, page_tree, palette};
@@ -283,6 +286,12 @@ pub struct GalleryApp {
     appmenu: Option<AppMenuHandle>,
     /// 演示勾选状态（View → 显示全局菜单演示）。初始开启。
     appmenu_checked: bool,
+
+    // ── 右键菜单（ContextMenu 演示，参 CONTEXT_MENU_SPEC） ──
+    /// 右键菜单状态机（handle_input 路由 + render 绘制）。
+    ctx_menu: ContextMenuState,
+    /// 最近一次右键命令结果回显（演示 on_context_command 回调）。
+    ctx_result: Option<String>,
 }
 
 impl GalleryApp {
@@ -432,6 +441,8 @@ impl GalleryApp {
             decl_retained: kanesumi_controls::RetainedScene::new(),
             appmenu: None,
             appmenu_checked: true,
+            ctx_menu: ContextMenuState::new(),
+            ctx_result: None,
         }
         .apply_visual_audit_state()
     }
@@ -885,8 +896,12 @@ impl GalleryApp {
     /// 参 V8：原本 Row 强制等分导致按钮撑到半屏。
     fn decl_footer(&self) -> kanesumi_controls::Decl {
         use kanesumi_controls::{Decl, DeclAction};
+        let ctx = self
+            .ctx_result
+            .as_deref()
+            .unwrap_or("右键任意位置试试");
         Decl::row(vec![
-            Decl::text(format!("声明式区域 · 计数 {}", self.decl_count)),
+            Decl::text(format!("声明式区域 · 计数 {} · {ctx}", self.decl_count)),
             Decl::spacer(1.0),
             Decl::button("点我 +1", DeclAction::Custom(9001)),
         ])
@@ -1867,7 +1882,41 @@ impl App for GalleryApp {
         }
     }
 
+    // ── 右键菜单（ContextMenu 演示，参 CONTEXT_MENU_SPEC §Ⅵ） ────────────
+
+    fn context_menu(&self, x: f32, y: f32) -> Option<Vec<kanesumi_controls::MenuItem>> {
+        let _ = (x, y);
+        Some(vec![
+            // 目标感知：本演示在任意位置右键都出同一套「画布」菜单（含级联 + 分隔线）。
+            kanesumi_controls::MenuItem::with_icon("复制", "📋"),
+            kanesumi_controls::MenuItem::with_icon("粘贴", "📌"),
+            kanesumi_controls::MenuItem::new("全选").separator(),
+            kanesumi_controls::MenuItem::new("插入").with_submenu(vec![
+                kanesumi_controls::MenuItem::new("文本").radio("insert"),
+                kanesumi_controls::MenuItem::new("图片").radio("insert"),
+                kanesumi_controls::MenuItem::new("表格").radio("insert"),
+            ]),
+            kanesumi_controls::MenuItem::new("删除"),
+        ])
+    }
+
+    fn on_context_command(&mut self, path: &[usize]) {
+        let name = match path {
+            [0] => "复制",
+            [1] => "粘贴",
+            [2] => "全选",
+            [3, 0] => "插入 > 文本",
+            [3, 1] => "插入 > 图片",
+            [3, 2] => "插入 > 表格",
+            [4] => "删除",
+            _ => "未知",
+        };
+        self.ctx_result = Some(format!("右键: {name}"));
+        log::info!("context menu: {name}（path {path:?}）");
+    }
+
     fn update(&mut self, dt: f64) {
+        self.ctx_menu.update(dt);
         self.switch.update(dt);
         self.bar.update(dt);
         self.ring.update(dt);
@@ -1902,10 +1951,30 @@ impl App for GalleryApp {
     }
 
     fn handle_input(&mut self, event: InputEvent) {
+        // 右键菜单优先：菜单开着时所有指针/键盘事件先喂给菜单（悬停/点选/LightDismiss/Esc）。
+        // 点选 → on_context_command 回调；其余被消费的跳过常规路由。
+        if self.ctx_menu.is_visible() || matches!(event, InputEvent::PointerPressed { button: PointerButton::Right, .. }) {
+            let action = self
+                .ctx_menu
+                .handle_pointer(Some(&self.engine), &event, self.screen());
+            match action {
+                ContextMenuAction::Activate(path) => {
+                    self.on_context_command(&path);
+                    return;
+                }
+                ContextMenuAction::Consumed => return,
+                ContextMenuAction::PassThrough => {}
+            }
+        }
         match event {
             InputEvent::PointerMoved { x, y } => self.update_hover(Point::new(x, y)),
             InputEvent::PointerPressed { x, y, button, .. } => {
-                if button == PointerButton::Left {
+                if button == PointerButton::Right {
+                    // 右键按下 → 请求 App 提供菜单内容，在指针位置打开。
+                    if let Some(items) = self.context_menu(x, y) {
+                        self.ctx_menu.open(&self.engine, Point::new(x, y), items, self.screen());
+                    }
+                } else if button == PointerButton::Left {
                     self.press(Point::new(x, y));
                 }
             }
@@ -2121,6 +2190,9 @@ impl App for GalleryApp {
             Rect::new(0.0, 0.0, size.width, size.height),
             &mut scene,
         );
+
+        // 右键菜单（最上层，覆盖对话框）—— 参 CONTEXT_MENU_SPEC。关闭态零命令。
+        self.ctx_menu.render(&self.theme, engine, &mut scene);
 
         scene
     }
@@ -3058,6 +3130,52 @@ mod tests {
         );
         g.update(1.0);
         assert!(!g.dialog.is_visible(), "按钮点击后对话框关闭");
+    }
+
+    /// 右键菜单：右键 → 菜单打开 → 点第一项 → on_context_command 回调 + 菜单关闭。
+    #[test]
+    fn context_menu_opens_and_activates_on_right_click() {
+        let mut g = app();
+        let right = InputEvent::PointerPressed {
+            x: 300.0,
+            y: 300.0,
+            button: PointerButton::Right,
+            modifiers: kanesumi_harness::Modifiers::NONE,
+        };
+        g.handle_input(right);
+        assert!(g.ctx_menu.is_visible(), "右键后菜单应打开");
+        // 点第一项「复制」。
+        let r = g.ctx_menu.panel_rect();
+        let click = InputEvent::PointerPressed {
+            x: r.origin.x + 20.0,
+            y: r.origin.y + 10.0,
+            button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
+        };
+        g.handle_input(click);
+        assert_eq!(g.ctx_result.as_deref(), Some("右键: 复制"));
+        assert!(!g.ctx_menu.is_visible(), "点选后菜单关闭");
+    }
+
+    /// 右键菜单 LightDismiss：点面板外关闭。
+    #[test]
+    fn context_menu_dismisses_on_outside_click() {
+        let mut g = app();
+        g.handle_input(InputEvent::PointerPressed {
+            x: 300.0,
+            y: 300.0,
+            button: PointerButton::Right,
+            modifiers: kanesumi_harness::Modifiers::NONE,
+        });
+        assert!(g.ctx_menu.is_visible());
+        g.handle_input(InputEvent::PointerPressed {
+            x: 3.0,
+            y: 3.0,
+            button: PointerButton::Left,
+            modifiers: kanesumi_harness::Modifiers::NONE,
+        });
+        assert!(!g.ctx_menu.is_visible(), "点外关闭");
+        assert_eq!(g.ctx_result, None, "LightDismiss 不触发命令");
     }
 }
 

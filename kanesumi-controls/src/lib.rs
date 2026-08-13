@@ -12,6 +12,7 @@ pub mod button;
 pub mod check_box;
 pub mod color_picker;
 pub mod command_bar_flyout;
+pub mod context_menu;
 pub mod decl;
 pub mod dialog;
 pub mod drop_down_button;
@@ -65,6 +66,7 @@ pub use command_bar_flyout::{
     COMMANDBAR_BORDER, COMMANDBAR_BUTTON_SIZE, COMMANDBAR_ICON_SIZE, TEXT_COMMANDS, CommandBarAction,
     CommandButton, MetroCommandBarFlyout,
 };
+pub use context_menu::MetroContextMenu;
 pub use decl::{
     Decl, DeclAction, DeclChange, DeclHit, DeclPath, collect_hits, diff_decl, render_decl,
 };

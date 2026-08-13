@@ -318,6 +318,15 @@ impl MetroDropdownMenu {
             return;
         }
         render_overlay(theme, &self.anim, screen, scene);
+        self.render_panel(theme, engine, scene);
+    }
+
+    /// 渲染面板本体（**无遮罩**）——右键菜单等无遮罩弹层复用。参 CONTEXT_MENU_SPEC §Ⅳ。
+    /// 可见性仍受 `anim.is_visible()` 门控（关闭动画期间照常渲染直到收起）。
+    pub fn render_panel(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
+        if !self.anim.is_visible() {
+            return;
+        }
         crate::popup::render_panel_base(theme, self.panel_rect, self.anim.panel_progress(), scene);
 
         let style = menu_item_style();
