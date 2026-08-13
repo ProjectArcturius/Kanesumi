@@ -322,6 +322,8 @@ impl App for CalculatorApp {
             // IME 事件：计算器无文本输入，忽略（组合态/提交均不适用）。
             InputEvent::Preedit { .. } | InputEvent::Commit { .. } | InputEvent::DeleteSurrounding { .. } => {
             }
+            // 双击：数字按钮双击无特殊语义，忽略（按下已照常处理）。
+            InputEvent::DoubleClick { .. } => {}
         }
     }
 

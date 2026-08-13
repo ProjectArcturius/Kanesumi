@@ -2096,6 +2096,8 @@ impl App for GalleryApp {
                     FocusedInput::None => {}
                 }
             }
+            // 双击：演示无特殊语义（按下已照常处理），忽略。
+            InputEvent::DoubleClick { .. } => {}
             InputEvent::Preedit { text, cursor_byte } => self.route_ime_preedit(text, cursor_byte),
             InputEvent::Commit { text } => self.route_ime_commit(text),
             InputEvent::DeleteSurrounding {

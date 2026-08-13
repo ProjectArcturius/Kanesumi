@@ -232,6 +232,8 @@ struct Shell {
     running: bool,
     last_frame: Instant,
     pointer_pos: (f32, f32),
+    /// 双击检测器（Press 判定 → 追加 `InputEvent::DoubleClick`）。
+    click_tracker: crate::app::ClickTracker,
 
     // ── IME（zwp_text_input_v3，参 IME_WIRING_PLAN 阶段 D） ─────
     /// text-input manager 全局（合成器未提供 → None，App 降级走裸 KeyPressed）。
@@ -505,6 +507,7 @@ impl Shell {
             running: true,
             last_frame: Instant::now(),
             pointer_pos: (-1.0, -1.0),
+            click_tracker: crate::app::ClickTracker::default(),
             text_input_manager,
             text_input: None,
             ime_enabled: false,
@@ -1224,7 +1227,7 @@ impl LayerShellHandler for Shell {
         if let Some(idx) = self.floating_idx_by_layer(layer) {
             let (w, h) = configure.new_size;
             // 全屏浮层：合成器 configure 常给高度 0（强制 (lw,0)）→ 用输出逻辑尺寸。
-            let out_size = if h <= 0 { self.output_logical_size() } else { None };
+            let out_size = if h == 0 { self.output_logical_size() } else { None };
             let f = &mut self.floating[idx];
             // ⚠ 固定宽度浮层（Dock 右键菜单）保持 spec.width，不用合成器强制宽度
             //   （Ether 合成器对所有 layer surface 强制 (lw,0)）→ 否则菜单被拉成全宽。
@@ -1382,9 +1385,11 @@ impl PointerHandler for Shell {
                 }
                 PointerEventKind::Leave { .. } => {
                     self.pointer_pos = (-1.0, -1.0);
+                    // 离开表面复位双击跟踪（跨表面快速点击不算双击）。
+                    self.click_tracker.reset();
                     self.route_input(target, InputEvent::PointerLeft);
                 }
-                PointerEventKind::Press { button, .. } => {
+                PointerEventKind::Press { time, button, .. } => {
                     self.pointer_pos = pos;
                     let button = map_button(*button);
                     self.route_input(
@@ -1396,6 +1401,18 @@ impl PointerHandler for Shell {
                             modifiers: self.modifiers,
                         },
                     );
+                    // 双击判定：第二次快速按下追加 DoubleClick（Press 照常投递，单击语义不丢）。
+                    if self.click_tracker.record(button, pos.0, pos.1, *time) {
+                        self.route_input(
+                            target,
+                            InputEvent::DoubleClick {
+                                x: pos.0,
+                                y: pos.1,
+                                button,
+                                modifiers: self.modifiers,
+                            },
+                        );
+                    }
                 }
                 PointerEventKind::Release { button, .. } => {
                     self.pointer_pos = pos;

@@ -1156,6 +1156,7 @@ dependencies = [
  "kanesumi-core",
  "kanesumi-structure",
  "log",
+ "memmap2 0.9.11",
  "pollster",
  "raw-window-handle",
  "smithay-client-toolkit",

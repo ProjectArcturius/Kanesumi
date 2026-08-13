@@ -177,6 +177,15 @@ pub enum InputEvent {
         button: PointerButton,
         modifiers: Modifiers,
     },
+    /// 双击 —— 与第二次 `PointerPressed` **同时**下发（后者照常投递，App 的单击
+    /// 语义不丢）。外壳按 [`ClickTracker`] 判定：同按钮、间隔 ≤250ms、位移 ≤5px。
+    /// App 需「单击选中 / 双击打开」类语义时匹配本变体（不可见双击 = 新单击序列）。
+    DoubleClick {
+        x: f32,
+        y: f32,
+        button: PointerButton,
+        modifiers: Modifiers,
+    },
     /// 滚轮 / 触摸板滚动。`dx`/`dy` 为逻辑像素增量；**正方向 = 表面坐标 +y（下）**，
     /// 即向下滚为正。外壳把 Wayland Axis 的 `discrete`（整格 ~50px）或 `absolute`
     /// （触摸板连续）转换为像素增量。
@@ -413,6 +422,52 @@ impl PendingImeBatch {
     }
 }
 
+/// 双击判定参数。参 UWP `GetDoubleClickTime`（默认 500ms）/ X11 `multi-click time`
+/// 惯例；Kanesumi 取 250ms（轻盈短促铁律对齐）、位移 5px 容差。
+const DOUBLE_CLICK_MS: u32 = 250;
+const DOUBLE_CLICK_TOLERANCE_PX: f32 = 5.0;
+
+/// 双击检测器 —— 记录每次指针按下，判定「同按钮、间隔 ≤250ms、位移 ≤5px」为双击。
+///
+/// 语义：第二次按下判定为双击（外壳随后下发 `InputEvent::DoubleClick`）；判定后复位，
+/// 故三次快速点击 = 单击 + 双击 + 单击（第三次重新开始计数，Windows 惯例）。
+#[derive(Debug, Clone, Default)]
+pub struct ClickTracker {
+    last_button: Option<PointerButton>,
+    last_time_ms: u32,
+    last_x: f32,
+    last_y: f32,
+}
+
+impl ClickTracker {
+    /// 记录一次按下（`time_ms` 为事件时间戳，同序单调）。返回 true = 构成双击。
+    pub fn record(&mut self, button: PointerButton, x: f32, y: f32, time_ms: u32) -> bool {
+        let double = self.last_button == Some(button)
+            && time_ms >= self.last_time_ms
+            && time_ms.saturating_sub(self.last_time_ms) <= DOUBLE_CLICK_MS
+            && (x - self.last_x).abs() <= DOUBLE_CLICK_TOLERANCE_PX
+            && (y - self.last_y).abs() <= DOUBLE_CLICK_TOLERANCE_PX;
+        if double {
+            // 判定后复位：第三次快速点击视为新单击（Windows 双击语义）。
+            self.last_button = None;
+            self.last_time_ms = 0;
+            self.last_x = 0.0;
+            self.last_y = 0.0;
+        } else {
+            self.last_button = Some(button);
+            self.last_time_ms = time_ms;
+            self.last_x = x;
+            self.last_y = y;
+        }
+        double
+    }
+
+    /// 指针离开表面时复位（跨表面的快速点击不算双击）。
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,5 +612,45 @@ mod tests {
             }
             _ => panic!("类型不符"),
         }
+    }
+
+    // ── ClickTracker（双击检测） ────────────────────────────────────────────
+
+    #[test]
+    fn click_tracker_second_quick_press_is_double() {
+        let mut t = ClickTracker::default();
+        assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1000));
+        assert!(t.record(PointerButton::Left, 10.0, 10.0, 1100), "250ms 内同点同按钮 = 双击");
+        // 复位后第三次快速点击重新计数（新单击）。
+        assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1200), "双击后复位，第三次为新单击");
+    }
+
+    #[test]
+    fn click_tracker_slow_second_press_is_single() {
+        let mut t = ClickTracker::default();
+        assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1000));
+        assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1300), ">250ms 不算双击");
+    }
+
+    #[test]
+    fn click_tracker_move_resets_interval() {
+        let mut t = ClickTracker::default();
+        assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1000));
+        assert!(!t.record(PointerButton::Left, 30.0, 10.0, 1100), "位移 >5px 不算双击");
+    }
+
+    #[test]
+    fn click_tracker_different_button_is_single() {
+        let mut t = ClickTracker::default();
+        assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1000));
+        assert!(!t.record(PointerButton::Right, 10.0, 10.0, 1100), "不同按钮不算双击");
+    }
+
+    #[test]
+    fn click_tracker_reset_clears() {
+        let mut t = ClickTracker::default();
+        assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1000));
+        t.reset();
+        assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1100), "离开表面后复位");
     }
 }
