@@ -387,6 +387,26 @@ impl Shell {
                 window = Some(win);
                 xdg_shell = Some(shell);
             }
+            SurfaceKind::LayerBackground => {
+                // 外部布局：桌面/墙纸层表面。非窗口——无 SSD/关闭键，不受 Alt+F4。
+                // 参 role.rs EtherRole::Desktop；Ether 合成器需将 Background 画在最底。
+                let shell = LayerShell::bind(globals, qh)
+                    .map_err(|e| format!("zwlr_layer_shell_v1 不可用：{e}"))?;
+                let ls = shell.create_layer_surface(
+                    qh,
+                    surface.clone(),
+                    Layer::Background,
+                    Some(cfg.app_id),
+                    None,
+                );
+                ls.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+                ls.set_exclusive_zone(0);
+                ls.set_size(0, 0);
+                ls.set_keyboard_interactivity(KeyboardInteractivity::None);
+                ls.commit();
+                layer_surface = Some(ls);
+                layer_shell = Some(shell);
+            }
             SurfaceKind::LayerTop | SurfaceKind::LayerBottom | SurfaceKind::LayerOverlay => {
                 let shell = LayerShell::bind(globals, qh)
                     .map_err(|e| format!("zwlr_layer_shell_v1 不可用：{e}"))?;
@@ -446,7 +466,10 @@ impl Shell {
             .ok();
         let shm_output = matches!(
             role.surface_kind(),
-            SurfaceKind::LayerTop | SurfaceKind::LayerBottom | SurfaceKind::LayerOverlay
+            SurfaceKind::LayerTop
+                | SurfaceKind::LayerBottom
+                | SurfaceKind::LayerOverlay
+                | SurfaceKind::LayerBackground
         );
         let main_shm = ShmBuffers::default();
 

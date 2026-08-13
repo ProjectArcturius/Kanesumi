@@ -40,6 +40,9 @@ impl FromStr for EtherRole {
 pub enum SurfaceKind {
     /// xdg-shell 普通窗口。
     XdgShell,
+    /// layer-shell BACKGROUND（最底层，桌面/墙纸）。非窗口：不受窗口管理，
+    /// 无 SSD / 关闭键 / Alt+F4，不可被当作窗口关闭。参 Ether PLAN.md §4.3「desktop 迁移」。
+    LayerBackground,
     /// layer-shell TOP（排他工作区上界）。
     LayerTop,
     /// layer-shell BOTTOM。
@@ -58,10 +61,11 @@ impl EtherRole {
     }
 
     /// 角色 → 表面类型。参 PLAN.md §4.3 表。
-    /// Desktop 现为 xdg-shell（Layer 1 固定），Phase 4 规划迁移 layer-shell Background。
+    /// Desktop → layer-shell Background（外部布局：非窗口，不被窗口管理/关闭；
+    /// 解决「桌面被 Alt+F4 关闭」。合成器需将 Background 层画在最底（Ether 跟进项）。
     pub fn surface_kind(self) -> SurfaceKind {
         match self {
-            EtherRole::Desktop => SurfaceKind::XdgShell,
+            EtherRole::Desktop => SurfaceKind::LayerBackground,
             EtherRole::Browser => SurfaceKind::XdgShell,
             EtherRole::TopBar => SurfaceKind::LayerTop,
             EtherRole::Dock => SurfaceKind::LayerBottom,
@@ -114,6 +118,10 @@ mod tests {
             SurfaceKind::LayerOverlay
         );
         assert_eq!(EtherRole::Browser.surface_kind(), SurfaceKind::XdgShell);
-        assert_eq!(EtherRole::Desktop.surface_kind(), SurfaceKind::XdgShell);
+        // 外部布局：桌面 = layer-shell Background（非窗口）。
+        assert_eq!(
+            EtherRole::Desktop.surface_kind(),
+            SurfaceKind::LayerBackground
+        );
     }
 }
