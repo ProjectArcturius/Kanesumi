@@ -26,6 +26,8 @@ pub enum AnchorKind {
     TopLeft,
     /// 底部居中（Dock 上方浮层）。
     BottomCenter,
+    /// 全屏铺满（Launcher overlay）。四边锚定，尺寸 0 = 自适应铺满。
+    Fullscreen,
 }
 
 /// 浮层表面 —— 与主表面解耦的独立 layer-shell surface。
@@ -230,6 +232,12 @@ pub trait App {
     /// 产出 Scene。面板关闭时 App 应渲染空 Scene（透明不可见）。
     fn floating_layers(&self) -> Vec<FloatingLayer> {
         Vec::new()
+    }
+
+    /// 浮层 `index` 是否可见。false → 外壳不渲染该浮层（表面空闲，不请求 frame）。
+    /// 默认 true（面板常驻渲染）；Launcher 用此控制开/合（配合 floating_height）。
+    fn floating_visible(&self, _index: usize) -> bool {
+        true
     }
 
     /// 渲染第 `index` 个浮层表面。`size` 为该表面逻辑尺寸（configure 后有效）。

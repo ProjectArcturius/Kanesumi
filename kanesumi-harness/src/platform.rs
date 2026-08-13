@@ -39,7 +39,7 @@ use smithay_client_toolkit::{
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle,
     globals::registry_queue_init,
-    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface},
+    protocol::{wl_buffer, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface},
 };
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
@@ -262,6 +262,37 @@ struct Shell {
     appmenu_rx: Option<std::sync::mpsc::Receiver<i32>>,
     /// 首帧诊断日志是否已输出。
     diag_logged: bool,
+
+    // ── SHM 输出（Ether 合成器 dmabuf 不可见 → 离屏读回 wl_shm 提交）─────
+    /// wl_shm 全局（layer-shell 表面用 SHM 提交；合成器未提供 → None，退化直接 present）。
+    shm: Option<wl_shm::WlShm>,
+    /// 主表面是否走 SHM 输出（layer-shell 角色 = true；xdg-shell = false）。
+    shm_output: bool,
+    /// 主表面 SHM 缓冲状态。
+    main_shm: ShmBuffers,
+    /// 各浮层表面的 SHM 缓冲状态（与 `floating` 等长）。
+    floating_shm: Vec<ShmBuffers>,
+}
+
+/// 单个 layer-shell 表面的 SHM 缓冲（单缓冲复用；尺寸变化时重建 pool/buffer）。
+struct ShmBuffers {
+    pool: Option<wl_shm_pool::WlShmPool>,
+    buffer: Option<wl_buffer::WlBuffer>,
+    mmap: Option<memmap2::MmapMut>,
+    width: u32,
+    height: u32,
+}
+
+impl Default for ShmBuffers {
+    fn default() -> Self {
+        Self {
+            pool: None,
+            buffer: None,
+            mmap: None,
+            width: 0,
+            height: 0,
+        }
+    }
 }
 
 /// 浮层表面 —— 独立 wl_surface + layer-shell + 透明底渲染器。
@@ -396,6 +427,20 @@ impl Shell {
             })
             .ok();
 
+        // wl_shm 全局（SHM 提交用）。Ether 合成器对 layer-shell wgpu dmabuf 渲染不可见，
+        // layer-shell 角色一律走离屏读回 → wl_shm 提交。合成器未提供 → None，退化 present。
+        let shm = globals
+            .bind::<wl_shm::WlShm, Self, ()>(qh, 1..=1, ())
+            .map_err(|e| {
+                log::warn!("wl_shm 不可用，SHM 提交降级为直接 present：{e}");
+            })
+            .ok();
+        let shm_output = matches!(
+            role.surface_kind(),
+            SurfaceKind::LayerTop | SurfaceKind::LayerBottom | SurfaceKind::LayerOverlay
+        );
+        let main_shm = ShmBuffers::default();
+
         // 浮层表面：独立 layer-shell surface（透明底控件浮层）。非 layer-shell 角色无浮层。
         let floating = match &layer_shell {
             Some(s) => app
@@ -414,6 +459,9 @@ impl Shell {
                 .collect::<Result<Vec<_>, String>>()?,
             None => Vec::new(),
         };
+        let floating_shm = std::iter::repeat_with(ShmBuffers::default)
+            .take(floating.len())
+            .collect();
 
         // 全局应用菜单：App 声明了菜单树 → 安装（D-Bus 服务 + Wayland 绑定 + Registrar）。
         // 服务线程在后台跑，命令经通道回主线程每帧排干（App::on_menu_command）。
@@ -468,6 +516,10 @@ impl Shell {
             appmenu,
             appmenu_rx,
             diag_logged: false,
+            shm,
+            shm_output,
+            main_shm,
+            floating_shm,
         })
     }
 
@@ -505,6 +557,10 @@ impl Shell {
 
     /// 渲染浮层帧：ensure renderer（透明底）→ App::render_floating → 光栅化 → present。
     fn render_floating_frame(&mut self, idx: usize, qh: &QueueHandle<Self>) {
+        if !self.app.floating_visible(idx) {
+            // 浮层隐藏：不请求下一帧 → 表面空闲（无 frame 回调，零成本）。
+            return;
+        }
         let (app, floating) = (&mut self.app, &mut self.floating);
         let Some(f) = floating.get_mut(idx) else {
             return;
@@ -513,10 +569,10 @@ impl Shell {
             return;
         }
         if f.renderer.is_none() {
-            match Renderer::new(&self.conn, &f.surface, f.width, f.height, f.scale, true) {
+            match Renderer::new(&self.conn, &f.surface, f.width, f.height, f.scale, true, true) {
                 Ok(r) => {
                     f.renderer = Some(r);
-                    log::info!("浮层渲染器已创建（{:.0}x{:.0}，透明底）", f.width, f.height);
+                    log::info!("浮层渲染器已创建（{:.0}x{:.0}，透明底，SHM 输出）", f.width, f.height);
                 }
                 Err(e) => {
                     log::error!("浮层渲染器初始化失败（{e:?}），退出");
@@ -543,8 +599,23 @@ impl Shell {
         };
         let s = f.surface.clone();
         s.frame(qh, s.clone());
+        let surface = f.surface.clone();
         if let Some(r) = f.renderer.as_mut() {
-            r.render(&self.engine, &scene);
+            // 浮层恒为 layer-shell → SHM 提交（Ether 合成器 dmabuf 不可见）。
+            if let Some(bgra) = r.render_to_shm(&self.engine, &scene) {
+                let (pw, ph) = r.physical_size();
+                if let Some(shm) = self.shm.clone() {
+                    commit_shm_buffers(
+                        &shm,
+                        qh,
+                        &surface,
+                        &mut self.floating_shm[idx],
+                        pw,
+                        ph,
+                        &bgra,
+                    );
+                }
+            }
         }
     }
 
@@ -637,10 +708,16 @@ impl Shell {
             self.height,
             self.scale,
             false,
+            self.shm_output,
         ) {
             Ok(r) => {
                 self.renderer = Some(r);
-                log::info!("wgpu 渲染器已创建（{:.0}x{:.0}）", self.width, self.height);
+                log::info!(
+                    "wgpu 渲染器已创建（{:.0}x{:.0}，SHM 输出 {}）",
+                    self.width,
+                    self.height,
+                    self.shm_output,
+                );
             }
             Err(e) => {
                 log::error!("wgpu 渲染器初始化失败（{e:?}），退出");
@@ -703,6 +780,14 @@ impl Shell {
         // 动态高度同步：App update 后可能请求展开/收起（TopBar 面板），先同步表面尺寸。
         self.sync_preferred_height();
         self.sync_floating_heights();
+        // 浮层可见性唤醒：App 打开浮层（floating_visible 变 true）→ 重新请求其 frame
+        // （此前隐藏时无 frame 回调，表面空闲）。每主帧请求一次，由 vsync 驱动渲染。
+        for (i, f) in self.floating.iter().enumerate() {
+            if self.app.floating_visible(i) && f.configured {
+                let s = f.surface.clone();
+                s.frame(qh, s.clone());
+            }
+        }
 
         // App 状态可能已变（焦点/文本/光标）→ 幂等 reconcile IME（无变化零成本）。
         self.reconcile_ime();
@@ -723,7 +808,25 @@ impl Shell {
         self.request_next_frame(qh);
 
         if let Some(r) = self.renderer.as_mut() {
-            r.render(&self.engine, &scene);
+            if self.shm_output {
+                // 离屏读回 → wl_shm 提交（Ether 合成器 dmabuf 不可见，SHM 可靠）。
+                if let Some(bgra) = r.render_to_shm(&self.engine, &scene) {
+                    let (pw, ph) = r.physical_size();
+                    if let Some(shm) = self.shm.clone() {
+                        commit_shm_buffers(
+                            &shm,
+                            qh,
+                            &self.surface,
+                            &mut self.main_shm,
+                            pw,
+                            ph,
+                            &bgra,
+                        );
+                    }
+                }
+            } else {
+                r.render(&self.engine, &scene);
+            }
         }
     }
 
@@ -1321,6 +1424,7 @@ fn create_floating_surface(
         AnchorKind::TopRight => Anchor::TOP | Anchor::RIGHT,
         AnchorKind::TopLeft => Anchor::TOP | Anchor::LEFT,
         AnchorKind::BottomCenter => Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
+        AnchorKind::Fullscreen => Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
     };
     let surface = compositor_state.create_surface(qh);
     let fractional_supported = fractional_scale_manager.is_some() && viewporter.is_some();
@@ -1600,5 +1704,119 @@ impl Dispatch<ZwpTextInputV3, ()> for Shell {
             }
             _ => {}
         }
+    }
+}
+
+// ── SHM 提交（Ether 合成器 dmabuf 不可见 → 离屏读回 wl_shm 提交）─────────────
+
+/// 创建可共享内存文件（/dev/shm 优先，回退 /tmp）供 wl_shm pool 使用。参 settings/topbar.rs。
+fn shm_open(size: usize) -> std::fs::File {
+    let name = format!("ether-kanesumi-{}", std::process::id());
+    let base = if std::path::Path::new("/dev/shm").exists() {
+        "/dev/shm"
+    } else {
+        "/tmp"
+    };
+    let path = format!("{}/{}", base, name);
+    let file = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&path)
+        .unwrap();
+    std::fs::remove_file(&path).ok();
+    file.set_len(size as u64).unwrap();
+    file
+}
+
+/// 用渲染读回的 BGRA 像素更新 SHM 表面（单缓冲复用；尺寸变化时重建 pool/buffer）。
+/// wl_shm Argb8888 = 内存 [B,G,R,A]（little-endian），与 Bgra8UnormSrgb readback 一致。
+#[allow(clippy::too_many_arguments)]
+fn commit_shm_buffers(
+    shm: &wl_shm::WlShm,
+    qh: &QueueHandle<Shell>,
+    surface: &wl_surface::WlSurface,
+    state: &mut ShmBuffers,
+    width: u32,
+    height: u32,
+    bgra: &[u8],
+) {
+    use std::os::fd::AsFd;
+
+    let expected = (width as usize)
+        .saturating_mul(height as usize)
+        .saturating_mul(4);
+    if bgra.len() < expected || width == 0 || height == 0 {
+        return;
+    }
+    // 尺寸变化或 pool 未建 → 重建。
+    if state.pool.is_none() || state.width != width || state.height != height {
+        state.pool.take().map(|p| p.destroy());
+        state.buffer.take().map(|b| b.destroy());
+        state.mmap = None;
+        let fd = shm_open(expected);
+        let mmap = unsafe { memmap2::MmapMut::map_mut(&fd) }.ok();
+        let pool = shm.create_pool(fd.as_fd(), expected as i32, qh, ());
+        let buf = pool.create_buffer(
+            0,
+            width as i32,
+            height as i32,
+            (width * 4) as i32,
+            wl_shm::Format::Argb8888,
+            qh,
+            (),
+        );
+        state.pool = Some(pool);
+        state.buffer = Some(buf);
+        state.mmap = mmap;
+        state.width = width;
+        state.height = height;
+    }
+    if let Some(mut mmap) = state.mmap.take() {
+        let n = bgra.len().min(mmap.len());
+        mmap[..n].copy_from_slice(&bgra[..n]);
+        state.mmap = Some(mmap);
+    }
+    if let Some(buf) = state.buffer.as_ref() {
+        surface.attach(Some(buf), 0, 0);
+        surface.commit();
+    }
+}
+
+// ── SHM 相关空事件处理（wl_shm / pool / buffer，无事件需处理）──────────────
+
+impl Dispatch<wl_shm::WlShm, ()> for Shell {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wl_shm::WlShm,
+        _event: wl_shm::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<wl_shm_pool::WlShmPool, ()> for Shell {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wl_shm_pool::WlShmPool,
+        _event: wl_shm_pool::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<wl_buffer::WlBuffer, ()> for Shell {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wl_buffer::WlBuffer,
+        _event: wl_buffer::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
     }
 }

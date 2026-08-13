@@ -140,6 +140,96 @@ struct ImageRun {
     count: u32,
 }
 
+/// 一帧 Scene 的顶点/绘制步数据（`build_frame` 产物，`render`/`render_to_shm` 共用）。
+struct FrameData {
+    solid: Vec<SolidVertex>,
+    text: Vec<TextVertex>,
+    text_runs: Vec<TextRun>,
+    image: Vec<TextVertex>,
+    image_runs: Vec<ImageRun>,
+    steps: Vec<Step>,
+    pending_glyphs: Vec<(GlyphKey, Vec<u8>, fontdue::Metrics)>,
+    pending_images: Vec<(u32, Vec<u8>, u32, u32)>,
+}
+
+/// 按 Scene 命令原始顺序记录绘制步（保 painter's algorithm 跨类型）。
+/// 同类型连续命令合成一个 Step，异类之间切 Step；draw 阶段按 Step 顺序切 pipeline。
+/// Step 携带裁剪（Draw 阶段 scissor 用）——同一裁剪上下文内的同类命令才合并。
+#[derive(Clone, Copy)]
+enum Step {
+    Solid {
+        start: u32,
+        count: u32,
+        clip: Option<Rect>,
+    },
+    Text {
+        run_start: u32,
+        run_end: u32,
+        clip: Option<Rect>,
+    },
+    Image {
+        run_start: u32,
+        run_end: u32,
+        clip: Option<Rect>,
+    },
+}
+
+// 追加或延长同类型末尾 Step。类型不同或裁剪不同 → 结算旧 Step、开新 Step。
+fn push_solid(steps: &mut Vec<Step>, before: u32, after: u32, clip: Option<Rect>) {
+    if after == before {
+        return;
+    }
+    if let Some(Step::Solid { count, clip: c, .. }) = steps.last_mut()
+        && *c == clip
+    {
+        *count += after - before;
+    } else {
+        steps.push(Step::Solid {
+            start: before,
+            count: after - before,
+            clip,
+        });
+    }
+}
+
+fn push_text(steps: &mut Vec<Step>, before: u32, after: u32, clip: Option<Rect>) {
+    if after == before {
+        return;
+    }
+    if let Some(Step::Text {
+        run_end, clip: c, ..
+    }) = steps.last_mut()
+        && *c == clip
+    {
+        *run_end = after;
+    } else {
+        steps.push(Step::Text {
+            run_start: before,
+            run_end: after,
+            clip,
+        });
+    }
+}
+
+fn push_image(steps: &mut Vec<Step>, before: u32, after: u32, clip: Option<Rect>) {
+    if after == before {
+        return;
+    }
+    if let Some(Step::Image {
+        run_end, clip: c, ..
+    }) = steps.last_mut()
+        && *c == clip
+    {
+        *run_end = after;
+    } else {
+        steps.push(Step::Image {
+            run_start: before,
+            run_end: after,
+            clip,
+        });
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct GlyphKey {
     engine_id: u64,
@@ -199,6 +289,12 @@ pub struct Renderer {
     /// MSAA 中间纹理 view（sample_count=MSAA_SAMPLES）。render pass attachment 用它，
     /// swapchain view 作 resolve_target。resize 时重建。
     msaa_view: wgpu::TextureView,
+    /// SHM 输出模式：渲染到离屏纹理并读回 BGRA → wl_shm 提交。
+    /// ⚠ Ether 合成器对 layer-shell 的 wgpu dmabuf 渲染不可见（Known Issue #8），
+    ///   SHM buffer（collect_layer_draws → import_memory）可靠。参 ETHER_RENDER_LESSONS.md。
+    shm_output: bool,
+    /// 离屏解析纹理（SHM 模式）：MSAA resolve target + readback 源。resize 时重建。
+    shm_tex: Option<wgpu::Texture>,
     /// 逻辑 → 物理缩放（整数，通常 1 或 2）。
     scale: f32,
     /// 逻辑尺寸。
@@ -228,6 +324,31 @@ fn create_msaa_view(
     tex.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
+/// 创建离屏解析纹理（SHM 模式）：单采样、同表面格式、RENDER_ATTACHMENT | COPY_SRC。
+/// 作为 MSAA resolve target 渲染，随后 copy_texture_to_buffer 读回 BGRA → wl_shm。
+fn create_shm_tex(
+    device: &wgpu::Device,
+    config: &wgpu::SurfaceConfiguration,
+) -> Option<wgpu::Texture> {
+    if config.width < 1 || config.height < 1 {
+        return None;
+    }
+    Some(device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("kanesumi-shm-offscreen"),
+        size: wgpu::Extent3d {
+            width: config.width.max(1),
+            height: config.height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: config.format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    }))
+}
+
 /// 渲染器初始化错误。
 #[derive(Debug)]
 pub enum RendererError {
@@ -246,6 +367,8 @@ impl Renderer {
     /// 新建渲染器。`transparent` = 表面需透明底（浮层）：alpha_mode 选 PreMultiplied，
     /// clear 为透明，画布上只画半透明面板/控件（参 Ether 合成器对 alpha 表面的混合）。
     /// `false` = 不透明表面（Kanesumi 主表面，背景实体）。
+    /// `shm_output` = true 时启用离屏读回 → wl_shm（Ether 合成器 dmabuf 不可见，参
+    ///   ETHER_RENDER_LESSONS.md）；false = 直接 present 到 wgpu surface（xdg-shell 可用）。
     pub fn new(
         conn: &Connection,
         wl_surface: &WlSurface,
@@ -253,6 +376,7 @@ impl Renderer {
         height: f32,
         scale: f32,
         transparent: bool,
+        shm_output: bool,
     ) -> Result<Self, RendererError> {
         Self::new_with_backends(
             conn,
@@ -261,6 +385,7 @@ impl Renderer {
             height,
             scale,
             transparent,
+            shm_output,
             // GL 优先：Ether 合成器（smithay GlesRenderer）自动 bind EGL Wayland display，
             // wgpu GL 后端经 EGL_WL_bind_wayland_display 可直接连；Vulkan 在 Ether DRM
             // 下 get_physical_device_surface_capabilities 报 SURFACE_LOST（客户端 Wayland
@@ -277,6 +402,7 @@ impl Renderer {
         height: f32,
         scale: f32,
         transparent: bool,
+        shm_output: bool,
         backends: &[wgpu::Backends],
     ) -> Result<Self, RendererError> {
         for (i, backend) in backends.iter().enumerate() {
@@ -287,6 +413,7 @@ impl Renderer {
                 height,
                 scale,
                 transparent,
+                shm_output,
                 *backend,
             ) {
                 Ok(r) => return Ok(r),
@@ -306,6 +433,7 @@ impl Renderer {
         height: f32,
         scale: f32,
         _transparent: bool,
+        shm_output: bool,
         backend: wgpu::Backends,
     ) -> Result<Self, RendererError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -575,6 +703,7 @@ impl Renderer {
         let image_buf = mk_vert_buf("kanesumi-image-buf", 128);
 
         let msaa_view = create_msaa_view(&device, &config);
+        let shm_tex = if shm_output { create_shm_tex(&device, &config) } else { None };
 
         Ok(Self {
             surface,
@@ -595,6 +724,8 @@ impl Renderer {
             text_cap,
             image_cap,
             msaa_view,
+            shm_output,
+            shm_tex,
             scale,
             width,
             height,
@@ -611,6 +742,11 @@ impl Renderer {
         self.config.height = ph.round().max(1.0) as u32;
         self.surface.configure(&self.device, &self.config);
         self.msaa_view = create_msaa_view(&self.device, &self.config);
+        self.shm_tex = if self.shm_output {
+            create_shm_tex(&self.device, &self.config)
+        } else {
+            None
+        };
     }
 
     /// 诊断：当前表面格式 / alpha_mode / buffer 物理尺寸（排查合成器下显示透明）。
@@ -627,12 +763,55 @@ impl Renderer {
         )
     }
 
-    /// 把一帧 Scene 光栅化到当前表面并提交。
+    /// 物理像素尺寸（读回 / SHM 提交用，与 config 同步）。
+    pub fn physical_size(&self) -> (u32, u32) {
+        (self.config.width, self.config.height)
+    }
+
+    /// 把一帧 Scene 光栅化到当前表面并提交（present 模式）。
     pub fn render(&mut self, engine: &TextEngine, scene: &Scene) {
         let (pw, ph) = (self.config.width as f32, self.config.height as f32);
         if pw < 1.0 || ph < 1.0 {
             return;
         }
+        let frame = self.build_frame(engine, scene);
+        let surface_texture = match self.surface.get_current_texture() {
+            Ok(t) => t,
+            Err(e) => {
+                log::warn!("kanesumi-harness 获取帧纹理失败：{e}");
+                return;
+            }
+        };
+        let view = surface_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        self.draw_frame(&frame, &view);
+        surface_texture.present();
+    }
+
+    /// 把一帧 Scene 光栅化到离屏纹理并读回 BGRA（wl_shm Argb8888 内存布局）。
+    /// ⚠ Ether 合成器对 layer-shell 的 wgpu dmabuf 渲染不可见 → 走 SHM 提交。
+    ///   返回 None = 尺寸未就绪 / 读回失败（调用方跳过本帧）。
+    pub fn render_to_shm(&mut self, engine: &TextEngine, scene: &Scene) -> Option<Vec<u8>> {
+        let (pw, ph) = (self.config.width as f32, self.config.height as f32);
+        if pw < 1.0 || ph < 1.0 {
+            return None;
+        }
+        let tex = match self.shm_tex.take() {
+            Some(t) => t,
+            None => return None,
+        };
+        let frame = self.build_frame(engine, scene);
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        self.draw_frame(&frame, &view);
+        let out = self.readback(&tex);
+        // 归还离屏纹理（draw_frame / readback 不触碰 shm_tex，take/restore 安全）。
+        self.shm_tex = Some(tex);
+        out
+    }
+
+    /// 构建一帧顶点与绘制步（Scene → 顶点）。render / render_to_shm 共用。
+    fn build_frame(&mut self, engine: &TextEngine, scene: &Scene) -> FrameData {
         let (px, py) = (self.width, self.height);
 
         // 逻辑 → NDC（y 翻转）。
@@ -659,79 +838,8 @@ impl Renderer {
         // 2026-08-12：Step 携带裁剪（`clip` 为 Draw 阶段 scissor 用）—— 同一裁剪
         // 上下文内的同类命令才合并；裁剪切换（含嵌套 push/pop）自动切 Step，
         // 保证 Text/Triangle 也被 scissor 裁进容器（修复文字溢出，参 layout.rs）。
-        #[derive(Clone, Copy)]
-        enum Step {
-            Solid {
-                start: u32,
-                count: u32,
-                clip: Option<Rect>,
-            },
-            Text {
-                run_start: u32,
-                run_end: u32,
-                clip: Option<Rect>,
-            },
-            Image {
-                run_start: u32,
-                run_end: u32,
-                clip: Option<Rect>,
-            },
-        }
+        // Step 枚举与 push_* 助手已上提模块级（render / render_to_shm 共用）。
         let mut steps: Vec<Step> = Vec::new();
-
-        // 追加或延长同类型末尾 Step。类型不同或裁剪不同 → 结算旧 Step、开新 Step。
-        fn push_solid(steps: &mut Vec<Step>, before: u32, after: u32, clip: Option<Rect>) {
-            if after == before {
-                return;
-            }
-            if let Some(Step::Solid { count, clip: c, .. }) = steps.last_mut()
-                && *c == clip
-            {
-                *count += after - before;
-            } else {
-                steps.push(Step::Solid {
-                    start: before,
-                    count: after - before,
-                    clip,
-                });
-            }
-        }
-        fn push_text(steps: &mut Vec<Step>, before: u32, after: u32, clip: Option<Rect>) {
-            if after == before {
-                return;
-            }
-            if let Some(Step::Text {
-                run_end, clip: c, ..
-            }) = steps.last_mut()
-                && *c == clip
-            {
-                *run_end = after;
-            } else {
-                steps.push(Step::Text {
-                    run_start: before,
-                    run_end: after,
-                    clip,
-                });
-            }
-        }
-        fn push_image(steps: &mut Vec<Step>, before: u32, after: u32, clip: Option<Rect>) {
-            if after == before {
-                return;
-            }
-            if let Some(Step::Image {
-                run_end, clip: c, ..
-            }) = steps.last_mut()
-                && *c == clip
-            {
-                *run_end = after;
-            } else {
-                steps.push(Step::Image {
-                    run_start: before,
-                    run_end: after,
-                    clip,
-                });
-            }
-        }
 
         let surface_bounds = Rect::new(0.0, 0.0, self.width, self.height);
         let effective_clip = |stack: &[Option<Rect>]| {
@@ -906,25 +1014,29 @@ impl Renderer {
             }
         }
 
+        FrameData {
+            solid,
+            text,
+            text_runs,
+            image,
+            image_runs,
+            steps,
+            pending_glyphs,
+            pending_images,
+        }
+    }
+
+    /// 绘制已构建帧：MSAA pass → resolve 到 `resolve` 视图 → submit。
+    /// `resolve` = swapchain 视图（present 模式）或离屏纹理视图（SHM 模式）。
+    fn draw_frame(&mut self, frame: &FrameData, resolve: &wgpu::TextureView) {
         // 先建字形纹理（借用分离）
-        for (key, bitmap, metrics) in &pending_glyphs {
+        for (key, bitmap, metrics) in &frame.pending_glyphs {
             self.ensure_glyph(*key, bitmap, metrics);
         }
         // 再建图标纹理（借用分离）
-        for (key, rgba, w, h) in &pending_images {
+        for (key, rgba, w, h) in &frame.pending_images {
             self.ensure_image(*key, rgba, *w, *h);
         }
-
-        let surface_texture = match self.surface.get_current_texture() {
-            Ok(t) => t,
-            Err(e) => {
-                log::warn!("kanesumi-harness 获取帧纹理失败：{e}");
-                return;
-            }
-        };
-        let view = surface_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut encoder = self
             .device
@@ -935,12 +1047,12 @@ impl Renderer {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("kanesumi-pass"),
-                // MSAA：多重采样纹理作 attachment，swapchain view 作 resolve_target。
-                // pass 结束时硬件自动 4→1 downsample 到 swapchain。store=Discard 因为
-                // MSAA 中间纹理不再使用（resolve 已完成）。
+                // MSAA：多重采样纹理作 attachment，resolve 视图作 resolve_target。
+                // pass 结束时硬件自动 4→1 downsample 到 resolve（swapchain 或离屏）。
+                // store=Discard 因为 MSAA 中间纹理不再使用（resolve 已完成）。
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.msaa_view,
-                    resolve_target: Some(&view),
+                    resolve_target: Some(resolve),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Discard,
@@ -955,35 +1067,35 @@ impl Renderer {
             // 三个持久顶点缓冲一次性上传全量顶点（避免每步反复 upload）；draw 区间
             // 由 Step 携带。painter's algorithm 跨类型正确 —— 对话框/下拉菜单面板
             // 之后的命令不再被之前控件的文本盖住。
-            let solid_buf = if !solid.is_empty() {
+            let solid_buf = if !frame.solid.is_empty() {
                 Some(upload_vertices_solid(
                     &self.device,
                     &self.queue,
                     &mut self.solid_buf,
                     &mut self.solid_cap,
-                    &solid,
+                    &frame.solid,
                 ))
             } else {
                 None
             };
-            let text_buf = if !text.is_empty() {
+            let text_buf = if !frame.text.is_empty() {
                 Some(upload_vertices(
                     &self.device,
                     &self.queue,
                     &mut self.text_buf,
                     &mut self.text_cap,
-                    &text,
+                    &frame.text,
                 ))
             } else {
                 None
             };
-            let image_buf = if !image.is_empty() {
+            let image_buf = if !frame.image.is_empty() {
                 Some(upload_vertices(
                     &self.device,
                     &self.queue,
                     &mut self.image_buf,
                     &mut self.image_cap,
-                    &image,
+                    &frame.image,
                 ))
             } else {
                 None
@@ -998,7 +1110,7 @@ impl Renderer {
                 pass.set_scissor_rect(x, y, width, height);
             };
 
-            for step in &steps {
+            for step in &frame.steps {
                 match step {
                     Step::Solid { start, count, clip } => {
                         let Some(buf) = solid_buf.as_ref() else {
@@ -1020,7 +1132,7 @@ impl Renderer {
                         pass.set_pipeline(&self.text_pipeline);
                         pass.set_vertex_buffer(0, buf.slice(..));
                         set_scissor(&mut pass, *clip);
-                        for run in &text_runs[*run_start as usize..*run_end as usize] {
+                        for run in &frame.text_runs[*run_start as usize..*run_end as usize] {
                             let Some(glyph) = self.glyphs.get(&run.glyph_key) else {
                                 continue;
                             };
@@ -1039,7 +1151,7 @@ impl Renderer {
                         pass.set_pipeline(&self.image_pipeline);
                         pass.set_vertex_buffer(0, buf.slice(..));
                         set_scissor(&mut pass, *clip);
-                        for run in &image_runs[*run_start as usize..*run_end as usize] {
+                        for run in &frame.image_runs[*run_start as usize..*run_end as usize] {
                             let Some(tex) = self.images.get(&run.image_key) else {
                                 continue;
                             };
@@ -1055,7 +1167,69 @@ impl Renderer {
         }
 
         self.queue.submit(Some(encoder.finish()));
-        surface_texture.present();
+    }
+
+    /// 读回离屏纹理 → BGRA bytes（bytes_per_row 256 对齐，去 padding）。
+    /// wl_shm Argb8888 = 内存 [B,G,R,A]（little-endian），与 Bgra8UnormSrgb readback 一致。
+    fn readback(&self, tex: &wgpu::Texture) -> Option<Vec<u8>> {
+        let w = tex.width();
+        let h = tex.height();
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let bpr = (w * 4).div_ceil(256) * 256;
+        let rb = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("kanesumi-shm-readback"),
+            size: bpr as u64 * h as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("kanesumi-shm-readback-enc"),
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture {
+                texture: tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyBuffer {
+                buffer: &rb,
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bpr),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(Some(encoder.finish()));
+
+        let slice = rb.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+        match rx.recv() {
+            Ok(Ok(())) => {
+                let data = slice.get_mapped_range();
+                // 去除 bpr padding：每行取 w*4 字节。
+                let row_bytes = (w as usize) * 4;
+                let mut out = Vec::with_capacity(row_bytes * h as usize);
+                for row in 0..h as usize {
+                    let start = row * bpr as usize;
+                    out.extend_from_slice(&data[start..start + row_bytes]);
+                }
+                Some(out)
+            }
+            _ => None,
+        }
     }
 
     /// 排版一段文本并产出字形 quad。

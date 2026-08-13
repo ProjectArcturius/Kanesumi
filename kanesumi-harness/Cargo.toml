@@ -34,3 +34,5 @@ raw-window-handle = "0.6"
 wgpu = { version = "22", features = ["vulkan-portability"] }
 pollster = "0.3"
 bytemuck = { version = "1", features = ["derive"] }
+# wl_shm 提交（Ether 合成器 dmabuf 不可见 → 离屏读回 SHM）。参 ETHER_RENDER_LESSONS.md。
+memmap2 = "0.9"
