@@ -1444,7 +1444,14 @@ fn create_floating_surface(
     }
     let ls = shell.create_layer_surface(qh, surface.clone(), layer, Some(spec.app_id), None);
     ls.set_anchor(anchor);
-    ls.set_exclusive_zone(-1);
+    // ⚠ exclusive_zone 仅全屏表面（四边锚定）可用 -1；部分表面（如固定宽度右键菜单）
+    //   设 -1 会触发 zwlr_layer_surface_v1 ERROR_INVALID_SURFACE_STATE（协议错误 → 客户端
+    //   被杀）。非全屏浮层用 0（不占排他区域）。
+    if matches!(spec.anchor, AnchorKind::Fullscreen) {
+        ls.set_exclusive_zone(-1);
+    } else {
+        ls.set_exclusive_zone(0);
+    }
     ls.set_size(spec.width as u32, spec.height as u32);
     ls.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
     ls.commit();
