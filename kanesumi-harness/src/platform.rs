@@ -756,13 +756,16 @@ impl Shell {
         } else {
             &self.surface
         };
+        // 桌面（Background 层，外部布局）需透明底：让合成器基色/壁纸透出，
+        // 否则离屏读回是整幅不透明黑（桌面黑屏而非 #1E1E1E）。参 role.rs Desktop。
+        let transparent = self.role.surface_kind() == SurfaceKind::LayerBackground;
         match Renderer::new(
             &self.conn,
             wl_surface,
             self.width,
             self.height,
             self.scale,
-            false,
+            transparent,
             self.shm_output,
         ) {
             Ok(r) => {
