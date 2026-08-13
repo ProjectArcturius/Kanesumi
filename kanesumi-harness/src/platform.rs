@@ -1226,7 +1226,9 @@ impl LayerShellHandler for Shell {
             // 全屏浮层：合成器 configure 常给高度 0（强制 (lw,0)）→ 用输出逻辑尺寸。
             let out_size = if h <= 0 { self.output_logical_size() } else { None };
             let f = &mut self.floating[idx];
-            if w > 0 {
+            // ⚠ 固定宽度浮层（Dock 右键菜单）保持 spec.width，不用合成器强制宽度
+            //   （Ether 合成器对所有 layer surface 强制 (lw,0)）→ 否则菜单被拉成全宽。
+            if w > 0 && f.fullscreen {
                 f.width = w as f32;
             }
             if h > 0 {
