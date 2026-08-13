@@ -305,6 +305,9 @@ struct FloatingSurface {
     height: f32,
     configured: bool,
     scale: f32,
+    /// 全屏浮层（四边锚定，尺寸自适应）→ 不参与高度同步（floating_height 语义对
+    /// 全屏表面无效；高度 0 = 铺满，非"收起"）。Launcher overlay 即此类。
+    fullscreen: bool,
     _fractional_scale: Option<WpFractionalScaleV1>,
     viewport: Option<WpViewport>,
 }
@@ -533,21 +536,36 @@ impl Shell {
         self.floating.iter().position(|f| f.layer_surface == *layer)
     }
 
+    /// 首个输出的逻辑尺寸（全屏浮层 fallback；Ether 合成器 configure 常给高度 0）。
+    fn output_logical_size(&self) -> Option<(i32, i32)> {
+        self.output_state
+            .outputs()
+            .next()
+            .and_then(|o| self.output_state.info(&o))
+            .and_then(|info| info.logical_size)
+    }
+
     /// 浮层高度同步（面板展开/收起）：App::floating_height 与当前不符 → set_size 立即
     /// 生效（高度 0 = 收起，无命中无渲染）。在渲染帧内调用（App update 后）。
     fn sync_floating_heights(&mut self) {
         for (i, f) in self.floating.iter_mut().enumerate() {
+            if f.fullscreen {
+                // 全屏浮层（Launcher overlay）：尺寸自适应铺满，不参与高度同步。
+                continue;
+            }
             let h = self.app.floating_height(i);
             if (h - f.height).abs() < 0.5 {
                 continue;
             }
+            // ⚠ Bottom-only 锚定浮层高度 0 非法（需上下同时锚定才可 0）→ 至少 1。
+            let h = h.max(1.0);
             f.layer_surface.set_size(f.width as u32, h as u32);
             f.height = h;
             if let Some(r) = f.renderer.as_mut() {
                 r.resize(f.width, h, f.scale);
             }
             if let Some(viewport) = f.viewport.as_ref()
-                && h > 0.0
+                && h > 1.0
             {
                 viewport
                     .set_destination(f.width.round().max(1.0) as i32, h.round().max(1.0) as i32);
@@ -780,11 +798,16 @@ impl Shell {
         // 动态高度同步：App update 后可能请求展开/收起（TopBar 面板），先同步表面尺寸。
         self.sync_preferred_height();
         self.sync_floating_heights();
-        // 浮层可见性唤醒：App 打开浮层（floating_visible 变 true）→ 重新请求其 frame
-        // （此前隐藏时无 frame 回调，表面空闲）。每主帧请求一次，由 vsync 驱动渲染。
-        for (i, f) in self.floating.iter().enumerate() {
-            if self.app.floating_visible(i) && f.configured {
-                let s = f.surface.clone();
+        // 浮层渲染唤醒：App 打开浮层（floating_visible 变 true）→ 首帧直接渲染
+        // （建渲染器 + SHM 提交，使刚请求的 frame callback 生效），此后由 vsync 驱动。
+        for i in 0..self.floating.len() {
+            if !self.app.floating_visible(i) || !self.floating[i].configured {
+                continue;
+            }
+            if self.floating[i].renderer.is_none() {
+                self.render_floating_frame(i, qh);
+            } else {
+                let s = self.floating[i].surface.clone();
                 s.frame(qh, s.clone());
             }
         }
@@ -1194,12 +1217,19 @@ impl LayerShellHandler for Shell {
         // 浮层 surface configure。
         if let Some(idx) = self.floating_idx_by_layer(layer) {
             let (w, h) = configure.new_size;
+            // 全屏浮层：合成器 configure 常给高度 0（强制 (lw,0)）→ 用输出逻辑尺寸。
+            let out_size = if h <= 0 { self.output_logical_size() } else { None };
             let f = &mut self.floating[idx];
             if w > 0 {
                 f.width = w as f32;
             }
             if h > 0 {
                 f.height = h as f32;
+            } else if f.fullscreen {
+                if let Some((ow, oh)) = out_size {
+                    f.width = ow as f32;
+                    f.height = oh as f32;
+                }
             }
             if let Some(r) = f.renderer.as_mut() {
                 r.resize(f.width, f.height, f.scale);
@@ -1452,7 +1482,14 @@ fn create_floating_surface(
     } else {
         ls.set_exclusive_zone(0);
     }
-    ls.set_size(spec.width as u32, spec.height as u32);
+    // ⚠ 高度 0 仅在「上下同时锚定」（全屏）合法；Bottom-only 浮层（右键菜单）设 0 →
+    //   zwlr_layer_surface ERROR_INVALID_SURFACE_STATE。非全屏浮层初始高度至少 1。
+    let init_h = if matches!(spec.anchor, AnchorKind::Fullscreen) {
+        spec.height
+    } else {
+        spec.height.max(1.0)
+    };
+    ls.set_size(spec.width as u32, init_h as u32);
     ls.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
     ls.commit();
     Ok(FloatingSurface {
@@ -1463,6 +1500,7 @@ fn create_floating_surface(
         height: spec.height,
         configured: false,
         scale: 1.0,
+        fullscreen: matches!(spec.anchor, AnchorKind::Fullscreen),
         _fractional_scale: fractional_scale,
         viewport,
     })
