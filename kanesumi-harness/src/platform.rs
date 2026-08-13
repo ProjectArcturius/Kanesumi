@@ -1425,6 +1425,7 @@ fn create_floating_surface(
         AnchorKind::TopLeft => Anchor::TOP | Anchor::LEFT,
         AnchorKind::BottomCenter => Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
         AnchorKind::Fullscreen => Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
+        AnchorKind::Bottom => Anchor::BOTTOM,
     };
     let surface = compositor_state.create_surface(qh);
     let fractional_supported = fractional_scale_manager.is_some() && viewporter.is_some();

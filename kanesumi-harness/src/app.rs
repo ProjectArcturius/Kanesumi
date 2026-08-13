@@ -28,6 +28,8 @@ pub enum AnchorKind {
     BottomCenter,
     /// 全屏铺满（Launcher overlay）。四边锚定，尺寸 0 = 自适应铺满。
     Fullscreen,
+    /// 仅底部锚定（水平居中，不横向拉伸）—— Dock 右键菜单等固定宽度浮层。
+    Bottom,
 }
 
 /// 浮层表面 —— 与主表面解耦的独立 layer-shell surface。
