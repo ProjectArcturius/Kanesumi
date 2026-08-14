@@ -1417,4 +1417,109 @@ Kanesumi 移植**纯状态 + 几何**：offset 夹紧、滚动条拇指/轨道�
 
 ---
 
+## 44 · CandidateWindow（MetroCandidateWindow · IME 候选窗）
+
+> 数据源：**无平台公开规格**（Win10 微软拼音「新体验」候选窗，微软未发布几何文档）。
+> 几何/状态/交互由 Kanesumi 定夺，完整产品规格见 `CEYBOARD_SPEC.md` §Ⅲ/§Ⅳ。
+> 本控件**纯展示**（内容注入 / 高亮态 / 翻页态），候选生成与选词逻辑全在引擎层（Ceyboard），
+> 控件不持输入法状态。参 CEYBOARD_SPEC §Ⅷ「Kanesumi 只负责画，Ceyboard 负责想」。
+
+### 定位
+
+Ceyboard 候选词窗口（`ETHER_ROLE=candidate`，layer-shell OVERLAY）。preedit 行 + 候选行列表。
+微软拼音同款行为：preedit 行置顶，候选行竖排，每页 9 项。
+
+### 形状（CEYBOARD_SPEC §Ⅲ.1）
+
+| 项 | 值 |
+|---|---|
+| 圆角 | **`Square`（直角）** |
+| 边框 | **无**（transparent） |
+| 阴影 | **无**（深度靠明暗） |
+| 面板底色 | `surface`（不透明） |
+| 透明度 | 不透明（无磨砂） |
+
+### 结构（上 → 下）
+
+```
+┌─────────────────────────────┐
+│ preedit 行（拼音串 + 光标） │ ← 可选中，置顶
+│ 1  候选词甲                 │
+│ 2  候选词乙                 │ ← 高亮行（当前选中）
+│ 3  候选词丙                 │
+│ …                          │
+└─────────────────────────────┘
+```
+
+### 尺寸（CEYBOARD_SPEC §Ⅲ.3）
+
+| 项 | 值 | 状态 |
+|---|---|---|
+| 面板左右内边距 | 8px | 定 |
+| 面板上下内边距 | 4px | 定 |
+| 候选行高 | 32px | 定（对齐 Slider 32 / 列表行高惯例） |
+| 序号列宽 | 20px | 定 |
+| 候选词字号 | 16px（body_large） | 参考 |
+| 候选词行距 | 单行无 gap | 定 |
+| 面板最大宽度 | 400px（超省略） | 参考 |
+| 页脚高（翻页指示） | 24px（可选） | 参考 |
+
+### 颜色与状态（CEYBOARD_SPEC §Ⅲ.4）
+
+| 态 | 序号 | 候选词前景 | 行背景 |
+|---|---|---|---|
+| Normal | `on_surface` 50% | `on_surface` | 透明 |
+| Highlight | `on_primary` | `on_primary` | **`primary`** |
+| Pressed | — | — | `primary` + press_tint |
+
+preedit 行：前景 `on_surface`、光标竖线 2px `on_surface`、行底 `surface`。
+颜色切换 = **瞬时硬切换**（通用规律 1：`DiscreteObjectKeyFrame`，无颜色过渡）。
+
+### 动画（CEYBOARD_SPEC §Ⅲ.5）
+
+| 场景 | 动画 |
+|---|---|
+| 弹出 | `Progress` 驱动，0.25s Quadratic/EaseOut |
+| 高亮切换 / 翻页 | 瞬时 |
+| 关闭 | Fade out 0.2s（可选） |
+
+> 铁律：动画只动视觉属性（位移/透明），不动布局；进度驱动，无时间线（AnimRules §III）。
+
+### 行为（CEYBOARD_SPEC §Ⅳ）
+
+- 键盘：数字 1–9 选第 N 候选；空格选高亮；回车提交高亮；↑/↓ 移高亮（边界翻页）；
+  PageUp/PageDown 或 +/− 翻页；Esc 取消组合态。
+- 鼠标：左键点候选行提交；滚轮翻页；点 preedit 行无操作。
+- 位置：锚定文本字段光标矩形（parent_geometry + popup 光标矩形）；空间不足向上翻；
+  位置随光标即时更新。
+- 密码字段（content_hint = Password）：不弹候选窗、不外发周边文本。
+
+### 控件 API（纯展示）
+
+```
+MetroCandidateWindow {
+    preedit: String            // 未提交拼音串
+    preedit_cursor: Option<usize>  // 组合态光标（字节偏移）
+    candidates: Vec<String>    // 候选词（一页 ≤ 9）
+    highlighted: Option<usize> // 高亮下标
+    page: usize                // 当前页（0-based）
+    has_prev / has_next        // 翻页指示
+    open: bool                 // 可见性（弹层开关）
+    // render(theme, engine, rect, scene)
+    // hit_candidate(rect, pos) -> Option<usize>
+    // popup_size(theme, engine) -> Size（内容量测，供 layer-shell 定位）
+}
+```
+
+- 内容注入：引擎层（Ceyboard）填充 preedit / candidates / highlighted / page；
+  控件只画 + 命中，不产生候选。选词/翻页由引擎层把结果写回本控件状态。
+
+### Kanesumi 适配
+
+- 深色桌面 `surface`；高亮用 `primary`（列表类「选中用强调色」，通用规律 5）。
+- CJK 安全：序号 = 数字键 1–9，候选词 UTF-8 边界不劈码点。
+- 面板最大宽度 400px：超出候选词以省略号截断（`TextOverflow::Ellipsis`）。
+
+---
+
 

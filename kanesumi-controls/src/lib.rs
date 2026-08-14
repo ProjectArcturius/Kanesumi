@@ -9,6 +9,7 @@ pub mod animated_icon;
 pub mod auto_suggest_box;
 pub mod breadcrumb_bar;
 pub mod button;
+pub mod candidate_window;
 pub mod check_box;
 pub mod color_picker;
 pub mod command_bar_flyout;
