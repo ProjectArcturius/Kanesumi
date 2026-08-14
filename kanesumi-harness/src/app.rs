@@ -288,7 +288,12 @@ pub trait App {
     /// 引擎宿主：处理一个按键（来自 `zwp_input_method_keyboard_grab_v2` 的 key 事件，
     /// 已由外壳经 xkbcommon 语义化为 [`Key`] + 修饰键）。引擎内部更新组合态。
     /// `modifiers` 供引擎宿主处理组合键（如 Ctrl+Space 切中英）。
-    fn ime_engine_key(&mut self, _key: Key, _modifiers: Modifiers) {}
+    /// **返回 `true` = 引擎消费了该键**（不重放）；`false` = 未消费，外壳经
+    /// `zwp_virtual_keyboard_v1` 重放给焦点客户端（fcitx5 同款透传策略，
+    /// arrow/backspace/Home 等导航键须透传，否则焦点应用收不到）。参 CEYBOARD_SPEC §Ⅴ。
+    fn ime_engine_key(&mut self, _key: Key, _modifiers: Modifiers) -> bool {
+        false
+    }
 
     /// 引擎宿主：当前组合态 preedit（拼音串）及光标字节偏移。
     /// 返回 `(preedit, cursor_byte)`；空串 = 无组合态。

@@ -61,6 +61,11 @@ use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_v2::{Event as ImEvent, ZwpInputMethodV2},
     zwp_input_popup_surface_v2::ZwpInputPopupSurfaceV2,
 };
+// 虚拟键盘：重放引擎未消费的按键给焦点客户端（fcitx5 同款透传）。
+use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
+    zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
+    zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+};
 
 use crate::app::{
     AnchorKind, App, FloatingLayer, ImeAction, ImeContentHint, ImeContext, InputEvent, Key,
@@ -286,6 +291,12 @@ struct Shell {
     im_surrounding: Option<(String, u32, u32)>,
     /// 候选窗 popup surface（引擎激活时创建，deactivate 释放）。
     im_popup: Option<ImPopupSurface>,
+    /// 虚拟键盘 manager 全局（重放未消费按键给焦点客户端）。
+    vk_manager: Option<ZwpVirtualKeyboardManagerV1>,
+    /// per-seat 虚拟键盘对象。
+    virtual_keyboard: Option<ZwpVirtualKeyboardV1>,
+    /// 重放按键时间戳（单调递增）。
+    im_key_time: u32,
 
     /// 当前修饰键状态（`update_modifiers` 维护，注入每个输入事件）。
     modifiers: Modifiers,
@@ -557,6 +568,18 @@ impl Shell {
             None
         };
 
+        // 虚拟键盘 manager：引擎宿主重放未消费按键（arrow/backspace 透传）。参 CEYBOARD_SPEC §Ⅴ。
+        let vk_manager = if app.ime_engine_host() {
+            globals
+                .bind::<ZwpVirtualKeyboardManagerV1, Self, ()>(qh, 1..=1, ())
+                .map_err(|e| {
+                    log::warn!("zwp_virtual_keyboard_manager_v1 不可用，按键透传降级：{e}");
+                })
+                .ok()
+        } else {
+            None
+        };
+
         // wl_shm 全局（SHM 提交用）。Ether 合成器对 layer-shell wgpu dmabuf 渲染不可见，
         // layer-shell 角色一律走离屏读回 → wl_shm 提交。合成器未提供 → None，退化 present。
         let shm = globals
@@ -651,6 +674,9 @@ impl Shell {
             im_modifiers: Modifiers::NONE,
             im_surrounding: None,
             im_popup: None,
+            vk_manager,
+            virtual_keyboard: None,
+            im_key_time: 0,
             modifiers: Modifiers::NONE,
             conn: conn.clone(),
             pending_height: None,
@@ -1533,6 +1559,13 @@ impl SeatHandler for Shell {
                 self.im_keyboard_grab = Some(grab);
                 self.input_method = Some(im);
             }
+            // per-seat 虚拟键盘（重放未消费按键给焦点客户端）。
+            if self.virtual_keyboard.is_none()
+                && let Some(manager) = self.vk_manager.as_ref()
+            {
+                let vk = manager.create_virtual_keyboard(&seat, qh, ());
+                self.virtual_keyboard = Some(vk);
+            }
         }
     }
 
@@ -2060,6 +2093,13 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                     log::warn!("input-method keymap 格式非 xkb_v1，忽略");
                     return;
                 }
+                // 虚拟键盘须先有 keymap 才能重放按键（协议要求）——把同一 keymap 也发过去。
+                if let Some(vk) = state.virtual_keyboard.clone() {
+                    use std::os::fd::AsFd;
+                    if let Ok(fd_clone) = fd.try_clone() {
+                        vk.keymap(1, fd_clone.as_fd(), size);
+                    }
+                }
                 match ImXkb::from_keymap(fd, size as usize) {
                     Ok(xkb) => state.im_xkb = Some(xkb),
                     Err(e) => log::warn!("input-method keymap 建立失败：{e}"),
@@ -2072,26 +2112,32 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
             } => {
                 // 合成器转发的硬件按键 → 引擎。仅按下（state==Pressed）且引擎激活时处理。
                 use wayland_client::WEnum;
-                let pressed = matches!(
+                let is_pressed = matches!(
                     kstate,
                     WEnum::Value(wayland_client::protocol::wl_keyboard::KeyState::Pressed)
                 );
-                if !pressed || !state.im_active {
+                if !is_pressed || !state.im_active {
                     return;
                 }
                 let Some(xkb) = state.im_xkb.as_ref() else {
                     return;
                 };
                 let (sym, utf8) = xkb.keycode_to_sym(key);
-                let logical = map_key(
-                    xkeysym::Keysym::new(sym),
-                    utf8,
-                );
+                let logical = map_key(xkeysym::Keysym::new(sym), utf8);
                 // 引擎处理按键 → 更新 preedit/commit，随即 flush 上屏。
-                state.app.ime_engine_key(logical, state.im_modifiers);
+                // 返回 false = 引擎未消费 → 经虚拟键盘重放给焦点客户端（fcitx5 同款
+                // 透传：arrow/backspace/Home 等导航键须到焦点应用）。
+                let consumed = state.app.ime_engine_key(logical, state.im_modifiers);
                 if let Some(im) = state.input_method.clone() {
                     state.flush_engine(&im);
                 }
+                if !consumed
+                    && let Some(vk) = state.virtual_keyboard.clone()
+                {
+                    vk.key(state.im_key_time, key, 1); // 按下
+                    vk.key(state.im_key_time, key, 0); // 释放（透传完整按键）
+                }
+                state.im_key_time += 1;
             }
             ImGrabEvent::Modifiers {
                 mods_depressed,
@@ -2109,6 +2155,10 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                     shift: mods_depressed & 1 != 0,  // Shift_L = 0x01
                     super_key: mods_depressed & 64 != 0, // Super_L = 0x40
                 };
+                // 同步修饰键到虚拟键盘（重放的组合键如 Ctrl+C 须带修饰状态）。
+                if let Some(vk) = state.virtual_keyboard.clone() {
+                    vk.modifiers(mods_depressed, mods_latched, mods_locked, group);
+                }
             }
             _ => {}
         }
@@ -2121,6 +2171,31 @@ impl Dispatch<ZwpInputPopupSurfaceV2, ()> for Shell {
         _state: &mut Self,
         _proxy: &ZwpInputPopupSurfaceV2,
         _event: wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_popup_surface_v2::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+// 虚拟键盘 manager / 对象：无事件需处理，仅保证存活。
+impl Dispatch<ZwpVirtualKeyboardManagerV1, ()> for Shell {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpVirtualKeyboardManagerV1,
+        _event: wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_manager_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwpVirtualKeyboardV1, ()> for Shell {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpVirtualKeyboardV1,
+        _event: wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_v1::Event,
         _data: &(),
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
