@@ -29,6 +29,9 @@ smithay-client-toolkit = { version = "0.19", default-features = false, features 
 wayland-client  = { version = "0.31", features = ["system"] }
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"] }
+# input-method-v2 引擎宿主协议（Ceyboard 作为 IME 引擎连接合成器）。参 CEYBOARD_SPEC §Ⅴ。
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+xkbcommon = "0.7"
 xkeysym = "0.2"
 raw-window-handle = "0.6"
 wgpu = { version = "22", features = ["vulkan-portability"] }

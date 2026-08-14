@@ -52,6 +52,14 @@ use wayland_protocols::wp::text_input::zv3::client::{
 use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
 };
+// input-method-v2 引擎宿主（Ceyboard 作为 IME 引擎连接合成器）。参 CEYBOARD_SPEC §Ⅴ。
+use wayland_protocols_misc::zwp_input_method_v2::client::{
+    zwp_input_method_keyboard_grab_v2::{
+        Event as ImGrabEvent, ZwpInputMethodKeyboardGrabV2,
+    },
+    zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+    zwp_input_method_v2::{Event as ImEvent, ZwpInputMethodV2},
+};
 
 use crate::app::{
     AnchorKind, App, FloatingLayer, ImeAction, ImeContentHint, ImeContext, InputEvent, Key,
@@ -254,6 +262,23 @@ struct Shell {
     pending_ime: PendingImeBatch,
     /// 上次发送的 IME 上下文缓存（无变化不重发，避免每帧灌上下文 + commit 抖动）。
     ime_context_cache: Option<ImeContext>,
+
+    // ── IME 引擎宿主（zwp_input_method_v2，Ceyboard 作为引擎）。参 CEYBOARD_SPEC §Ⅴ ─────
+    /// input-method manager 全局（合成器提供 + App 声明引擎宿主 → Some）。
+    input_method_manager: Option<ZwpInputMethodManagerV2>,
+    /// per-seat input-method 对象（引擎侧）。
+    input_method: Option<ZwpInputMethodV2>,
+    /// grab_keyboard 返回的键盘 grab（接收合成器转发的按键）。
+    im_keyboard_grab: Option<ZwpInputMethodKeyboardGrabV2>,
+    /// 引擎是否激活（activate 后 true；此时按键进引擎）。
+    im_active: bool,
+    /// done 事件计数（serial = 已收到的 done 数；commit 时回传）。
+    im_done_serial: u32,
+    /// xkbcommon keymap 状态（keymap 事件建立，key 事件语义化）。
+    im_xkb: Option<ImXkb>,
+    /// 上次发送的 preedit（幂等：无变化不重发 set_preedit_string）。
+    im_preedit_cache: Option<String>,
+
     /// 当前修饰键状态（`update_modifiers` 维护，注入每个输入事件）。
     modifiers: Modifiers,
     /// Wayland 连接（延迟渲染器初始化用：首 configure 后才创建 wgpu surface）。
@@ -287,6 +312,48 @@ struct ShmBuffers {
     mmap: Option<memmap2::MmapMut>,
     width: u32,
     height: u32,
+}
+
+/// IME 引擎宿主的 xkbcommon 状态 —— 把 grab keymap 的 keycode 语义化为 keysym/utf8。
+/// 参 CEYBOARD_SPEC §Ⅴ（合成器把按键转发给 IME，IME 据此生成 preedit/commit）。
+struct ImXkb {
+    /// 保持 keymap 存活（State 引用它，drop 顺序在 state 之后）。
+    #[allow(dead_code)]
+    keymap: xkbcommon::xkb::Keymap,
+    state: xkbcommon::xkb::State,
+}
+
+impl ImXkb {
+    fn from_keymap(fd: std::os::fd::OwnedFd, size: usize) -> Result<Self, String> {
+        let context = xkbcommon::xkb::Context::new(xkbcommon::xkb::CONTEXT_NO_FLAGS);
+        let keymap = unsafe {
+            xkbcommon::xkb::Keymap::new_from_fd(
+                &context,
+                fd,
+                size,
+                xkbcommon::xkb::KEYMAP_FORMAT_TEXT_V1,
+                xkbcommon::xkb::KEYMAP_COMPILE_NO_FLAGS,
+            )
+        }
+        .map_err(|e| format!("keymap mmap 失败：{e}"))?
+        .ok_or_else(|| "keymap 编译失败".to_string())?;
+        let state = xkbcommon::xkb::State::new(&keymap);
+        Ok(Self { keymap, state })
+    }
+
+    /// keycode → (keysym raw, utf8 文本)。
+    fn keycode_to_sym(&self, keycode: u32) -> (u32, Option<String>) {
+        let key = xkeysym::KeyCode::new(keycode + 8);
+        let sym: xkeysym::Keysym = self.state.key_get_one_sym(key);
+        let utf8 = self.state.key_get_utf8(key);
+        let utf8 = utf8.trim_matches('\0');
+        let utf8 = if utf8.is_empty() { None } else { Some(utf8.to_string()) };
+        (sym.raw(), utf8)
+    }
+
+    fn update_mask(&mut self, depressed: u32, latched: u32, locked: u32, group: u32) {
+        let _ = self.state.update_mask(depressed, latched, locked, 0, 0, group);
+    }
 }
 
 impl Default for ShmBuffers {
@@ -456,6 +523,19 @@ impl Shell {
             })
             .ok();
 
+        // IME 引擎宿主：App 声明 ime_engine_host() 时绑定 zwp_input_method_manager_v2。
+        // 合成器未提供 → None，Ceyboard 退化为无键盘引擎（仅 UI 展示）。
+        let input_method_manager = if app.ime_engine_host() {
+            globals
+                .bind::<ZwpInputMethodManagerV2, Self, ()>(qh, 1..=1, ())
+                .map_err(|e| {
+                    log::warn!("zwp_input_method_manager_v2 不可用，引擎宿主降级：{e}");
+                })
+                .ok()
+        } else {
+            None
+        };
+
         // wl_shm 全局（SHM 提交用）。Ether 合成器对 layer-shell wgpu dmabuf 渲染不可见，
         // layer-shell 角色一律走离屏读回 → wl_shm 提交。合成器未提供 → None，退化 present。
         let shm = globals
@@ -540,6 +620,13 @@ impl Shell {
             commit_serial: 0,
             pending_ime: PendingImeBatch::default(),
             ime_context_cache: None,
+            input_method_manager,
+            input_method: None,
+            im_keyboard_grab: None,
+            im_active: false,
+            im_done_serial: 0,
+            im_xkb: None,
+            im_preedit_cache: None,
             modifiers: Modifiers::NONE,
             conn: conn.clone(),
             pending_height: None,
@@ -1409,6 +1496,16 @@ impl SeatHandler for Shell {
                 let ti = manager.get_text_input(&seat, qh, ());
                 self.text_input = Some(ti);
             }
+            // per-seat input-method 对象（引擎宿主）+ grab keyboard。
+            if self.input_method.is_none()
+                && let Some(manager) = self.input_method_manager.as_ref()
+            {
+                let im = manager.get_input_method(&seat, qh, ());
+                // grab_keyboard：引擎接收合成器转发的硬件键盘。
+                let grab = im.grab_keyboard(qh, ());
+                self.im_keyboard_grab = Some(grab);
+                self.input_method = Some(im);
+            }
         }
     }
 
@@ -1847,6 +1944,160 @@ impl Dispatch<ZwpTextInputV3, ()> for Shell {
                 state.reconcile_ime();
             }
             _ => {}
+        }
+    }
+}
+
+// ── IME 引擎宿主（zwp_input_method_v2，Ceyboard 作为引擎）。参 CEYBOARD_SPEC §Ⅴ ─────
+
+// manager 无事件，仅保证对象存活。
+impl Dispatch<ZwpInputMethodManagerV2, ()> for Shell {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpInputMethodManagerV2,
+        _event: wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_manager_v2::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwpInputMethodV2, ()> for Shell {
+    fn event(
+        state: &mut Self,
+        proxy: &ZwpInputMethodV2,
+        event: ImEvent,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            // 文本字段获焦 → 引擎激活；重置组合态缓存。
+            ImEvent::Activate => {
+                state.im_active = true;
+                state.im_preedit_cache = None;
+                state.emit_input(InputEvent::Preedit {
+                    text: String::new(),
+                    cursor_byte: None,
+                });
+                state.flush_engine(proxy);
+            }
+            // 失焦 → 引擎失活；清组合态。
+            ImEvent::Deactivate => {
+                state.im_active = false;
+                state.im_preedit_cache = None;
+                state.emit_input(InputEvent::Preedit {
+                    text: String::new(),
+                    cursor_byte: None,
+                });
+            }
+            // done 事件：serial 计数（commit 请求需回传该 serial）。
+            ImEvent::Done => {
+                state.im_done_serial += 1;
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
+    fn event(
+        state: &mut Self,
+        _proxy: &ZwpInputMethodKeyboardGrabV2,
+        event: ImGrabEvent,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            ImGrabEvent::Keymap { format, fd, size } => {
+                // xkbcommon keymap → ImXkb（key 事件语义化）。
+                use wayland_client::WEnum;
+                let fmt_ok = match format {
+                    WEnum::Value(f) => {
+                        matches!(f, wayland_client::protocol::wl_keyboard::KeymapFormat::XkbV1)
+                    }
+                    _ => false,
+                };
+                if !fmt_ok {
+                    log::warn!("input-method keymap 格式非 xkb_v1，忽略");
+                    return;
+                }
+                match ImXkb::from_keymap(fd, size as usize) {
+                    Ok(xkb) => state.im_xkb = Some(xkb),
+                    Err(e) => log::warn!("input-method keymap 建立失败：{e}"),
+                }
+            }
+            ImGrabEvent::Key {
+                key,
+                state: kstate,
+                ..
+            } => {
+                // 合成器转发的硬件按键 → 引擎。仅按下（state==Pressed）且引擎激活时处理。
+                use wayland_client::WEnum;
+                let pressed = matches!(
+                    kstate,
+                    WEnum::Value(wayland_client::protocol::wl_keyboard::KeyState::Pressed)
+                );
+                if !pressed || !state.im_active {
+                    return;
+                }
+                let Some(xkb) = state.im_xkb.as_ref() else {
+                    return;
+                };
+                let (sym, utf8) = xkb.keycode_to_sym(key);
+                let logical = map_key(
+                    xkeysym::Keysym::new(sym),
+                    utf8,
+                );
+                // 引擎处理按键 → 更新 preedit/commit，随即 flush 上屏。
+                state.app.ime_engine_key(logical);
+                if let Some(im) = state.input_method.clone() {
+                    state.flush_engine(&im);
+                }
+            }
+            ImGrabEvent::Modifiers {
+                mods_depressed,
+                mods_latched,
+                mods_locked,
+                group,
+                ..
+            } => {
+                if let Some(xkb) = state.im_xkb.as_mut() {
+                    xkb.update_mask(mods_depressed, mods_latched, mods_locked, group);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Shell {
+    /// 引擎宿主 flush：把 App 引擎的 preedit / commit / delete 通过 input-method-v2 上屏。
+    /// 幂等：preedit 无变化不重发 set_preedit_string（避免光标抖动）。
+    fn flush_engine(&mut self, im: &ZwpInputMethodV2) {
+        // 1. 待提交文本（选词/空格/回车）。
+        let mut committed = false;
+        while let Some(text) = self.app.ime_engine_take_commit() {
+            im.commit_string(text);
+            committed = true;
+        }
+        // 2. 待删除周边字节（退格）。
+        let (before, after) = self.app.ime_engine_take_delete();
+        if before > 0 || after > 0 {
+            im.delete_surrounding_text(before, after);
+        }
+        // 3. 组合态 preedit（变化才发）。
+        let (preedit, cursor_byte) = self.app.ime_engine_preedit();
+        let cursor = cursor_byte.map(|c| c as i32).unwrap_or(-1);
+        if self.im_preedit_cache.as_deref() != Some(preedit.as_str()) {
+            im.set_preedit_string(preedit.clone(), cursor, cursor);
+            self.im_preedit_cache = Some(preedit);
+        }
+        // 4. 提交（serial = 已收到 done 数）。
+        if committed {
+            im.commit(self.im_done_serial);
         }
     }
 }

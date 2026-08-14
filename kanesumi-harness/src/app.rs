@@ -277,6 +277,35 @@ pub trait App {
         None
     }
 
+    /// 是否作为 IME 引擎宿主（`zwp_input_method_v2` 引擎侧）。`true` 时外壳绑定
+    /// `zwp_input_method_manager_v2` + `grab_keyboard`，把合成器转发的按键经
+    /// `ime_engine_key` 投递给本 App，并把 `ime_engine_preedit`/`ime_engine_commit`
+    /// 回传上屏。仅 Ceyboard（Candidate 角色）返回 true。
+    fn ime_engine_host(&self) -> bool {
+        false
+    }
+
+    /// 引擎宿主：处理一个按键（来自 `zwp_input_method_keyboard_grab_v2` 的 key 事件，
+    /// 已由外壳经 xkbcommon 语义化为 [`Key`]）。引擎内部更新组合态。
+    fn ime_engine_key(&mut self, _key: Key) {}
+
+    /// 引擎宿主：当前组合态 preedit（拼音串）及光标字节偏移。
+    /// 返回 `(preedit, cursor_byte)`；空串 = 无组合态。
+    fn ime_engine_preedit(&self) -> (String, Option<usize>) {
+        (String::new(), None)
+    }
+
+    /// 引擎宿主：取走待提交文本（选词/空格/回车后引擎产出的 commit）。
+    /// 返回 `Some(text)` = 上屏；`None` = 无待提交。
+    fn ime_engine_take_commit(&mut self) -> Option<String> {
+        None
+    }
+
+    /// 引擎宿主：取走待删除的周边字节数（退格等）。返回 `(before, after)`。
+    fn ime_engine_take_delete(&mut self) -> (u32, u32) {
+        (0, 0)
+    }
+
     /// 全局应用菜单声明。返回 `Some(tree)` = 启用 AppMenu —— 外壳（Linux）自动完成
     /// com.canonical.dbusmenu 服务 + org_kde_kwin_appmenu Wayland 绑定 +
     /// com.canonical.AppMenu.Registrar 兜底注册（参 appmenu 模块）；`None` = 无全局菜单。

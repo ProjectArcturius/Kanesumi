@@ -246,9 +246,24 @@ Ceyboard crate（`ceyboard/`，bin `ceyboard`）：
   `create_libime_engine` 加载 `/usr/share/libime/sc.dict`（Binary）+ zh_CN.lm（resolver）；
   拼音候选 / 选词上屏 / 退格 / 翻页全部真实 libime 语义。
 
-> 引擎桥接（libime LGPL 动态链接）已通：`nihao → 你好` 候选链实测。缺最后一步：
-> harness 作为 `zwp_input_method_v2` 引擎宿主的客户端协议绑定（候选窗 popup 由引擎进程
-> 经 input-method-v2 创建，而非当前 layer-shell OVERLAY 模拟路径）。
+> 引擎桥接（libime LGPL 动态链接）已通：`nihao → 你好` 候选链实测。
+
+## 4. 引擎宿主协议绑定（2026-08-14 已落）
+
+harness 作为 `zwp_input_method_v2` 引擎宿主的客户端绑定已落地：
+
+- `App` trait 增引擎宿主钩子：`ime_engine_host()` / `ime_engine_key()` /
+  `ime_engine_preedit()` / `ime_engine_take_commit()` / `ime_engine_take_delete()`。
+- `platform.rs`：`Shell` 绑定 `zwp_input_method_manager_v2` → `get_input_method(seat)` →
+  `grab_keyboard`；`Dispatch<ZwpInputMethodV2>`（activate/deactivate/done）+ 键盘 grab
+  keymap/key/modifiers（xkbcommon 语义化）→ `App::ime_engine_key` → 引擎。
+- `flush_engine()`：引擎 preedit → `set_preedit_string`（幂等缓存）、commit →
+  `commit_string`、`delete_surrounding_text`，最后 `commit(serial)` 上屏。
+- CeyboardApp 实现全部引擎宿主钩子（libime 引擎驱动）。
+
+> 候选窗视觉：引擎进程经 layer-shell OVERLAY 渲染候选窗（当前路径）；
+> 输入法 popup surface（`get_input_popup_surface`）的候选窗渲染留待后续（合成器
+> `collect_im_popup_draws` 已就绪）。
 
 ---
 
@@ -313,9 +328,10 @@ Ceyboard 是「语言环境」（Locale + 字体 + 输入法 + Fallback + UI 对
 4. ✅ **Ceyboard 进程**（引擎抽象 + mock 引擎 + 候选窗驱动 + libime 真实引擎 FFI 桥接）。
 5. ✅ **状态指示**（中/英切换，Phase 1 候选窗底部）。
 6. ✅ **语言包 `ether-langpack-zh-ime`**（manifest + staging + 打包说明）。
+7. ✅ **引擎宿主协议绑定**（`zwp_input_method_v2` 客户端：grab keyboard + preedit/commit 上屏）。
 
 **剩余（后续单独立项）：**
 
-- harness 作为 `zwp_input_method_v2` 引擎宿主的客户端协议绑定（候选窗 popup 由引擎进程创建）。
+- 输入法 popup surface（`get_input_popup_surface`）候选窗渲染（当前 layer-shell OVERLAY 路径）。
 - 状态指示 Phase 2 并入 TopBar Control Gate。
 - 语言包实际词库数据落位 + `pinyin.lua` 数据脚本分发。
