@@ -20,8 +20,8 @@ pub const CANDIDATE_PAD_X: f32 = 12.0;
 pub const CANDIDATE_PAD_Y: f32 = 6.0;
 /// 序号 + 词之间间隔。
 pub const CANDIDATE_LABEL_GAP: f32 = 2.0;
-/// 相邻候选间隔。
-pub const CANDIDATE_ITEM_GAP: f32 = 14.0;
+/// 相邻候选间隔（拉长 → 各候选色块左右等宽、视觉协调）。
+pub const CANDIDATE_ITEM_GAP: f32 = 28.0;
 /// 高亮块额外内边距（序号左侧留白，词右侧留白）。
 pub const CANDIDATE_HL_PAD: f32 = 6.0;
 /// 面板最大宽度（超过则溢出省略当前页尾项）。
@@ -62,9 +62,8 @@ impl MetroCandidateWindow {
     }
 
     /// 单候选「序号 + 词」的宽度（估算：汉字 ≈ 字号宽，拉丁 ≈ 字号×0.6）。
-    /// 不需 TextEngine（popup_size/hit 无引擎上下文时仍可用）；引擎侧用 render 时
-    /// 的精确排版，宽余量由 CANDIDATE_HL_PAD 吸收。
-    pub fn item_width(&self, i: usize) -> f32 {
+    /// 不需 TextEngine（popup_size/hit 无引擎上下文时仍可用）。
+    fn raw_item_width(&self, i: usize) -> f32 {
         let Some(cand) = self.candidates.get(i) else {
             return 0.0;
         };
@@ -77,26 +76,36 @@ impl MetroCandidateWindow {
         label_w + CANDIDATE_LABEL_GAP + text_w + CANDIDATE_HL_PAD * 2.0
     }
 
-    /// 面板内容尺寸（横排单行，宽 = 候选总宽，高 = 单行）。
+    /// 候选块宽（等宽）：取全部候选项最大宽。等宽 → 高亮/悬停色块左右对称，视觉协调。
+    pub fn item_width(&self, _i: usize) -> f32 {
+        self.max_item_width()
+    }
+
+    /// 最大候选块宽（等宽基准）。
+    fn max_item_width(&self) -> f32 {
+        (0..self.candidates.len())
+            .map(|i| self.raw_item_width(i))
+            .fold(0.0, f32::max)
+            .max(CANDIDATE_HL_PAD * 2.0)
+    }
+
+    /// 面板内容尺寸（横排单行，宽 = 等宽候选 × N + 间距，高 = 单行）。
     /// 供 popup surface 定位用。宽上限 CANDIDATE_MAX_W。
     pub fn popup_size(&self) -> Size {
         if self.candidates.is_empty() {
             return Size::new(0.0, 0.0);
         }
-        let mut w = CANDIDATE_PAD_X * 2.0;
-        for i in 0..self.candidates.len() {
-            if i > 0 {
-                w += CANDIDATE_ITEM_GAP;
-            }
-            w += self.item_width(i);
-        }
+        let iw = self.max_item_width();
+        let n = self.candidates.len() as f32;
+        let gaps = (n - 1.0) * CANDIDATE_ITEM_GAP;
+        let w = CANDIDATE_PAD_X * 2.0 + iw * n + gaps;
         Size::new(
             w.min(CANDIDATE_MAX_W).max(CANDIDATE_PAD_X * 2.0),
             CANDIDATE_PAD_Y * 2.0 + CANDIDATE_ROW_H,
         )
     }
 
-    /// 命中候选项（横排）。返回下标。
+    /// 命中候选项（横排等宽）。返回下标。
     pub fn hit_candidate(&self, rect: Rect, pos: Point) -> Option<usize> {
         if !self.open || self.candidates.is_empty() || !rect.contains(pos) {
             return None;
@@ -106,9 +115,9 @@ impl MetroCandidateWindow {
         if pos.y < row_y0 || pos.y >= row_y0 + CANDIDATE_ROW_H {
             return None;
         }
+        let iw = self.max_item_width();
         let mut x = rect.origin.x + CANDIDATE_PAD_X;
         for i in 0..self.candidates.len() {
-            let iw = self.item_width(i);
             if pos.x >= x && pos.x < x + iw {
                 return Some(i);
             }
@@ -141,14 +150,14 @@ impl MetroCandidateWindow {
             let text_y = row_y + (CANDIDATE_ROW_H - text_h) / 2.0;
 
             if highlighted {
-                // 高亮：primary 整块贴面板（从左缘到该项右缘、垂直铺满面板），
-                // 无内边距露底 = 无边框设计。微软拼音横排候选高亮同款。
+                // 高亮：单项等宽色块（垂直铺满面板，左右贴该项边界）。
+                // 等宽候选 → 每项色块左右对称；不延伸跨项。微软拼音横排同款。
                 scene.fill_rect(
                     colors.primary,
                     Rect::new(
-                        rect.origin.x,
+                        x,
                         rect.origin.y,
-                        (x + iw - rect.origin.x).max(0.0),
+                        iw,
                         rect.size.height,
                     ),
                 );
