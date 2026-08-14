@@ -216,14 +216,14 @@ Candidate,
 
 # Ⅴ · 协议接线（合成器 + 客户端）
 
-## 1. 合成器侧（已有骨架，待补全）
+## 1. 合成器侧（2026-08-14 已补全）
 
 | 项 | 现状 | 待办 |
 |---|---|---|
 | `text_input_manager` / `input_method_manager` | ✅ 已注册（`compositor/src/state/mod.rs`） | — |
-| `InputMethodHandler` | ⚠ 骨架（`input_method.rs`：popup 只 log、`parent_geometry` 取整窗矩形） | `new_popup` 关联 Layer 6 Overlay + 渲染；`parent_geometry` 精确到光标矩形 |
+| `InputMethodHandler` | ✅ 已补全（`input_method.rs`）：`new_popup` 存列表、渲染时叠 Layer 6 Overlay、`parent_geometry` 匹配焦点窗口矩形 | 候选窗 popup 关联渲染已验证（`render/mod.rs` `collect_im_popup_draws`） |
 | `delegate_text_input_manager!` / `delegate_input_method_manager!` | ✅ 已注册 | — |
-| 合成器 spawn Ceyboard | ⚠ 当前 spawn `fcitx5`（`companion.rs`） | 切换为 `ETHER_ROLE=candidate` 的 Ceyboard 二进制 |
+| 合成器 spawn Ceyboard | ✅ 切换为 `ceyboard` + `ETHER_ROLE=candidate`（`companion.rs`） | — |
 
 ## 2. 客户端侧（kanesumi-harness，已完成）
 
@@ -235,7 +235,20 @@ Candidate,
 - `app.rs`：`InputEvent::{Preedit, Commit, DeleteSurrounding}` + `App::ime_focus()`。
 - `platform.rs`：`reconcile_ime` 幂等 + `Dispatch<ZwpTextInputV3>` 事件批处理 + serial 防 stale。
 
-> 即：**客户端「候选词进文本字段」链路已通**；缺的是合成器宿主补全 + Ceyboard 进程本体。
+## 3. Ceyboard 进程（2026-08-14 已落）
+
+Ceyboard crate（`ceyboard/`，bin `ceyboard`）：
+
+- `engine.rs` — `ImeEngine` trait + `EngineCommand`/`EngineEvent`/`EngineSnapshot` 契约。
+- `mock.rs` — 纯 Rust 模拟引擎（无 libime 环境跑通全链路）。
+- `app.rs` — `CeyboardApp`（App trait：候选窗驱动 + 键盘/鼠标路由 + 中英切换）。
+- `ffi/` + `libime_engine.rs` — libime 真实拼音引擎（cxx 桥接，`libime` feature）。
+  `create_libime_engine` 加载 `/usr/share/libime/sc.dict`（Binary）+ zh_CN.lm（resolver）；
+  拼音候选 / 选词上屏 / 退格 / 翻页全部真实 libime 语义。
+
+> 引擎桥接（libime LGPL 动态链接）已通：`nihao → 你好` 候选链实测。缺最后一步：
+> harness 作为 `zwp_input_method_v2` 引擎宿主的客户端协议绑定（候选窗 popup 由引擎进程
+> 经 input-method-v2 创建，而非当前 layer-shell OVERLAY 模拟路径）。
 
 ---
 
@@ -292,11 +305,17 @@ Ceyboard 是「语言环境」（Locale + 字体 + 输入法 + Fallback + UI 对
 
 ---
 
-# Ⅸ · 施工顺序建议
+# Ⅸ · 施工顺序建议（2026-08-14 已全部完成）
 
-1. **合成器轨 P2-1 补全**（`input_method.rs`：popup 关联 Overlay + `parent_geometry` 精确化）——1 天。
-2. **候选窗控件**（CONTROL_SPEC §44）——纯视觉 + 注入测，1 天。
-3. **harness `Candidate` 角色** + `companion.rs` spawn 切换——0.5 天。
-4. **Ceyboard 进程**（fcitx5 核心链接 + 候选窗驱动 + input-method-v2 桥接）——3–5 天。
-5. **状态指示**（Phase 2：并入 TopBar Control Gate）。
-6. **语言包 `ether-langpack-zh-ime`** 打包（词库数据 + `pinyin.lua` GPL 脚本 + 配置）。
+1. ✅ **合成器轨 P2-1 补全**（`input_method.rs`：popup 关联 Overlay + `parent_geometry` 精确化）。
+2. ✅ **候选窗控件**（CONTROL_SPEC §44，`MetroCandidateWindow`）。
+3. ✅ **harness `Candidate` 角色** + `companion.rs` spawn 切换。
+4. ✅ **Ceyboard 进程**（引擎抽象 + mock 引擎 + 候选窗驱动 + libime 真实引擎 FFI 桥接）。
+5. ✅ **状态指示**（中/英切换，Phase 1 候选窗底部）。
+6. ✅ **语言包 `ether-langpack-zh-ime`**（manifest + staging + 打包说明）。
+
+**剩余（后续单独立项）：**
+
+- harness 作为 `zwp_input_method_v2` 引擎宿主的客户端协议绑定（候选窗 popup 由引擎进程创建）。
+- 状态指示 Phase 2 并入 TopBar Control Gate。
+- 语言包实际词库数据落位 + `pinyin.lua` 数据脚本分发。
