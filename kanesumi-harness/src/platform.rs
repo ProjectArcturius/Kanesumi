@@ -59,6 +59,7 @@ use wayland_protocols_misc::zwp_input_method_v2::client::{
     },
     zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
     zwp_input_method_v2::{Event as ImEvent, ZwpInputMethodV2},
+    zwp_input_popup_surface_v2::ZwpInputPopupSurfaceV2,
 };
 
 use crate::app::{
@@ -278,6 +279,10 @@ struct Shell {
     im_xkb: Option<ImXkb>,
     /// 上次发送的 preedit（幂等：无变化不重发 set_preedit_string）。
     im_preedit_cache: Option<String>,
+    /// 引擎键盘的修饰键状态（grab modifiers 事件维护，注入 ime_engine_key）。
+    im_modifiers: Modifiers,
+    /// 候选窗 popup surface（引擎激活时创建，deactivate 释放）。
+    im_popup: Option<ImPopupSurface>,
 
     /// 当前修饰键状态（`update_modifiers` 维护，注入每个输入事件）。
     modifiers: Modifiers,
@@ -354,6 +359,19 @@ impl ImXkb {
     fn update_mask(&mut self, depressed: u32, latched: u32, locked: u32, group: u32) {
         let _ = self.state.update_mask(depressed, latched, locked, 0, 0, group);
     }
+}
+
+/// IME 候选窗 popup surface（`zwp_input_popup_surface_v2`）。合成器渲染到 Layer 6
+/// Overlay 并跟随光标（Section 1 `collect_im_popup_draws`）。参 CEYBOARD_SPEC §Ⅱ/§Ⅴ。
+struct ImPopupSurface {
+    surface: wl_surface::WlSurface,
+    /// popup surface 对象（角色标记，保持存活）。
+    #[allow(dead_code)]
+    popup: wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_popup_surface_v2::ZwpInputPopupSurfaceV2,
+    renderer: Option<Renderer>,
+    shm: ShmBuffers,
+    width: f32,
+    height: f32,
 }
 
 impl Default for ShmBuffers {
@@ -627,6 +645,8 @@ impl Shell {
             im_done_serial: 0,
             im_xkb: None,
             im_preedit_cache: None,
+            im_modifiers: Modifiers::NONE,
+            im_popup: None,
             modifiers: Modifiers::NONE,
             conn: conn.clone(),
             pending_height: None,
@@ -940,6 +960,9 @@ impl Shell {
 
         // App 状态可能已变（焦点/文本/光标）→ 幂等 reconcile IME（无变化零成本）。
         self.reconcile_ime();
+
+        // IME 候选窗 popup 刷新（引擎激活时；尺寸变化重建 surface，随后渲染提交）。
+        self.refresh_im_popup(qh);
 
         let size = self.size();
         let scene_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2052,7 +2075,7 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                     utf8,
                 );
                 // 引擎处理按键 → 更新 preedit/commit，随即 flush 上屏。
-                state.app.ime_engine_key(logical);
+                state.app.ime_engine_key(logical, state.im_modifiers);
                 if let Some(im) = state.input_method.clone() {
                     state.flush_engine(&im);
                 }
@@ -2067,9 +2090,28 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                 if let Some(xkb) = state.im_xkb.as_mut() {
                     xkb.update_mask(mods_depressed, mods_latched, mods_locked, group);
                 }
+                state.im_modifiers = Modifiers {
+                    ctrl: mods_depressed & 4 != 0,   // Control_L = 0x04
+                    alt: mods_depressed & 8 != 0,    // Alt_L = 0x08
+                    shift: mods_depressed & 1 != 0,  // Shift_L = 0x01
+                    super_key: mods_depressed & 64 != 0, // Super_L = 0x40
+                };
             }
             _ => {}
         }
+    }
+}
+
+// popup surface：接收 text_input_rectangle（光标矩形提示）。无请求需处理。
+impl Dispatch<ZwpInputPopupSurfaceV2, ()> for Shell {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpInputPopupSurfaceV2,
+        _event: wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_popup_surface_v2::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
     }
 }
 
@@ -2083,21 +2125,108 @@ impl Shell {
             im.commit_string(text);
             committed = true;
         }
-        // 2. 待删除周边字节（退格）。
+        // 2. 待删除周边字节（退格）。double-buffered → 须 commit 才生效。
         let (before, after) = self.app.ime_engine_take_delete();
         if before > 0 || after > 0 {
             im.delete_surrounding_text(before, after);
+            committed = true;
         }
-        // 3. 组合态 preedit（变化才发）。
+        // 3. 组合态 preedit（变化才发）。double-buffered → 变化时 commit 才生效。
         let (preedit, cursor_byte) = self.app.ime_engine_preedit();
         let cursor = cursor_byte.map(|c| c as i32).unwrap_or(-1);
         if self.im_preedit_cache.as_deref() != Some(preedit.as_str()) {
             im.set_preedit_string(preedit.clone(), cursor, cursor);
             self.im_preedit_cache = Some(preedit);
+            committed = true;
         }
         // 4. 提交（serial = 已收到 done 数）。
         if committed {
             im.commit(self.im_done_serial);
+        }
+    }
+
+    /// 候选窗 popup surface 每帧刷新：按引擎状态建/调整 surface，渲染候选窗 Scene 提交。
+    /// 合成器把 `zwp_input_popup_surface_v2` 渲染到 Layer 6 Overlay（跟随光标）。
+    fn refresh_im_popup(&mut self, qh: &QueueHandle<Self>) {
+        let (pw, ph) = self.app.ime_engine_popup_size();
+        let active = self.im_active && pw > 0.0 && ph > 0.0;
+        let has_input_method = self.input_method.is_some();
+
+        // 引擎失活 / 无 popup 内容 → 释放 popup surface。
+        if !active || !has_input_method {
+            if let Some(popup) = self.im_popup.take() {
+                // popup surface 无独立 destroy；wl_surface 销毁即消失。
+                popup.surface.destroy();
+                log::info!("IME 候选窗 popup 已释放");
+            }
+            return;
+        }
+
+        // 尺寸变化或首次 → 重建 popup surface + 渲染器。
+        let size_changed = self
+            .im_popup
+            .as_ref()
+            .map(|p| (p.width - pw).abs() > 0.5 || (p.height - ph).abs() > 0.5)
+            .unwrap_or(true);
+        if size_changed || self.im_popup.as_ref().map(|p| p.renderer.is_none()).unwrap_or(true) {
+            if let Some(old) = self.im_popup.take() {
+                old.surface.destroy();
+            }
+            let Some(im) = self.input_method.clone() else {
+                return;
+            };
+            let surface = self.compositor_state.create_surface(qh);
+            let popup = im.get_input_popup_surface(&surface, qh, ());
+            log::info!("IME 候选窗 popup 创建：{pw:.0}×{ph:.0}");
+            self.im_popup = Some(ImPopupSurface {
+                surface: surface.clone(),
+                popup,
+                renderer: None,
+                shm: ShmBuffers::default(),
+                width: pw,
+                height: ph,
+            });
+        }
+
+        let Some(im_popup) = self.im_popup.as_mut() else {
+            return;
+        };
+        if im_popup.renderer.is_none() {
+            match Renderer::new(&self.conn, &im_popup.surface, pw, ph, 1.0, true, true) {
+                Ok(r) => im_popup.renderer = Some(r),
+                Err(e) => {
+                    log::warn!("候选窗 popup 渲染器初始化失败：{e:?}");
+                    return;
+                }
+            }
+        }
+        let Some(r) = im_popup.renderer.as_mut() else {
+            return;
+        };
+        // 候选窗 Scene（App 引擎驱动）。
+        let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.app.ime_engine_popup_scene(&self.engine)
+        }));
+        let scene = match scene {
+            Ok(s) => s,
+            Err(_) => {
+                log::error!("App::ime_engine_popup_scene panic，跳过本帧");
+                return;
+            }
+        };
+        if let Some(bgra) = r.render_to_shm(&self.engine, &scene) {
+            let (srw, srh) = r.physical_size();
+            if let Some(shm) = self.shm.clone() {
+                commit_shm_buffers(
+                    &shm,
+                    qh,
+                    &im_popup.surface,
+                    &mut im_popup.shm,
+                    srw,
+                    srh,
+                    &bgra,
+                );
+            }
         }
     }
 }

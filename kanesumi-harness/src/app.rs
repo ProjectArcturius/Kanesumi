@@ -286,8 +286,9 @@ pub trait App {
     }
 
     /// 引擎宿主：处理一个按键（来自 `zwp_input_method_keyboard_grab_v2` 的 key 事件，
-    /// 已由外壳经 xkbcommon 语义化为 [`Key`]）。引擎内部更新组合态。
-    fn ime_engine_key(&mut self, _key: Key) {}
+    /// 已由外壳经 xkbcommon 语义化为 [`Key`] + 修饰键）。引擎内部更新组合态。
+    /// `modifiers` 供引擎宿主处理组合键（如 Ctrl+Space 切中英）。
+    fn ime_engine_key(&mut self, _key: Key, _modifiers: Modifiers) {}
 
     /// 引擎宿主：当前组合态 preedit（拼音串）及光标字节偏移。
     /// 返回 `(preedit, cursor_byte)`；空串 = 无组合态。
@@ -304,6 +305,19 @@ pub trait App {
     /// 引擎宿主：取走待删除的周边字节数（退格等）。返回 `(before, after)`。
     fn ime_engine_take_delete(&mut self) -> (u32, u32) {
         (0, 0)
+    }
+
+    /// 引擎宿主：候选窗 popup surface 的 Scene（画在 `zwp_input_popup_surface_v2` 上，
+    /// 合成器渲染到 Layer 6 Overlay 并跟随光标）。空 Scene = 不显示候选窗。
+    fn ime_engine_popup_scene(&mut self, engine: &TextEngine) -> kanesumi_canvas::Scene {
+        let _ = engine;
+        kanesumi_canvas::Scene::default()
+    }
+
+    /// 引擎宿主：候选窗 popup surface 尺寸（逻辑像素，0×0 = 不显示）。
+    /// 合成器据 popup 内容渲染；本值供外壳创建/调整 surface。
+    fn ime_engine_popup_size(&self) -> (f32, f32) {
+        (0.0, 0.0)
     }
 
     /// 全局应用菜单声明。返回 `Some(tree)` = 启用 AppMenu —— 外壳（Linux）自动完成
