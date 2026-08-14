@@ -1573,7 +1573,6 @@ impl SeatHandler for Shell {
                 let im = manager.get_input_method(&seat, qh, ());
                 // grab_keyboard：引擎接收合成器转发的硬件键盘。
                 let grab = im.grab_keyboard(qh, ());
-                eprintln!("[ceyboard-ime] get_input_method + grab_keyboard 已创建");
                 self.im_keyboard_grab = Some(grab);
                 self.input_method = Some(im);
             }
@@ -2142,14 +2141,6 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                 };
                 let (sym, utf8) = xkb.keycode_to_sym(key);
                 let logical = map_key(xkeysym::Keysym::new(sym), utf8);
-                // 调试：按键 + 当前修饰键（排查 Ctrl+Space 切换不工作）。eprintln 不受 RUST_LOG 过滤。
-                eprintln!(
-                    "[ceyboard-key] key={logical:?} sym={sym:#x} mods={{ctrl={},alt={},shift={},super={}}}",
-                    state.im_modifiers.ctrl,
-                    state.im_modifiers.alt,
-                    state.im_modifiers.shift,
-                    state.im_modifiers.super_key,
-                );
                 // 引擎处理按键 → 更新 preedit/commit，随即 flush 上屏。
                 // 返回 false = 引擎未消费 → 经虚拟键盘重放给焦点客户端（fcitx5 同款
                 // 透传：arrow/backspace/Home 等导航键须到焦点应用）。
@@ -2175,9 +2166,6 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                 group,
                 ..
             } => {
-                eprintln!(
-                    "[ceyboard-mods] depressed={mods_depressed:#x} latched={mods_latched:#x} locked={mods_locked:#x} group={group}"
-                );
                 if let Some(xkb) = state.im_xkb.as_mut() {
                     xkb.update_mask(mods_depressed, mods_latched, mods_locked, group);
                 }
@@ -2249,7 +2237,6 @@ impl Shell {
             {
                 let im = manager.get_input_method(&seat, qh, ());
                 let grab = im.grab_keyboard(qh, ());
-                eprintln!("[ceyboard-ime] ensure_ime_engine：get_input_method + grab_keyboard 已创建");
                 self.im_keyboard_grab = Some(grab);
                 self.input_method = Some(im);
             }
