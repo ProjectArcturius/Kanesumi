@@ -141,10 +141,16 @@ impl MetroCandidateWindow {
             let text_y = row_y + (CANDIDATE_ROW_H - text_h) / 2.0;
 
             if highlighted {
-                // 高亮：primary 底色块包裹「序号+词」。
+                // 高亮：primary 整块贴面板（从左缘到该项右缘、垂直铺满面板），
+                // 无内边距露底 = 无边框设计。微软拼音横排候选高亮同款。
                 scene.fill_rect(
                     colors.primary,
-                    Rect::new(x, row_y, iw, CANDIDATE_ROW_H),
+                    Rect::new(
+                        rect.origin.x,
+                        rect.origin.y,
+                        (x + iw - rect.origin.x).max(0.0),
+                        rect.size.height,
+                    ),
                 );
             }
 
