@@ -20,8 +20,8 @@ pub const CANDIDATE_PAD_X: f32 = 12.0;
 pub const CANDIDATE_PAD_Y: f32 = 6.0;
 /// 序号 + 词之间间隔。
 pub const CANDIDATE_LABEL_GAP: f32 = 2.0;
-/// 相邻候选间隔（拉长 → 各候选色块左右等宽、视觉协调）。
-pub const CANDIDATE_ITEM_GAP: f32 = 28.0;
+/// 相邻候选间隔（无 gap：候选块连续紧贴，完全无边框感）。
+pub const CANDIDATE_ITEM_GAP: f32 = 0.0;
 /// 高亮块额外内边距（序号左侧留白，词右侧留白）。
 pub const CANDIDATE_HL_PAD: f32 = 6.0;
 /// 面板最大宽度（超过则溢出省略当前页尾项）。
@@ -89,7 +89,7 @@ impl MetroCandidateWindow {
             .max(CANDIDATE_HL_PAD * 2.0)
     }
 
-    /// 面板内容尺寸（横排单行，宽 = 等宽候选 × N + 间距，高 = 单行）。
+    /// 面板内容尺寸（横排单行，宽 = 等宽候选 × N，无间距；高 = 单行）。
     /// 供 popup surface 定位用。宽上限 CANDIDATE_MAX_W。
     pub fn popup_size(&self) -> Size {
         if self.candidates.is_empty() {
@@ -97,15 +97,14 @@ impl MetroCandidateWindow {
         }
         let iw = self.max_item_width();
         let n = self.candidates.len() as f32;
-        let gaps = (n - 1.0) * CANDIDATE_ITEM_GAP;
-        let w = CANDIDATE_PAD_X * 2.0 + iw * n + gaps;
+        let w = iw * n;
         Size::new(
-            w.min(CANDIDATE_MAX_W).max(CANDIDATE_PAD_X * 2.0),
+            w.min(CANDIDATE_MAX_W).max(1.0),
             CANDIDATE_PAD_Y * 2.0 + CANDIDATE_ROW_H,
         )
     }
 
-    /// 命中候选项（横排等宽）。返回下标。
+    /// 命中候选项（横排等宽无间距）。返回下标。
     pub fn hit_candidate(&self, rect: Rect, pos: Point) -> Option<usize> {
         if !self.open || self.candidates.is_empty() || !rect.contains(pos) {
             return None;
@@ -116,13 +115,13 @@ impl MetroCandidateWindow {
             return None;
         }
         let iw = self.max_item_width();
-        let mut x = rect.origin.x + CANDIDATE_PAD_X;
+        let start = rect.origin.x;
         for i in 0..self.candidates.len() {
-            if pos.x >= x && pos.x < x + iw {
+            let x0 = start + i as f32 * iw;
+            if pos.x >= x0 && pos.x < x0 + iw {
                 return Some(i);
             }
-            x += iw + CANDIDATE_ITEM_GAP;
-            if x > rect.right() {
+            if x0 > rect.right() {
                 break;
             }
         }
@@ -141,25 +140,23 @@ impl MetroCandidateWindow {
         scene.fill_rect(colors.surface, rect);
 
         let row_y = rect.origin.y + CANDIDATE_PAD_Y;
-        let mut x = rect.origin.x + CANDIDATE_PAD_X;
+        let iw = self.max_item_width();
+        let start = rect.origin.x; // 贴面板左缘，无内边距 → 高亮块贴边
 
         for (i, cand) in self.candidates.iter().enumerate() {
-            let iw = self.item_width(i);
+            let x0 = start + i as f32 * iw;
+            if x0 >= rect.right() {
+                break;
+            }
             let highlighted = self.highlighted == Some(i);
             let text_h = style.line_height;
             let text_y = row_y + (CANDIDATE_ROW_H - text_h) / 2.0;
 
             if highlighted {
-                // 高亮：单项等宽色块（垂直铺满面板，左右贴该项边界）。
-                // 等宽候选 → 每项色块左右对称；不延伸跨项。微软拼音横排同款。
+                // 高亮：该项等宽色块（垂直铺满面板，左右贴块边界，块间无缝隙）。
                 scene.fill_rect(
                     colors.primary,
-                    Rect::new(
-                        x,
-                        rect.origin.y,
-                        iw,
-                        rect.size.height,
-                    ),
+                    Rect::new(x0, rect.origin.y, iw, rect.size.height),
                 );
             }
 
@@ -174,22 +171,23 @@ impl MetroCandidateWindow {
                 colors.on_surface.with_alpha(0.5)
             };
 
+            // 块内内容 = 「序号 + 词」整体居中于块宽。
+            // content_w = raw_item_width - HL_PAD*2（去掉 padding 即为序号+间隙+词）。
+            let label_w = 12.0;
+            let content_w = (self.raw_item_width(i) - CANDIDATE_HL_PAD * 2.0).max(0.0);
+            let content_x = x0 + ((iw - content_w) / 2.0).max(0.0);
+
             // 序号。
             scene.text(
                 format!("{}", i + 1),
-                Rect::new(
-                    x + CANDIDATE_HL_PAD,
-                    text_y,
-                    12.0,
-                    text_h,
-                ),
+                Rect::new(content_x, text_y, label_w, text_h),
                 label_fg,
                 style,
                 TextAlign::Left,
             );
-            // 候选词（超出面板右缘省略）。
-            let cand_x = x + CANDIDATE_HL_PAD + 12.0 + CANDIDATE_LABEL_GAP;
-            let cand_avail = (rect.right() - cand_x).max(0.0);
+            // 候选词（超出块右缘省略）。
+            let cand_x = content_x + label_w + CANDIDATE_LABEL_GAP;
+            let cand_avail = (x0 + iw - cand_x).max(0.0);
             scene.text_with_options(
                 cand.clone(),
                 Rect::new(cand_x, text_y, cand_avail, text_h),
@@ -200,11 +198,6 @@ impl MetroCandidateWindow {
                 Some(1),
                 TextOverflow::Ellipsis,
             );
-
-            x += iw + CANDIDATE_ITEM_GAP;
-            if x > rect.right() {
-                break; // 面板右缘截断
-            }
         }
 
         // 翻页指示（右下角，仅多页时）。
@@ -341,8 +334,8 @@ mod tests {
         let cw = sample();
         let sz = cw.popup_size();
         let rect = Rect::new(0.0, 0.0, sz.width, sz.height);
-        // 第一项中点（x 从 pad 开始，命中第 0 项）。
-        let item0_x = rect.origin.x + CANDIDATE_PAD_X + cw.item_width(0) / 2.0;
+        // 第一块中点（贴面板左缘起，等宽块中点）。
+        let item0_x = rect.origin.x + cw.item_width(0) / 2.0;
         let mid_y = rect.origin.y + CANDIDATE_PAD_Y + CANDIDATE_ROW_H / 2.0;
         assert_eq!(cw.hit_candidate(rect, Point::new(item0_x, mid_y)), Some(0));
         // 面板外不命中。
@@ -359,8 +352,8 @@ mod tests {
         let sz = cw.popup_size();
         // 横排单行：高 = 上下边距 + 单行高。
         assert_eq!(sz.height, CANDIDATE_PAD_Y * 2.0 + CANDIDATE_ROW_H);
-        // 宽 = 3 项横排总和（≤ 上限）。
+        // 宽 = 3 项等宽总和（无间距，贴边）。
         assert!(sz.width <= CANDIDATE_MAX_W);
-        assert!(sz.width > CANDIDATE_PAD_X * 2.0);
+        assert!(sz.width > 0.0);
     }
 }
