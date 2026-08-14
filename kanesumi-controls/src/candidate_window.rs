@@ -20,8 +20,8 @@ pub const CANDIDATE_PAD_X: f32 = 12.0;
 pub const CANDIDATE_PAD_Y: f32 = 6.0;
 /// 序号 + 词之间间隔。
 pub const CANDIDATE_LABEL_GAP: f32 = 2.0;
-/// 相邻候选间隔（无 gap：候选块连续紧贴，完全无边框感）。
-pub const CANDIDATE_ITEM_GAP: f32 = 0.0;
+/// 相邻候选间隔（适度宽松：块间留缝但不过分，视觉透气）。
+pub const CANDIDATE_ITEM_GAP: f32 = 10.0;
 /// 高亮块额外内边距（序号左侧留白，词右侧留白）。
 pub const CANDIDATE_HL_PAD: f32 = 6.0;
 /// 面板最大宽度（超过则溢出省略当前页尾项）。
@@ -89,7 +89,7 @@ impl MetroCandidateWindow {
             .max(CANDIDATE_HL_PAD * 2.0)
     }
 
-    /// 面板内容尺寸（横排单行，宽 = 等宽候选 × N，无间距；高 = 单行）。
+    /// 面板内容尺寸（横排单行，宽 = 等宽候选 × N + 间距，高 = 单行）。
     /// 供 popup surface 定位用。宽上限 CANDIDATE_MAX_W。
     pub fn popup_size(&self) -> Size {
         if self.candidates.is_empty() {
@@ -97,14 +97,15 @@ impl MetroCandidateWindow {
         }
         let iw = self.max_item_width();
         let n = self.candidates.len() as f32;
-        let w = iw * n;
+        let gaps = (n - 1.0) * CANDIDATE_ITEM_GAP;
+        let w = iw * n + gaps;
         Size::new(
             w.min(CANDIDATE_MAX_W).max(1.0),
             CANDIDATE_PAD_Y * 2.0 + CANDIDATE_ROW_H,
         )
     }
 
-    /// 命中候选项（横排等宽无间距）。返回下标。
+    /// 命中候选项（横排等宽 + 间距）。返回下标。
     pub fn hit_candidate(&self, rect: Rect, pos: Point) -> Option<usize> {
         if !self.open || self.candidates.is_empty() || !rect.contains(pos) {
             return None;
@@ -117,7 +118,7 @@ impl MetroCandidateWindow {
         let iw = self.max_item_width();
         let start = rect.origin.x;
         for i in 0..self.candidates.len() {
-            let x0 = start + i as f32 * iw;
+            let x0 = start + i as f32 * (iw + CANDIDATE_ITEM_GAP);
             if pos.x >= x0 && pos.x < x0 + iw {
                 return Some(i);
             }
@@ -144,7 +145,7 @@ impl MetroCandidateWindow {
         let start = rect.origin.x; // 贴面板左缘，无内边距 → 高亮块贴边
 
         for (i, cand) in self.candidates.iter().enumerate() {
-            let x0 = start + i as f32 * iw;
+            let x0 = start + i as f32 * (iw + CANDIDATE_ITEM_GAP);
             if x0 >= rect.right() {
                 break;
             }
