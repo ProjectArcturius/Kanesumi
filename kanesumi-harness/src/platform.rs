@@ -281,6 +281,9 @@ struct Shell {
     im_preedit_cache: Option<String>,
     /// 引擎键盘的修饰键状态（grab modifiers 事件维护，注入 ime_engine_key）。
     im_modifiers: Modifiers,
+    /// 焦点文本字段周边文本（`ImEvent::SurroundingText` 缓存，退格字符边界用）。
+    /// `(text, cursor, anchor)` 字节偏移。
+    im_surrounding: Option<(String, u32, u32)>,
     /// 候选窗 popup surface（引擎激活时创建，deactivate 释放）。
     im_popup: Option<ImPopupSurface>,
 
@@ -646,6 +649,7 @@ impl Shell {
             im_xkb: None,
             im_preedit_cache: None,
             im_modifiers: Modifiers::NONE,
+            im_surrounding: None,
             im_popup: None,
             modifiers: Modifiers::NONE,
             conn: conn.clone(),
@@ -2019,6 +2023,15 @@ impl Dispatch<ZwpInputMethodV2, ()> for Shell {
             ImEvent::Done => {
                 state.im_done_serial += 1;
             }
+            // 周边文本缓存（退格字符边界用：delete_surrounding_text 按字节，
+            // CJK 字符 3 字节，须整字符删避免劈码点）。
+            ImEvent::SurroundingText {
+                text,
+                cursor,
+                anchor,
+            } => {
+                state.im_surrounding = Some((text, cursor, anchor));
+            }
             _ => {}
         }
     }
@@ -2125,10 +2138,14 @@ impl Shell {
             im.commit_string(text);
             committed = true;
         }
-        // 2. 待删除周边字节（退格）。double-buffered → 须 commit 才生效。
-        let (before, after) = self.app.ime_engine_take_delete();
-        if before > 0 || after > 0 {
-            im.delete_surrounding_text(before, after);
+        // 2. 待删除周边文本（退格）。double-buffered → 须 commit 才生效。
+        //    App 以「字符数」请求（before=1 = 删光标前一字符）；协议按字节，
+        //    CJK 字符 3 字节，据周边文本缓存换算字节数（整字符删，不劈码点）。
+        let (before_chars, after_chars) = self.app.ime_engine_take_delete();
+        if before_chars > 0 || after_chars > 0 {
+            let before_bytes = self.chars_to_bytes_before(before_chars);
+            let after_bytes = self.chars_to_bytes_after(after_chars);
+            im.delete_surrounding_text(before_bytes, after_bytes);
             committed = true;
         }
         // 3. 组合态 preedit（变化才发）。double-buffered → 变化时 commit 才生效。
@@ -2143,6 +2160,31 @@ impl Shell {
         if committed {
             im.commit(self.im_done_serial);
         }
+    }
+
+    /// 光标前 `n` 字符 → 字节数（据周边文本缓存）。缺缓存时退化为 n 字节。
+    fn chars_to_bytes_before(&self, n: u32) -> u32 {
+        let Some((text, cursor, _anchor)) = self.im_surrounding.as_ref() else {
+            return n;
+        };
+        let cursor = (*cursor as usize).min(text.len());
+        let prefix = &text[..cursor];
+        let n = (n as usize).min(prefix.chars().count());
+        // 取前缀最后 n 字符的字节长度。
+        let chars: Vec<char> = prefix.chars().collect();
+        let len = chars.len();
+        chars[len - n..].iter().map(|c| c.len_utf8()).sum::<usize>() as u32
+    }
+
+    /// 光标后 `n` 字符 → 字节数。
+    fn chars_to_bytes_after(&self, n: u32) -> u32 {
+        let Some((text, cursor, _anchor)) = self.im_surrounding.as_ref() else {
+            return n;
+        };
+        let cursor = (*cursor as usize).min(text.len());
+        let suffix = &text[cursor..];
+        let n = (n as usize).min(suffix.chars().count());
+        suffix.chars().take(n).map(|c| c.len_utf8()).sum::<usize>() as u32
     }
 
     /// 候选窗 popup surface 每帧刷新：按引擎状态建/调整 surface，渲染候选窗 Scene 提交。
