@@ -2055,6 +2055,7 @@ impl Dispatch<ZwpInputMethodV2, ()> for Shell {
         match event {
             // 文本字段获焦 → 引擎激活；重置组合态缓存。
             ImEvent::Activate => {
+                log::info!("IME 引擎激活（文本字段获焦，im_active=true）");
                 state.im_active = true;
                 state.im_preedit_cache = None;
                 state.emit_input(InputEvent::Preedit {
@@ -2065,6 +2066,7 @@ impl Dispatch<ZwpInputMethodV2, ()> for Shell {
             }
             // 失焦 → 引擎失活；清组合态。
             ImEvent::Deactivate => {
+                log::info!("IME 引擎失活（im_active=false）");
                 state.im_active = false;
                 state.im_preedit_cache = None;
                 state.emit_input(InputEvent::Preedit {
