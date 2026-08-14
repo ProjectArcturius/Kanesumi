@@ -464,13 +464,10 @@ impl Shell {
                 log::warn!("wl_shm 不可用，SHM 提交降级为直接 present：{e}");
             })
             .ok();
-        let shm_output = matches!(
-            role.surface_kind(),
-            SurfaceKind::LayerTop
-                | SurfaceKind::LayerBottom
-                | SurfaceKind::LayerOverlay
-                | SurfaceKind::LayerBackground
-        );
+        // 全部角色一律 SHM 输出（离屏 wgpu 读回 → wl_shm 提交）：Ether 合成器下
+        // wgpu dmabuf 直出不可见（ETHER_RENDER_LESSONS.md 验证矩阵），SHM 是唯一
+        // 可靠路径（含 xdg-shell 浏览器窗口）。wl_shm 缺失时 render_frame 回退直出。
+        let shm_output = true;
         let main_shm = ShmBuffers::default();
 
         // 浮层表面：独立 layer-shell surface（透明底控件浮层）。非 layer-shell 角色无浮层。
@@ -879,8 +876,9 @@ impl Shell {
         self.request_next_frame(qh);
 
         if let Some(r) = self.renderer.as_mut() {
-            if self.shm_output {
-                // 离屏读回 → wl_shm 提交（Ether 合成器 dmabuf 不可见，SHM 可靠）。
+            // SHM 输出优先（Ether 合成器 dmabuf 不可见）；合成器无 wl_shm 时回退直出。
+            if self.shm_output && self.shm.is_some() {
+                // 离屏读回 → wl_shm 提交（ETHER_RENDER_LESSONS.md 唯一可靠路径）。
                 if let Some(bgra) = r.render_to_shm(&self.engine, &scene) {
                     let (pw, ph) = r.physical_size();
                     if let Some(shm) = self.shm.clone() {
