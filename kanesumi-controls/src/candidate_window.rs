@@ -22,8 +22,8 @@ pub const CANDIDATE_PAD_Y: f32 = 6.0;
 pub const CANDIDATE_LABEL_GAP: f32 = 2.0;
 /// 相邻候选间隔（**无 gap**：候选块连续紧贴，微软拼音横排同款）。
 pub const CANDIDATE_ITEM_GAP: f32 = 0.0;
-/// 高亮块额外内边距（序号左侧留白，词右侧留白）。
-pub const CANDIDATE_HL_PAD: f32 = 6.0;
+/// 高亮块左右内边距（加宽 → 每块内左右留白更大，内容宽松不挤）。
+pub const CANDIDATE_HL_PAD: f32 = 16.0;
 /// 面板最大宽度（超过则溢出省略当前页尾项）。
 pub const CANDIDATE_MAX_W: f32 = 640.0;
 /// 每页候选数（数字键 1–9）。
