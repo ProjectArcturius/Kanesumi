@@ -1,35 +1,37 @@
 // MetroCandidateWindow —— IME 候选窗。参 CONTROL_SPEC §44 / CEYBOARD_SPEC §Ⅲ/§Ⅳ。
 //
-// 纯展示控件：内容（preedit / candidates / highlighted / page）由引擎层（Ceyboard）
-// 注入，控件只负责画 + 命中测试，不产生候选、不持输入法状态。
+// 纯展示控件：内容（candidates / highlighted / page）由引擎层（Ceyboard）注入，
+// 控件只负责画 + 命中测试，不产生候选、不持输入法状态。
 // 参 CEYBOARD_SPEC §Ⅷ「Kanesumi 只负责画，Ceyboard 负责想」。
+//
+// 视觉：微软拼音「新体验」横排候选——单行横向延伸，候选词横向排列
+// （`1.你好 2.尼豪 3.泥蒿 …`），无 preedit 行（拼音内联在文本字段，由合成器
+// text-input 桥接显示）。高亮项以强调色块包裹。
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign, TextOverflow};
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
-/// 候选行高（CEYBOARD_SPEC §Ⅲ.3，对齐 Slider 32 / 列表行高惯例）。
+/// 候选行高（CEYBOARD_SPEC §Ⅲ.3 修订：横排单行，高 32 对齐 Slider）。
 pub const CANDIDATE_ROW_H: f32 = 32.0;
-/// 序号列宽。
-pub const CANDIDATE_LABEL_W: f32 = 20.0;
 /// 面板左右内边距。
 pub const CANDIDATE_PAD_X: f32 = 8.0;
 /// 面板上下内边距。
 pub const CANDIDATE_PAD_Y: f32 = 4.0;
-/// 面板最大宽度（超出省略号截断）。
-pub const CANDIDATE_MAX_W: f32 = 400.0;
-/// 页脚高（翻页指示，可选）。
-pub const CANDIDATE_FOOTER_H: f32 = 24.0;
+/// 序号 + 词之间间隔。
+pub const CANDIDATE_LABEL_GAP: f32 = 2.0;
+/// 相邻候选间隔。
+pub const CANDIDATE_ITEM_GAP: f32 = 10.0;
+/// 高亮块额外内边距（序号左侧留白，词右侧留白）。
+pub const CANDIDATE_HL_PAD: f32 = 4.0;
+/// 面板最大宽度（超过则溢出省略当前页尾项）。
+pub const CANDIDATE_MAX_W: f32 = 480.0;
 /// 每页候选数（数字键 1–9）。
 pub const CANDIDATES_PER_PAGE: usize = 9;
 
-/// IME 候选窗。纯展示（引擎注入内容 + 命中测试回馈）。
+/// IME 候选窗（横排单行）。纯展示（引擎注入内容 + 命中测试回馈）。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MetroCandidateWindow {
-    /// 未提交拼音串（preedit 行）。
-    pub preedit: String,
-    /// 组合态光标（preedit 内字节偏移，None = 无光标）。
-    pub preedit_cursor: Option<usize>,
     /// 候选词（一页，≤ 9）。
     pub candidates: Vec<String>,
     /// 高亮候选下标。
@@ -49,127 +51,133 @@ impl MetroCandidateWindow {
         Self::default()
     }
 
-    /// 是否存在可展示内容（preedit 或候选）。
+    /// 是否存在可展示内容。
     pub fn is_empty(&self) -> bool {
-        self.preedit.is_empty() && self.candidates.is_empty()
+        self.candidates.is_empty()
     }
 
-    /// 候选词字号（CEYBOARD_SPEC §Ⅲ.3：微软拼音候选字号偏大 → body_large）。
+    /// 候选词字号（微软拼音候选字号偏大 → body_large）。
     fn candidate_style(&self, theme: &MetroTheme) -> kanesumi_core::typography::TextStyle {
         theme.typography.body_large
     }
 
-    /// 面板内容尺寸（不含外层 anchor 偏移），供 layer-shell 定位用。
-    /// 高 = 上下内边距 + preedit 行高（若有）+ 候选行 × 行高 + 页脚（若翻页）。
-    pub fn popup_size(&self) -> Size {
-        let row_h = CANDIDATE_ROW_H;
-        let mut h = CANDIDATE_PAD_Y * 2.0;
-        if !self.preedit.is_empty() {
-            h += row_h;
+    /// 单候选「序号 + 词」的宽度（估算：汉字 ≈ 字号宽，拉丁 ≈ 字号×0.6）。
+    /// 不需 TextEngine（popup_size/hit 无引擎上下文时仍可用）；引擎侧用 render 时
+    /// 的精确排版，宽余量由 CANDIDATE_HL_PAD 吸收。
+    pub fn item_width(&self, i: usize) -> f32 {
+        let Some(cand) = self.candidates.get(i) else {
+            return 0.0;
+        };
+        let size = 16.0; // body_large 字号
+        let mut text_w = 0.0;
+        for ch in cand.chars() {
+            text_w += if ch.is_ascii() { size * 0.6 } else { size };
         }
-        h += self.candidates.len() as f32 * row_h;
-        if self.has_prev || self.has_next {
-            h += CANDIDATE_FOOTER_H;
-        }
-        Size::new(CANDIDATE_MAX_W, h)
+        let label_w = 10.0;
+        label_w + CANDIDATE_LABEL_GAP + text_w + CANDIDATE_HL_PAD * 2.0
     }
 
-    /// 命中候选行（返回下标；preedit 行 / 页脚不返回）。引擎层据此提交。
+    /// 面板内容尺寸（横排单行，宽 = 候选总宽，高 = 单行）。
+    /// 供 popup surface 定位用。宽上限 CANDIDATE_MAX_W。
+    pub fn popup_size(&self) -> Size {
+        if self.candidates.is_empty() {
+            return Size::new(0.0, 0.0);
+        }
+        let mut w = CANDIDATE_PAD_X * 2.0;
+        for i in 0..self.candidates.len() {
+            if i > 0 {
+                w += CANDIDATE_ITEM_GAP;
+            }
+            w += self.item_width(i);
+        }
+        Size::new(
+            w.min(CANDIDATE_MAX_W).max(CANDIDATE_PAD_X * 2.0),
+            CANDIDATE_PAD_Y * 2.0 + CANDIDATE_ROW_H,
+        )
+    }
+
+    /// 命中候选项（横排）。返回下标。
     pub fn hit_candidate(&self, rect: Rect, pos: Point) -> Option<usize> {
-        if !self.open || !rect.contains(pos) {
+        if !self.open || self.candidates.is_empty() || !rect.contains(pos) {
             return None;
         }
-        let mut y = rect.origin.y + CANDIDATE_PAD_Y;
-        if !self.preedit.is_empty() {
-            y += CANDIDATE_ROW_H; // preedit 行占一行
+        // 横向遍历：y 须在候选行带内。
+        let row_y0 = rect.origin.y + CANDIDATE_PAD_Y;
+        if pos.y < row_y0 || pos.y >= row_y0 + CANDIDATE_ROW_H {
+            return None;
         }
-        for (i, _) in self.candidates.iter().enumerate() {
-            let row = Rect::new(rect.origin.x, y + i as f32 * CANDIDATE_ROW_H, rect.size.width, CANDIDATE_ROW_H);
-            if row.contains(pos) {
+        let mut x = rect.origin.x + CANDIDATE_PAD_X;
+        for i in 0..self.candidates.len() {
+            let iw = self.item_width(i);
+            if pos.x >= x && pos.x < x + iw {
                 return Some(i);
+            }
+            x += iw + CANDIDATE_ITEM_GAP;
+            if x > rect.right() {
+                break;
             }
         }
         None
     }
 
-    /// 渲染候选窗到 `rect`（rect = 面板整体区域，内容从内边距内排布）。
+    /// 渲染候选窗到 `rect`（横排单行）。
     pub fn render(&self, theme: &MetroTheme, _engine: &TextEngine, rect: Rect, scene: &mut Scene) {
         if !self.open || self.is_empty() {
             return;
         }
         let colors = &theme.colors;
         let style = self.candidate_style(theme);
-        let row_h = CANDIDATE_ROW_H;
 
         // 面板底（直角、无边框、不透明，CEYBOARD_SPEC §Ⅲ.1）。
         scene.fill_rect(colors.surface, rect);
 
-        let mut y = rect.origin.y + CANDIDATE_PAD_Y;
+        let row_y = rect.origin.y + CANDIDATE_PAD_Y;
+        let mut x = rect.origin.x + CANDIDATE_PAD_X;
 
-        // preedit 行（置顶，微软拼音同款）。
-        if !self.preedit.is_empty() {
-            let text_rect = Rect::new(
-                rect.origin.x + CANDIDATE_PAD_X,
-                y + (row_h - style.line_height) / 2.0,
-                (rect.size.width - CANDIDATE_PAD_X * 2.0).max(0.0),
-                style.line_height,
-            );
-            scene.text(
-                self.preedit.clone(),
-                text_rect,
-                colors.on_surface,
-                style,
-                TextAlign::Left,
-            );
-            // 组合态光标：竖向 2px（CEYBOARD_SPEC §Ⅲ.4.2）。
-            if let Some(cur) = self.preedit_cursor {
-                let _ = cur;
-                // 光标 x 需 TextEngine 度量（preedit 前段宽）。纯展示下省略，
-                // 引擎层若需光标位置由 `ime_context` 提供 caret_rect，此处不重度量。
-            }
-            y += row_h;
-        }
-
-        // 候选行列表。
         for (i, cand) in self.candidates.iter().enumerate() {
-            let row = Rect::new(rect.origin.x, y, rect.size.width, row_h);
+            let iw = self.item_width(i);
             let highlighted = self.highlighted == Some(i);
+            let text_h = style.line_height;
+            let text_y = row_y + (CANDIDATE_ROW_H - text_h) / 2.0;
 
             if highlighted {
-                // 高亮 = primary 底 + on_primary 字（CEYBOARD_SPEC §Ⅲ.4.1）。
-                scene.fill_rect(colors.primary, row);
+                // 高亮：primary 底色块包裹「序号+词」。
+                scene.fill_rect(
+                    colors.primary,
+                    Rect::new(x, row_y, iw, CANDIDATE_ROW_H),
+                );
             }
 
-            let idx = format!("{}", i + 1);
             let fg = if highlighted {
                 colors.on_primary
             } else {
                 colors.on_surface
             };
-            // 序号（Normal 用 on_surface 50%）。
             let label_fg = if highlighted {
                 colors.on_primary
             } else {
                 colors.on_surface.with_alpha(0.5)
             };
-            let label_rect = Rect::new(
-                rect.origin.x + CANDIDATE_PAD_X,
-                y + (row_h - style.line_height) / 2.0,
-                CANDIDATE_LABEL_W,
-                style.line_height,
-            );
-            scene.text(idx, label_rect, label_fg, style, TextAlign::Left);
 
-            // 候选词（超出省略）。
-            let cand_rect = Rect::new(
-                rect.origin.x + CANDIDATE_PAD_X + CANDIDATE_LABEL_W,
-                y + (row_h - style.line_height) / 2.0,
-                (rect.size.width - CANDIDATE_PAD_X * 2.0 - CANDIDATE_LABEL_W).max(0.0),
-                style.line_height,
+            // 序号。
+            scene.text(
+                format!("{}", i + 1),
+                Rect::new(
+                    x + CANDIDATE_HL_PAD,
+                    text_y,
+                    10.0,
+                    text_h,
+                ),
+                label_fg,
+                style,
+                TextAlign::Left,
             );
+            // 候选词（超出面板右缘省略）。
+            let cand_x = x + CANDIDATE_HL_PAD + 10.0 + CANDIDATE_LABEL_GAP;
+            let cand_avail = (rect.right() - cand_x).max(0.0);
             scene.text_with_options(
                 cand.clone(),
-                cand_rect,
+                Rect::new(cand_x, text_y, cand_avail, text_h),
                 fg,
                 style,
                 TextAlign::Left,
@@ -178,17 +186,14 @@ impl MetroCandidateWindow {
                 TextOverflow::Ellipsis,
             );
 
-            y += row_h;
+            x += iw + CANDIDATE_ITEM_GAP;
+            if x > rect.right() {
+                break; // 面板右缘截断
+            }
         }
 
-        // 页脚（翻页指示，可选）。
+        // 翻页指示（右下角，仅多页时）。
         if self.has_prev || self.has_next {
-            let footer = Rect::new(
-                rect.origin.x + CANDIDATE_PAD_X,
-                y,
-                (rect.size.width - CANDIDATE_PAD_X * 2.0).max(0.0),
-                CANDIDATE_FOOTER_H,
-            );
             let indicator = if self.has_prev && self.has_next {
                 "‹ ›".to_string()
             } else if self.has_prev {
@@ -198,7 +203,12 @@ impl MetroCandidateWindow {
             };
             scene.text(
                 indicator,
-                footer,
+                Rect::new(
+                    rect.origin.x + CANDIDATE_PAD_X,
+                    rect.origin.y + CANDIDATE_PAD_Y,
+                    (rect.size.width - CANDIDATE_PAD_X * 2.0).max(0.0),
+                    style.line_height,
+                ),
                 colors.on_surface_variant,
                 theme.typography.caption,
                 TextAlign::Right,
@@ -242,8 +252,6 @@ mod tests {
 
     fn sample() -> MetroCandidateWindow {
         MetroCandidateWindow {
-            preedit: "nihao".into(),
-            preedit_cursor: Some(5),
             candidates: vec!["你好".into(), "尼豪".into(), "泥蒿".into()],
             highlighted: Some(0),
             page: 0,
@@ -263,12 +271,12 @@ mod tests {
         let mut cw = sample();
         cw.open = false;
         let mut scene = Scene::default();
-        cw.render(&theme, &engine, Rect::new(0.0, 0.0, 200.0, 200.0), &mut scene);
+        cw.render(&theme, &engine, Rect::new(0.0, 0.0, 200.0, 40.0), &mut scene);
         assert!(scene.is_empty());
     }
 
     #[test]
-    fn renders_preedit_plus_candidates() {
+    fn renders_horizontal_candidates() {
         if !font_available() {
             return;
         }
@@ -276,18 +284,19 @@ mod tests {
         let theme = themed();
         let cw = sample();
         let mut scene = Scene::default();
-        cw.render(&theme, &engine, Rect::new(0.0, 0.0, 200.0, 200.0), &mut scene);
+        let sz = cw.popup_size();
+        cw.render(&theme, &engine, Rect::new(0.0, 0.0, sz.width, sz.height), &mut scene);
         let texts = scene
             .commands
             .iter()
             .filter(|c| matches!(c, SceneCommand::Text { .. }))
             .count();
-        // preedit 1 + 3 候选 × (序号 + 词) = 1 + 6 = 7 文本 + 页脚 1 = 8
-        assert_eq!(texts, 8);
+        // 3 候选 × (序号 + 词) = 6 文本（无 preedit 行）+ 翻页指示 1 = 7
+        assert_eq!(texts, 7);
     }
 
     #[test]
-    fn highlight_fills_primary_row() {
+    fn highlight_fills_primary_block() {
         if !font_available() {
             return;
         }
@@ -295,7 +304,8 @@ mod tests {
         let theme = themed();
         let cw = sample();
         let mut scene = Scene::default();
-        cw.render(&theme, &engine, Rect::new(0.0, 0.0, 200.0, 200.0), &mut scene);
+        let sz = cw.popup_size();
+        cw.render(&theme, &engine, Rect::new(0.0, 0.0, sz.width, sz.height), &mut scene);
         let primary_fills = scene
             .commands
             .iter()
@@ -304,39 +314,38 @@ mod tests {
                 _ => false,
             })
             .count();
-        assert_eq!(primary_fills, 1, "仅高亮行有 primary 底");
+        assert_eq!(primary_fills, 1, "仅高亮项有 primary 底");
     }
 
     #[test]
-    fn hit_candidate_maps_row() {
-        let theme = themed();
-        let cw = sample();
-        let rect = Rect::new(0.0, 0.0, 200.0, 200.0);
-        // preedit 行占一行（32px），候选行从 y=36 开始
-        let row0 = Rect::new(0.0, CANDIDATE_PAD_Y + CANDIDATE_ROW_H, 200.0, CANDIDATE_ROW_H);
-        assert_eq!(cw.hit_candidate(rect, row0.center()), Some(0));
-        // preedit 行不命中候选
-        let preedit_row = Rect::new(0.0, CANDIDATE_PAD_Y, 200.0, CANDIDATE_ROW_H);
-        assert_eq!(cw.hit_candidate(rect, preedit_row.center()), None);
-    }
-
-    #[test]
-    fn popup_size_accounts_for_footer() {
-        let theme = themed();
+    fn hit_candidate_maps_horizontal_item() {
+        if !font_available() {
+            return;
+        }
+        let engine = TextEngine::load(find_font().unwrap()).unwrap();
         let cw = sample();
         let sz = cw.popup_size();
-        // 高 = 8 + 32(preedit) + 3×32 + 24(footer) = 164
-        assert_eq!(sz.height, 8.0 + 32.0 + 96.0 + 24.0);
-        assert_eq!(sz.width, CANDIDATE_MAX_W);
+        let rect = Rect::new(0.0, 0.0, sz.width, sz.height);
+        // 第一项中点（x 从 pad 开始，命中第 0 项）。
+        let item0_x = rect.origin.x + CANDIDATE_PAD_X + cw.item_width(0) / 2.0;
+        let mid_y = rect.origin.y + CANDIDATE_PAD_Y + CANDIDATE_ROW_H / 2.0;
+        assert_eq!(cw.hit_candidate(rect, Point::new(item0_x, mid_y)), Some(0));
+        // 面板外不命中。
+        assert_eq!(cw.hit_candidate(rect, Point::new(-5.0, mid_y)), None);
     }
 
     #[test]
-    fn no_footer_when_no_paging() {
-        let theme = themed();
-        let mut cw = sample();
-        cw.has_next = false;
-        cw.has_prev = false;
+    fn popup_size_single_line() {
+        if !font_available() {
+            return;
+        }
+        let engine = TextEngine::load(find_font().unwrap()).unwrap();
+        let cw = sample();
         let sz = cw.popup_size();
-        assert_eq!(sz.height, 8.0 + 32.0 + 96.0);
+        // 横排单行：高 = 上下边距 + 单行高。
+        assert_eq!(sz.height, CANDIDATE_PAD_Y * 2.0 + CANDIDATE_ROW_H);
+        // 宽 = 3 项横排总和（≤ 上限）。
+        assert!(sz.width <= CANDIDATE_MAX_W);
+        assert!(sz.width > CANDIDATE_PAD_X * 2.0);
     }
 }

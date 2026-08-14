@@ -1426,8 +1426,9 @@ Kanesumi 移植**纯状态 + 几何**：offset 夹紧、滚动条拇指/轨道�
 
 ### 定位
 
-Ceyboard 候选词窗口（`ETHER_ROLE=candidate`，layer-shell OVERLAY）。preedit 行 + 候选行列表。
-微软拼音同款行为：preedit 行置顶，候选行竖排，每页 9 项。
+Ceyboard 候选词窗口（`ETHER_ROLE=candidate`，input-method popup surface）。
+**横排单行候选**（微软拼音「新体验」横排模式）：候选词横向延伸，preedit 拼音
+**不显示在候选窗**（内联文本字段，合成器 text-input 桥接）。每页 9 项。
 
 ### 形状（CEYBOARD_SPEC §Ⅲ.1）
 
@@ -1439,17 +1440,16 @@ Ceyboard 候选词窗口（`ETHER_ROLE=candidate`，layer-shell OVERLAY）。pre
 | 面板底色 | `surface`（不透明） |
 | 透明度 | 不透明（无磨砂） |
 
-### 结构（上 → 下）
+### 结构（横排单行）
 
 ```
-┌─────────────────────────────┐
-│ preedit 行（拼音串 + 光标） │ ← 可选中，置顶
-│ 1  候选词甲                 │
-│ 2  候选词乙                 │ ← 高亮行（当前选中）
-│ 3  候选词丙                 │
-│ …                          │
-└─────────────────────────────┘
+┌──────────────────────────────────────────┐
+│ 1.你好  2.尼豪  3.泥蒿  4.逆好  …   ›    │
+└──────────────────────────────────────────┘
 ```
+
+- 每候选 = 序号 + 词横向排列；高亮项以 `primary` 色块包裹。
+- preedit 不占候选窗空间。
 
 ### 尺寸（CEYBOARD_SPEC §Ⅲ.3）
 
@@ -1458,11 +1458,11 @@ Ceyboard 候选词窗口（`ETHER_ROLE=candidate`，layer-shell OVERLAY）。pre
 | 面板左右内边距 | 8px | 定 |
 | 面板上下内边距 | 4px | 定 |
 | 候选行高 | 32px | 定（对齐 Slider 32 / 列表行高惯例） |
-| 序号列宽 | 20px | 定 |
+| 序号宽 | ~10px（+2px 间隙） | 定 |
 | 候选词字号 | 16px（body_large） | 参考 |
-| 候选词行距 | 单行无 gap | 定 |
-| 面板最大宽度 | 400px（超省略） | 参考 |
-| 页脚高（翻页指示） | 24px（可选） | 参考 |
+| 候选间距 | 10px | 定 |
+| 面板最大宽度 | 480px（超省略） | 参考 |
+| 面板高度 | 单行 40px | 定 |
 
 ### 颜色与状态（CEYBOARD_SPEC §Ⅲ.4）
 
@@ -1472,7 +1472,7 @@ Ceyboard 候选词窗口（`ETHER_ROLE=candidate`，layer-shell OVERLAY）。pre
 | Highlight | `on_primary` | `on_primary` | **`primary`** |
 | Pressed | — | — | `primary` + press_tint |
 
-preedit 行：前景 `on_surface`、光标竖线 2px `on_surface`、行底 `surface`。
+preedit 不显示在候选窗（拼音内联文本字段）；高亮块 = 序号 + 词一体 primary 底。
 颜色切换 = **瞬时硬切换**（通用规律 1：`DiscreteObjectKeyFrame`，无颜色过渡）。
 
 ### 动画（CEYBOARD_SPEC §Ⅲ.5）
@@ -1489,7 +1489,7 @@ preedit 行：前景 `on_surface`、光标竖线 2px `on_surface`、行底 `surf
 
 - 键盘：数字 1–9 选第 N 候选；空格选高亮；回车提交高亮；↑/↓ 移高亮（边界翻页）；
   PageUp/PageDown 或 +/− 翻页；Esc 取消组合态。
-- 鼠标：左键点候选行提交；滚轮翻页；点 preedit 行无操作。
+- 鼠标：左键点候选项提交；滚轮翻页。
 - 位置：锚定文本字段光标矩形（parent_geometry + popup 光标矩形）；空间不足向上翻；
   位置随光标即时更新。
 - 密码字段（content_hint = Password）：不弹候选窗、不外发周边文本。
@@ -1498,27 +1498,27 @@ preedit 行：前景 `on_surface`、光标竖线 2px `on_surface`、行底 `surf
 
 ```
 MetroCandidateWindow {
-    preedit: String            // 未提交拼音串
-    preedit_cursor: Option<usize>  // 组合态光标（字节偏移）
-    candidates: Vec<String>    // 候选词（一页 ≤ 9）
+    candidates: Vec<String>    // 候选词（一页 ≤ 9，横排单行）
     highlighted: Option<usize> // 高亮下标
     page: usize                // 当前页（0-based）
     has_prev / has_next        // 翻页指示
     open: bool                 // 可见性（弹层开关）
     // render(theme, engine, rect, scene)
     // hit_candidate(rect, pos) -> Option<usize>
-    // popup_size(theme, engine) -> Size（内容量测，供 layer-shell 定位）
+    // popup_size() -> Size（横排单行，供 popup surface 定位）
+    // item_width(i) -> f32（单候选宽估算）
 }
 ```
 
-- 内容注入：引擎层（Ceyboard）填充 preedit / candidates / highlighted / page；
+- 内容注入：引擎层（Ceyboard）填充 candidates / highlighted / page；
   控件只画 + 命中，不产生候选。选词/翻页由引擎层把结果写回本控件状态。
+- **无 preedit 字段**：拼音内联文本字段（合成器 text-input 桥接），候选框只显示候选词。
 
 ### Kanesumi 适配
 
 - 深色桌面 `surface`；高亮用 `primary`（列表类「选中用强调色」，通用规律 5）。
 - CJK 安全：序号 = 数字键 1–9，候选词 UTF-8 边界不劈码点。
-- 面板最大宽度 400px：超出候选词以省略号截断（`TextOverflow::Ellipsis`）。
+- 横排单行：面板最大宽度 480px，超出右缘省略截断（`TextOverflow::Ellipsis`）。
 
 ---
 

@@ -61,9 +61,9 @@ pub use animated_icon::{IconDirection, MetroAnimatedIcon};
 pub use auto_suggest_box::{AutoSuggestAction, MetroAutoSuggestBox};
 pub use breadcrumb_bar::{BreadcrumbClick, MetroBreadcrumbBar};
 pub use button::{ButtonKind, MetroButton};
-pub use candidate_window::{
-    MetroCandidateWindow, CANDIDATES_PER_PAGE, CANDIDATE_LABEL_W, CANDIDATE_MAX_W, CANDIDATE_PAD_X,
-    CANDIDATE_PAD_Y, CANDIDATE_ROW_H,
+ pub use candidate_window::{
+    MetroCandidateWindow, CANDIDATES_PER_PAGE, CANDIDATE_HL_PAD, CANDIDATE_ITEM_GAP, CANDIDATE_MAX_W,
+    CANDIDATE_PAD_X, CANDIDATE_PAD_Y, CANDIDATE_ROW_H,
 };
 pub use check_box::{CheckState, MetroCheckBox};
 pub use color_picker::{ALL_CHANNELS, ColorChannel, MetroColorPicker};
