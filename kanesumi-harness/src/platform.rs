@@ -150,6 +150,9 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         .map_err(|e| format!("加载字体失败 {}：{e}", font_path.display()))?;
 
     let mut shell = Shell::new(app, engine, &conn, &globals, &qh, role)?;
+    // 引擎宿主兜底：主循环内幂等绑定（每帧，seat 异步 announce 后自动创建）。
+    // 绕过 new_capability 竞态——ceyboard 连接时 seat keyboard 能力可能已就绪，
+    // 能力事件不触发 → grab 未建立 → 合成器转发的键收不到。
 
     // 主循环：持续 dispatch（frame callback 驱动渲染，动画由 vsync 推进）。
     loop {
@@ -159,6 +162,8 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         event_loop
             .dispatch(std::time::Duration::from_millis(16), &mut shell)
             .map_err(|e| format!("事件循环 dispatch 失败：{e}"))?;
+        // 引擎宿主幂等绑定（input_method.is_none 才建，seat 就绪后即生效）。
+        shell.ensure_ime_engine(&qh);
     }
     Ok(())
 }
@@ -528,7 +533,11 @@ impl Shell {
                         ls.set_size(0, height as u32);
                     }
                     _ => {
-                        ls.set_exclusive_zone(-1);
+                        // Overlay 主表面（Launcher/Candidate）：四边锚定铺满。
+                        // ⚠ 不用 exclusive_zone(-1) + set_size(0,0)（合成器强制 (lw,0)
+                        //   时可能触发 InvalidSize「height 0 without top/bottom anchors」，
+                        //   旧 Ceyboard 反复被 ProtocolError 杀）。四边锚 + 尺寸 0 = 全屏。
+                        ls.set_exclusive_zone(0);
                         ls.set_size(0, 0);
                     }
                 }
@@ -558,24 +567,32 @@ impl Shell {
         // IME 引擎宿主：App 声明 ime_engine_host() 时绑定 zwp_input_method_manager_v2。
         // 合成器未提供 → None，Ceyboard 退化为无键盘引擎（仅 UI 展示）。
         let input_method_manager = if app.ime_engine_host() {
-            globals
+            let m = globals
                 .bind::<ZwpInputMethodManagerV2, Self, ()>(qh, 1..=1, ())
                 .map_err(|e| {
                     log::warn!("zwp_input_method_manager_v2 不可用，引擎宿主降级：{e}");
                 })
-                .ok()
+                .ok();
+            if m.is_some() {
+                log::info!("引擎宿主：zwp_input_method_manager_v2 已绑定");
+            }
+            m
         } else {
             None
         };
 
         // 虚拟键盘 manager：引擎宿主重放未消费按键（arrow/backspace 透传）。参 CEYBOARD_SPEC §Ⅴ。
         let vk_manager = if app.ime_engine_host() {
-            globals
+            let m = globals
                 .bind::<ZwpVirtualKeyboardManagerV1, Self, ()>(qh, 1..=1, ())
                 .map_err(|e| {
                     log::warn!("zwp_virtual_keyboard_manager_v1 不可用，按键透传降级：{e}");
                 })
-                .ok()
+                .ok();
+            if m.is_some() {
+                log::info!("引擎宿主：zwp_virtual_keyboard_manager_v1 已绑定");
+            }
+            m
         } else {
             None
         };
@@ -1556,6 +1573,7 @@ impl SeatHandler for Shell {
                 let im = manager.get_input_method(&seat, qh, ());
                 // grab_keyboard：引擎接收合成器转发的硬件键盘。
                 let grab = im.grab_keyboard(qh, ());
+                eprintln!("[ceyboard-ime] get_input_method + grab_keyboard 已创建");
                 self.im_keyboard_grab = Some(grab);
                 self.input_method = Some(im);
             }
@@ -2077,7 +2095,7 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
         event: ImGrabEvent,
         _data: &(),
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
     ) {
         match event {
             ImGrabEvent::Keymap { format, fd, size } => {
@@ -2124,6 +2142,14 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                 };
                 let (sym, utf8) = xkb.keycode_to_sym(key);
                 let logical = map_key(xkeysym::Keysym::new(sym), utf8);
+                // 调试：按键 + 当前修饰键（排查 Ctrl+Space 切换不工作）。eprintln 不受 RUST_LOG 过滤。
+                eprintln!(
+                    "[ceyboard-key] key={logical:?} sym={sym:#x} mods={{ctrl={},alt={},shift={},super={}}}",
+                    state.im_modifiers.ctrl,
+                    state.im_modifiers.alt,
+                    state.im_modifiers.shift,
+                    state.im_modifiers.super_key,
+                );
                 // 引擎处理按键 → 更新 preedit/commit，随即 flush 上屏。
                 // 返回 false = 引擎未消费 → 经虚拟键盘重放给焦点客户端（fcitx5 同款
                 // 透传：arrow/backspace/Home 等导航键须到焦点应用）。
@@ -2138,6 +2164,9 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                     vk.key(state.im_key_time, key, 0); // 释放（透传完整按键）
                 }
                 state.im_key_time += 1;
+                // 候选窗 popup 即时刷新（不依赖主 surface vsync——主表面 0×0 时
+                // 无 frame callback，渲染循环停滞会致候选窗不出现）。
+                state.refresh_im_popup(qh);
             }
             ImGrabEvent::Modifiers {
                 mods_depressed,
@@ -2146,6 +2175,9 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                 group,
                 ..
             } => {
+                eprintln!(
+                    "[ceyboard-mods] depressed={mods_depressed:#x} latched={mods_latched:#x} locked={mods_locked:#x} group={group}"
+                );
                 if let Some(xkb) = state.im_xkb.as_mut() {
                     xkb.update_mask(mods_depressed, mods_latched, mods_locked, group);
                 }
@@ -2204,6 +2236,35 @@ impl Dispatch<ZwpVirtualKeyboardV1, ()> for Shell {
 }
 
 impl Shell {
+    /// 主动绑定引擎宿主：遍历已有 seat，创建 input-method 对象 + grab keyboard + 虚拟键盘。
+    /// 幂等（input_method.is_none 才建）。用于绕过 new_capability 竞态（ceyboard 连接时
+    /// seat keyboard 能力可能已就绪，能力事件不触发 → grab 未建立 → 键收不到）。
+    fn ensure_ime_engine(&mut self, qh: &QueueHandle<Self>) {
+        if self.input_method.is_some() && self.virtual_keyboard.is_some() {
+            return;
+        }
+        for seat in self.seat_state.seats() {
+            if self.input_method.is_none()
+                && let Some(manager) = self.input_method_manager.as_ref()
+            {
+                let im = manager.get_input_method(&seat, qh, ());
+                let grab = im.grab_keyboard(qh, ());
+                eprintln!("[ceyboard-ime] ensure_ime_engine：get_input_method + grab_keyboard 已创建");
+                self.im_keyboard_grab = Some(grab);
+                self.input_method = Some(im);
+            }
+            if self.virtual_keyboard.is_none()
+                && let Some(manager) = self.vk_manager.as_ref()
+            {
+                let vk = manager.create_virtual_keyboard(&seat, qh, ());
+                self.virtual_keyboard = Some(vk);
+            }
+            if self.input_method.is_some() && self.virtual_keyboard.is_some() {
+                break;
+            }
+        }
+    }
+
     /// 引擎宿主 flush：把 App 引擎的 preedit / commit / delete 通过 input-method-v2 上屏。
     /// 幂等：preedit 无变化不重发 set_preedit_string（避免光标抖动）。
     fn flush_engine(&mut self, im: &ZwpInputMethodV2) {
