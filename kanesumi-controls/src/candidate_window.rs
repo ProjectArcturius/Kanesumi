@@ -12,20 +12,20 @@ use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign, TextOverflow};
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
-/// 候选行高（CEYBOARD_SPEC §Ⅲ.3 修订：横排单行，高 32 对齐 Slider）。
-pub const CANDIDATE_ROW_H: f32 = 32.0;
+/// 候选行高（微软拼音横排候选窗行高偏大，清晰易点）。
+pub const CANDIDATE_ROW_H: f32 = 44.0;
 /// 面板左右内边距。
-pub const CANDIDATE_PAD_X: f32 = 8.0;
+pub const CANDIDATE_PAD_X: f32 = 12.0;
 /// 面板上下内边距。
-pub const CANDIDATE_PAD_Y: f32 = 4.0;
+pub const CANDIDATE_PAD_Y: f32 = 6.0;
 /// 序号 + 词之间间隔。
 pub const CANDIDATE_LABEL_GAP: f32 = 2.0;
 /// 相邻候选间隔。
-pub const CANDIDATE_ITEM_GAP: f32 = 10.0;
+pub const CANDIDATE_ITEM_GAP: f32 = 14.0;
 /// 高亮块额外内边距（序号左侧留白，词右侧留白）。
-pub const CANDIDATE_HL_PAD: f32 = 4.0;
+pub const CANDIDATE_HL_PAD: f32 = 6.0;
 /// 面板最大宽度（超过则溢出省略当前页尾项）。
-pub const CANDIDATE_MAX_W: f32 = 480.0;
+pub const CANDIDATE_MAX_W: f32 = 640.0;
 /// 每页候选数（数字键 1–9）。
 pub const CANDIDATES_PER_PAGE: usize = 9;
 
@@ -56,9 +56,9 @@ impl MetroCandidateWindow {
         self.candidates.is_empty()
     }
 
-    /// 候选词字号（微软拼音候选字号偏大 → body_large）。
-    fn candidate_style(&self, theme: &MetroTheme) -> kanesumi_core::typography::TextStyle {
-        theme.typography.body_large
+    /// 候选词字号（微软拼音候选字号偏大 → 显式 18px，横排清晰）。
+    fn candidate_style(&self, _theme: &MetroTheme) -> kanesumi_core::typography::TextStyle {
+        kanesumi_core::typography::TextStyle::new(18.0, 26.0, kanesumi_core::FontWeight::Normal)
     }
 
     /// 单候选「序号 + 词」的宽度（估算：汉字 ≈ 字号宽，拉丁 ≈ 字号×0.6）。
@@ -68,12 +68,12 @@ impl MetroCandidateWindow {
         let Some(cand) = self.candidates.get(i) else {
             return 0.0;
         };
-        let size = 16.0; // body_large 字号
+        let size = 18.0; // 候选字号（放大，微软拼音候选清晰可辨）
         let mut text_w = 0.0;
         for ch in cand.chars() {
             text_w += if ch.is_ascii() { size * 0.6 } else { size };
         }
-        let label_w = 10.0;
+        let label_w = 12.0;
         label_w + CANDIDATE_LABEL_GAP + text_w + CANDIDATE_HL_PAD * 2.0
     }
 
@@ -165,7 +165,7 @@ impl MetroCandidateWindow {
                 Rect::new(
                     x + CANDIDATE_HL_PAD,
                     text_y,
-                    10.0,
+                    12.0,
                     text_h,
                 ),
                 label_fg,
@@ -173,7 +173,7 @@ impl MetroCandidateWindow {
                 TextAlign::Left,
             );
             // 候选词（超出面板右缘省略）。
-            let cand_x = x + CANDIDATE_HL_PAD + 10.0 + CANDIDATE_LABEL_GAP;
+            let cand_x = x + CANDIDATE_HL_PAD + 12.0 + CANDIDATE_LABEL_GAP;
             let cand_avail = (rect.right() - cand_x).max(0.0);
             scene.text_with_options(
                 cand.clone(),

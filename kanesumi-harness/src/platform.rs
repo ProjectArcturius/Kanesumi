@@ -296,6 +296,8 @@ struct Shell {
     im_surrounding: Option<(String, u32, u32)>,
     /// 候选窗 popup surface（引擎激活时创建，deactivate 释放）。
     im_popup: Option<ImPopupSurface>,
+    /// 候选窗内容脏标记（key 事件置位；refresh 消费后清除）。避免每帧 SHM 提交闪烁。
+    im_popup_dirty: bool,
     /// 虚拟键盘 manager 全局（重放未消费按键给焦点客户端）。
     vk_manager: Option<ZwpVirtualKeyboardManagerV1>,
     /// per-seat 虚拟键盘对象。
@@ -691,6 +693,7 @@ impl Shell {
             im_modifiers: Modifiers::NONE,
             im_surrounding: None,
             im_popup: None,
+            im_popup_dirty: false,
             vk_manager,
             virtual_keyboard: None,
             im_key_time: 0,
@@ -2155,8 +2158,8 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                     vk.key(state.im_key_time, key, 0); // 释放（透传完整按键）
                 }
                 state.im_key_time += 1;
-                // 候选窗 popup 即时刷新（不依赖主 surface vsync——主表面 0×0 时
-                // 无 frame callback，渲染循环停滞会致候选窗不出现）。
+                // 候选窗 popup 刷新（key 即时置脏，下一帧 refresh 提交）。
+                state.im_popup_dirty = true;
                 state.refresh_im_popup(qh);
             }
             ImGrabEvent::Modifiers {
@@ -2327,22 +2330,32 @@ impl Shell {
             return;
         }
 
-        // 尺寸变化或首次 → 重建 popup surface + 渲染器。
+        // 尺寸变化或首次 → 重建 popup surface（wl_surface 尺寸由 SHM buffer 决定）。
+        // ⚠ 渲染器不复建（resize 复用）——重建会重创 wgpu context 导致闪烁。
         let size_changed = self
             .im_popup
             .as_ref()
             .map(|p| (p.width - pw).abs() > 0.5 || (p.height - ph).abs() > 0.5)
             .unwrap_or(true);
-        if size_changed || self.im_popup.as_ref().map(|p| p.renderer.is_none()).unwrap_or(true) {
-            if let Some(old) = self.im_popup.take() {
-                old.surface.destroy();
+        if size_changed && self.im_popup.is_some() {
+            // 仅更新记录尺寸，不 destroy/recreate（surface 尺寸由 SHM buffer 驱动，
+            // 渲染器 resize 即可）。避免候选内容变化时 surface 重建闪烁。
+            if let Some(p) = self.im_popup.as_mut() {
+                p.width = pw;
+                p.height = ph;
             }
+            self.im_popup_dirty = true; // 尺寸变化须重渲染提交。
+        }
+        if self.im_popup.is_none() {
             let Some(im) = self.input_method.clone() else {
                 return;
             };
             let surface = self.compositor_state.create_surface(qh);
+            // SHM buffer 按合成器 scale 渲染（物理像素），须声明 buffer_scale 让合成器
+            // 按 1x 逻辑缩放 —— 缺失则 HiDPI 下候选窗错位/模糊。
+            surface.set_buffer_scale(self.scale.round().max(1.0) as i32);
             let popup = im.get_input_popup_surface(&surface, qh, ());
-            log::info!("IME 候选窗 popup 创建：{pw:.0}×{ph:.0}");
+            log::info!("IME 候选窗 popup 创建：{pw:.0}×{ph:.0} scale={}", self.scale);
             self.im_popup = Some(ImPopupSurface {
                 surface: surface.clone(),
                 popup,
@@ -2351,23 +2364,35 @@ impl Shell {
                 width: pw,
                 height: ph,
             });
+            self.im_popup_dirty = true; // 新 surface 首帧须渲染。
         }
 
         let Some(im_popup) = self.im_popup.as_mut() else {
             return;
         };
         if im_popup.renderer.is_none() {
-            match Renderer::new(&self.conn, &im_popup.surface, pw, ph, 1.0, true, true) {
+            match Renderer::new(&self.conn, &im_popup.surface, pw, ph, self.scale, true, true) {
                 Ok(r) => im_popup.renderer = Some(r),
                 Err(e) => {
                     log::warn!("候选窗 popup 渲染器初始化失败：{e:?}");
                     return;
                 }
             }
+        } else {
+            // 尺寸变化：resize 复用渲染器（避免重建 wgpu context 闪烁）。
+            if let Some(r) = im_popup.renderer.as_mut() {
+                r.resize(pw, ph, self.scale);
+            }
         }
         let Some(r) = im_popup.renderer.as_mut() else {
             return;
         };
+        // 候选窗内容仅在 dirty（key 变化 / 尺寸变化 / 首次）时渲染提交——
+        // 每帧无条件 SHM 提交会致候选窗闪烁。
+        if !self.im_popup_dirty {
+            return;
+        }
+        self.im_popup_dirty = false;
         // 候选窗 Scene（App 引擎驱动）。
         let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.app.ime_engine_popup_scene(&self.engine)
