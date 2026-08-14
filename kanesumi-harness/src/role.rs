@@ -14,6 +14,8 @@ pub enum EtherRole {
     Dock,
     /// 启动器（layer-shell OVERLAY）。
     Launcher,
+    /// IME 候选窗 / 状态指示（layer-shell OVERLAY，跟随光标）。参 CEYBOARD_SPEC §Ⅱ。
+    Candidate,
 }
 
 /// 角色解析失败。
@@ -30,6 +32,7 @@ impl FromStr for EtherRole {
             "topbar" => Ok(EtherRole::TopBar),
             "dock" => Ok(EtherRole::Dock),
             "launcher" => Ok(EtherRole::Launcher),
+            "candidate" => Ok(EtherRole::Candidate),
             _ => Err(RoleParseError),
         }
     }
@@ -70,6 +73,7 @@ impl EtherRole {
             EtherRole::TopBar => SurfaceKind::LayerTop,
             EtherRole::Dock => SurfaceKind::LayerBottom,
             EtherRole::Launcher => SurfaceKind::LayerOverlay,
+            EtherRole::Candidate => SurfaceKind::LayerOverlay,
         }
     }
 }
@@ -85,6 +89,7 @@ mod tests {
         assert_eq!("topbar".parse(), Ok(EtherRole::TopBar));
         assert_eq!("dock".parse(), Ok(EtherRole::Dock));
         assert_eq!("launcher".parse(), Ok(EtherRole::Launcher));
+        assert_eq!("candidate".parse(), Ok(EtherRole::Candidate));
     }
 
     #[test]
@@ -118,6 +123,11 @@ mod tests {
             SurfaceKind::LayerOverlay
         );
         assert_eq!(EtherRole::Browser.surface_kind(), SurfaceKind::XdgShell);
+        // 候选窗 = layer-shell Overlay（跟随光标）。
+        assert_eq!(
+            EtherRole::Candidate.surface_kind(),
+            SurfaceKind::LayerOverlay
+        );
         // 外部布局：桌面 = layer-shell Background（非窗口）。
         assert_eq!(
             EtherRole::Desktop.surface_kind(),
