@@ -24,7 +24,7 @@ Kanesumi 为 UI（`ETHER_ROLE=candidate`），提供中日韩等东亚语言输�
 | UI 实现 | **Kanesumi**，候选窗/状态指示用 Kanesumi 控件，**不重写 UI** |
 | 角色 | `ETHER_ROLE=candidate`，layer-shell **OVERLAY**（参 harness `role.rs`） |
 | 引擎关系 | **不 fork fcitx5 仓库**；上游经 Debian 系统库升级维护 |
-| 词库/引擎插件 | GPL chinese-addons（pinyin/cloudpinyin）以独立 .so 入 `ether-langpack-zh-ime`（PLAN §2.4），GPL 只停留语言包分发单元 |
+| 词库/引擎插件 | 引擎链全 LGPL（fcitx5/libime/chinese-addons，实证见 `reference/fcitx5/NOTES.md` §六）；`pinyin.lua`（GPL 脚本）作数据文件入 `ether-langpack-zh-ime` |
 | 平台 | **仅 Wayland**（input-method-v2 引擎宿主 + layer-shell 候选窗；无 X11/XWayland 目标） |
 | 状态 | 计划（Kanban 待立项） |
 
@@ -241,20 +241,27 @@ Candidate,
 
 # Ⅵ · 语言包与分发
 
-## 1. 词库与引擎插件（PLAN §2.4）
+## 1. 词库与引擎插件（PLAN §2.4，2026-08-14 修订）
 
 ```
-ether-langpack-zh-ime   # 词库数据 + Ceyboard pinyin 配置（GPL chinese-addons 插件在此层）
+ether-langpack-zh-ime   # 词库数据 + Ceyboard pinyin 配置 + pinyin.lua（GPL 数据脚本）
 ```
 
-- fcitx5-chinese-addons（pinyin/cloudpinyin 模块，GPL-2.0-or-later）→ 独立 .so 插件，
-  **只入语言包**，GPL 停留语言包分发单元。
-- Ceyboard 本体（Apache-2.0）只动态链接 LGPL 库（fcitx5 核心 + libime），**不受传染**。
+**许可证（2026-08-14 实证，见 `reference/fcitx5/NOTES.md` §六）：**
+
+- fcitx5 核心、libime、fcitx5-chinese-addons 引擎链**全部为 LGPL-2.1-or-later**
+  （chinese-addons 的 metainfo `GPL-2.0+` 系模板遗留，逐文件核查无引用）。
+- pinyin 引擎插件（`.so`，LGPL）**直接随 Ceyboard 动态链接分发**，不再隔离进语言包。
+- **唯一 GPL 文件 `im/pinyin/pinyin.lua`**（时间/日期/符号转换脚本）作**数据文件**入语言包，
+  不随 Ceyboard 二进制编译/链接，规避传染争议（与 fcitx 官方「lua 扩展与核心分离」惯例一致）。
+- Ceyboard 本体（Apache-2.0）动态链接 LGPL 库（fcitx5 核心 + libime + pinyin 插件），**不受传染**。
+- LGPL-2.1 §6 义务：动态 `.so` 分发、保留版权声明、附许可证文本、允许 relink。
 
 ## 2. 与语言包的关系（SD §语言环境）
 
 Ceyboard 是「语言环境」（Locale + 字体 + 输入法 + Fallback + UI 对照 + Typographic Policy）
-的输入法消费端。装 `ether-langpack-zh-ime` → 中文可输入；不装 → 仅拉丁输入。
+的输入法消费端。装 `ether-langpack-zh-ime` → 中文可输入（词库 + pinyin.lua 数据 + 配置）；
+不装 → 仅拉丁输入（引擎基座仍在，只是无中文词库）。
 
 ---
 
@@ -292,4 +299,4 @@ Ceyboard 是「语言环境」（Locale + 字体 + 输入法 + Fallback + UI 对
 3. **harness `Candidate` 角色** + `companion.rs` spawn 切换——0.5 天。
 4. **Ceyboard 进程**（fcitx5 核心链接 + 候选窗驱动 + input-method-v2 桥接）——3–5 天。
 5. **状态指示**（Phase 2：并入 TopBar Control Gate）。
-6. **语言包 `ether-langpack-zh-ime`** 打包（词库 + GPL 插件）。
+6. **语言包 `ether-langpack-zh-ime`** 打包（词库数据 + `pinyin.lua` GPL 脚本 + 配置）。
