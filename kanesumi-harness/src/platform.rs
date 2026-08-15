@@ -2470,7 +2470,7 @@ fn shm_open(size: usize) -> std::fs::File {
     file
 }
 
-/// 用渲染读回的 BGRA 像素更新 SHM 表面（单缓冲复用；尺寸变化时重建 pool/buffer）。
+/// 用渲染读回的像素更新 SHM 表面（RGBA→BGRA R/B 交换；单缓冲复用；尺寸变化重建）。
 /// wl_shm Argb8888 = 内存 [B,G,R,A]（little-endian），与 Bgra8UnormSrgb readback 一致。
 #[allow(clippy::too_many_arguments)]
 fn commit_shm_buffers(
@@ -2515,7 +2515,15 @@ fn commit_shm_buffers(
     }
     if let Some(mut mmap) = state.mmap.take() {
         let n = bgra.len().min(mmap.len());
-        mmap[..n].copy_from_slice(&bgra[..n]);
+        // wl_shm Argb8888 内存序为 B,G,R,A；wgpu Rgba8UnormSrgb 读回为 R,G,B,A。
+        // 不交换则屏幕 R/B 通道互换（纯灰不受影响、彩色全错位）。逐像素交换。
+        for i in (0..n).step_by(4) {
+            let (r, g, a) = (bgra[i], bgra[i + 1], bgra[i + 3]);
+            mmap[i] = bgra[i + 2];
+            mmap[i + 1] = g;
+            mmap[i + 2] = r;
+            mmap[i + 3] = a;
+        }
         state.mmap = Some(mmap);
     }
     if let Some(buf) = state.buffer.as_ref() {

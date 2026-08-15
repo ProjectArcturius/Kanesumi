@@ -289,7 +289,7 @@ pub struct Renderer {
     /// MSAA 中间纹理 view（sample_count=MSAA_SAMPLES）。render pass attachment 用它，
     /// swapchain view 作 resolve_target。resize 时重建。
     msaa_view: wgpu::TextureView,
-    /// SHM 输出模式：渲染到离屏纹理并读回 BGRA → wl_shm 提交。
+    /// SHM 输出模式：渲染到离屏纹理并读回 RGBA → wl_shm 提交（R/B 交换在 commit 侧）。
     /// ⚠ Ether 合成器对 layer-shell 的 wgpu dmabuf 渲染不可见（Known Issue #8），
     ///   SHM buffer（collect_layer_draws → import_memory）可靠。参 ETHER_RENDER_LESSONS.md。
     shm_output: bool,
@@ -325,7 +325,7 @@ fn create_msaa_view(
 }
 
 /// 创建离屏解析纹理（SHM 模式）：单采样、同表面格式、RENDER_ATTACHMENT | COPY_SRC。
-/// 作为 MSAA resolve target 渲染，随后 copy_texture_to_buffer 读回 BGRA → wl_shm。
+/// 作为 MSAA resolve target 渲染，随后 copy_texture_to_buffer 读回 RGBA → wl_shm。
 fn create_shm_tex(
     device: &wgpu::Device,
     config: &wgpu::SurfaceConfiguration,
@@ -789,7 +789,7 @@ impl Renderer {
         surface_texture.present();
     }
 
-    /// 把一帧 Scene 光栅化到离屏纹理并读回 BGRA（wl_shm Argb8888 内存布局）。
+    /// 把一帧 Scene 光栅化到离屏纹理并读回 RGBA（wl_shm Argb8888 内存序为 BGRA，转换在 commit 侧）。
     /// ⚠ Ether 合成器对 layer-shell 的 wgpu dmabuf 渲染不可见 → 走 SHM 提交。
     ///   返回 None = 尺寸未就绪 / 读回失败（调用方跳过本帧）。
     pub fn render_to_shm(&mut self, engine: &TextEngine, scene: &Scene) -> Option<Vec<u8>> {
@@ -1169,7 +1169,7 @@ impl Renderer {
         self.queue.submit(Some(encoder.finish()));
     }
 
-    /// 读回离屏纹理 → BGRA bytes（bytes_per_row 256 对齐，去 padding）。
+    /// 读回离屏纹理 → RGBA bytes（bytes_per_row 256 对齐，去 padding）。
     /// wl_shm Argb8888 = 内存 [B,G,R,A]（little-endian），与 Bgra8UnormSrgb readback 一致。
     fn readback(&self, tex: &wgpu::Texture) -> Option<Vec<u8>> {
         let w = tex.width();
