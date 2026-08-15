@@ -190,6 +190,7 @@ impl MetroDropdownMenu {
     }
 
     /// 项命中测试（相对面板原点，面板以 `panel_rect.origin` 起排）。
+    /// 布局与渲染一致：每项占 `item_height`，项后分隔线再占 2px（参 `render_panel`）。
     pub fn item_at(&self, pos: Point) -> Option<usize> {
         if pos.x < self.panel_rect.origin.x
             || pos.x >= self.panel_rect.origin.x + self.panel_rect.size.width
@@ -200,17 +201,17 @@ impl MetroDropdownMenu {
         let mut y = 0.0;
         for (i, item) in self.items.iter().enumerate() {
             let h = self.item_height;
-            if item.separator_after {
-                // 分隔线 +2px 计入下一项起点
-                y += h;
-                if local_y >= y - 1.0 && local_y < y + 1.0 {
-                    return None; // 分隔线本身不可命中
-                }
-            }
             if local_y >= y && local_y < y + h {
                 return Some(i);
             }
             y += h;
+            if item.separator_after {
+                // 分隔线本身不可命中；+2px 计入下一项起点。
+                if local_y >= y - 1.0 && local_y < y + 1.0 {
+                    return None;
+                }
+                y += 2.0;
+            }
         }
         None
     }
@@ -219,13 +220,13 @@ impl MetroDropdownMenu {
     pub fn item_rect(&self, i: usize) -> Rect {
         let mut y = self.panel_rect.origin.y;
         for (k, item) in self.items.iter().enumerate() {
-            if item.separator_after {
-                y += self.item_height + 2.0;
-            }
             if k == i {
                 break;
             }
             y += self.item_height;
+            if item.separator_after {
+                y += 2.0;
+            }
         }
         Rect::new(
             self.panel_rect.origin.x,
@@ -860,5 +861,42 @@ mod tests {
         assert!(!menu.items[0].checked, "同组互斥取消");
         assert!(menu.items[2].checked);
         assert!(!menu.select(2), "重选已勾选项无变化");
+    }
+
+    #[test]
+    fn item_at_and_rect_align_with_separators() {
+        let mut menu = MetroDropdownMenu::new(vec![
+            MenuItem::new("打开"),
+            MenuItem::new("复制"),
+            MenuItem::new("压缩为"),
+            MenuItem::new("移至回收站").separator(),
+            MenuItem::new("永久删除").separator(),
+            MenuItem::new("属性"),
+        ]);
+        menu.open(Rect::new(0.0, 0.0, 120.0, 0.0));
+        let h = menu.item_height;
+        // 布局：每项 h；分隔线画在项**之后** +2（与 render_panel 一致）。
+        // 0 打开 [0,h)                      → y=0
+        // 1 复制 [h,2h)                     → y=h
+        // 2 压缩为 [2h,3h)                  → y=2h
+        // 3 移至回收站(sep) [3h,4h)          → y=3h；线在 4h
+        // 4 永久删除(sep) [4h+2,5h+2)        → y=4h+2；线在 5h+2
+        // 5 属性 [5h+4,6h+4)                → y=5h+4
+        let cases = [
+            (0, 0.0),
+            (1, h),
+            (2, 2.0 * h),
+            (3, 3.0 * h),
+            (4, 4.0 * h + 2.0),
+            (5, 5.0 * h + 4.0),
+        ];
+        for (idx, y) in cases {
+            let hit = menu.item_at(Point::new(10.0, y + h * 0.5));
+            assert_eq!(hit, Some(idx), "y={y} 应命中第 {idx} 项");
+            let r = menu.item_rect(idx);
+            assert!((r.origin.y - y).abs() < 1e-3, "第 {idx} 项 rect y={} ≠ 预期 {y}", r.origin.y);
+        }
+        // 分隔线本身不可命中（第 3 项后，y = 4h）。
+        assert_eq!(menu.item_at(Point::new(10.0, 4.0 * h)), None, "分隔线不可命中");
     }
 }
