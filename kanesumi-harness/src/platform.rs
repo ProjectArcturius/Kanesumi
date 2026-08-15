@@ -2562,13 +2562,13 @@ fn commit_shm_buffers(
     if let Some(mmap) = state.mmap.as_mut() {
         let n = bgra.len().min(mmap.len());
         // wl_shm Argb8888 内存序为 B,G,R,A；wgpu Rgba8UnormSrgb 读回为 R,G,B,A。
-        // 不交换则屏幕 R/B 通道互换（纯灰不受影响、彩色全错位）。逐像素交换。
-        for i in (0..n).step_by(4) {
-            let (r, g, a) = (bgra[i], bgra[i + 1], bgra[i + 3]);
-            mmap[i] = bgra[i + 2];
-            mmap[i + 1] = g;
-            mmap[i + 2] = r;
-            mmap[i + 3] = a;
+        // 不交换则屏幕 R/B 通道互换（纯灰不受影响、彩色全错位）。按 4 字节组交换，
+        // chunks_exact 让编译器按字宽批量处理，比逐字节 step_by 循环更利于向量化。
+        for (dst, src) in mmap[..n].chunks_exact_mut(4).zip(bgra[..n].chunks_exact(4)) {
+            dst[0] = src[2];
+            dst[1] = src[1];
+            dst[2] = src[0];
+            dst[3] = src[3];
         }
     }
     if let Some(buf) = state.buffer.as_ref() {
