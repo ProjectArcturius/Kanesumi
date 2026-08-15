@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use fontdue::{Font, FontSettings};
 use rustybuzz::{Direction, Face, UnicodeBuffer};
@@ -201,12 +202,24 @@ impl FontFace {
     }
 }
 
+/// 塑形缓存键 —— 文本 + 字号 + 字距。运行期字体栈不变（加载期一次性），
+/// 故不含 `identity`；字体栈变化时 `load_with_fallbacks` 尚未被渲染消费，缓存为空。
+#[derive(Hash, Eq, PartialEq, Clone)]
+struct ShapeKey {
+    text: String,
+    size_bits: u32,
+    spacing_bits: u32,
+}
+
 /// 文本引擎 —— OpenType shaping + Unicode BiDi + UAX #14 换行 + 字体回退。
 /// Measure 与 Paint 消费同一塑形结果，禁止逐字符宽度近似。
 #[derive(Clone)]
 pub struct TextEngine {
     fonts: Vec<FontFace>,
     identity: u64,
+    /// 塑形结果缓存（`Arc<Mutex<..>>` 使 Clone 共享同一缓存）。静态文本每帧重复
+    /// BiDi 分析 + grapheme 切分 + rustybuzz 塑形是仅次于光栅化的 CPU 大头。
+    shape_cache: Arc<Mutex<HashMap<ShapeKey, Arc<Vec<ShapedGlyph>>>>>,
 }
 
 impl TextEngine {
@@ -248,6 +261,7 @@ impl TextEngine {
         let mut engine = Self {
             fonts: vec![face],
             identity: 0,
+            shape_cache: Arc::new(Mutex::new(HashMap::new())),
         };
         engine.refresh_identity();
         Ok(engine)
@@ -291,6 +305,21 @@ impl TextEngine {
     pub fn shape_line(&self, text: &str, size: f32, letter_spacing_em: f32) -> Vec<ShapedGlyph> {
         if text.is_empty() || size <= 0.0 || !size.is_finite() {
             return Vec::new();
+        }
+        // 塑形缓存：静态文本每帧重复 BiDi + rustybuzz 塑形是主要 CPU 开销（仅次于
+        // 已缓存的光栅化）。命中直接返回克隆（ShapedGlyph 为 Copy，浅拷贝极廉）。
+        let key = ShapeKey {
+            text: text.to_string(),
+            size_bits: size.to_bits(),
+            spacing_bits: letter_spacing_em.to_bits(),
+        };
+        if let Some(hit) = self
+            .shape_cache
+            .lock()
+            .expect("塑形缓存锁中毒")
+            .get(&key)
+        {
+            return hit.as_ref().clone();
         }
         let bidi = ParagraphBidiInfo::new(text, None);
         let (levels, runs) = bidi.visual_runs(0..text.len());
@@ -347,6 +376,10 @@ impl TextEngine {
                 }
             }
         }
+        self.shape_cache
+            .lock()
+            .expect("塑形缓存锁中毒")
+            .insert(key, Arc::new(out.clone()));
         out
     }
 
