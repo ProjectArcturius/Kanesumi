@@ -826,7 +826,11 @@ impl Shell {
             }
         };
         let s = f.surface.clone();
-        s.frame(qh, s.clone());
+        // 按需重绘：浮层动画跑完即停（floating_needs_redraw false → 不请求下一帧，
+        // 表面空闲零成本）。panic 分支仍无条件请求（降级为持续重绘，保证不卡死）。
+        if app.floating_needs_redraw(idx) {
+            s.frame(qh, s.clone());
+        }
         let surface = f.surface.clone();
         if let Some(r) = f.renderer.as_mut() {
             // 浮层恒为 layer-shell → SHM 提交（Ether 合成器 dmabuf 不可见）。
@@ -1027,7 +1031,7 @@ impl Shell {
             }
             if self.floating[i].renderer.is_none() {
                 self.render_floating_frame(i, qh);
-            } else {
+            } else if self.app.floating_needs_redraw(i) {
                 let s = self.floating[i].surface.clone();
                 s.frame(qh, s.clone());
             }

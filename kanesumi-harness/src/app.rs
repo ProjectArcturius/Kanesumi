@@ -251,6 +251,15 @@ pub trait App {
         true
     }
 
+    /// 浮层 `index` 是否仍需重绘（有动画 / 内容脏）。
+    ///
+    /// 返回 `false` 时外壳停止请求该浮层的 frame callback（表面空闲，零 CPU）。
+    /// 浮层动画由主表面 `update` 推进，动画跑完即可停（对称主表面 `needs_redraw`）。
+    /// 默认 `true`（保守：每帧重绘，行为同旧版）。
+    fn floating_needs_redraw(&self, _index: usize) -> bool {
+        true
+    }
+
     /// 渲染第 `index` 个浮层表面。`size` 为该表面逻辑尺寸（configure 后有效）。
     fn render_floating(&mut self, _engine: &TextEngine, _index: usize, _size: Size) -> Scene {
         Scene::default()
