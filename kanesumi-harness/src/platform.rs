@@ -1011,6 +1011,12 @@ impl Shell {
         // App 状态可能已变（焦点/文本/光标）→ 幂等 reconcile IME（无变化零成本）。
         self.reconcile_ime();
 
+        // App 请求关闭（文件选择器等交付结果后）→ 退出主循环（进程正常收尾）。
+        if self.app.should_close() {
+            self.running = false;
+            return;
+        }
+
         // IME 候选窗 popup 刷新（引擎激活时；尺寸变化重建 surface，随后渲染提交）。
         self.refresh_im_popup(qh);
 
@@ -1109,6 +1115,21 @@ impl Shell {
                     log::error!("App::on_context_command panic，已隔离");
                 }
             }
+        }
+    }
+
+    /// 表面焦点变化通知：`App::focus_changed`（失焦关闭弹层，错误边界隔离）。
+    /// 同时关闭 harness 自持的右键菜单（失焦残留：Alt+Tab / 点击其他窗口后菜单不隐）。
+    fn notify_focus_changed(&mut self, focused: bool) {
+        if !focused {
+            self.ctx_menu.close();
+        }
+        let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.app.focus_changed(focused);
+        }))
+        .is_ok();
+        if !ok {
+            log::error!("App::focus_changed panic，已隔离");
         }
     }
 
@@ -1807,6 +1828,8 @@ impl KeyboardHandler for Shell {
         // 表面获得键盘焦点 → text-input 焦点标记 + 幂等 reconcile。
         self.ime_focus_surface = true;
         self.reconcile_ime();
+        // App 通知：获焦（关闭弹层路径之外的正向通知）。
+        self.notify_focus_changed(true);
     }
 
     fn leave(
@@ -1820,6 +1843,8 @@ impl KeyboardHandler for Shell {
         self.ime_focus_surface = false;
         self.pending_ime = PendingImeBatch::default();
         self.reconcile_ime();
+        // App 通知：失焦 → 关闭右键菜单 / 弹窗（失焦残留修复）。
+        self.notify_focus_changed(false);
     }
 
     fn press_key(

@@ -268,6 +268,17 @@ pub trait App {
     /// 每帧 tick。`dt` 单位为秒（外壳从 frame callback 计算，参 PLAN.md §4.2 合成器时钟）。
     fn update(&mut self, _dt: f64) {}
 
+    /// 表面键盘焦点变化回调。`focused=false` 时 App 应关闭弹层（右键菜单/对话框等），
+    /// 避免「失焦残留」（参 CONTEXT_MENU_SPEC §Ⅵ LightDismiss 之外的应用侧关闭路径）。
+    /// 外壳在 wl_keyboard enter/leave 时调用。
+    fn focus_changed(&mut self, _focused: bool) {}
+
+    /// 是否请求关闭表面（窗口/进程退出）。App 置 true（如文件选择器点选完成交付结果后），
+    /// 外壳每帧轮询 → 置 running=false → 主循环退出（进程正常收尾）。
+    fn should_close(&self) -> bool {
+        false
+    }
+
     /// 输入事件（指针位置为表面本地逻辑坐标）。控件命中测试由 App 负责（参 HANDOVER §2 输入层）。
     fn handle_input(&mut self, _event: InputEvent) {}
 
