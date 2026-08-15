@@ -148,7 +148,7 @@ struct FrameData {
     image: Vec<TextVertex>,
     image_runs: Vec<ImageRun>,
     steps: Vec<Step>,
-    pending_glyphs: Vec<(GlyphKey, Vec<u8>, fontdue::Metrics)>,
+    pending_glyphs: Vec<GlyphKey>,
     pending_images: Vec<(u32, Vec<u8>, u32, u32)>,
 }
 
@@ -278,6 +278,9 @@ pub struct Renderer {
     glyphs: HashMap<GlyphKey, GlyphEntry>,
     /// 图标纹理缓存：key = (width,height) + rgba 内容 FNV 哈希。同一图标去重复用。
     images: HashMap<u32, GlyphEntry>,
+    /// 字形位图 CPU 缓存（fontdue 光栅化结果）。key = `GlyphKey`。静态文本每帧复用，
+    /// 避免重复光栅化（全链路最贵的 CPU 操作）。GPU 侧已有字形纹理缓存，此处补 CPU 侧。
+    glyph_bitmaps: HashMap<GlyphKey, (fontdue::Metrics, Vec<u8>)>,
     /// 持久顶点缓冲（避免每帧 create_buffer 的 GPU 分配开销，§4.1 保留视觉树）。
     solid_buf: wgpu::Buffer,
     text_buf: wgpu::Buffer,
@@ -717,6 +720,7 @@ impl Renderer {
             sampler,
             glyphs: HashMap::new(),
             images: HashMap::new(),
+            glyph_bitmaps: HashMap::new(),
             solid_buf,
             text_buf,
             image_buf,
@@ -820,7 +824,7 @@ impl Renderer {
         let mut solid: Vec<SolidVertex> = Vec::new();
         let mut text: Vec<TextVertex> = Vec::new();
         let mut text_runs: Vec<TextRun> = Vec::new();
-        let mut pending_glyphs: Vec<(GlyphKey, Vec<u8>, fontdue::Metrics)> = Vec::new();
+        let mut pending_glyphs: Vec<GlyphKey> = Vec::new();
         let mut image: Vec<TextVertex> = Vec::new();
         let mut image_runs: Vec<ImageRun> = Vec::new();
         let mut pending_images: Vec<(u32, Vec<u8>, u32, u32)> = Vec::new();
@@ -1030,8 +1034,8 @@ impl Renderer {
     /// `resolve` = swapchain 视图（present 模式）或离屏纹理视图（SHM 模式）。
     fn draw_frame(&mut self, frame: &FrameData, resolve: &wgpu::TextureView) {
         // 先建字形纹理（借用分离）
-        for (key, bitmap, metrics) in &frame.pending_glyphs {
-            self.ensure_glyph(*key, bitmap, metrics);
+        for key in &frame.pending_glyphs {
+            self.ensure_glyph(*key);
         }
         // 再建图标纹理（借用分离）
         for (key, rgba, w, h) in &frame.pending_images {
@@ -1240,7 +1244,7 @@ impl Renderer {
         ndc: &dyn Fn(f32, f32) -> [f32; 2],
         verts: &mut Vec<TextVertex>,
         runs: &mut Vec<TextRun>,
-        pending: &mut Vec<(GlyphKey, Vec<u8>, fontdue::Metrics)>,
+        pending: &mut Vec<GlyphKey>,
         content: &str,
         rect: Rect,
         color: Color,
@@ -1277,13 +1281,24 @@ impl Renderer {
             let baseline = line_y + ascent_log;
             let mut pen = x_log;
             for glyph in engine.shape_line(&line.content, style.size, style.letter_spacing_em) {
-                let (metrics, bitmap) =
-                    engine.rasterize_glyph(glyph.font_id, glyph.glyph_id, size_phys);
+                let key = glyph_key(engine.identity(), glyph.font_id, glyph.glyph_id, size_phys);
+                // 字形位图缓存：静态文本每帧重复光栅化是最大 CPU 浪费。命中仅复用度量
+                // （零分配），miss 才 rasterize 并入库。bitmap 只在 GPU 纹理首次创建时
+                // 需要，由 `ensure_glyph` 直接从缓存取，不再每帧 clone 位图。
+                let metrics = if let Some((m, _)) = self.glyph_bitmaps.get(&key) {
+                    *m
+                } else {
+                    let (m, b) =
+                        engine.rasterize_glyph(glyph.font_id, glyph.glyph_id, size_phys);
+                    if m.width > 0 && m.height > 0 {
+                        self.glyph_bitmaps.insert(key, (m, b));
+                    }
+                    m
+                };
                 if metrics.width == 0 || metrics.height == 0 {
                     pen += glyph.x_advance;
                     continue;
                 }
-                let key = glyph_key(engine.identity(), glyph.font_id, glyph.glyph_id, size_phys);
                 // 物理 metrics → 逻辑坐标（÷ scale）。
                 // fontdue: ymin = 字形底相对基线的偏移，fontdue Y+ 向上（PostScript 惯例）。
                 //   descender 字母（y/p/g）ymin < 0（底在基线下方）；只有 ascender 的字母 ymin = 0。
@@ -1311,18 +1326,22 @@ impl Renderer {
                     start,
                     count: 6,
                 });
-                pending.push((key, bitmap, metrics));
+                pending.push(key);
                 pen += glyph.x_advance;
             }
             line_y += line_advance;
         }
     }
 
-    /// 确保字形纹理存在。
-    fn ensure_glyph(&mut self, key: GlyphKey, bitmap: &[u8], metrics: &fontdue::Metrics) {
+    /// 确保字形纹理存在。bitmap/metrics 从 `glyph_bitmaps` CPU 缓存取（`emit_text`
+    /// 已在 miss 时入库），不再通过帧数据传递——避免每帧 clone 位图。
+    fn ensure_glyph(&mut self, key: GlyphKey) {
         if self.glyphs.contains_key(&key) {
             return;
         }
+        let Some((metrics, bitmap)) = self.glyph_bitmaps.get(&key) else {
+            return;
+        };
         let (w, h) = (metrics.width as u32, metrics.height as u32);
         if w == 0 || h == 0 {
             return;

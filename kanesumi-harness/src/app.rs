@@ -268,6 +268,18 @@ pub trait App {
     /// 每帧 tick。`dt` 单位为秒（外壳从 frame callback 计算，参 PLAN.md §4.2 合成器时钟）。
     fn update(&mut self, _dt: f64) {}
 
+    /// 本帧之后是否仍需继续请求下一帧（有动画进行中 / 内容脏）。
+    ///
+    /// 返回 `false` 时外壳停止请求 frame callback，进入零 CPU 空闲，直到输入事件
+    /// 或浮层状态变化唤醒（参 AnimationRules §III 进度驱动：动画跑完即停）。动画
+    /// 状态应汇总 `Progress::is_steady()` / `SpringAnim::is_steady()`，或光标闪烁等
+    /// 持续动画恒为 true。
+    ///
+    /// 默认 `true`（保守：每帧重绘，行为同旧版）。应用可覆盖以省 CPU。
+    fn needs_redraw(&self) -> bool {
+        true
+    }
+
     /// 表面键盘焦点变化回调。`focused=false` 时 App 应关闭弹层（右键菜单/对话框等），
     /// 避免「失焦残留」（参 CONTEXT_MENU_SPEC §Ⅵ LightDismiss 之外的应用侧关闭路径）。
     /// 外壳在 wl_keyboard enter/leave 时调用。

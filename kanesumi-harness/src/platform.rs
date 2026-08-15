@@ -155,12 +155,14 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
     // 能力事件不触发 → grab 未建立 → 合成器转发的键收不到。
 
     // 主循环：持续 dispatch（frame callback 驱动渲染，动画由 vsync 推进）。
+    // 空闲时（needs_redraw false）无 frame callback，dispatch 仅靠 timeout 兜底；
+    // 用 100ms 而非 16ms 避免 60Hz 空转（有事件时 WaylandSource 会立即唤醒）。
     loop {
         if !shell.running {
             break;
         }
         event_loop
-            .dispatch(std::time::Duration::from_millis(16), &mut shell)
+            .dispatch(std::time::Duration::from_millis(100), &mut shell)
             .map_err(|e| format!("事件循环 dispatch 失败：{e}"))?;
         // 引擎宿主幂等绑定（input_method.is_none 才建，seat 就绪后即生效）。
         shell.ensure_ime_engine(&qh);
@@ -250,6 +252,8 @@ struct Shell {
     height: f32,
     configured: bool,
     running: bool,
+    /// 已请求主表面 frame callback 但尚未到达（去重，避免一帧多请求）。
+    frame_pending: bool,
     last_frame: Instant,
     pointer_pos: (f32, f32),
     /// 双击检测器（Press 判定 → 追加 `InputEvent::DoubleClick`）。
@@ -332,12 +336,28 @@ struct Shell {
 }
 
 /// 单个 layer-shell 表面的 SHM 缓冲（单缓冲复用；尺寸变化时重建 pool/buffer）。
+/// SHM 缓冲状态（主表面 + 各浮层各一份）。
 struct ShmBuffers {
     pool: Option<wl_shm_pool::WlShmPool>,
     buffer: Option<wl_buffer::WlBuffer>,
     mmap: Option<memmap2::MmapMut>,
     width: u32,
     height: u32,
+    /// 已 attach 且未收到 release → 合成器仍持有，不可复用。
+    in_flight: bool,
+}
+
+impl ShmBuffers {
+    /// `wl_buffer.release` → 标记可复用。返回是否命中。
+    fn mark_released(&mut self, buffer: &wl_buffer::WlBuffer) -> bool {
+        if let Some(b) = &self.buffer
+            && b == buffer
+        {
+            self.in_flight = false;
+            return true;
+        }
+        false
+    }
 }
 
 /// IME 引擎宿主的 xkbcommon 状态 —— 把 grab keymap 的 keycode 语义化为 keysym/utf8。
@@ -403,6 +423,7 @@ impl Default for ShmBuffers {
             mmap: None,
             width: 0,
             height: 0,
+            in_flight: false,
         }
     }
 }
@@ -607,10 +628,13 @@ impl Shell {
                 log::warn!("wl_shm 不可用，SHM 提交降级为直接 present：{e}");
             })
             .ok();
-        // 全部角色一律 SHM 输出（离屏 wgpu 读回 → wl_shm 提交）：Ether 合成器下
-        // wgpu dmabuf 直出不可见（ETHER_RENDER_LESSONS.md 验证矩阵），SHM 是唯一
-        // 可靠路径（含 xdg-shell 浏览器窗口）。wl_shm 缺失时 render_frame 回退直出。
-        let shm_output = true;
+        // SHM 输出（离屏 wgpu 读回 → wl_shm 提交）：Ether 合成器对 wgpu dmabuf
+        // 渲染不可见（ETHER_RENDER_LESSONS.md），layer-shell 走 SHM 是唯一可靠路径。
+        // 但 xdg-shell（Browser/Desktop）在 KWin/smithay 下 dmabuf 直接 present 即可见；
+        // SHM 每帧 GPU 同步回读 + 逐像素 R/B 交换是「掉帧/迟滞/CPU 虚高」主因之一，
+        // 故仅 layer-shell 角色走 SHM，xdg-shell 直接 present。单缓冲 + release 跟踪
+        // （in_flight 守卫）避免 EBUSY。wl_shm 缺失时 render_frame 回退直出。
+        let shm_output = !matches!(role.surface_kind(), SurfaceKind::XdgShell);
         let main_shm = ShmBuffers::default();
 
         // 浮层表面：独立 layer-shell surface（透明底控件浮层）。非 layer-shell 角色无浮层。
@@ -672,6 +696,7 @@ impl Shell {
             height,
             configured: false,
             running: true,
+            frame_pending: false,
             last_frame: Instant::now(),
             pointer_pos: (-1.0, -1.0),
             click_tracker: crate::app::ClickTracker::default(),
@@ -1039,7 +1064,11 @@ impl Shell {
                 .render(&self.app.theme(), &self.engine, &mut scene);
         }
 
-        self.request_next_frame(qh);
+        // 按需重绘：仅当 App 仍有动画/内容脏时才请求下一帧。返回 false → 主表面进入
+        // 零 CPU 空闲，输入事件（pointer/keyboard）唤醒后重新请求（参 AnimationRules §III）。
+        if self.app.needs_redraw() {
+            self.request_next_frame(qh);
+        }
 
         if let Some(r) = self.renderer.as_mut() {
             // SHM 输出优先（Ether 合成器 dmabuf 不可见）；合成器无 wl_shm 时回退直出。
@@ -1065,10 +1094,15 @@ impl Shell {
         }
     }
 
-    /// 请求下一帧 callback（须在 present 之前，与本次提交对应）。
+    /// 请求下一帧 callback（须在 present 之前，与本次提交对应）。去重：一帧只注册
+    /// 一个 callback，`frame_pending` 标记，`CompositorHandler::frame` 到达时清除。
     fn request_next_frame(&mut self, qh: &QueueHandle<Self>) {
+        if self.frame_pending {
+            return;
+        }
         let s = self.surface.clone();
         s.frame(qh, s.clone());
+        self.frame_pending = true;
     }
 
     /// 主表面输入：右键菜单优先路由（参 CONTEXT_MENU_SPEC §Ⅵ.2）→ 未消费才投给 App。
@@ -1364,6 +1398,7 @@ impl CompositorHandler for Shell {
     ) {
         // vsync 到达 → 按表面分发渲染：主表面 / 浮层。
         if *surface == self.surface {
+            self.frame_pending = false;
             self.render_frame(qh);
         } else if let Some(idx) = self.floating_idx(surface) {
             self.render_floating_frame(idx, qh);
@@ -1637,7 +1672,7 @@ impl PointerHandler for Shell {
     fn pointer_frame(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         _pointer: &wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
@@ -1730,6 +1765,8 @@ impl PointerHandler for Shell {
                 }
             }
         }
+        // 指针事件改变 hover/焦点状态 → 唤醒一帧渲染（去重；空闲时输入是唯一唤醒源）。
+        self.request_next_frame(qh);
     }
 }
 
@@ -1818,7 +1855,7 @@ impl KeyboardHandler for Shell {
     fn enter(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _surface: &wl_surface::WlSurface,
         _serial: u32,
@@ -1830,12 +1867,13 @@ impl KeyboardHandler for Shell {
         self.reconcile_ime();
         // App 通知：获焦（关闭弹层路径之外的正向通知）。
         self.notify_focus_changed(true);
+        self.request_next_frame(qh);
     }
 
     fn leave(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _surface: &wl_surface::WlSurface,
         _serial: u32,
@@ -1845,12 +1883,13 @@ impl KeyboardHandler for Shell {
         self.reconcile_ime();
         // App 通知：失焦 → 关闭右键菜单 / 弹窗（失焦残留修复）。
         self.notify_focus_changed(false);
+        self.request_next_frame(qh);
     }
 
     fn press_key(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _serial: u32,
         event: SctkKeyEvent,
@@ -1871,6 +1910,7 @@ impl KeyboardHandler for Shell {
         {
             self.emit_input(InputEvent::Commit { text });
         }
+        self.request_next_frame(qh);
     }
 
     fn release_key(
@@ -2512,8 +2552,14 @@ fn commit_shm_buffers(
         state.mmap = mmap;
         state.width = width;
         state.height = height;
+        state.in_flight = false;
     }
-    if let Some(mut mmap) = state.mmap.take() {
+    // 合成器仍持有上一帧缓冲（未 release）→ 本次不重附（避免 KWin EBUSY），
+    // 等 release 后下一帧再提交。
+    if state.in_flight {
+        return;
+    }
+    if let Some(mmap) = state.mmap.as_mut() {
         let n = bgra.len().min(mmap.len());
         // wl_shm Argb8888 内存序为 B,G,R,A；wgpu Rgba8UnormSrgb 读回为 R,G,B,A。
         // 不交换则屏幕 R/B 通道互换（纯灰不受影响、彩色全错位）。逐像素交换。
@@ -2524,11 +2570,19 @@ fn commit_shm_buffers(
             mmap[i + 2] = r;
             mmap[i + 3] = a;
         }
-        state.mmap = Some(mmap);
     }
     if let Some(buf) = state.buffer.as_ref() {
         surface.attach(Some(buf), 0, 0);
+        // 全量 damage：SHM 逐帧重绘。不报 damage 时 KWin 等合成器可能不重绘表面。
+        // damage_buffer 需 wl_surface ≥ v4（KWin/smithay/wlroots 均 ≥4）；
+        // 低版本回退 `damage`（surface 坐标，按 buffer 尺寸换算）。
+        if surface.version() >= 4 {
+            surface.damage_buffer(0, 0, width as i32, height as i32);
+        } else {
+            surface.damage(0, 0, width as i32, height as i32);
+        }
         surface.commit();
+        state.in_flight = true;
     }
 }
 
@@ -2560,12 +2614,23 @@ impl Dispatch<wl_shm_pool::WlShmPool, ()> for Shell {
 
 impl Dispatch<wl_buffer::WlBuffer, ()> for Shell {
     fn event(
-        _state: &mut Self,
-        _proxy: &wl_buffer::WlBuffer,
-        _event: wl_buffer::Event,
+        state: &mut Self,
+        proxy: &wl_buffer::WlBuffer,
+        event: wl_buffer::Event,
         _data: &(),
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+        // release：合成器用完了该缓冲 → 标记可复用（避免重复 attach 同缓冲触发 EBUSY）。
+        if let wl_buffer::Event::Release = event {
+            if state.main_shm.mark_released(proxy) {
+                return;
+            }
+            for slot in &mut state.floating_shm {
+                if slot.mark_released(proxy) {
+                    return;
+                }
+            }
+        }
     }
 }
