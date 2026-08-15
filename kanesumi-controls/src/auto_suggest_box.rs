@@ -10,7 +10,7 @@
 // 建议数据由宿主经 `set_suggestions` 注入（纯逻辑过滤）。
 
 use kanesumi_canvas::text::TextEngine;
-use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_canvas::{Scene, TextAlign, TextOverflow};
 use kanesumi_core::{MetroTheme, Point, Rect};
 
 use crate::state::ControlState;
@@ -47,6 +47,8 @@ pub struct MetroAutoSuggestBox {
     pub state: ControlState,
     /// 是否聚焦。
     pub focused: bool,
+    /// 水平滚动偏移（内容超宽时，保持末尾/光标可见）。单行输入框，长文本左移。
+    pub scroll: f32,
     /// 上次文本（检测变化触发过滤）。
     last_text: String,
 }
@@ -63,6 +65,7 @@ impl Default for MetroAutoSuggestBox {
             popup_open: false,
             state: ControlState::Normal,
             focused: false,
+            scroll: 0.0,
             last_text: String::new(),
         }
     }
@@ -257,7 +260,11 @@ impl MetroAutoSuggestBox {
     pub fn update(&mut self, _dt: f64) {}
 
     /// 渲染：TextBox（复用精简渲染）+ 建议弹层（展开时）。
-    pub fn render(&self, theme: &MetroTheme, _engine: &TextEngine, rect: Rect, scene: &mut Scene) {
+    ///
+    /// 自适应（单行输入）：文本以 `wrap=false` 单行排版，超出内容区时经 `PushClip`
+    /// 裁剪进框内，`scroll` 保持末尾可见——修复长文本「文字不在框内」的自适应差问题
+    /// （旧实现 `wrap=true` 会把超宽文本换行，第二行被框裁掉 / 溢出）。
+    pub fn render(&mut self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
         let colors = &theme.colors;
         let style = theme.typography.body;
 
@@ -278,7 +285,7 @@ impl MetroAutoSuggestBox {
         }
 
         let body = self.body_rect(theme, rect);
-        let b = if self.focused { 2.0 } else { 1.0 };
+        let b = self.border_thickness();
         let inner = Rect::new(
             body.origin.x,
             body.origin.y,
@@ -287,35 +294,55 @@ impl MetroAutoSuggestBox {
         );
         scene.fill_rounded_rect(colors.surface, inner, theme.tokens.corner_radius);
 
-        // 文本 / 占位
-        let text_x = body.origin.x + b + 10.0;
+        let content = self.content_rect(theme, body);
+
+        // 自适应滚动：单行文本超宽时，把 scroll 调至末尾可见（UWP 单行输入行为）。
         if !self.field.is_empty() {
-            scene.text(
+            let text_w = engine.measure(&self.field.display_text(), style.size);
+            let view_w = content.size.width;
+            self.scroll = if text_w > view_w { text_w - view_w } else { 0.0 };
+        } else {
+            self.scroll = 0.0;
+        }
+
+        // 文本 / 占位 —— 单行不换行 + 裁剪进内容区（避免换行溢出框）。
+        scene.push_clip(content);
+        if !self.field.is_empty() {
+            let text_rect = Rect::new(
+                content.origin.x - self.scroll,
+                content.origin.y,
+                content.size.width + self.scroll,
+                style.line_height,
+            );
+            scene.text_with_options(
                 self.field.display_text(),
-                Rect::new(
-                    text_x,
-                    body.origin.y + b + 6.0,
-                    (body.size.width - 20.0).max(0.0),
-                    style.line_height,
-                ),
+                text_rect,
                 colors.on_surface,
                 style,
                 TextAlign::Left,
+                false,
+                Some(1),
+                TextOverflow::Clip,
             );
         } else if !self.placeholder.is_empty() {
-            scene.text(
+            let ph_rect = Rect::new(
+                content.origin.x,
+                content.origin.y,
+                content.size.width,
+                style.line_height,
+            );
+            scene.text_with_options(
                 self.placeholder.clone(),
-                Rect::new(
-                    text_x,
-                    body.origin.y + b + 6.0,
-                    (body.size.width - 20.0).max(0.0),
-                    style.line_height,
-                ),
+                ph_rect,
                 colors.on_surface_variant,
                 style,
                 TextAlign::Left,
+                false,
+                Some(1),
+                TextOverflow::Clip,
             );
         }
+        scene.pop_clip();
 
         // 边框
         let (stroke, stroke_w) = if self.focused {
@@ -341,20 +368,48 @@ impl MetroAutoSuggestBox {
                     // 高亮 = 中性（参 CONTROL_SPEC §5 规律 5：悬停用中性）
                     scene.fill_rect(colors.on_surface.with_alpha(0.30), item);
                 }
-                scene.text(
+                // 建议项单行不换行 + 裁剪（超宽项截断进 item，不溢出面板）。
+                let text_rect = Rect::new(
+                    item.origin.x + AUTOSUGGEST_ITEM_PAD,
+                    item.origin.y + (AUTOSUGGEST_ITEM_H - style.line_height) / 2.0,
+                    (item.size.width - 2.0 * AUTOSUGGEST_ITEM_PAD).max(0.0),
+                    style.line_height,
+                );
+                scene.push_clip(text_rect);
+                scene.text_with_options(
                     s.clone(),
-                    Rect::new(
-                        item.origin.x + AUTOSUGGEST_ITEM_PAD,
-                        item.origin.y + (AUTOSUGGEST_ITEM_H - style.line_height) / 2.0,
-                        (item.size.width - 2.0 * AUTOSUGGEST_ITEM_PAD).max(0.0),
-                        style.line_height,
-                    ),
+                    text_rect,
                     colors.on_surface,
                     style,
                     TextAlign::Left,
+                    false,
+                    Some(1),
+                    TextOverflow::Clip,
                 );
+                scene.pop_clip();
             }
         }
+    }
+
+    /// 边框厚度：聚焦 2px，其余 1px（与 MetroTextBox 对齐）。
+    fn border_thickness(&self) -> f32 {
+        if self.focused { 2.0 } else { 1.0 }
+    }
+
+    /// 内容区（在 `body` 内扣除边框 + Padding，与 MetroTextBox::content_rect 同款
+    /// UWP Padding `10,6,6,5`）——文本/占位/滚动的自适应基准矩形。
+    fn content_rect(&self, _theme: &MetroTheme, body: Rect) -> Rect {
+        let b = self.border_thickness();
+        let pad_l = 10.0;
+        let pad_t = 6.0;
+        let pad_r = 6.0;
+        let pad_b = 5.0;
+        Rect::new(
+            body.origin.x + b + pad_l,
+            body.origin.y + b + pad_t,
+            (body.size.width - 2.0 * b - pad_l - pad_r).max(0.0),
+            (body.size.height - 2.0 * b - pad_t - pad_b).max(0.0),
+        )
     }
 
     /// 主体矩形（Header 之下）。
