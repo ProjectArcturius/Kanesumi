@@ -111,6 +111,30 @@ impl MetroContextMenu {
         self.menu.panel_rect
     }
 
+    /// 顶层第 `i` 项的矩形（面板内）。供悬停/点选定位。
+    pub fn item_rect(&self, i: usize) -> Rect {
+        self.menu.item_rect(i)
+    }
+
+    /// 当前展开的子菜单（父项 + 面板 + 子菜单控件）。
+    pub fn submenu_state(&self) -> Option<&crate::dropdown_menu::SubmenuState> {
+        self.menu.submenu_state()
+    }
+
+    /// 子菜单当前悬停项索引。
+    pub fn submenu_hovered(&self) -> Option<usize> {
+        self.menu.submenu_hovered()
+    }
+
+    /// 指定路径是否为嵌套父项（带子菜单）。点击父项应保持/展开子菜单，
+    /// **不触发命令**（如「压缩为」父项 = 展开 ZIP/TAR 子菜单，而非直接压缩）。
+    pub fn is_submenu_parent(&self, path: &[usize]) -> bool {
+        match path {
+            [i] => self.menu.items.get(*i).is_some_and(|it| it.is_submenu()),
+            _ => false,
+        }
+    }
+
     /// 菜单状态（供外部判断/测试）。
     pub fn state(&self) -> PopupState {
         self.menu.state()

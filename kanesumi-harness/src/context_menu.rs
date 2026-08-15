@@ -159,6 +159,11 @@ impl ContextMenuState {
                         None => vec![path.index],
                         Some(p) => vec![p, path.index],
                     };
+                    // 点击嵌套父项：保持/展开子菜单，不触发命令（如「压缩为」→ 展开
+                    // ZIP/TAR 子菜单，而非直接压缩）。子菜单项点击才 Activate。
+                    if self.menu.is_submenu_parent(&path) {
+                        return ContextMenuAction::Consumed;
+                    }
                     self.select(&path);
                     self.close();
                     ContextMenuAction::Activate(path)
@@ -282,6 +287,41 @@ mod tests {
         let action = s.handle_pointer(Some(&engine), &ev, SCREEN);
         assert_eq!(action, ContextMenuAction::Activate(vec![0]));
         assert!(!s.is_visible(), "点选后关闭");
+    }
+
+    #[test]
+    fn click_submenu_parent_keeps_open() {
+        let Some(engine) = engine() else { return };
+        let mut s = ContextMenuState::new();
+        s.open(&engine, Point::new(100.0, 100.0), items(), SCREEN);
+        s.update(1.0);
+        // 悬停"更多"（index 3，嵌套项）→ 展开子菜单。
+        let r3 = s.menu.item_rect(3);
+        s.menu.hover(&engine, SCREEN, Point::new(r3.origin.x + 10.0, r3.origin.y + 10.0));
+        assert!(s.menu.submenu_state().is_some());
+        // 点击父项"更多" → 保持打开，不触发命令（不应 Activate）。
+        let ev = InputEvent::PointerPressed {
+            x: r3.origin.x + 20.0,
+            y: r3.origin.y + 10.0,
+            button: PointerButton::Left,
+            modifiers: crate::Modifiers::NONE,
+        };
+        let action = s.handle_pointer(Some(&engine), &ev, SCREEN);
+        assert_eq!(action, ContextMenuAction::Consumed, "点父项应保持菜单不触发命令");
+        assert!(s.is_visible(), "父项点击后菜单仍开");
+        // 点子菜单项（index 0 = 重命名）→ 才 Activate 路径 [3, 0]。
+        let sub = s.menu.submenu_state().unwrap().panel;
+        let ev = InputEvent::PointerPressed {
+            x: sub.origin.x + 20.0,
+            y: sub.origin.y + 10.0,
+            button: PointerButton::Left,
+            modifiers: crate::Modifiers::NONE,
+        };
+        assert_eq!(
+            s.handle_pointer(Some(&engine), &ev, SCREEN),
+            ContextMenuAction::Activate(vec![3, 0]),
+            "点子菜单项应返回 [parent, child]"
+        );
     }
 
     #[test]

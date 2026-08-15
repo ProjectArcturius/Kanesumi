@@ -240,9 +240,29 @@ impl MetroDropdownMenu {
     /// 子菜单展开时悬停其它项 → 收起当前子菜单（hover-swap 语义，对齐 MenuBar §8.5）。
     ///
     /// `screen` 供子菜单方向自适应（右侧越屏翻左 / 下缘越屏上移），参 [`place_submenu`]。
+    ///
+    /// **跨缝隙保持**：指针从父项移入已开子菜单时，会经过父项↔子菜单之间的桥接带
+    /// （水平条：顶层面板左缘 → 子菜单右缘，覆盖子菜单 y 范围）。在桥接带内保持
+    /// 展开，否则移动途中子菜单会闪没（旧 bug）。
     pub fn hover(&mut self, engine: &TextEngine, screen: Rect, pos: Point) {
+        // 子菜单已开：指针在子菜单面板内 → 子菜单接管（悬停其项高亮）；
+        // 在桥接带内 → 保持展开（不收起、不改父项高亮）。
+        if let Some(s) = self.submenu.as_ref() {
+            if s.panel.contains(pos) {
+                self.submenu.as_mut().map(|m| m.menu.hover(engine, screen, pos));
+                return;
+            }
+            let bridge = Rect::new(
+                self.panel_rect.origin.x,
+                s.panel.origin.y,
+                s.panel.right() - self.panel_rect.origin.x,
+                s.panel.size.height,
+            );
+            if bridge.contains(pos) {
+                return;
+            }
+        }
         self.hovered = self.item_at(pos);
-        // 级联：悬停嵌套项自动展开其子菜单；悬停普通项/空白收起当前子菜单。
         let submenu_target = self.hovered.filter(|i| self.items[*i].is_submenu());
         if let Some(i) = submenu_target {
             if self.submenu.as_ref().map(|s| s.parent) != Some(i) {
@@ -759,6 +779,28 @@ mod tests {
         menu.hover(&engine, TEST_SCREEN, Point::new(r0.origin.x + 10.0, r0.origin.y + 10.0));
         assert!(menu.submenu.is_none(), "悬停普通项应收起子菜单");
         assert_eq!(menu.hovered, Some(0));
+    }
+
+    #[test]
+    fn hover_into_submenu_keeps_it_open() {
+        let Some(engine) = find_engine() else { return };
+        let mut menu = cascaded_menu();
+        menu.open(Rect::new(0.0, 0.0, 120.0, 96.0));
+        let r1 = menu.item_rect(1);
+        menu.hover(&engine, TEST_SCREEN, Point::new(r1.origin.x + 10.0, r1.origin.y + 10.0));
+        let sub = menu.submenu_state().unwrap().panel;
+        // 指针移入子菜单内部 → 保持展开，且悬停高亮转移到子菜单项。
+        let inside = Point::new(sub.origin.x + 10.0, sub.origin.y + 10.0);
+        menu.hover(&engine, TEST_SCREEN, inside);
+        assert!(menu.submenu.is_some(), "指针进入子菜单应收起");
+        assert_eq!(menu.submenu_hovered(), Some(0), "子菜单首项应高亮");
+        // 指针停在父项↔子菜单之间的桥接带（父项右缘+1，父项 y 中）→ 保持展开。
+        let bridge = Point::new(r1.right() + 1.0, r1.origin.y + 10.0);
+        menu.hover(&engine, TEST_SCREEN, bridge);
+        assert!(menu.submenu.is_some(), "桥接带内应收起子菜单");
+        // 离开面板（远处空白）→ 收起。
+        menu.hover(&engine, TEST_SCREEN, Point::new(800.0, 700.0));
+        assert!(menu.submenu.is_none(), "远处空白应收起");
     }
 
     #[test]
