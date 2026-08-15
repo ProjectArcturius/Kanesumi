@@ -298,6 +298,8 @@ pub struct Renderer {
     shm_output: bool,
     /// 离屏解析纹理（SHM 模式）：MSAA resolve target + readback 源。resize 时重建。
     shm_tex: Option<wgpu::Texture>,
+    /// 读回缓冲（持久，避免每帧 `create_buffer` 的 GPU 分配）。容量不足时重建。
+    readback_buf: Option<wgpu::Buffer>,
     /// 逻辑 → 物理缩放（整数，通常 1 或 2）。
     scale: f32,
     /// 逻辑尺寸。
@@ -730,6 +732,7 @@ impl Renderer {
             msaa_view,
             shm_output,
             shm_tex,
+            readback_buf: None,
             scale,
             width,
             height,
@@ -1175,19 +1178,24 @@ impl Renderer {
 
     /// 读回离屏纹理 → RGBA bytes（bytes_per_row 256 对齐，去 padding）。
     /// wl_shm Argb8888 = 内存 [B,G,R,A]（little-endian），与 Bgra8UnormSrgb readback 一致。
-    fn readback(&self, tex: &wgpu::Texture) -> Option<Vec<u8>> {
+    /// 读回缓冲持久化：容量足够时复用，避免每帧 `create_buffer` 的 GPU 分配。
+    fn readback(&mut self, tex: &wgpu::Texture) -> Option<Vec<u8>> {
         let w = tex.width();
         let h = tex.height();
         if w == 0 || h == 0 {
             return None;
         }
         let bpr = (w * 4).div_ceil(256) * 256;
-        let rb = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("kanesumi-shm-readback"),
-            size: bpr as u64 * h as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        let needed = bpr as u64 * h as u64;
+        if self.readback_buf.as_ref().is_none_or(|b| b.size() < needed) {
+            self.readback_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("kanesumi-shm-readback"),
+                size: needed,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            }));
+        }
+        let rb = self.readback_buf.as_ref().expect("读回缓冲已建");
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("kanesumi-shm-readback-enc"),
         });
@@ -1199,7 +1207,7 @@ impl Renderer {
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::ImageCopyBuffer {
-                buffer: &rb,
+                buffer: rb,
                 layout: wgpu::ImageDataLayout {
                     offset: 0,
                     bytes_per_row: Some(bpr),
