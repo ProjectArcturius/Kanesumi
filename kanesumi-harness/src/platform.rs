@@ -73,6 +73,7 @@ use crate::app::{
 };
 use crate::appmenu::AppMenuHandle;
 use crate::context_menu::ContextMenuAction;
+use crate::cpu_raster::CpuRenderer;
 use crate::render::Renderer;
 use crate::role::{EtherRole, SurfaceKind};
 
@@ -154,23 +155,37 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
     // 绕过 new_capability 竞态——ceyboard 连接时 seat keyboard 能力可能已就绪，
     // 能力事件不触发 → grab 未建立 → 合成器转发的键收不到。
 
-    // 主循环：持续 dispatch（frame callback 驱动渲染，动画由 vsync 推进）。
-    // 空闲时（needs_redraw false）无 frame callback，dispatch 仅靠 timeout 兜底；
-    // 用 100ms 而非 16ms 避免 60Hz 空转（有事件时 WaylandSource 会立即唤醒）。
+    // 主循环（TOPBAR_RENDER_REFACTOR §4.6 按需提交 + 唤醒重构）：
+    // - 渲染完全由 `dirty` 驱动（输入 / 定时器 / 动画 / 尺寸变化显式置位，I-3）；
+    // - frame 回调仅作 vsync 提示（到达 → 置 dirty），绝不驱动渲染（I-2）；
+    // - dispatch timeout：脏时 16ms（动画兜底），空闲 100ms（定时器推进节流）。
     loop {
         if !shell.running {
             break;
         }
+        let busy = shell.dirty || shell.floating_dirty.iter().any(|d| *d);
+        let timeout = if busy {
+            std::time::Duration::from_millis(16)
+        } else {
+            std::time::Duration::from_millis(100)
+        };
         event_loop
-            .dispatch(std::time::Duration::from_millis(100), &mut shell)
+            .dispatch(timeout, &mut shell)
             .map_err(|e| format!("事件循环 dispatch 失败：{e}"))?;
         // 引擎宿主幂等绑定（input_method.is_none 才建，seat 就绪后即生效）。
         shell.ensure_ime_engine(&qh);
-        // 定时唤醒：App 需要周期刷新（时钟等）时直接跑一帧。needs_redraw 默认 true
-        // （行为不变）；覆盖为「静态 false」的 App 据此在空闲时按需唤醒，避免每帧
-        // SHM 读回 + GPU 同步（poll(Wait)）造成的输入高延迟。
-        if shell.app.needs_redraw() {
-            shell.wake(&qh);
+        // 推进步：update / 定时器 / 菜单命令 / IME / 尺寸同步（与渲染解耦，I-4）。
+        shell.step(&qh);
+        // 脏 → 渲染 + commit（I-1：CPU 缓冲恒就绪，无条件成功）。
+        if shell.dirty {
+            shell.render_and_commit(&qh);
+            shell.dirty = false;
+        }
+        for i in 0..shell.floating.len() {
+            if shell.floating_dirty[i] {
+                shell.floating_dirty[i] = false;
+                shell.render_floating_frame(i, &qh);
+            }
         }
     }
     Ok(())
@@ -245,7 +260,19 @@ struct Shell {
     pointer: Option<wl_pointer::WlPointer>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
 
+    /// xdg-shell 直出渲染器（present 路径）。layer-shell 角色为 None（走 CPU）。
     renderer: Option<Renderer>,
+    /// layer-shell CPU 光栅化器（Scene → SHM 像素，零 GPU 同步点）。
+    /// 参 TOPBAR_RENDER_REFACTOR §4.1 / cpu_raster.rs。
+    cpu: Option<CpuRenderer>,
+
+    /// 主表面脏标记（I-3：输入 / 定时器 / 动画 / 尺寸变化显式置位，commit 后清除）。
+    /// frame 回调仅作 vsync 提示（置位 dirty），不驱动渲染（I-2）。
+    dirty: bool,
+    /// 各浮层表面脏标记（与 `floating` 等长）。
+    floating_dirty: Vec<bool>,
+    /// 上一迭代各浮层可见性（翻转检测 → 置脏）。
+    floating_visible_cache: Vec<bool>,
 
     /// 主表面光栅化缩放。布局仍使用逻辑像素；支持 1.25 / 1.5 等分数比例。
     scale: f32,
@@ -260,7 +287,6 @@ struct Shell {
     running: bool,
     /// 已请求主表面 frame callback 但尚未到达（去重，避免一帧多请求）。
     frame_pending: bool,
-    last_frame: Instant,
     pointer_pos: (f32, f32),
     /// 双击检测器（Press 判定 → 追加 `InputEvent::DoubleClick`）。
     click_tracker: crate::app::ClickTracker,
@@ -332,15 +358,15 @@ struct Shell {
     /// 渲染帧计数（诊断：验证静止唤醒是否重启渲染）。
     frame_count: u64,
 
-    // ── SHM 输出（Ether 合成器 dmabuf 不可见 → 离屏读回 wl_shm 提交）─────
+    // ── SHM 输出（layer-shell 角色 CPU 光栅化 → wl_shm 提交）─────
     /// wl_shm 全局（layer-shell 表面用 SHM 提交；合成器未提供 → None，退化直接 present）。
     shm: Option<wl_shm::WlShm>,
-    /// 主表面是否走 SHM 输出（layer-shell 角色 = true；xdg-shell = false）。
-    shm_output: bool,
     /// 主表面 SHM 缓冲状态。
     main_shm: ShmBuffers,
     /// 各浮层表面的 SHM 缓冲状态（与 `floating` 等长）。
     floating_shm: Vec<ShmBuffers>,
+    /// 上次 update 的时刻（合成器时钟：dt 限幅防卡顿后跳变，§4.1 不变量 2）。
+    last_update: Instant,
 }
 
 /// 单个 layer-shell 表面的 SHM 缓冲（双缓冲；尺寸变化时重建 pool/buffer）。
@@ -423,7 +449,8 @@ struct ImPopupSurface {
     /// popup surface 对象（角色标记，保持存活）。
     #[allow(dead_code)]
     popup: wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_popup_surface_v2::ZwpInputPopupSurfaceV2,
-    renderer: Option<Renderer>,
+    /// CPU 光栅化器（popup surface 走 SHM 提交；resize 复用，不重建）。
+    cpu: Option<CpuRenderer>,
     shm: ShmBuffers,
     width: f32,
     height: f32,
@@ -443,12 +470,13 @@ impl Default for ShmBuffers {
     }
 }
 
-/// 浮层表面 —— 独立 wl_surface + layer-shell + 透明底渲染器。
+/// 浮层表面 —— 独立 wl_surface + layer-shell + CPU 光栅化（透明底）。
 /// 内容由 `App::render_floating(idx)` 提供；输入按指针所在表面路由到 `floating_input`。
 struct FloatingSurface {
     surface: wl_surface::WlSurface,
     layer_surface: LayerSurface,
-    renderer: Option<Renderer>,
+    /// CPU 光栅化器（浮层恒为 layer-shell → SHM 提交）。
+    cpu: Option<CpuRenderer>,
     width: f32,
     height: f32,
     configured: bool,
@@ -635,20 +663,14 @@ impl Shell {
             None
         };
 
-        // wl_shm 全局（SHM 提交用）。Ether 合成器对 layer-shell wgpu dmabuf 渲染不可见，
-        // layer-shell 角色一律走离屏读回 → wl_shm 提交。合成器未提供 → None，退化 present。
+        // wl_shm 全局（layer-shell 角色 CPU 光栅化 → wl_shm 提交）。合成器未提供 → None，
+        // 退化直接 present（xdg-shell 路径不受影响）。
         let shm = globals
             .bind::<wl_shm::WlShm, Self, ()>(qh, 1..=1, ())
             .map_err(|e| {
                 log::warn!("wl_shm 不可用，SHM 提交降级为直接 present：{e}");
             })
             .ok();
-        // SHM 输出（离屏 wgpu 读回 → wl_shm 提交）：Ether 合成器对 wgpu dmabuf
-        // 渲染不可见（ETHER_RENDER_LESSONS.md），layer-shell 走 SHM 是唯一可靠路径。
-        // ⚠ 实验：ETHER_DMABUF=1 强制 layer-shell 也走 dmabuf 直出，用于定位合成器
-        //   「layer dmabuf 不可见」根因（配 compositor render/mod.rs GL 复位实验）。
-        let shm_output = !matches!(role.surface_kind(), SurfaceKind::XdgShell)
-            && std::env::var("ETHER_DMABUF").ok().is_none();
         let main_shm = ShmBuffers::default();
 
         // 浮层表面：独立 layer-shell surface（透明底控件浮层）。非 layer-shell 角色无浮层。
@@ -701,6 +723,10 @@ impl Shell {
             pointer: None,
             keyboard: None,
             renderer,
+            cpu: None,
+            dirty: true,
+            floating_dirty: vec![false; floating.len()],
+            floating_visible_cache: vec![false; floating.len()],
             scale: 1.0,
             _fractional_scale_manager: fractional_scale_manager,
             _viewporter: viewporter,
@@ -711,7 +737,6 @@ impl Shell {
             configured: false,
             running: true,
             frame_pending: false,
-            last_frame: Instant::now(),
             pointer_pos: (-1.0, -1.0),
             click_tracker: crate::app::ClickTracker::default(),
             ctx_menu: crate::context_menu::ContextMenuState::new(),
@@ -745,9 +770,9 @@ impl Shell {
             diag_logged: false,
             frame_count: 0,
             shm,
-            shm_output,
             main_shm,
             floating_shm,
+            last_update: Instant::now(),
         })
     }
 
@@ -786,9 +811,10 @@ impl Shell {
             let h = h.max(1.0);
             f.layer_surface.set_size(f.width as u32, h as u32);
             f.height = h;
-            if let Some(r) = f.renderer.as_mut() {
-                r.resize(f.width, h, f.scale);
+            if let Some(cpu) = f.cpu.as_mut() {
+                cpu.resize(f.width, h, f.scale);
             }
+            self.floating_dirty[i] = true; // 尺寸变化 → 呈现新高度（I-3）。
             if let Some(viewport) = f.viewport.as_ref()
                 && h > 1.0
             {
@@ -798,10 +824,10 @@ impl Shell {
         }
     }
 
-    /// 渲染浮层帧：ensure renderer（透明底）→ App::render_floating → 光栅化 → present。
+    /// 渲染浮层帧：ensure CPU 光栅器（透明底）→ App::render_floating → 光栅化 → SHM 提交。
     fn render_floating_frame(&mut self, idx: usize, qh: &QueueHandle<Self>) {
         if !self.app.floating_visible(idx) {
-            // 浮层隐藏：不请求下一帧 → 表面空闲（无 frame 回调，零成本）。
+            // 浮层隐藏：不请求下一帧 → 表面空闲（零成本）。
             return;
         }
         let (app, floating) = (&mut self.app, &mut self.floating);
@@ -811,17 +837,15 @@ impl Shell {
         if !f.configured {
             return;
         }
-        // ⚠ 渲染器惰性创建前先同步当前 App 请求高度：面板打开时 floating_height 返回
-        //   面板高（如 198），f.height 可能仍是收起值 0/1 → 渲染器用 0 高度创建
-        //   （日志「浮层渲染器已创建（252x0）」）→ render_to_shm 因高度≤1 跳过读回 →
-        //   浮层永远不可见（用户视觉「点击面板不展开」）。
+        // ⚠ 光栅器惰性创建前先同步当前 App 请求高度：面板打开时 floating_height 返回
+        //   面板高，f.height 可能仍是收起值 → 光栅器用 0 高度创建 → 浮层永远不可见。
         let h = app.floating_height(idx);
         if (h - f.height).abs() >= 0.5 {
             let h = h.max(1.0);
             f.layer_surface.set_size(f.width as u32, h as u32);
             f.height = h;
-            if let Some(r) = f.renderer.as_mut() {
-                r.resize(f.width, h, f.scale);
+            if let Some(cpu) = f.cpu.as_mut() {
+                cpu.resize(f.width, h, f.scale);
             }
             if let Some(viewport) = f.viewport.as_ref()
                 && h > 1.0
@@ -830,22 +854,9 @@ impl Shell {
                     .set_destination(f.width.round().max(1.0) as i32, h.round().max(1.0) as i32);
             }
         }
-        if f.renderer.is_none() {
-            match Renderer::new(&self.conn, &f.surface, f.width, f.height, f.scale, true, true) {
-                Ok(r) => {
-                    f.renderer = Some(r);
-                    log::info!("浮层渲染器已创建（{:.0}x{:.0}，透明底，SHM 输出）", f.width, f.height);
-                }
-                Err(e) => {
-                    log::error!("浮层渲染器初始化失败（{e:?}），退出");
-                    write_diag(
-                        "ether-renderer-error.log",
-                        &format!("浮层渲染器初始化失败：{e:?}\n"),
-                    );
-                    self.running = false;
-                    return;
-                }
-            }
+        if f.cpu.is_none() {
+            f.cpu = Some(CpuRenderer::new(f.width, f.height, f.scale));
+            log::info!("浮层 CPU 光栅化器已创建（{:.0}x{:.0}）", f.width, f.height);
         }
         let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             app.render_floating(&self.engine, idx, Size::new(f.width, f.height))
@@ -860,32 +871,28 @@ impl Shell {
             }
         };
         let s = f.surface.clone();
-        // 按需重绘：浮层动画跑完即停（floating_needs_redraw false → 不请求下一帧，
-        // 表面空闲零成本）。panic 分支仍无条件请求（降级为持续重绘，保证不卡死）。
+        // 按需重绘：浮层动画跑完即停（floating_needs_redraw false → 不请求下一帧）。
         if app.floating_needs_redraw(idx) {
             s.frame(qh, s.clone());
         }
-        let surface = f.surface.clone();
-        if let Some(r) = f.renderer.as_mut() {
-            // 浮层恒为 layer-shell → SHM 提交（Ether 合成器 dmabuf 不可见）。
-            if let Some(bgra) = r.render_to_shm(&self.engine, &scene) {
-                let (pw, ph) = r.physical_size();
-                if let Some(shm) = self.shm.clone() {
-                    commit_shm_buffers(
-                        &shm,
-                        qh,
-                        &surface,
-                        &mut self.floating_shm[idx],
-                        pw,
-                        ph,
-                        &bgra,
-                    );
-                }
+        if let Some(cpu) = f.cpu.as_mut() {
+            let (pw, ph) = cpu.physical_size();
+            let rgba = cpu.render(&self.engine, &scene);
+            if let Some(shm) = self.shm.clone() {
+                commit_shm_buffers(
+                    &shm,
+                    qh,
+                    &f.surface,
+                    &mut self.floating_shm[idx],
+                    pw,
+                    ph,
+                    rgba,
+                );
             }
         }
     }
 
-    /// 浮层输入事件错误边界。
+    /// 浮层输入事件错误边界。事件到达即置脏（I-4）。
     fn emit_floating_input(&mut self, idx: usize, event: InputEvent) {
         let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.app.floating_input(idx, event);
@@ -893,6 +900,9 @@ impl Shell {
         .is_ok();
         if !ok {
             log::error!("App::floating_input panic，已隔离");
+        }
+        if idx < self.floating_dirty.len() {
+            self.floating_dirty[idx] = true;
         }
     }
 
@@ -928,6 +938,10 @@ impl Shell {
         if let Some(r) = self.renderer.as_mut() {
             r.resize(self.width, self.height, self.scale);
         }
+        if let Some(cpu) = self.cpu.as_mut() {
+            cpu.resize(self.width, self.height, self.scale);
+        }
+        self.dirty = true; // 尺寸变化 → 呈现新高度（I-3）。
         if let Some(viewport) = self.viewport.as_ref() {
             viewport.set_destination(
                 self.width.round().max(1.0) as i32,
@@ -962,61 +976,119 @@ impl Shell {
 
     /// 确保渲染器已创建（首个 configure 后调用；surface 已配置、尺寸已知）。
     /// 失败记日志并置 running=false（App 退出）。
+    ///
+    /// 按表面类型分派（TOPBAR_RENDER_REFACTOR §3.2）：
+    /// - xdg-shell（Settings 窗口等）→ wgpu `Renderer`（直出 present）。
+    /// - layer-shell（TopBar/Dock/Launcher/Ceyboard）→ `CpuRenderer`（Scene 直接
+    ///   光栅化进 SHM；零 GPU 同步点、零读回）。
     fn ensure_renderer(&mut self) {
-        if self.renderer.is_some() {
+        if self.renderer.is_some() || self.cpu.is_some() {
             return;
         }
-        let wl_surface = if let Some(w) = &self.window {
-            w.wl_surface()
-        } else if let Some(l) = &self.layer_surface {
-            l.wl_surface()
+        if matches!(self.role.surface_kind(), SurfaceKind::XdgShell) {
+            let wl_surface = if let Some(w) = &self.window {
+                w.wl_surface()
+            } else {
+                &self.surface
+            };
+            match Renderer::new(&self.conn, wl_surface, self.width, self.height, self.scale, false) {
+                Ok(r) => {
+                    self.renderer = Some(r);
+                    log::info!("wgpu 渲染器已创建（{:.0}x{:.0}）", self.width, self.height);
+                }
+                Err(e) => {
+                    log::error!("wgpu 渲染器初始化失败（{e:?}），退出");
+                    write_diag(
+                        "ether-renderer-error.log",
+                        &format!("wgpu 渲染器初始化失败：{e:?}\n"),
+                    );
+                    self.running = false;
+                }
+            }
         } else {
-            &self.surface
-        };
-        // 桌面（Background 层）+ TopBar（面板展开时主表面高度扩展）需透明底：
-        // 否则扩展区（面板外空白）以清除色（黑/不透明）覆盖桌面 —— 视觉「下拉菜单
-        // 把桌面往下顶」。参 role.rs Desktop / settings kanesumi_topbar。
-        let transparent = matches!(
-            self.role.surface_kind(),
-            SurfaceKind::LayerBackground | SurfaceKind::LayerTop
-        );
-        match Renderer::new(
-            &self.conn,
-            wl_surface,
-            self.width,
-            self.height,
-            self.scale,
-            transparent,
-            self.shm_output,
-        ) {
-            Ok(r) => {
-                self.renderer = Some(r);
-                log::info!(
-                    "wgpu 渲染器已创建（{:.0}x{:.0}，SHM 输出 {}）",
-                    self.width,
-                    self.height,
-                    self.shm_output,
-                );
-            }
-            Err(e) => {
-                log::error!("wgpu 渲染器初始化失败（{e:?}），退出");
-                // 会话内无日志 UI：错误写文件供排查（Ether 下 wgpu 初始化兼容问题）。
-                write_diag(
-                    "ether-renderer-error.log",
-                    &format!("wgpu 渲染器初始化失败：{e:?}\n"),
-                );
-                self.running = false;
-            }
+            // layer-shell → CPU 光栅化。无失败模式：Vec 分配即就绪（I-1）。
+            let cpu = CpuRenderer::new(self.width, self.height, self.scale);
+            log::info!(
+                "CPU 光栅化器已创建（{:.0}x{:.0}，scale {}）",
+                self.width,
+                self.height,
+                self.scale,
+            );
+            self.cpu = Some(cpu);
         }
     }
 
-    /// 渲染一帧：update + render + 光栅化 + present。
-    /// 调用前须请求 frame callback（vsync 推进动画）。
-    fn render_frame(&mut self, qh: &QueueHandle<Self>) {
+    /// 推进步（每循环迭代；与渲染解耦，TOPBAR_RENDER_REFACTOR I-4）：
+    /// update / 定时器 / 菜单命令 / IME / 尺寸同步。渲染完全由 `dirty` 驱动，
+    /// 本步只推进状态并显式置位脏标记（I-3）。
+    fn step(&mut self, qh: &QueueHandle<Self>) {
         if !self.configured {
             return;
         }
-        // 诊断：帧计数 + needs_redraw + frame_pending，写 /tmp 供会话外排查（唤醒失效用）。
+        // 合成器时钟（PLAN §4.2）：dt 限幅防卡顿后跳变。§4.1 不变量 2。
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_update).as_secs_f64().min(0.05);
+        self.last_update = now;
+
+        // 全局菜单命令（App::on_menu_command）：在 App::update 之前派发，
+        // 保证菜单触发的状态变更当帧生效。
+        self.drain_menu_commands();
+
+        // 错误边界：App update panic 不杀进程（§4.1 鲁棒性）。
+        let update_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.app.update(dt);
+        }))
+        .is_ok();
+        if !update_ok {
+            log::error!("App::update panic，跳过本迭代");
+            return;
+        }
+        // 右键菜单动画 tick（弹出/关闭轨道，与 App 状态解耦）。
+        self.ctx_menu.update(dt);
+
+        // 动态高度同步：App update 后可能请求展开/收起（TopBar 面板）。
+        self.sync_preferred_height();
+        self.sync_floating_heights();
+
+        // 浮层可见性翻转（Launcher 开/合）→ 置浮层脏（翻转前不可见 → 不渲染）。
+        for i in 0..self.floating.len() {
+            let visible = self.app.floating_visible(i);
+            if visible && !self.floating_visible_cache[i] {
+                self.floating_dirty[i] = true;
+            }
+            self.floating_visible_cache[i] = visible;
+        }
+
+        // App 状态可能已变（焦点/文本/光标）→ 幂等 reconcile IME（无变化零成本）。
+        self.reconcile_ime();
+
+        // App 请求关闭（文件选择器等交付结果后）→ 退出主循环（进程正常收尾）。
+        if self.app.should_close() {
+            self.running = false;
+            return;
+        }
+
+        // IME 候选窗 popup 刷新（内部脏门控：im_popup_dirty）。
+        self.refresh_im_popup(qh);
+
+        // I-3 定时器/动画脏位：App 自报「内容脏」→ 置主表面 dirty。
+        if self.app.needs_redraw() {
+            self.dirty = true;
+        }
+        if self.ctx_menu.is_visible() {
+            // 右键菜单开（含开/关动画推进中）→ 需要呈现。
+            self.dirty = true;
+        }
+    }
+
+    /// 渲染 + 提交（dirty 驱动；I-1：CPU 缓冲恒就绪，无条件成功）。
+    /// 渲染后若仍有动画（needs_redraw 语义 = 内容脏）→ 请求下一帧回调作 vsync
+    /// 提示（I-2）。回调丢失绝不冻结：主循环 16ms 兜底超时继续推进。
+    fn render_and_commit(&mut self, qh: &QueueHandle<Self>) {
+        if !self.configured {
+            return;
+        }
+        // 诊断：帧计数 + needs_redraw + frame_pending，写 /tmp 供会话外排查。
         self.frame_count += 1;
         if self.frame_count <= 20 || self.frame_count % 30 == 0 {
             let _ = std::fs::write(
@@ -1047,58 +1119,6 @@ impl Shell {
             let _ = std::fs::write("/tmp/ether-kanesumi-diag.txt", lines.as_bytes());
             log::info!("{}", lines.trim_end());
         }
-        // 合成器时钟（PLAN §4.2）：frame callback 驱动，dt 限幅防卡顿后跳变。
-        // §4.1 不变量 2 —— 动画由合成器 vsync 时钟推进，不依赖逻辑帧。
-        let now = Instant::now();
-        let dt = now.duration_since(self.last_frame).as_secs_f64().min(0.05);
-        self.last_frame = now;
-
-        // 全局菜单命令（App::on_menu_command）：在 App::update 之前派发，
-        // 保证菜单触发的状态变更当帧生效。
-        self.drain_menu_commands();
-
-        // 错误边界：App update/render panic 不杀进程，降级为跳过本帧（§4.1 鲁棒性）。
-        // &mut dyn App 非 UnwindSafe，用 AssertUnwindSafe 显式声明（App 是单线程消费）。
-        let update_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.app.update(dt);
-        }))
-        .is_ok();
-        if !update_ok {
-            log::error!("App::update panic，跳过本帧");
-            self.request_next_frame(qh);
-            return;
-        }
-        // 右键菜单动画 tick（弹出/关闭轨道，与 App 状态解耦）。
-        self.ctx_menu.update(dt);
-
-        // 动态高度同步：App update 后可能请求展开/收起（TopBar 面板），先同步表面尺寸。
-        self.sync_preferred_height();
-        self.sync_floating_heights();
-        // 浮层渲染唤醒：App 打开浮层（floating_visible 变 true）→ 首帧直接渲染
-        // （建渲染器 + SHM 提交，使刚请求的 frame callback 生效），此后由 vsync 驱动。
-        for i in 0..self.floating.len() {
-            if !self.app.floating_visible(i) || !self.floating[i].configured {
-                continue;
-            }
-            if self.floating[i].renderer.is_none() {
-                self.render_floating_frame(i, qh);
-            } else if self.app.floating_needs_redraw(i) {
-                let s = self.floating[i].surface.clone();
-                s.frame(qh, s.clone());
-            }
-        }
-
-        // App 状态可能已变（焦点/文本/光标）→ 幂等 reconcile IME（无变化零成本）。
-        self.reconcile_ime();
-
-        // App 请求关闭（文件选择器等交付结果后）→ 退出主循环（进程正常收尾）。
-        if self.app.should_close() {
-            self.running = false;
-            return;
-        }
-
-        // IME 候选窗 popup 刷新（引擎激活时；尺寸变化重建 surface，随后渲染提交）。
-        self.refresh_im_popup(qh);
 
         let size = self.size();
         let scene_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1108,7 +1128,6 @@ impl Shell {
             Ok(s) => s,
             Err(_) => {
                 log::error!("App::render panic，跳过本帧");
-                self.request_next_frame(qh);
                 return;
             }
         };
@@ -1119,38 +1138,35 @@ impl Shell {
                 .render(&self.app.theme(), &self.engine, &mut scene);
         }
 
-        // 按需重绘：仅当 App 仍有动画/内容脏时才请求下一帧。返回 false → 主表面进入
-        // 零 CPU 空闲，输入事件（pointer/keyboard）唤醒后重新请求（参 AnimationRules §III）。
+        // 渲染后仍在动画 → 请求下一帧（vsync 提示，I-2）。App 在 render() 内清除
+        // 自身脏标记（契约），此处的 needs_redraw = 动画推进中。
         if self.app.needs_redraw() {
             self.request_next_frame(qh);
         }
 
-        if let Some(r) = self.renderer.as_mut() {
-            // SHM 输出优先（Ether 合成器 dmabuf 不可见）；合成器无 wl_shm 时回退直出。
-            if self.shm_output && self.shm.is_some() {
-                // 离屏读回 → wl_shm 提交（ETHER_RENDER_LESSONS.md 唯一可靠路径）。
-                if let Some(bgra) = r.render_to_shm(&self.engine, &scene) {
-                    let (pw, ph) = r.physical_size();
-                    if let Some(shm) = self.shm.clone() {
-                        commit_shm_buffers(
-                            &shm,
-                            qh,
-                            &self.surface,
-                            &mut self.main_shm,
-                            pw,
-                            ph,
-                            &bgra,
-                        );
-                    }
-                }
-            } else {
-                r.render(&self.engine, &scene);
+        // 输出分派：layer-shell → CPU 光栅化 + SHM 提交；xdg-shell → wgpu 直出。
+        if let Some(cpu) = self.cpu.as_mut() {
+            let (pw, ph) = cpu.physical_size();
+            let rgba = cpu.render(&self.engine, &scene);
+            if let Some(shm) = self.shm.clone() {
+                commit_shm_buffers(
+                    &shm,
+                    qh,
+                    &self.surface,
+                    &mut self.main_shm,
+                    pw,
+                    ph,
+                    rgba,
+                );
             }
+        } else if let Some(r) = self.renderer.as_mut() {
+            r.render(&self.engine, &scene);
         }
     }
 
-    /// 请求下一帧 callback（须在 present 之前，与本次提交对应）。去重：一帧只注册
+    /// 请求下一帧 callback（须在 commit 之前，与本次提交对应）。去重：一帧只注册
     /// 一个 callback，`frame_pending` 标记，`CompositorHandler::frame` 到达时清除。
+    /// ⚠ 回调仅作 vsync 提示（置 dirty）；丢失不再致命（TOPBAR_RENDER_REFACTOR I-2）。
     fn request_next_frame(&mut self, qh: &QueueHandle<Self>) {
         if self.frame_pending {
             return;
@@ -1158,15 +1174,6 @@ impl Shell {
         let s = self.surface.clone();
         s.frame(qh, s.clone());
         self.frame_pending = true;
-    }
-
-    /// 空闲态唤醒渲染：直接跑一帧（update + render + commit），并依 `needs_redraw`
-    /// 决定是否续帧。⚠ 不能只 `request_next_frame` —— frame callback 须伴随 commit
-    /// 才会触发；空闲态无提交，仅注册回调会死锁（顶栏/伴生进程静止后无法再次交互）。
-    fn wake(&mut self, qh: &QueueHandle<Self>) {
-        if !self.frame_pending {
-            self.render_frame(qh);
-        }
     }
 
     /// 主表面输入：右键菜单优先路由（参 CONTEXT_MENU_SPEC §Ⅵ.2）→ 未消费才投给 App。
@@ -1214,6 +1221,8 @@ impl Shell {
                 }
             }
         }
+        // 事件到达即置脏（I-4）：输入独立于渲染循环，循环死亡不再导致输入失效。
+        self.dirty = true;
     }
 
     /// 表面焦点变化通知：`App::focus_changed`（失焦关闭弹层，错误边界隔离）。
@@ -1305,7 +1314,7 @@ impl Shell {
         );
     }
 
-    /// 应用新缩放：重配 wgpu 表面物理尺寸 + buffer_scale。
+    /// 应用新缩放：重配渲染器物理尺寸 + buffer_scale。
     fn apply_scale(&mut self, scale: f32) {
         if scale <= 0.0 || !scale.is_finite() {
             return;
@@ -1314,6 +1323,10 @@ impl Shell {
         if let Some(r) = self.renderer.as_mut() {
             r.resize(self.width, self.height, scale);
         }
+        if let Some(cpu) = self.cpu.as_mut() {
+            cpu.resize(self.width, self.height, scale);
+        }
+        self.dirty = true; // 缩放变化 → 呈现新尺寸（I-3）。
         if let Some(viewport) = self.viewport.as_ref() {
             viewport.set_destination(
                 self.width.round().max(1.0) as i32,
@@ -1346,8 +1359,8 @@ impl Shell {
                 .surface
                 .set_buffer_scale(scale.round().max(1.0) as i32);
         }
-        if let Some(renderer) = floating.renderer.as_mut() {
-            renderer.resize(floating.width, floating.height, scale);
+        if let Some(cpu) = floating.cpu.as_mut() {
+            cpu.resize(floating.width, floating.height, scale);
         }
     }
 
@@ -1361,6 +1374,9 @@ impl Shell {
         }
         if let Some(r) = self.renderer.as_mut() {
             r.resize(self.width, self.height, self.scale);
+        }
+        if let Some(cpu) = self.cpu.as_mut() {
+            cpu.resize(self.width, self.height, self.scale);
         }
         if let Some(viewport) = self.viewport.as_ref() {
             viewport.set_destination(
@@ -1456,16 +1472,17 @@ impl CompositorHandler for Shell {
     fn frame(
         &mut self,
         _conn: &Connection,
-        qh: &QueueHandle<Self>,
+        _qh: &QueueHandle<Self>,
         surface: &wl_surface::WlSurface,
         _time: u32,
     ) {
-        // vsync 到达 → 按表面分发渲染：主表面 / 浮层。
+        // vsync 提示（I-2）：frame 回调**不驱动渲染**，只置脏标记 → 主循环下一迭代
+        // 渲染 + commit。回调丢失绝不冻结：主循环 16ms 超时兜底（TOPBAR_RENDER_REFACTOR §4.6）。
         if *surface == self.surface {
             self.frame_pending = false;
-            self.render_frame(qh);
+            self.dirty = true;
         } else if let Some(idx) = self.floating_idx(surface) {
-            self.render_floating_frame(idx, qh);
+            self.floating_dirty[idx] = true;
         }
     }
 
@@ -1547,7 +1564,7 @@ impl WindowHandler for Shell {
             .unwrap_or(self.height);
         self.apply_size(w, h);
         // 首 configure：延迟创建渲染器（surface 已配置；此前 wgpu 会 SURFACE_LOST）。
-        if self.renderer.is_none() {
+        if self.renderer.is_none() && self.cpu.is_none() {
             self.ensure_renderer();
             if !self.running {
                 return;
@@ -1555,8 +1572,11 @@ impl WindowHandler for Shell {
         }
         if !self.configured {
             self.configured = true;
-            // 首帧：render_frame 内部会请求 frame callback 并渲染。
-            self.render_frame(_qh);
+            // 首帧：置脏 → 主循环渲染 + commit（I-1：无条件成功）。
+            self.dirty = true;
+        } else {
+            // 尺寸变化 → 呈现新内容（I-3）。
+            self.dirty = true;
         }
     }
 }
@@ -1595,8 +1615,8 @@ impl LayerShellHandler for Shell {
                     f.height = oh as f32;
                 }
             }
-            if let Some(r) = f.renderer.as_mut() {
-                r.resize(f.width, f.height, f.scale);
+            if let Some(cpu) = f.cpu.as_mut() {
+                cpu.resize(f.width, f.height, f.scale);
             }
             if let Some(viewport) = f.viewport.as_ref()
                 && f.width > 0.0
@@ -1609,8 +1629,13 @@ impl LayerShellHandler for Shell {
             }
             if !f.configured {
                 f.configured = true;
+                // 首帧：浮层脏 → 主循环渲染 + 提交。
+                self.floating_dirty[idx] = true;
                 let s = f.surface.clone();
                 s.frame(qh, s.clone());
+            } else {
+                // 尺寸变化 → 呈现新内容（I-3）。
+                self.floating_dirty[idx] = true;
             }
             return;
         }
@@ -1626,8 +1651,8 @@ impl LayerShellHandler for Shell {
         } else if h > 0 {
             self.height = h as f32;
         }
-        // 首 configure：延迟创建渲染器（surface 已配置、尺寸已知；此前 wgpu 会 SURFACE_LOST）。
-        if self.renderer.is_none() {
+        // 首 configure：延迟创建渲染器（surface 已配置、尺寸已知）。
+        if self.renderer.is_none() && self.cpu.is_none() {
             self.ensure_renderer();
             if !self.running {
                 return;
@@ -1635,6 +1660,9 @@ impl LayerShellHandler for Shell {
         }
         if let Some(r) = self.renderer.as_mut() {
             r.resize(self.width, self.height, self.scale);
+        }
+        if let Some(cpu) = self.cpu.as_mut() {
+            cpu.resize(self.width, self.height, self.scale);
         }
         if let Some(viewport) = self.viewport.as_ref() {
             viewport.set_destination(
@@ -1646,10 +1674,10 @@ impl LayerShellHandler for Shell {
             self.surface
                 .set_buffer_scale(self.scale.round().max(1.0) as i32);
         }
+        // 首帧或尺寸变化：置脏 → 主循环渲染 + commit（I-1）。
+        self.dirty = true;
         if !self.configured {
             self.configured = true;
-            // 首帧：render_frame 内部会请求 frame callback 并渲染。
-            self.render_frame(qh);
         }
     }
 }
@@ -1736,7 +1764,7 @@ impl PointerHandler for Shell {
     fn pointer_frame(
         &mut self,
         _conn: &Connection,
-        qh: &QueueHandle<Self>,
+        _qh: &QueueHandle<Self>,
         _pointer: &wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
@@ -1829,8 +1857,8 @@ impl PointerHandler for Shell {
                 }
             }
         }
-        // 指针事件改变 hover/焦点状态 → 唤醒一帧渲染（去重；空闲时输入是唯一唤醒源）。
-        self.wake(qh);
+        // 指针事件改变 hover/焦点状态 → 置脏（I-3；route_input 已置，此处兜底）。
+        self.dirty = true;
     }
 }
 
@@ -1896,7 +1924,7 @@ fn create_floating_surface(
     Ok(FloatingSurface {
         surface,
         layer_surface: ls,
-        renderer: None,
+        cpu: None,
         width: spec.width,
         height: spec.height,
         configured: false,
@@ -1923,7 +1951,7 @@ impl KeyboardHandler for Shell {
     fn enter(
         &mut self,
         _conn: &Connection,
-        qh: &QueueHandle<Self>,
+        _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _surface: &wl_surface::WlSurface,
         _serial: u32,
@@ -1935,13 +1963,13 @@ impl KeyboardHandler for Shell {
         self.reconcile_ime();
         // App 通知：获焦（关闭弹层路径之外的正向通知）。
         self.notify_focus_changed(true);
-        self.wake(qh);
+        self.dirty = true;
     }
 
     fn leave(
         &mut self,
         _conn: &Connection,
-        qh: &QueueHandle<Self>,
+        _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _surface: &wl_surface::WlSurface,
         _serial: u32,
@@ -1951,13 +1979,13 @@ impl KeyboardHandler for Shell {
         self.reconcile_ime();
         // App 通知：失焦 → 关闭右键菜单 / 弹窗（失焦残留修复）。
         self.notify_focus_changed(false);
-        self.wake(qh);
+        self.dirty = true;
     }
 
     fn press_key(
         &mut self,
         _conn: &Connection,
-        qh: &QueueHandle<Self>,
+        _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _serial: u32,
         event: SctkKeyEvent,
@@ -1978,7 +2006,7 @@ impl KeyboardHandler for Shell {
         {
             self.emit_input(InputEvent::Commit { text });
         }
-        self.wake(qh);
+        self.dirty = true;
     }
 
     fn release_key(
@@ -2466,7 +2494,7 @@ impl Shell {
         }
 
         // 尺寸变化或首次 → 重建 popup surface（wl_surface 尺寸由 SHM buffer 决定）。
-        // ⚠ 渲染器不复建（resize 复用）——重建会重创 wgpu context 导致闪烁。
+        // ⚠ CPU 光栅器不复建（resize 复用），避免候选内容变化时 surface 重建闪烁。
         let size_changed = self
             .im_popup
             .as_ref()
@@ -2474,7 +2502,7 @@ impl Shell {
             .unwrap_or(true);
         if size_changed && self.im_popup.is_some() {
             // 仅更新记录尺寸，不 destroy/recreate（surface 尺寸由 SHM buffer 驱动，
-            // 渲染器 resize 即可）。避免候选内容变化时 surface 重建闪烁。
+            // CPU 光栅器 resize 即可）。
             if let Some(p) = self.im_popup.as_mut() {
                 p.width = pw;
                 p.height = ph;
@@ -2494,7 +2522,7 @@ impl Shell {
             self.im_popup = Some(ImPopupSurface {
                 surface: surface.clone(),
                 popup,
-                renderer: None,
+                cpu: None,
                 shm: ShmBuffers::default(),
                 width: pw,
                 height: ph,
@@ -2505,23 +2533,14 @@ impl Shell {
         let Some(im_popup) = self.im_popup.as_mut() else {
             return;
         };
-        if im_popup.renderer.is_none() {
-            match Renderer::new(&self.conn, &im_popup.surface, pw, ph, self.scale, true, true) {
-                Ok(r) => im_popup.renderer = Some(r),
-                Err(e) => {
-                    log::warn!("候选窗 popup 渲染器初始化失败：{e:?}");
-                    return;
-                }
-            }
-        } else {
-            // 尺寸变化：resize 复用渲染器（避免重建 wgpu context 闪烁）。
-            if let Some(r) = im_popup.renderer.as_mut() {
-                r.resize(pw, ph, self.scale);
+        if im_popup.cpu.is_none() {
+            im_popup.cpu = Some(CpuRenderer::new(pw, ph, self.scale));
+        } else if size_changed {
+            // 尺寸变化：resize 复用（避免重建闪烁）。
+            if let Some(cpu) = im_popup.cpu.as_mut() {
+                cpu.resize(pw, ph, self.scale);
             }
         }
-        let Some(r) = im_popup.renderer.as_mut() else {
-            return;
-        };
         // 候选窗内容仅在 dirty（key 变化 / 尺寸变化 / 首次）时渲染提交——
         // 每帧无条件 SHM 提交会致候选窗闪烁。
         if !self.im_popup_dirty {
@@ -2539,8 +2558,9 @@ impl Shell {
                 return;
             }
         };
-        if let Some(bgra) = r.render_to_shm(&self.engine, &scene) {
-            let (srw, srh) = r.physical_size();
+        if let Some(cpu) = im_popup.cpu.as_mut() {
+            let (srw, srh) = cpu.physical_size();
+            let rgba = cpu.render(&self.engine, &scene);
             if let Some(shm) = self.shm.clone() {
                 commit_shm_buffers(
                     &shm,
@@ -2549,7 +2569,7 @@ impl Shell {
                     &mut im_popup.shm,
                     srw,
                     srh,
-                    &bgra,
+                    rgba,
                 );
             }
         }

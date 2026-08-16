@@ -10,10 +10,16 @@ pub mod context_menu;
 pub mod role;
 
 #[cfg(target_os = "linux")]
+pub mod cpu_raster;
+
+#[cfg(target_os = "linux")]
 pub mod platform;
 
 #[cfg(target_os = "linux")]
 pub mod render;
+
+#[cfg(target_os = "linux")]
+pub use cpu_raster::CpuRenderer;
 
 pub use app::{
     App, AppConfig, ImeAction, ImeContentHint, ImeContext, InputEvent, Key, Modifiers,

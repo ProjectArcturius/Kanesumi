@@ -286,14 +286,17 @@ pub trait App {
     /// 每帧 tick。`dt` 单位为秒（外壳从 frame callback 计算，参 PLAN.md §4.2 合成器时钟）。
     fn update(&mut self, _dt: f64) {}
 
-    /// 本帧之后是否仍需继续请求下一帧（有动画进行中 / 内容脏）。
+    /// 本帧是否有需要呈现的状态变化（「内容脏了吗」；TOPBAR_RENDER_REFACTOR §4.6 I-3）。
     ///
-    /// 返回 `false` 时外壳停止请求 frame callback，进入零 CPU 空闲，直到输入事件
-    /// 或浮层状态变化唤醒（参 AnimationRules §III 进度驱动：动画跑完即停）。动画
-    /// 状态应汇总 `Progress::is_steady()` / `SpringAnim::is_steady()`，或光标闪烁等
-    /// 持续动画恒为 true。
+    /// 契约变更（2026-08-16）：语义从「恒 true / 每帧画」改为**脏标记消费前查询**：
+    /// - App 在 `update()` / `handle_input()` 中置位自身脏标记（时钟变化 / hover /
+    ///   press / 面板开合 / 菜单打开 / 动画推进中等）；
+    /// - **App 在 `render()` 末尾清除脏标记**（render 与 commit 一一对应）；
+    /// - 返回 true → 外壳置主表面 dirty → 渲染 + commit（静止时零提交）；
+    /// - 动画推进中（Progress/SpringAnim 未稳态）应返回 true，外壳以 frame 回调
+    ///   作 vsync 提示逐帧渲染（回调丢失有 16ms 超时兜底，绝不冻结）。
     ///
-    /// 默认 `true`（保守：每帧重绘，行为同旧版）。应用可覆盖以省 CPU。
+    /// 默认 `true`（保守：每帧渲染，行为同旧版）。应用可覆盖以省 CPU。
     fn needs_redraw(&self) -> bool {
         true
     }

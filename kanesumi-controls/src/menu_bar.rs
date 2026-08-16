@@ -19,7 +19,7 @@ use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::{FontWeight, MetroTheme, Point, Rect, TextStyle};
 
 use crate::dropdown_menu::{MenuItem, MetroDropdownMenu};
-use crate::popup::place_popup;
+use crate::popup::{PopupState, place_popup};
 
 /// MenuBar header 高（UWP MenuBarHeight = 40）。
 const HEADER_HEIGHT: f32 = 40.0;
@@ -188,6 +188,14 @@ impl MetroMenuBar {
     /// 是否有 flyout 可见（含淡出中）。用于宿主判定弹层优先级。
     pub fn is_flyout_visible(&self) -> bool {
         self.flyouts.iter().any(|f| f.anim.is_visible())
+    }
+
+    /// 是否有 flyout 动画推进中（Opening/Closing）。静态 Open 不需要每帧重绘
+    /// （宿主 needs_redraw 脏标记语义用；参 TOPBAR_RENDER_REFACTOR §4.6）。
+    pub fn is_animating(&self) -> bool {
+        self.flyouts
+            .iter()
+            .any(|f| matches!(f.anim.state(), PopupState::Opening | PopupState::Closing))
     }
 
     /// 当前展开 flyout 的面板矩形（无展开返回 None）。供宿主 light dismiss：
