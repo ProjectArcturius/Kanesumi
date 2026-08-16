@@ -134,6 +134,17 @@ impl MetroMenuBar {
         None
     }
 
+    /// 设置 header 的子菜单项并同步到对应 flyout（⚠ `items[idx].items` 与 `flyouts[idx]`
+    /// 是两份快照，直接改 `items` 会导致 flyout 渲染陈旧/空项 —— 必须经此方法同步）。
+    pub fn set_item_submenu(&mut self, index: usize, items: Vec<MenuItem>) {
+        if index >= self.items.len() {
+            return;
+        }
+        self.items[index].items = items.clone();
+        self.flyouts[index].items = items;
+        self.flyouts[index].invalidate_layout();
+    }
+
     /// 打开指定 header 的 flyout（自动收拢其它）。`screen` 供 `place_popup` 方向自适应。
     pub fn open(&mut self, index: usize, engine: &TextEngine, rect: Rect, screen: Rect) {
         if index >= self.items.len() {
