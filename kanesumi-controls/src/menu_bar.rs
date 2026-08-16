@@ -178,6 +178,15 @@ impl MetroMenuBar {
         self.flyouts.iter().any(|f| f.anim.is_visible())
     }
 
+    /// 当前展开 flyout 的面板高度（无展开返回 0）。供宿主 `preferred_height` 精确扩展，
+    /// 避免固定保守高度造成「全宽大黑区」。参 settings kanesumi_topbar。
+    pub fn flyout_height(&self, engine: &TextEngine) -> f32 {
+        match self.open_index {
+            Some(i) if i < self.flyouts.len() => self.flyouts[i].panel_size(engine).height,
+            _ => 0.0,
+        }
+    }
+
     /// 命中 flyout 项：仅当有 flyout 展开时有效，返回 (header_idx, item_idx)。
     pub fn item_at(&self, p: Point) -> Option<(usize, usize)> {
         let i = self.open_index?;

@@ -166,6 +166,12 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
             .map_err(|e| format!("事件循环 dispatch 失败：{e}"))?;
         // 引擎宿主幂等绑定（input_method.is_none 才建，seat 就绪后即生效）。
         shell.ensure_ime_engine(&qh);
+        // 定时唤醒：App 需要周期刷新（时钟等）时请求下一帧。needs_redraw 默认 true
+        // （行为不变）；覆盖为「静态 false」的 App 据此在空闲时按需唤醒，避免每帧
+        // SHM 读回 + GPU 同步（poll(Wait)）造成的输入高延迟。
+        if shell.app.needs_redraw() {
+            shell.request_next_frame(&qh);
+        }
     }
     Ok(())
 }
