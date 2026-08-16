@@ -2652,6 +2652,12 @@ impl Dispatch<wl_buffer::WlBuffer, ()> for Shell {
                     return;
                 }
             }
+            // IME 候选窗 popup 的 SHM 缓冲也须处理 release，否则双缓冲耗尽后候选窗冻结。
+            if let Some(popup) = state.im_popup.as_mut()
+                && popup.shm.mark_released(proxy)
+            {
+                return;
+            }
         }
     }
 }
