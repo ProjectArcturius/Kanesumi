@@ -8,6 +8,7 @@
 
 use kanesumi_anim::{EasingMode, MetroAnim, UwpEasing};
 use kanesumi_canvas::glyph;
+use kanesumi_canvas::icon::Icon;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::typography::TextStyle;
@@ -51,8 +52,10 @@ pub enum NavigationPaneMode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NavigationViewItem {
     pub label: String,
-    /// 图标文本（16px；None = 无图标）。
+    /// 图标文本（16px；None = 无图标）。图像图标 `icon_image` 优先。
     pub icon: Option<String>,
+    /// 图像图标（SVG 光栅化，16×16 呈现）。None = 无图像图标，回退文本 `icon`。
+    pub icon_image: Option<Icon>,
     /// 子项（Left 模式缩进展示）。
     pub children: Vec<NavigationViewItem>,
 }
@@ -62,6 +65,7 @@ impl NavigationViewItem {
         Self {
             label: label.into(),
             icon: None,
+            icon_image: None,
             children: Vec::new(),
         }
     }
@@ -70,6 +74,16 @@ impl NavigationViewItem {
         Self {
             label: label.into(),
             icon: Some(icon.into()),
+            icon_image: None,
+            children: Vec::new(),
+        }
+    }
+
+    pub fn with_image_icon(label: impl Into<String>, icon: Icon) -> Self {
+        Self {
+            label: label.into(),
+            icon: None,
+            icon_image: Some(icon),
             children: Vec::new(),
         }
     }
@@ -372,10 +386,16 @@ impl MetroNavigationView {
                     ),
                 );
             }
-            // icon
+            // icon（图像图标优先于文本 glyph；SVG 光栅化，缺失回退文本）
             let mut x = r.origin.x + 16.0;
-            if let Some(icon) = &item.icon {
-                let icon_rect = Rect::new(x, r.origin.y + (r.size.height - 16.0) / 2.0, 16.0, 16.0);
+            if let Some(img) = &item.icon_image {
+                let icon_rect =
+                    Rect::new(x, r.origin.y + (r.size.height - 16.0) / 2.0, 16.0, 16.0);
+                scene.image(img, icon_rect, None);
+                x += 16.0 + 12.0;
+            } else if let Some(icon) = &item.icon {
+                let icon_rect =
+                    Rect::new(x, r.origin.y + (r.size.height - 16.0) / 2.0, 16.0, 16.0);
                 scene.text(
                     icon.clone(),
                     icon_rect,
