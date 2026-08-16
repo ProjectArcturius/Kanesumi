@@ -23,6 +23,35 @@ impl Icon {
     }
 }
 
+/// 把 PNG 文件解码为直通 RGBA 图标（用户头像 `~/.face` 等）。失败返回 None。
+/// tiny-skia 输出 premultiplied RGBA → 去预乘直通 RGBA。参 rasterize_svg。
+pub fn rasterize_png(path: impl AsRef<Path>) -> Option<Icon> {
+    let data = std::fs::read(path).ok()?;
+    let pixmap = resvg::tiny_skia::Pixmap::decode_png(&data).ok()?;
+    let (w, h) = (pixmap.width(), pixmap.height());
+    let raw = pixmap.data();
+    let mut rgba = Vec::with_capacity(raw.len());
+    for chunk in raw.chunks_exact(4) {
+        let (r, g, b, a) = (chunk[0], chunk[1], chunk[2], chunk[3]);
+        let (r, g, b) = if a == 0 {
+            (0u8, 0u8, 0u8)
+        } else {
+            let af = a as f32 / 255.0;
+            (
+                (r as f32 / af).round().min(255.0) as u8,
+                (g as f32 / af).round().min(255.0) as u8,
+                (b as f32 / af).round().min(255.0) as u8,
+            )
+        };
+        rgba.extend_from_slice(&[r, g, b, a]);
+    }
+    Some(Icon {
+        rgba,
+        width: w,
+        height: h,
+    })
+}
+
 /// 把 SVG 文件栅格化为直通 RGBA 图标。`target_size` 为最长边像素。
 /// 失败（文件缺失 / 解析错误）返回 `None` —— 图标缺失不 panic（SD §IX 只约束字体）。
 pub fn rasterize_svg(path: impl AsRef<Path>, target_size: u32) -> Option<Icon> {
