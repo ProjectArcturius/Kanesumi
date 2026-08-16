@@ -48,6 +48,8 @@ pub struct FloatingLayer {
     /// 逻辑尺寸（宽高）。宽 0 = 随输出自适应（Top 锚定时通常保留）。
     pub width: f32,
     pub height: f32,
+    /// 上边距（逻辑像素）。用于让 Top 锚定浮层贴 TopBar 下边（不盖住 bar）。
+    pub top_margin: f32,
 }
 
 impl FloatingLayer {
@@ -64,7 +66,14 @@ impl FloatingLayer {
             anchor,
             width,
             height,
+            top_margin: 0.0,
         }
+    }
+
+    /// 设置上边距（贴 TopBar 下边：传入 BAR_H）。参 settings kanesumi_topbar。
+    pub const fn with_top_margin(mut self, margin: f32) -> Self {
+        self.top_margin = margin;
+        self
     }
 }
 

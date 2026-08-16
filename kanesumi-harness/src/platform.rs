@@ -1818,6 +1818,10 @@ fn create_floating_surface(
     }
     let ls = shell.create_layer_surface(qh, surface.clone(), layer, Some(spec.app_id), None);
     ls.set_anchor(anchor);
+    // 上边距：让 Top 锚定浮层贴 TopBar 下边（不盖住 bar）。参 FloatingLayer::top_margin。
+    if spec.top_margin > 0.0 {
+        ls.set_margin(spec.top_margin.round() as i32, 0, 0, 0);
+    }
     // ⚠ exclusive_zone 仅全屏表面（四边锚定）可用 -1；部分表面（如固定宽度右键菜单）
     //   设 -1 会触发 zwlr_layer_surface_v1 ERROR_INVALID_SURFACE_STATE（协议错误 → 客户端
     //   被杀）。非全屏浮层用 0（不占排他区域）。

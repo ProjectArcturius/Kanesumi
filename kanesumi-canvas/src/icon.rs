@@ -21,6 +21,24 @@ impl Icon {
     pub fn load_svg(path: impl AsRef<Path>, target_size: u32) -> Option<Self> {
         rasterize_svg(path, target_size)
     }
+
+    /// 裁剪为圆形（用户头像用）：圆外像素 alpha 置 0，正圆。
+    pub fn circle_crop(mut self) -> Self {
+        let (w, h) = (self.width as f32, self.height as f32);
+        let (cx, cy) = (w / 2.0, h / 2.0);
+        let r = (w.min(h) / 2.0).max(1.0);
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let dx = x as f32 + 0.5 - cx;
+                let dy = y as f32 + 0.5 - cy;
+                if dx * dx + dy * dy > r * r {
+                    let i = ((y * self.width + x) * 4) as usize;
+                    self.rgba[i + 3] = 0;
+                }
+            }
+        }
+        self
+    }
 }
 
 /// 把 PNG 文件解码为直通 RGBA 图标（用户头像 `~/.face` 等）。失败返回 None。
