@@ -329,6 +329,8 @@ struct Shell {
     appmenu_rx: Option<std::sync::mpsc::Receiver<i32>>,
     /// 首帧诊断日志是否已输出。
     diag_logged: bool,
+    /// 渲染帧计数（诊断：验证静止唤醒是否重启渲染）。
+    frame_count: u64,
 
     // ── SHM 输出（Ether 合成器 dmabuf 不可见 → 离屏读回 wl_shm 提交）─────
     /// wl_shm 全局（layer-shell 表面用 SHM 提交；合成器未提供 → None，退化直接 present）。
@@ -742,6 +744,7 @@ impl Shell {
             appmenu,
             appmenu_rx,
             diag_logged: false,
+            frame_count: 0,
             shm,
             shm_output,
             main_shm,
@@ -990,6 +993,19 @@ impl Shell {
     fn render_frame(&mut self, qh: &QueueHandle<Self>) {
         if !self.configured {
             return;
+        }
+        // 诊断：帧计数 + needs_redraw + frame_pending，写 /tmp 供会话外排查（唤醒失效用）。
+        self.frame_count += 1;
+        if self.frame_count <= 20 || self.frame_count % 30 == 0 {
+            let _ = std::fs::write(
+                "/tmp/ether-harness-trace.log",
+                format!(
+                    "frame #{}, needs_redraw={}, frame_pending={}\n",
+                    self.frame_count,
+                    self.app.needs_redraw(),
+                    self.frame_pending
+                ),
+            );
         }
         // 首帧诊断：确认逻辑尺寸与 scale（排查合成器下 TopBar 显示不全/卡一半）。
         // 写入 /tmp/ether-kanesumi-diag.txt 便于会话内查看（无日志 UI）。
