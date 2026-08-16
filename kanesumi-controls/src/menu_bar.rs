@@ -19,7 +19,7 @@ use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::{FontWeight, MetroTheme, Point, Rect, TextStyle};
 
 use crate::dropdown_menu::{MenuItem, MetroDropdownMenu};
-use crate::popup::{place_popup, popup_gap};
+use crate::popup::place_popup;
 
 /// MenuBar header 高（UWP MenuBarHeight = 40）。
 const HEADER_HEIGHT: f32 = 40.0;
@@ -160,7 +160,8 @@ impl MetroMenuBar {
             return;
         };
         let size = self.flyouts[index].panel_size(engine);
-        let placement = place_popup(trigger, size, screen, popup_gap());
+        // gap=0：AppMenu flyout 贴 TopBar 下缘（macOS 菜单栏下拉无间隙，与 bar 连续面板）。
+        let placement = place_popup(trigger, size, screen, 0.0);
         self.flyouts[index].open(placement.rect);
         self.open_index = Some(index);
     }
@@ -187,6 +188,13 @@ impl MetroMenuBar {
     /// 是否有 flyout 可见（含淡出中）。用于宿主判定弹层优先级。
     pub fn is_flyout_visible(&self) -> bool {
         self.flyouts.iter().any(|f| f.anim.is_visible())
+    }
+
+    /// 当前展开 flyout 的面板矩形（无展开返回 None）。供宿主 light dismiss：
+    /// 点击面板外 → 关闭 flyout（AppMenu 菜单栏语义，点击别处收菜单）。
+    pub fn flyout_panel_rect(&self) -> Option<Rect> {
+        let i = self.open_index?;
+        self.flyouts.get(i).map(|f| f.panel_rect)
     }
 
     /// 当前展开 flyout 的面板高度（无展开返回 0）。供宿主 `preferred_height` 精确扩展，

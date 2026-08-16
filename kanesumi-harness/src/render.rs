@@ -398,11 +398,9 @@ impl Renderer {
             scale,
             transparent,
             shm_output,
-            // GL 优先：Ether 合成器（smithay GlesRenderer）自动 bind EGL Wayland display，
-            // wgpu GL 后端经 EGL_WL_bind_wayland_display 可直接连；Vulkan 在 Ether DRM
-            // 下 get_physical_device_surface_capabilities 报 SURFACE_LOST（客户端 Wayland
-            // WSI 与合成器不兼容），且 fallback 会落到 lavapipe 软件 Vulkan 卡死。参 session.log。
-            &[wgpu::Backends::GL, wgpu::Backends::VULKAN],
+            // ⚠ 实验：Vulkan 优先（支持 PreMultiplied alpha，主表面可透明）。
+            // 之前 Vulkan 在 Ether 下 SURFACE_LOST，故 GL 优先；GL 复位实验后重试 Vulkan。
+            &[wgpu::Backends::VULKAN, wgpu::Backends::GL],
         )
     }
 
@@ -499,6 +497,12 @@ impl Renderer {
                 .map_err(RendererError::Device)?;
 
         let caps = surface.get_capabilities(&adapter);
+        // 诊断：surface capabilities 的 alpha_modes / formats（排查「主表面无法透明」）。
+        log::warn!(
+            "kanesumi surface caps: alpha_modes={:?} formats={:?}",
+            caps.alpha_modes,
+            caps.formats,
+        );
         // 用 sRGB 格式：与 eframe（librarian 可见）对齐。⚠ 合成器（GLES）import 非 sRGB
         // dmabuf（XRGB8888，无 alpha）时 alpha 通道读 0 → 整个 buffer 透明（背景消失、
         // 文字浮空）；sRGB（ARGB8888，有 alpha）→ 可见。参 session.log + Known Issue #8。
@@ -764,6 +768,14 @@ impl Renderer {
         } else {
             None
         };
+        // ⚠ resize（面板展开/收起）后读回双缓冲尺寸失效：旧 buffer 尺寸与新的
+        //   tex.width/height 不符 → copy_range 用新 h 读旧 mapped range 越界 panic
+        //   （"range end index ... out of range"）。重置 warmed → 下一帧走首帧预热
+        //   重建 buffer。旧 buffer drop 仅 destroy_buffer（不检查 map 态，安全）。
+        self.readback_bufs = [None, None];
+        self.readback_idx = 0;
+        self.readback_rx = None;
+        self.readback_warmed = false;
     }
 
     /// 诊断：当前表面格式 / alpha_mode / buffer 物理尺寸（排查合成器下显示透明）。

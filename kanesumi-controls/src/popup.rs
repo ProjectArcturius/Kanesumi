@@ -240,11 +240,11 @@ pub fn render_overlay(theme: &MetroTheme, anim: &PopupAnim, screen: Rect, scene:
     scene.fill_rect(color, screen);
 }
 
-/// 弹层面板底座：surface 底 + 1px 边框。`progress` 用于展开位移（未启用布局位移，仅语义占位）。
+/// 弹层面板底座：surface 纯色底（无边框，Kanesumi 铁律：无容器边框，靠色阶拉开层次）。
+/// `progress` 用于展开位移（未启用布局位移，仅语义占位）。
 pub fn render_panel_base(theme: &MetroTheme, rect: Rect, progress: f64, scene: &mut Scene) {
     let _ = progress;
     scene.fill_rounded_rect(theme.colors.surface, rect, theme.tokens.corner_radius);
-    scene.stroke_rounded_rect(theme.colors.divider, rect, 1.0, theme.tokens.corner_radius);
 }
 
 #[cfg(test)]

@@ -645,11 +645,10 @@ impl Shell {
             .ok();
         // SHM 输出（离屏 wgpu 读回 → wl_shm 提交）：Ether 合成器对 wgpu dmabuf
         // 渲染不可见（ETHER_RENDER_LESSONS.md），layer-shell 走 SHM 是唯一可靠路径。
-        // 但 xdg-shell（Browser/Desktop）在 KWin/smithay 下 dmabuf 直接 present 即可见；
-        // SHM 每帧 GPU 同步回读 + 逐像素 R/B 交换是「掉帧/迟滞/CPU 虚高」主因之一，
-        // 故仅 layer-shell 角色走 SHM，xdg-shell 直接 present。单缓冲 + release 跟踪
-        // （in_flight 守卫）避免 EBUSY。wl_shm 缺失时 render_frame 回退直出。
-        let shm_output = !matches!(role.surface_kind(), SurfaceKind::XdgShell);
+        // ⚠ 实验：ETHER_DMABUF=1 强制 layer-shell 也走 dmabuf 直出，用于定位合成器
+        //   「layer dmabuf 不可见」根因（配 compositor render/mod.rs GL 复位实验）。
+        let shm_output = !matches!(role.surface_kind(), SurfaceKind::XdgShell)
+            && std::env::var("ETHER_DMABUF").ok().is_none();
         let main_shm = ShmBuffers::default();
 
         // 浮层表面：独立 layer-shell surface（透明底控件浮层）。非 layer-shell 角色无浮层。
@@ -812,6 +811,25 @@ impl Shell {
         if !f.configured {
             return;
         }
+        // ⚠ 渲染器惰性创建前先同步当前 App 请求高度：面板打开时 floating_height 返回
+        //   面板高（如 198），f.height 可能仍是收起值 0/1 → 渲染器用 0 高度创建
+        //   （日志「浮层渲染器已创建（252x0）」）→ render_to_shm 因高度≤1 跳过读回 →
+        //   浮层永远不可见（用户视觉「点击面板不展开」）。
+        let h = app.floating_height(idx);
+        if (h - f.height).abs() >= 0.5 {
+            let h = h.max(1.0);
+            f.layer_surface.set_size(f.width as u32, h as u32);
+            f.height = h;
+            if let Some(r) = f.renderer.as_mut() {
+                r.resize(f.width, h, f.scale);
+            }
+            if let Some(viewport) = f.viewport.as_ref()
+                && h > 1.0
+            {
+                viewport
+                    .set_destination(f.width.round().max(1.0) as i32, h.round().max(1.0) as i32);
+            }
+        }
         if f.renderer.is_none() {
             match Renderer::new(&self.conn, &f.surface, f.width, f.height, f.scale, true, true) {
                 Ok(r) => {
@@ -955,9 +973,13 @@ impl Shell {
         } else {
             &self.surface
         };
-        // 桌面（Background 层，外部布局）需透明底：让合成器基色/壁纸透出，
-        // 否则离屏读回是整幅不透明黑（桌面黑屏而非 #1E1E1E）。参 role.rs Desktop。
-        let transparent = self.role.surface_kind() == SurfaceKind::LayerBackground;
+        // 桌面（Background 层）+ TopBar（面板展开时主表面高度扩展）需透明底：
+        // 否则扩展区（面板外空白）以清除色（黑/不透明）覆盖桌面 —— 视觉「下拉菜单
+        // 把桌面往下顶」。参 role.rs Desktop / settings kanesumi_topbar。
+        let transparent = matches!(
+            self.role.surface_kind(),
+            SurfaceKind::LayerBackground | SurfaceKind::LayerTop
+        );
         match Renderer::new(
             &self.conn,
             wl_surface,

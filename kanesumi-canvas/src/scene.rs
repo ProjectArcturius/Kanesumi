@@ -214,6 +214,35 @@ impl Scene {
     pub fn is_empty(&self) -> bool {
         self.commands.is_empty()
     }
+
+    /// 平移本场景所有命令（面板本地坐标 → 主表面坐标）。子面板（会话菜单/控制面板/
+    /// 日历）在本地 (0,0) 布局，合并到主表面时整体平移 offset。参 kanesumi_topbar。
+    pub fn translate(&mut self, offset: Point) {
+        for cmd in &mut self.commands {
+            match cmd {
+                SceneCommand::FillRect { rect, .. }
+                | SceneCommand::StrokeRect { rect, .. }
+                | SceneCommand::Text { rect, .. }
+                | SceneCommand::PushClip { rect }
+                | SceneCommand::Image { rect, .. } => {
+                    rect.origin = Point::new(rect.origin.x + offset.x, rect.origin.y + offset.y);
+                }
+                SceneCommand::Arc { center, .. } => {
+                    center.x += offset.x;
+                    center.y += offset.y;
+                }
+                SceneCommand::Triangle { p0, p1, p2, .. } => {
+                    p0.x += offset.x;
+                    p0.y += offset.y;
+                    p1.x += offset.x;
+                    p1.y += offset.y;
+                    p2.x += offset.x;
+                    p2.y += offset.y;
+                }
+                SceneCommand::PopClip => {}
+            }
+        }
+    }
 }
 
 #[cfg(test)]
