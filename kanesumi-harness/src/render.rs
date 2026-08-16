@@ -1230,14 +1230,22 @@ impl Renderer {
         self.device.poll(wgpu::Maintain::Wait);
         match rx.recv() {
             Ok(Ok(())) => {
-                let data = slice.get_mapped_range();
-                // 去除 bpr padding：每行取 w*4 字节。
-                let row_bytes = (w as usize) * 4;
-                let mut out = Vec::with_capacity(row_bytes * h as usize);
-                for row in 0..h as usize {
-                    let start = row * bpr as usize;
-                    out.extend_from_slice(&data[start..start + row_bytes]);
-                }
+                // 先复制出数据、drop BufferView，再 unmap。
+                // ⚠ 持久读回缓冲必须解除映射，否则下一帧 queue.submit 报
+                //   "Buffer 'kanesumi-shm-readback' is still mapped" → panic →
+                //   全部 SHM 客户端第二帧崩溃循环（Debian 实测，参 5e4f788 引入）。
+                let out = {
+                    let data = slice.get_mapped_range();
+                    // 去除 bpr padding：每行取 w*4 字节。
+                    let row_bytes = (w as usize) * 4;
+                    let mut o = Vec::with_capacity(row_bytes * h as usize);
+                    for row in 0..h as usize {
+                        let start = row * bpr as usize;
+                        o.extend_from_slice(&data[start..start + row_bytes]);
+                    }
+                    o
+                };
+                rb.unmap();
                 Some(out)
             }
             _ => None,
