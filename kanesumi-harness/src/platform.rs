@@ -335,26 +335,32 @@ struct Shell {
     floating_shm: Vec<ShmBuffers>,
 }
 
-/// 单个 layer-shell 表面的 SHM 缓冲（单缓冲复用；尺寸变化时重建 pool/buffer）。
+/// 单个 layer-shell 表面的 SHM 缓冲（双缓冲；尺寸变化时重建 pool/buffer）。
 /// SHM 缓冲状态（主表面 + 各浮层各一份）。
+/// ⚠ 双缓冲：smithay 对单缓冲客户端不发 wl_buffer.release（只在 buffer 被替换时
+///   释放），单缓冲复用会导致 in_flight 永不复位 → 提交一帧后冻结。双缓冲交替
+///   提交不同 buffer，触发 release，动画/悬停才能持续刷新。
 struct ShmBuffers {
     pool: Option<wl_shm_pool::WlShmPool>,
-    buffer: Option<wl_buffer::WlBuffer>,
     mmap: Option<memmap2::MmapMut>,
     width: u32,
     height: u32,
-    /// 已 attach 且未收到 release → 合成器仍持有，不可复用。
-    in_flight: bool,
+    /// 两个槽位的 buffer（同一 pool 的两半）。
+    buffers: [Option<wl_buffer::WlBuffer>; 2],
+    /// 每个槽位是否已 attach 且未收到 release。
+    in_flight: [bool; 2],
+    /// 下一个使用的槽位索引。
+    next: usize,
 }
 
 impl ShmBuffers {
-    /// `wl_buffer.release` → 标记可复用。返回是否命中。
+    /// `wl_buffer.release` → 标记对应槽位可复用。返回是否命中。
     fn mark_released(&mut self, buffer: &wl_buffer::WlBuffer) -> bool {
-        if let Some(b) = &self.buffer
-            && b == buffer
-        {
-            self.in_flight = false;
-            return true;
+        for (i, b) in self.buffers.iter().enumerate() {
+            if b.as_ref() == Some(buffer) {
+                self.in_flight[i] = false;
+                return true;
+            }
         }
         false
     }
@@ -419,11 +425,12 @@ impl Default for ShmBuffers {
     fn default() -> Self {
         Self {
             pool: None,
-            buffer: None,
             mmap: None,
             width: 0,
             height: 0,
-            in_flight: false,
+            buffers: [None, None],
+            in_flight: [false, false],
+            next: 0,
         }
     }
 }
@@ -2534,59 +2541,69 @@ fn commit_shm_buffers(
     if bgra.len() < expected || width == 0 || height == 0 {
         return;
     }
-    // 尺寸变化或 pool 未建 → 重建。
+    // 尺寸变化或 pool 未建 → 重建（pool 大小 = 2×expected，容纳双缓冲）。
     if state.pool.is_none() || state.width != width || state.height != height {
         state.pool.take().map(|p| p.destroy());
-        state.buffer.take().map(|b| b.destroy());
+        for b in state.buffers.iter_mut() {
+            b.take().map(|b| b.destroy());
+        }
         state.mmap = None;
-        let fd = shm_open(expected);
+        state.in_flight = [false, false];
+        state.next = 0;
+        let fd = shm_open(expected * 2);
         let mmap = unsafe { memmap2::MmapMut::map_mut(&fd) }.ok();
-        let pool = shm.create_pool(fd.as_fd(), expected as i32, qh, ());
-        let buf = pool.create_buffer(
-            0,
-            width as i32,
-            height as i32,
-            (width * 4) as i32,
-            wl_shm::Format::Argb8888,
-            qh,
-            (),
-        );
+        let pool = shm.create_pool(fd.as_fd(), (expected * 2) as i32, qh, ());
+        for i in 0..2 {
+            let buf = pool.create_buffer(
+                (i * expected) as i32,
+                width as i32,
+                height as i32,
+                (width * 4) as i32,
+                wl_shm::Format::Argb8888,
+                qh,
+                (),
+            );
+            state.buffers[i] = Some(buf);
+        }
         state.pool = Some(pool);
-        state.buffer = Some(buf);
         state.mmap = mmap;
         state.width = width;
         state.height = height;
-        state.in_flight = false;
     }
-    // 合成器仍持有上一帧缓冲（未 release）→ 本次不重附（避免 KWin EBUSY），
-    // 等 release 后下一帧再提交。
-    if state.in_flight {
+    // 找一个空闲槽位（优先 next，其次另一个；双缓冲都飞则跳过本帧）。
+    let idx = if !state.in_flight[state.next] {
+        state.next
+    } else if !state.in_flight[1 - state.next] {
+        1 - state.next
+    } else {
         return;
-    }
+    };
     if let Some(mmap) = state.mmap.as_mut() {
-        let n = bgra.len().min(mmap.len());
+        let offset = idx * expected;
+        let n = bgra.len().min(expected);
         // wl_shm Argb8888 内存序为 B,G,R,A；wgpu Rgba8UnormSrgb 读回为 R,G,B,A。
-        // 不交换则屏幕 R/B 通道互换（纯灰不受影响、彩色全错位）。按 4 字节组交换，
-        // chunks_exact 让编译器按字宽批量处理，比逐字节 step_by 循环更利于向量化。
-        for (dst, src) in mmap[..n].chunks_exact_mut(4).zip(bgra[..n].chunks_exact(4)) {
+        // 不交换则屏幕 R/B 通道互换（纯灰不受影响、彩色全错位）。按 4 字节组交换。
+        for (dst, src) in mmap[offset..offset + n]
+            .chunks_exact_mut(4)
+            .zip(bgra[..n].chunks_exact(4))
+        {
             dst[0] = src[2];
             dst[1] = src[1];
             dst[2] = src[0];
             dst[3] = src[3];
         }
     }
-    if let Some(buf) = state.buffer.as_ref() {
+    if let Some(buf) = state.buffers[idx].as_ref() {
         surface.attach(Some(buf), 0, 0);
         // 全量 damage：SHM 逐帧重绘。不报 damage 时 KWin 等合成器可能不重绘表面。
-        // damage_buffer 需 wl_surface ≥ v4（KWin/smithay/wlroots 均 ≥4）；
-        // 低版本回退 `damage`（surface 坐标，按 buffer 尺寸换算）。
         if surface.version() >= 4 {
             surface.damage_buffer(0, 0, width as i32, height as i32);
         } else {
             surface.damage(0, 0, width as i32, height as i32);
         }
         surface.commit();
-        state.in_flight = true;
+        state.in_flight[idx] = true;
+        state.next = 1 - idx;
     }
 }
 
