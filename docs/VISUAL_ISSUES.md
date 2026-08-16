@@ -171,10 +171,10 @@ CONTROL_SPEC §4 要 0.25s 淡出到 0.6 / 0.25s 换错误色。当前布尔直�
 **修法：** `Default` 用零时长 `MetroAnim::new(0.0, ...)` 占位（`open()`/`close()` 必替换），删掉两次 `default_metro()` + `jump_to(0.0)` 冗余构造。
 
 ### V21 · Gallery `dropdown_panel()` 每帧重复计算 panel_size / place_popup ✅ 本 commit
-补记：实际排查后 `dropdown_panel()` 只在用户交互（toggle/click）时调，**非每帧**（SESSION_HANDOVER §4.1 措辞不准）。但 `panel_size` 本身仍是 O(items × engine.measure)，加缓存对交互延迟与将来更大菜单都有意义。`MetroDropdownMenu` 内加 `Cell<Option<Size>>` + `invalidate_layout()` 显式失效。
+补记：实际排查后 `dropdown_panel()` 只在用户交互（toggle/click）时调，**非每帧**（前版交接措辞不准，以此为准）。但 `panel_size` 本身仍是 O(items × engine.measure)，加缓存对交互延迟与将来更大菜单都有意义。`MetroDropdownMenu` 内加 `Cell<Option<Size>>` + `invalidate_layout()` 显式失效。
 `panel_size` 遍历所有 items × `engine.measure`。retained 层没利用。
 
-### V22 · **无布局器**（SESSION_HANDOVER §1 核心） 🟡 核心原语落地（本 commit）
+### V22 · **无布局器** 🟡 核心原语落地（本 commit）
 本 commit 落 `kanesumi-structure/src/ui.rs`：`Ui { max_rect, cursor, min_rect, direction, spacing }` + `allocate(size) -> Rect` + `horizontal`/`vertical` 子域 + `available_main`/`available_cross`。egui 风格最小模型，8 个单元测试覆盖 allocate/spacing/scope/min_rect/available。**未做**：控件迁移 + Gallery 硬编码常量退役（下 session 继续）。控件继续接 `Rect`，`Ui` 只在 App 层用来分配矩形。
 所有控件的 render 拿一个 "给定 rect" 就画；控件间坐标由 App 硬编码。这是"构图混乱"的机制原因。**修完 V22 后 V5 V6 V8 V11 自然消解。**
 **修法：** 搬 egui 的最小模型 —— `Ui { max_rect, cursor, min_rect }` + `allocate(size) -> Rect` 三样，足以承起当前所有控件；不用整套 egui。

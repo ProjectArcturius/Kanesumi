@@ -1,8 +1,8 @@
 // ui.rs —— V22 (A2) 布局器·渐进 A（egui-style 最小模型）
 //
-// 参 SESSION_HANDOVER §4.2：不动现有控件，`Ui` 是新叠加层。控件仍以 `Rect`
-// 为输入，Gallery/App 层用 `Ui::allocate` 分配矩形替代硬编码常量（
-// `PAD` / `CTRL_Y0` / `switch_rect` 之类）。逐控件迁移，一次一小步。
+// 不动现有控件，`Ui` 是新叠加层。控件仍以 `Rect` 为输入，Gallery/App 层用
+// `Ui::allocate` 分配矩形替代硬编码常量（`PAD` / `CTRL_Y0` / `switch_rect`
+// 之类）。逐控件迁移，一次一小步。
 //
 // 与 egui 差异：本层无「样式 / 视觉」概念，纯几何 —— 主轴 cursor 沿 direction
 // 前进，`allocate(size)` 切出一块 `Rect`。子域（`horizontal`/`vertical`）
