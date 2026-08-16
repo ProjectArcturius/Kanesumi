@@ -298,8 +298,15 @@ pub struct Renderer {
     shm_output: bool,
     /// 离屏解析纹理（SHM 模式）：MSAA resolve target + readback 源。resize 时重建。
     shm_tex: Option<wgpu::Texture>,
-    /// 读回缓冲（持久，避免每帧 `create_buffer` 的 GPU 分配）。容量不足时重建。
-    readback_buf: Option<wgpu::Buffer>,
+    /// 读回缓冲（双缓冲，避免每帧 `create_buffer` 的 GPU 分配）。容量不足时重建。
+    readback_bufs: [Option<wgpu::Buffer>; 2],
+    /// 本帧提交副本的目标缓冲索引（0/1，ping-pong）。
+    readback_idx: usize,
+    /// 上一帧 map_async 的接收端（本帧读回上一帧缓冲用；None = 首帧尚未预热）。
+    readback_rx: Option<std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>>,
+    /// 首帧预热：首帧无上一帧数据，须阻塞读回一次以提交内容（否则无提交 → 无 frame
+    /// callback → 渲染循环停摆）。
+    readback_warmed: bool,
     /// 逻辑 → 物理缩放（整数，通常 1 或 2）。
     scale: f32,
     /// 逻辑尺寸。
@@ -732,7 +739,10 @@ impl Renderer {
             msaa_view,
             shm_output,
             shm_tex,
-            readback_buf: None,
+            readback_bufs: [None, None],
+            readback_idx: 0,
+            readback_rx: None,
+            readback_warmed: false,
             scale,
             width,
             height,
@@ -801,7 +811,10 @@ impl Renderer {
     ///   返回 None = 尺寸未就绪 / 读回失败（调用方跳过本帧）。
     pub fn render_to_shm(&mut self, engine: &TextEngine, scene: &Scene) -> Option<Vec<u8>> {
         let (pw, ph) = (self.config.width as f32, self.config.height as f32);
-        if pw < 1.0 || ph < 1.0 {
+        // ⚠ 高度 ≤1 = 浮层收起态（sync_floating_heights 对关闭面板取 max(1.0)）。此时跳过
+        //   读回 + 提交（1px 不可见），避免每帧 device.poll(Wait) 全量 GPU 同步拖慢输入
+        //   （TopBar 3 浮层 × 60fps 的 GPU 同步是顶栏延迟主因）。
+        if pw < 1.0 || ph <= 1.0 {
             return None;
         }
         let tex = match self.shm_tex.take() {
@@ -1178,7 +1191,10 @@ impl Renderer {
 
     /// 读回离屏纹理 → RGBA bytes（bytes_per_row 256 对齐，去 padding）。
     /// wl_shm Argb8888 = 内存 [B,G,R,A]（little-endian），与 Bgra8UnormSrgb readback 一致。
-    /// 读回缓冲持久化：容量足够时复用，避免每帧 `create_buffer` 的 GPU 分配。
+    ///
+    /// **双缓冲**：本帧把副本提交到 `bufs[idx]`，读回 `bufs[1-idx]`（上一帧副本，已就绪），
+    /// 避免每帧 `device.poll(Maintain::Wait)` 全量 GPU 同步阻塞输入分发（TopBar 延迟主因）。
+    /// 首帧（无上一帧）预热：阻塞读回一次，保证有提交 → frame callback → 渲染循环启动。
     fn readback(&mut self, tex: &wgpu::Texture) -> Option<Vec<u8>> {
         let w = tex.width();
         let h = tex.height();
@@ -1187,15 +1203,19 @@ impl Renderer {
         }
         let bpr = (w * 4).div_ceil(256) * 256;
         let needed = bpr as u64 * h as u64;
-        if self.readback_buf.as_ref().is_none_or(|b| b.size() < needed) {
-            self.readback_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+        let idx = self.readback_idx;
+        if self.readback_bufs[idx]
+            .as_ref()
+            .is_none_or(|b| b.size() < needed)
+        {
+            self.readback_bufs[idx] = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("kanesumi-shm-readback"),
                 size: needed,
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
             }));
         }
-        let rb = self.readback_buf.as_ref().expect("读回缓冲已建");
+        let rb = self.readback_bufs[idx].as_ref().expect("读回缓冲已建");
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("kanesumi-shm-readback-enc"),
         });
@@ -1222,34 +1242,82 @@ impl Renderer {
         );
         self.queue.submit(Some(encoder.finish()));
 
-        let slice = rb.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| {
-            let _ = tx.send(r);
-        });
-        self.device.poll(wgpu::Maintain::Wait);
-        match rx.recv() {
-            Ok(Ok(())) => {
-                // 先复制出数据、drop BufferView，再 unmap。
-                // ⚠ 持久读回缓冲必须解除映射，否则下一帧 queue.submit 报
-                //   "Buffer 'kanesumi-shm-readback' is still mapped" → panic →
-                //   全部 SHM 客户端第二帧崩溃循环（Debian 实测，参 5e4f788 引入）。
-                let out = {
-                    let data = slice.get_mapped_range();
-                    // 去除 bpr padding：每行取 w*4 字节。
-                    let row_bytes = (w as usize) * 4;
-                    let mut o = Vec::with_capacity(row_bytes * h as usize);
-                    for row in 0..h as usize {
-                        let start = row * bpr as usize;
-                        o.extend_from_slice(&data[start..start + row_bytes]);
-                    }
-                    o
-                };
-                rb.unmap();
-                Some(out)
-            }
-            _ => None,
+        if !self.readback_warmed {
+            // 首帧预热：阻塞读回本帧（无上一帧数据）。
+            self.readback_warmed = true;
+            let slice = rb.slice(..);
+            let (tx, rx) = std::sync::mpsc::channel();
+            slice.map_async(wgpu::MapMode::Read, move |r| {
+                let _ = tx.send(r);
+            });
+            self.device.poll(wgpu::Maintain::Wait);
+            let out = match rx.recv() {
+                Ok(Ok(())) => Some(Self::de_read(&slice, rb, w, h, bpr)),
+                _ => None,
+            };
+            self.readback_idx = 1 - idx;
+            return out;
         }
+
+        // 常规帧：map_async 本帧缓冲（供下一帧读回），读回上一帧缓冲（已就绪）。
+        let new_slice = rb.slice(..);
+        let (new_tx, new_rx) = std::sync::mpsc::channel();
+        new_slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = new_tx.send(r);
+        });
+
+        let prev = 1 - idx;
+        let out = match self.readback_rx.take() {
+            Some(rx) => {
+                self.device.poll(wgpu::Maintain::Poll);
+                match rx.try_recv() {
+                    Ok(Ok(())) => {
+                        let pb = self.readback_bufs[prev].as_ref().expect("读回缓冲已建");
+                        let pslice = pb.slice(..);
+                        Some(Self::de_read(&pslice, pb, w, h, bpr))
+                    }
+                    // 罕见：上一帧 map 尚未就绪（GPU 过忙）→ 阻塞兜底，保证正确性。
+                    _ => {
+                        self.device.poll(wgpu::Maintain::Wait);
+                        match rx.recv() {
+                            Ok(Ok(())) => {
+                                let pb = self.readback_bufs[prev].as_ref().expect("读回缓冲已建");
+                                let pslice = pb.slice(..);
+                                Some(Self::de_read(&pslice, pb, w, h, bpr))
+                            }
+                            _ => None,
+                        }
+                    }
+                }
+            }
+            None => None,
+        };
+        self.readback_idx = prev;
+        self.readback_rx = Some(new_rx);
+        out
+    }
+
+    /// 从已映射的读回缓冲复制数据并解除映射（去除 bpr padding）。
+    /// ⚠ 持久读回缓冲必须 unmap，否则下一帧 queue.submit 报 "is still mapped" → panic →
+    /// 全部 SHM 客户端第二帧崩溃循环（Debian 实测，参 5e4f788 引入）。
+    fn de_read(
+        slice: &wgpu::BufferSlice,
+        buf: &wgpu::Buffer,
+        w: u32,
+        h: u32,
+        bpr: u32,
+    ) -> Vec<u8> {
+        let row_bytes = (w as usize) * 4;
+        let mut o = Vec::with_capacity(row_bytes * h as usize);
+        {
+            let data = slice.get_mapped_range();
+            for row in 0..h as usize {
+                let start = row * bpr as usize;
+                o.extend_from_slice(&data[start..start + row_bytes]);
+            }
+        }
+        buf.unmap();
+        o
     }
 
     /// 排版一段文本并产出字形 quad。
