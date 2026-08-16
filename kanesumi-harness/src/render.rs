@@ -1243,7 +1243,8 @@ impl Renderer {
         self.queue.submit(Some(encoder.finish()));
 
         if !self.readback_warmed {
-            // 首帧预热：阻塞读回本帧（无上一帧数据）。
+            // 首帧预热：阻塞 map + 读，但**保持映射**（供下一帧读回后 unmap）。
+            // ⚠ 若此处 unmap，下一帧读回读不到上一帧数据 → 无提交 → 渲染循环停摆。
             self.readback_warmed = true;
             let slice = rb.slice(..);
             let (tx, rx) = std::sync::mpsc::channel();
@@ -1252,7 +1253,7 @@ impl Renderer {
             });
             self.device.poll(wgpu::Maintain::Wait);
             let out = match rx.recv() {
-                Ok(Ok(())) => Some(Self::de_read(&slice, rb, w, h, bpr)),
+                Ok(Ok(())) => Some(Self::copy_range(&slice, w, h, bpr)),
                 _ => None,
             };
             self.readback_idx = 1 - idx;
@@ -1290,11 +1291,29 @@ impl Renderer {
                     }
                 }
             }
-            None => None,
+            // 第二帧：上一帧缓冲已被预热保持映射（无 rx）→ 直接读 + unmap。
+            None => {
+                let pb = self.readback_bufs[prev].as_ref().expect("读回缓冲已建");
+                let pslice = pb.slice(..);
+                Some(Self::de_read(&pslice, pb, w, h, bpr))
+            }
         };
         self.readback_idx = prev;
         self.readback_rx = Some(new_rx);
         out
+    }
+
+    /// 从已映射的读回缓冲复制数据（去除 bpr padding），**不解除映射**。
+    /// 首帧预热用：保持映射供下一帧读回后 unmap。
+    fn copy_range(slice: &wgpu::BufferSlice, w: u32, h: u32, bpr: u32) -> Vec<u8> {
+        let row_bytes = (w as usize) * 4;
+        let mut o = Vec::with_capacity(row_bytes * h as usize);
+        let data = slice.get_mapped_range();
+        for row in 0..h as usize {
+            let start = row * bpr as usize;
+            o.extend_from_slice(&data[start..start + row_bytes]);
+        }
+        o
     }
 
     /// 从已映射的读回缓冲复制数据并解除映射（去除 bpr padding）。
@@ -1307,15 +1326,7 @@ impl Renderer {
         h: u32,
         bpr: u32,
     ) -> Vec<u8> {
-        let row_bytes = (w as usize) * 4;
-        let mut o = Vec::with_capacity(row_bytes * h as usize);
-        {
-            let data = slice.get_mapped_range();
-            for row in 0..h as usize {
-                let start = row * bpr as usize;
-                o.extend_from_slice(&data[start..start + row_bytes]);
-            }
-        }
+        let o = Self::copy_range(slice, w, h, bpr);
         buf.unmap();
         o
     }
