@@ -278,7 +278,7 @@ impl MetroMenuBar {
         theme: &MetroTheme,
         engine: &TextEngine,
         rect: Rect,
-        screen: Rect,
+        _screen: Rect,
         scene: &mut Scene,
     ) {
         let colors = &theme.colors;
@@ -318,11 +318,11 @@ impl MetroMenuBar {
         }
         scene.pop_clip();
 
-        // Flyout —— 每帧渲染一个（open_index 唯一），走 dropdown_menu 完整通路
-        // （遮罩 + 面板 + 项）。fill 走 painter's algorithm（V18 render.rs），
-        // 会正确覆盖 header 行下方的内容。
+        // Flyout —— 每帧渲染一个（open_index 唯一）。菜单栏 flyout 无遮罩
+        // （render_panel 而非 render：render 会 render_overlay 黑 70% 盖满主表面整宽，
+        // 把 bar 与扩展区全压黑 → 「屏幕等宽大黑区」）。参 dropdown_menu render_overlay。
         if let Some(i) = self.open_index {
-            self.flyouts[i].render(theme, engine, screen, scene);
+            self.flyouts[i].render_panel(theme, engine, scene);
         }
     }
 }

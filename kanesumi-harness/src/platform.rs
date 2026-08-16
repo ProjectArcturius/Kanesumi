@@ -946,15 +946,9 @@ impl Shell {
         } else {
             &self.surface
         };
-        // 桌面（Background 层，外部布局）与 TopBar 需透明底：
-        // - 桌面：让合成器基色/壁纸透出，否则离屏读回是整幅不透明黑（桌面黑屏）。
-        // - TopBar：AppMenu flyout 展开时主表面高度扩展，扩展区（bar 之下）若为不透明
-        //   会以清除色（黑）填满整宽 → 「全宽黑块」。透明底让扩展区透出桌面。
-        // 参 role.rs Desktop / settings kanesumi_topbar preferred_height。
-        let transparent = matches!(
-            self.role.surface_kind(),
-            SurfaceKind::LayerBackground | SurfaceKind::LayerTop
-        );
+        // 桌面（Background 层，外部布局）需透明底：让合成器基色/壁纸透出，
+        // 否则离屏读回是整幅不透明黑（桌面黑屏而非 #1E1E1E）。参 role.rs Desktop。
+        let transparent = self.role.surface_kind() == SurfaceKind::LayerBackground;
         match Renderer::new(
             &self.conn,
             wl_surface,
