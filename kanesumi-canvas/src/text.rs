@@ -8,7 +8,7 @@ use unicode_bidi::ParagraphBidiInfo;
 use unicode_segmentation::UnicodeSegmentation;
 
 /// 文本越界策略。布局边界、绘制裁剪与内容取舍是三件独立的事。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum TextOverflow {
     /// 保留完整内容，绘制阶段仍裁进文本框。
     #[default]
@@ -211,6 +211,28 @@ struct ShapeKey {
     spacing_bits: u32,
 }
 
+/// 排版缓存键 —— 覆盖 `layout_box` 全部输入（文本 + 字号 + 换行选项）。
+/// 静态文本（时钟 / 应用名 / 菜单项）每帧重复 UAX #14 换行 + 逐段测量是仅次于
+/// 塑形与光栅化的 CPU 大头；命中直接返回缓存的 `Arc<TextLayout>`（参 egui GalleyCache）。
+#[derive(Hash, Eq, PartialEq, Clone)]
+struct LayoutKey {
+    text: String,
+    size_bits: u32,
+    spacing_bits: u32,
+    max_width_bits: u32,
+    max_height_bits: u32,
+    line_height_bits: u32,
+    max_lines: Option<usize>,
+    wrap: bool,
+    overflow: TextOverflow,
+}
+
+/// 塑形/排版缓存容量上限。超出即整体清空 —— 纯加速缓存，命中与未命中结果等价，
+/// 故清空无正确性风险，只约束长会话内存（时钟每分钟、应用名/菜单项均在产生新 key）。
+/// 参 swash `FontCache` 的有界原则：缓存必须有界，否则长会话单调泄漏。
+const SHAPE_CACHE_MAX: usize = 4096;
+const LAYOUT_CACHE_MAX: usize = 4096;
+
 /// 文本引擎 —— OpenType shaping + Unicode BiDi + UAX #14 换行 + 字体回退。
 /// Measure 与 Paint 消费同一塑形结果，禁止逐字符宽度近似。
 #[derive(Clone)]
@@ -220,6 +242,9 @@ pub struct TextEngine {
     /// 塑形结果缓存（`Arc<Mutex<..>>` 使 Clone 共享同一缓存）。静态文本每帧重复
     /// BiDi 分析 + grapheme 切分 + rustybuzz 塑形是仅次于光栅化的 CPU 大头。
     shape_cache: Arc<Mutex<HashMap<ShapeKey, Arc<Vec<ShapedGlyph>>>>>,
+    /// 排版结果缓存（换行 + 逐段测量）。与 `shape_cache` 互补：塑形缓存按行，
+    /// 本缓存按整段 `layout_box` 调用。
+    layout_cache: Arc<Mutex<HashMap<LayoutKey, Arc<TextLayout>>>>,
 }
 
 impl TextEngine {
@@ -262,6 +287,7 @@ impl TextEngine {
             fonts: vec![face],
             identity: 0,
             shape_cache: Arc::new(Mutex::new(HashMap::new())),
+            layout_cache: Arc::new(Mutex::new(HashMap::new())),
         };
         engine.refresh_identity();
         Ok(engine)
@@ -376,10 +402,11 @@ impl TextEngine {
                 }
             }
         }
-        self.shape_cache
-            .lock()
-            .expect("塑形缓存锁中毒")
-            .insert(key, Arc::new(out.clone()));
+        let mut cache = self.shape_cache.lock().expect("塑形缓存锁中毒");
+        if cache.len() >= SHAPE_CACHE_MAX {
+            cache.clear();
+        }
+        cache.insert(key, Arc::new(out.clone()));
         out
     }
 
@@ -582,7 +609,45 @@ impl TextEngine {
         lines
     }
 
-    pub fn layout_box(&self, text: &str, size: f32, options: TextLayoutOptions) -> TextLayout {
+    /// 排版一段文本 → 换行 + 逐段测量结果（`Arc` 共享，命中零数据拷贝）。
+    /// 参 egui `GalleyCache`：静态文本（时钟/应用名/菜单项）每帧重复 UAX #14 换行 +
+    /// 逐段测量是仅次于塑形/光栅化的 CPU 大头，此处按完整排版输入缓存整段结果。
+    pub fn layout_box(&self, text: &str, size: f32, options: TextLayoutOptions) -> Arc<TextLayout> {
+        let key = LayoutKey {
+            text: text.to_string(),
+            size_bits: size.to_bits(),
+            spacing_bits: options.letter_spacing_em.to_bits(),
+            max_width_bits: options.max_width.to_bits(),
+            max_height_bits: options.max_height.to_bits(),
+            line_height_bits: options.line_height.to_bits(),
+            max_lines: options.max_lines,
+            wrap: options.wrap,
+            overflow: options.overflow,
+        };
+        if let Some(hit) = self
+            .layout_cache
+            .lock()
+            .expect("排版缓存锁中毒")
+            .get(&key)
+        {
+            return hit.clone();
+        }
+        let layout = Arc::new(self.layout_box_uncached(text, size, options));
+        let mut cache = self.layout_cache.lock().expect("排版缓存锁中毒");
+        if cache.len() >= LAYOUT_CACHE_MAX {
+            cache.clear();
+        }
+        cache.insert(key, layout.clone());
+        layout
+    }
+
+    /// `layout_box` 的实算路径（缓存 miss 时调用）。
+    fn layout_box_uncached(
+        &self,
+        text: &str,
+        size: f32,
+        options: TextLayoutOptions,
+    ) -> TextLayout {
         let line_height = options.line_height.max(0.0);
         let mut lines = if options.wrap {
             self.layout_with_spacing(text, size, options.letter_spacing_em, options.max_width)

@@ -12,8 +12,7 @@
 // 「线性空间预乘 → sRGB 编码」契约；此处自实现 4× 超采样光栅器与 GPU MSAA 4× 同构。
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use kanesumi_canvas::geometry::{Triangle, rounded_rect_polygon, triangulate_arc, triangulate_stroke};
 use kanesumi_canvas::text::TextEngine;
@@ -127,8 +126,9 @@ pub struct CpuRenderer {
     buf: Vec<u8>,
     /// 字形位图缓存：key = GlyphKey。静态文本每帧零重栅格化。
     glyph_bitmaps: HashMap<GlyphKey, (fontdue::Metrics, Vec<u8>)>,
-    /// 图标缓存（FNV 内容去重，同 render.rs 思路）。
-    images: HashMap<u32, (Vec<u8>, u32, u32)>,
+    /// 图标缓存（FNV 内容去重）。`Arc<[u8]>` 共享字节，命中仅增引用计数——
+    /// 旧 `(Vec<u8>,..).clone()` 每帧整张拷一遍，缓存形同虚设（参 egui texture atlas）。
+    images: HashMap<u32, (Arc<[u8]>, u32, u32)>,
     /// 文本布局缓存（egui GalleyCache 同构思想，参 reference/egui fonts.rs 1061-1292）：
     /// key = 布局参数打包（内容 fnv1a + rect/style/align/wrap/max_lines/overflow/scale）。
     /// 静态文本每帧零重排版 —— 命中只 blit（字形位图已在 glyph_bitmaps）。
@@ -761,7 +761,7 @@ impl CpuRenderer {
         let cached = self
             .images
             .entry(key)
-            .or_insert_with(|| (rgba.to_vec(), sw, sh))
+            .or_insert_with(|| (Arc::from(rgba), sw, sh))
             .clone();
         let (src, sw, sh) = cached;
         let scale = self.scale;
@@ -803,10 +803,10 @@ impl CpuRenderer {
                 let (u0, v0) = (u.floor() as u32, v.floor() as u32);
                 let (u1, v1) = ((u0 + 1).min(sw - 1), (v0 + 1).min(sh - 1));
                 let (fu, fv) = (u - u0 as f32, v - v0 as f32);
-                let s00 = texel(&src, sw, u0, v0);
-                let s10 = texel(&src, sw, u1, v0);
-                let s01 = texel(&src, sw, u0, v1);
-                let s11 = texel(&src, sw, u1, v1);
+                let s00 = texel(&src[..], sw, u0, v0);
+                let s10 = texel(&src[..], sw, u1, v0);
+                let s01 = texel(&src[..], sw, u0, v1);
+                let s11 = texel(&src[..], sw, u1, v1);
                 // 逐通道双线性（sRGB 解码后线性插值）。
                 let mut lin = [0.0f32; 4];
                 for ch in 0..4 {
