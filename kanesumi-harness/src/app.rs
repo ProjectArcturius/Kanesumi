@@ -296,9 +296,10 @@ pub trait App {
     /// - 动画推进中（Progress/SpringAnim 未稳态）应返回 true，外壳以 frame 回调
     ///   作 vsync 提示逐帧渲染（回调丢失有 16ms 超时兜底，绝不冻结）。
     ///
-    /// 默认 `true`（保守：每帧渲染，行为同旧版）。应用可覆盖以省 CPU。
+    /// 默认 `false`（S3 按需重绘：静止时零提交）。App 应在 update/handle_input
+    /// 置位自身脏标记（动画推进 / 交互），并在 `render()` 末尾清除。
     fn needs_redraw(&self) -> bool {
-        true
+        false
     }
 
     /// 本表面「运动语义」签名（S1 输入门控）。

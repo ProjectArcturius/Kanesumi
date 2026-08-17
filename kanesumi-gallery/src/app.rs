@@ -246,6 +246,13 @@ pub struct GalleryApp {
     /// 虚拟化列表选中项。
     virtual_selected: Option<usize>,
 
+    // ── 按需重绘（S3：needs_redraw 默认 false，App 自报脏） ──
+    /// App 脏标记：update/handle_input 置位，`render()` 末尾清除（与 commit 一一对应）。
+    dirty: bool,
+    /// 动画驱动截止时刻：交互后一段时间内强制逐帧渲染（开关/滑行/弹出等
+    /// 0.25~0.38s 动画），到期自动停（配合门控后静止零提交）。
+    animate_until: Option<std::time::Instant>,
+
     // 输入状态
     hovered: Option<Target>,
     pressed: Option<Target>,
@@ -441,6 +448,8 @@ impl GalleryApp {
             appmenu: None,
             appmenu_checked: true,
             ctx_result: None,
+            dirty: true,
+            animate_until: None,
         }
         .apply_visual_audit_state()
     }
@@ -1111,6 +1120,30 @@ impl GalleryApp {
     /// 最近一次指针位置（逻辑坐标）。
     fn pointer_pos(&self) -> Point {
         self.pointer
+    }
+
+    // ── S3 按需重绘：脏标记 + 动画驱动窗口 ─────────────────────────────────
+
+    /// 是否有弹层/悬浮项打开（needs_redraw 持续渲染源 —— 打开期间逐帧呈现动画）。
+    fn any_popup_open(&self) -> bool {
+        self.dropdown.anim.is_visible()
+            || self.selector.anim.is_visible()
+            || self.dialog.is_visible()
+            || self.command_bar_open
+            || self.suggest.popup_open
+    }
+
+    /// 交互事件到达：置脏 + 开动画驱动窗口（0.5s 覆盖 UWP 0.38s 上限）。
+    fn mark_interactive(&mut self) {
+        self.dirty = true;
+        self.animate_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
+    }
+
+    /// 每帧推进：动画进行中持续置脏（配合 needs_redraw 逐帧渲染）。
+    fn mark_animating(&mut self) {
+        if self.any_popup_open() {
+            self.dirty = true;
+        }
     }
 
     fn clear_hover(&mut self) {
@@ -1842,6 +1875,16 @@ impl App for GalleryApp {
         Some(h.finish())
     }
 
+    /// S3 按需重绘：脏标记 / 动画驱动窗口 / 弹层打开 → 渲染；静止 → 零提交。
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+            || self
+                .animate_until
+                .map(|t| std::time::Instant::now() < t)
+                .unwrap_or(false)
+            || self.any_popup_open()
+    }
+
     fn ime_focus(&self) -> Option<kanesumi_harness::ImeContext> {
         // 复用聚焦级联：TextBox / PasswordBox 提供 IME 上下文（含光标矩形）。
         match self.focused_input() {
@@ -1969,11 +2012,15 @@ impl App for GalleryApp {
         self.command_bar.update(dt);
         // 虚拟化长列表平滑滚动
         self.virtual_list.update(dt);
+        // S3 按需重绘：弹层打开期间持续置脏（开/关动画逐帧呈现）。
+        self.mark_animating();
     }
 
     fn handle_input(&mut self, event: InputEvent) {
         // 右键菜单路由已由 harness 接管（`App::context_menu` / `on_context_command`，
         // 参 CONTEXT_MENU_SPEC §Ⅵ.2）——本处不再处理右键，右键按下不会到达这里。
+        // S3：除纯 Move 外皆为交互事件（按下/释放/滚轮/按键/IME）→ 置脏 + 动画窗口。
+        let interactive = !matches!(&event, InputEvent::PointerMoved { .. });
         match event {
             InputEvent::PointerMoved { x, y } => self.update_hover(Point::new(x, y)),
             InputEvent::PointerPressed { x, y, button, .. } => {
@@ -2123,6 +2170,9 @@ impl App for GalleryApp {
                 self.sync_tile_states();
             }
         }
+        if interactive {
+            self.mark_interactive();
+        }
     }
 
     fn render(&mut self, engine: &TextEngine, size: Size) -> Scene {
@@ -2197,6 +2247,9 @@ impl App for GalleryApp {
         );
 
         // 右键菜单由 harness 叠加渲染（App 内容之上），App 不绘制。
+
+        // S3 按需重绘契约：render 与 commit 一一对应，此处清除脏标记。
+        self.dirty = false;
 
         scene
     }
