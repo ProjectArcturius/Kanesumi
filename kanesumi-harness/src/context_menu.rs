@@ -76,6 +76,15 @@ impl ContextMenuState {
         self.open && self.menu.is_animating()
     }
 
+    /// 当前悬停项矩形（顶层 + 子菜单），S4 局部损坏重绘用（旧/新并集）。
+    pub fn hovered_rects(&self) -> Vec<kanesumi_core::Rect> {
+        if self.open {
+            self.menu.hovered_rects()
+        } else {
+            Vec::new()
+        }
+    }
+
     /// 菜单是否可见（含开关动画期间）。
     pub fn is_visible(&self) -> bool {
         self.open && self.menu.is_visible()

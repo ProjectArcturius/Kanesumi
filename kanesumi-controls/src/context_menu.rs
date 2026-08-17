@@ -95,6 +95,11 @@ impl MetroContextMenu {
         self.menu.is_animating()
     }
 
+    /// 当前悬停项矩形（顶层 + 子菜单），S4 局部损坏重绘用。
+    pub fn hovered_rects(&self) -> Vec<Rect> {
+        self.menu.hovered_rects()
+    }
+
     /// 命中测试（含级联）：返回 `(parent, child)` 路径或顶层索引。
     pub fn path_at(&self, pos: Point) -> Option<MenuPath> {
         self.menu.path_at(pos)

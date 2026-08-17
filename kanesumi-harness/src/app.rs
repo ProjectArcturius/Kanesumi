@@ -1,6 +1,6 @@
 use kanesumi_canvas::Scene;
 use kanesumi_canvas::text::TextEngine;
-use kanesumi_core::{MetroTheme, Size};
+use kanesumi_core::{MetroTheme, Rect, Size};
 
 use crate::appmenu::{AppMenuHandle, MenuTree};
 use crate::role::EtherRole;
@@ -310,6 +310,18 @@ pub trait App {
     /// 列表悬停行、页签 hover 等），**不得包含指针坐标本身**（否则永远变化）。
     /// 返回 `None`（默认）：保持旧行为（每次 Move 都置脏），简单应用无需实现。
     fn hover_signature(&self) -> Option<u64> {
+        None
+    }
+
+    /// 本帧发生了**局部**变化的矩形（S4 CpuRenderer 损坏区域重绘）。
+    ///
+    /// 返回 `Some(rect)`：外壳经 CPU 光栅化时只清/绘该区域（其余像素保留上帧）；
+    /// 返回 `None`：全量重绘。**契约：rect 必须覆盖本帧全部变化**（含旧位置
+    /// + 新位置），存在位置外变化时返回 `None`（保守兜底）。静止/未知 → None。
+    ///
+    /// 建议在 `handle_input` 置位、随脏标记一并清除（App 无法感知外壳消费时机，
+    /// 可靠性要求：仅在「本帧仅此一处变化」时提供）。
+    fn damage_hint(&mut self) -> Option<Rect> {
         None
     }
 

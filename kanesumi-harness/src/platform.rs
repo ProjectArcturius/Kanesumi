@@ -290,6 +290,9 @@ struct Shell {
     pointer_pos: (f32, f32),
     /// 当前按下的指针键数（S1 输入门控：按键期间 Move 恒置脏，拖拽/滑动逐帧回馈）。
     pointer_buttons: u32,
+    /// S4 局部损坏矩形（本帧 CPU 光栅只重绘该区，其余像素保留上帧；None = 全量）。
+    /// 由菜单悬停 / App::damage_hint 累积，`render_and_commit` 消费后清除。
+    pending_damage: Option<Rect>,
     /// 双击检测器（Press 判定 → 追加 `InputEvent::DoubleClick`）。
     click_tracker: crate::app::ClickTracker,
     /// 右键菜单状态机（harness 接管右键路由，参 CONTEXT_MENU_SPEC §Ⅵ.2）。
@@ -741,6 +744,7 @@ impl Shell {
             frame_pending: false,
             pointer_pos: (-1.0, -1.0),
             pointer_buttons: 0,
+            pending_damage: None,
             click_tracker: crate::app::ClickTracker::default(),
             ctx_menu: crate::context_menu::ContextMenuState::new(),
             text_input_manager,
@@ -880,7 +884,7 @@ impl Shell {
         }
         if let Some(cpu) = f.cpu.as_mut() {
             let (pw, ph) = cpu.physical_size();
-            let rgba = cpu.render(&self.engine, &scene);
+            let rgba = cpu.render(&self.engine, &scene, None);
             if let Some(shm) = self.shm.clone() {
                 commit_shm_buffers(
                     &shm,
@@ -890,6 +894,8 @@ impl Shell {
                     pw,
                     ph,
                     rgba,
+                    f.scale,
+                    None,
                 );
             }
         }
@@ -956,6 +962,27 @@ impl Shell {
     /// 逻辑尺寸。
     fn size(&self) -> Size {
         Size::new(self.width, self.height)
+    }
+
+    /// S4：累积局部损坏矩形（取并集；用于菜单悬停高亮这类小区域变化）。
+    fn accumulate_damage(&mut self, rect: Rect) {
+        self.pending_damage = Some(match self.pending_damage {
+            Some(p) => union_rect(p, rect),
+            None => rect,
+        });
+    }
+
+    /// S4：消费本帧损坏矩形 = pending ∪ App::damage_hint。任一为 None
+    /// （App 未报局部变化 / 明确全量）→ 全量。消费后清 pending。
+    fn take_damage(&mut self) -> Option<Rect> {
+        let mut d = self.pending_damage.take();
+        if let Some(app_d) = self.app.damage_hint() {
+            d = Some(match d {
+                Some(p) => union_rect(p, app_d),
+                None => app_d,
+            });
+        }
+        d
     }
 
     /// 排干全局菜单命令 → App::on_menu_command(id)。错误边界隔离（panic 不杀进程）。
@@ -1148,9 +1175,11 @@ impl Shell {
         }
 
         // 输出分派：layer-shell → CPU 光栅化 + SHM 提交；xdg-shell → wgpu 直出。
+        // S4：本帧局部损坏矩形（CPU 光栅只重绘该区；GPU 直出全量，恒定消费）。
+        let damage = self.take_damage();
         if let Some(cpu) = self.cpu.as_mut() {
             let (pw, ph) = cpu.physical_size();
-            let rgba = cpu.render(&self.engine, &scene);
+            let rgba = cpu.render(&self.engine, &scene, damage);
             if let Some(shm) = self.shm.clone() {
                 commit_shm_buffers(
                     &shm,
@@ -1160,6 +1189,8 @@ impl Shell {
                     pw,
                     ph,
                     rgba,
+                    self.scale,
+                    damage,
                 );
             }
         } else if let Some(r) = self.renderer.as_mut() {
@@ -1197,6 +1228,12 @@ impl Shell {
         let is_move = matches!(event, InputEvent::PointerMoved { .. });
         let app_sig_before = if is_move { self.app.hover_signature() } else { None };
         let menu_sig_before = self.ctx_menu.interaction_signature();
+        // S4：菜单悬停旧高亮矩形（损坏区 = 旧 ∪ 新，局部重绘）。
+        let menu_damage_before = if is_move && self.ctx_menu.is_visible() {
+            self.ctx_menu.hovered_rects()
+        } else {
+            Vec::new()
+        };
 
         let action = {
             // 仅「菜单关着 + 右键按下」才请求 App 内容（&mut app 与 &mut ctx 分开借用）。
@@ -1252,6 +1289,15 @@ impl Shell {
             };
             if changed {
                 self.dirty = true;
+                // S4：菜单悬停变化 → 局部损坏 = 旧高亮 ∪ 新高亮（避免残影）。
+                if menu_active {
+                    for r in menu_damage_before {
+                        self.accumulate_damage(r);
+                    }
+                    for r in self.ctx_menu.hovered_rects() {
+                        self.accumulate_damage(r);
+                    }
+                }
             }
         } else {
             self.dirty = true;
@@ -2593,7 +2639,7 @@ impl Shell {
         };
         if let Some(cpu) = im_popup.cpu.as_mut() {
             let (srw, srh) = cpu.physical_size();
-            let rgba = cpu.render(&self.engine, &scene);
+            let rgba = cpu.render(&self.engine, &scene, None);
             if let Some(shm) = self.shm.clone() {
                 commit_shm_buffers(
                     &shm,
@@ -2603,6 +2649,8 @@ impl Shell {
                     srw,
                     srh,
                     rgba,
+                    self.scale,
+                    None,
                 );
             }
         }
@@ -2634,6 +2682,15 @@ fn shm_open(size: usize) -> std::fs::File {
 /// 用渲染读回的像素更新 SHM 表面（RGBA→BGRA R/B 交换；单缓冲复用；尺寸变化重建）。
 /// wl_shm Argb8888 = 内存 [B,G,R,A]（little-endian），与 Bgra8UnormSrgb readback 一致。
 #[allow(clippy::too_many_arguments)]
+/// 两矩形并集（外接框）。S4 损坏矩形累积用。
+fn union_rect(a: Rect, b: Rect) -> Rect {
+    let x0 = a.origin.x.min(b.origin.x);
+    let y0 = a.origin.y.min(b.origin.y);
+    let x1 = a.right().max(b.right());
+    let y1 = a.bottom().max(b.bottom());
+    Rect::new(x0, y0, x1 - x0, y1 - y0)
+}
+
 fn commit_shm_buffers(
     shm: &wl_shm::WlShm,
     qh: &QueueHandle<Shell>,
@@ -2642,6 +2699,8 @@ fn commit_shm_buffers(
     width: u32,
     height: u32,
     bgra: &[u8],
+    scale: f32,
+    damage: Option<Rect>,
 ) {
     use std::os::fd::AsFd;
 
@@ -2705,9 +2764,28 @@ fn commit_shm_buffers(
     }
     if let Some(buf) = state.buffers[idx].as_ref() {
         surface.attach(Some(buf), 0, 0);
-        // 全量 damage：SHM 逐帧重绘。不报 damage 时 KWin 等合成器可能不重绘表面。
+        // damage：S4 局部变化只报变化区（缓冲仍整帧拷贝保证双缓冲槽位一致）；
+        // None = 全量。不报 damage 时 KWin 等合成器可能不重绘表面。
         if surface.version() >= 4 {
-            surface.damage_buffer(0, 0, width as i32, height as i32);
+            let (dx, dy, dw, dh) = match damage {
+                Some(d) => {
+                    let x0 = (d.origin.x * scale).floor().clamp(0.0, width as f32) as i32;
+                    let y0 = (d.origin.y * scale).floor().clamp(0.0, height as f32) as i32;
+                    let x1 = (d.right() * scale).ceil().clamp(0.0, width as f32) as i32;
+                    let y1 = (d.bottom() * scale).ceil().clamp(0.0, height as f32) as i32;
+                    (x0, y0, (x1 - x0).max(0), (y1 - y0).max(0))
+                }
+                None => (0, 0, width as i32, height as i32),
+            };
+            surface.damage_buffer(dx, dy, dw, dh);
+        } else if let Some(d) = damage {
+            // 旧协议 damage 用表面坐标（逻辑）；未提供 scale 换算时四舍五入。
+            surface.damage(
+                d.origin.x.round() as i32,
+                d.origin.y.round() as i32,
+                d.size.width.round() as i32,
+                d.size.height.round() as i32,
+            );
         } else {
             surface.damage(0, 0, width as i32, height as i32);
         }

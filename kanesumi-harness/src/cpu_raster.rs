@@ -157,20 +157,59 @@ impl CpuRenderer {
         self.buf = vec![0u8; self.w as usize * self.h as usize * 4];
     }
 
+    /// 只清逻辑 `d` 覆盖的物理像素（局部重绘用，其余像素保留上帧）。
+    fn clear_rect(&mut self, d: Rect) {
+        let x0 = (d.origin.x * self.scale).floor().clamp(0.0, self.w as f32) as u32;
+        let y0 = (d.origin.y * self.scale).floor().clamp(0.0, self.h as f32) as u32;
+        let x1 = (d.right() * self.scale).ceil().clamp(0.0, self.w as f32) as u32;
+        let y1 = (d.bottom() * self.scale).ceil().clamp(0.0, self.h as f32) as u32;
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
+        let row_bytes = (x1 - x0) as usize * 4;
+        for py in y0..y1 {
+            let row = (py * self.w + x0) as usize * 4;
+            self.buf[row..row + row_bytes].fill(0);
+        }
+    }
+
     /// 物理像素尺寸（SHM 提交用）。
     pub fn physical_size(&self) -> (u32, u32) {
         (self.w, self.h)
     }
 
-    /// 把一帧 Scene 光栅化进像素缓冲，返回 RGBA bytes（每帧从透明开始）。
-    pub fn render(&mut self, engine: &TextEngine, scene: &Scene) -> &[u8] {
-        self.render_inner(Some(engine), scene)
+    /// 把一帧 Scene 光栅化进像素缓冲，返回 RGBA bytes。
+    ///
+    /// S4 局部重绘：`damage = Some(d)` 时只清/绘 `d` 内的像素，缓冲区其余部分
+    /// **保留上一帧**（命令经 `d` 裁剪）。调用方必须保证 `d` 覆盖本帧全部变化；
+    /// 场景存在未知变化（时钟/面板整体变动等）传 `None` → 全量重绘（每帧零填充）。
+    pub fn render(&mut self, engine: &TextEngine, scene: &Scene, damage: Option<Rect>) -> &[u8] {
+        self.render_inner(Some(engine), scene, damage)
     }
 
     /// 命令遍历实现。`engine = None` 时跳过 Text 命令（形状单测无需字体）。
-    fn render_inner(&mut self, engine: Option<&TextEngine>, scene: &Scene) -> &[u8] {
-        // 每帧零填充（透明底）。面板扩展区空白透出桌面（TopBar 主表面透明契约）。
-        self.buf.fill(0);
+    fn render_inner(
+        &mut self,
+        engine: Option<&TextEngine>,
+        scene: &Scene,
+        damage: Option<Rect>,
+    ) -> &[u8] {
+        match damage {
+            // S4：仅清损坏矩形，其余保留上帧（配合命令裁剪 = 只重绘变化区）。
+            Some(d) => self.clear_rect(d),
+            // 全量：每帧零填充（透明底）。面板扩展区空白透出桌面（透明契约）。
+            None => self.buf.fill(0),
+        }
+        // 命令裁剪：全量 → 原样；局部 → 与 damage 求交（None 栈顶 = 视口即 damage）。
+        let clip_through_damage = |clip: Option<Rect>| -> Option<Rect> {
+            match damage {
+                Some(d) => match clip {
+                    Some(c) => intersect_logical(c, d),
+                    None => Some(d),
+                },
+                None => clip,
+            }
+        };
         let mut clip_stack: Vec<Option<Rect>> = Vec::new();
         for cmd in &scene.commands {
             match cmd {
@@ -188,7 +227,7 @@ impl CpuRenderer {
                     }
                 }
                 SceneCommand::FillRect { color, rect, corner_radius } => {
-                    let clip = effective_clip(&clip_stack);
+                    let clip = clip_through_damage(effective_clip(&clip_stack));
                     if is_fully_clipped(&clip_stack) {
                         continue;
                     }
@@ -201,7 +240,7 @@ impl CpuRenderer {
                     self.fill_triangles(
                         triangulate_stroke(*rect, *corner_radius, *thickness),
                         *color,
-                        effective_clip(&clip_stack),
+                        clip_through_damage(effective_clip(&clip_stack)),
                     );
                 }
                 SceneCommand::Arc { center, radius, thickness, color, start_deg, end_deg } => {
@@ -211,7 +250,7 @@ impl CpuRenderer {
                     self.fill_triangles(
                         triangulate_arc(*center, *radius, *thickness, *start_deg, *end_deg),
                         *color,
-                        effective_clip(&clip_stack),
+                        clip_through_damage(effective_clip(&clip_stack)),
                     );
                 }
                 SceneCommand::Triangle { p0, p1, p2, color } => {
@@ -221,7 +260,7 @@ impl CpuRenderer {
                     self.fill_triangles(
                         vec![Triangle::new(*p0, *p1, *p2)],
                         *color,
-                        effective_clip(&clip_stack),
+                        clip_through_damage(effective_clip(&clip_stack)),
                     );
                 }
                 SceneCommand::Text {
@@ -238,9 +277,10 @@ impl CpuRenderer {
                     if is_fully_clipped(&clip_stack) || rect.is_empty() {
                         continue;
                     }
-                    let text_clip = match effective_clip(&clip_stack) {
+                    // 文字裁剪 = (有效裁剪 ∩ damage) ∩ rect；不相交 → 该项不在损坏区，跳过。
+                    let text_clip = match clip_through_damage(effective_clip(&clip_stack)) {
                         Some(parent) => intersect_logical(parent, *rect),
-                        None => Some(*rect),
+                        None => None,
                     };
                     let Some(text_clip) = text_clip else { continue };
                     self.emit_text(
@@ -258,7 +298,7 @@ impl CpuRenderer {
                         *height,
                         *rect,
                         *tint,
-                        effective_clip(&clip_stack),
+                        clip_through_damage(effective_clip(&clip_stack)),
                     );
                 }
             }
@@ -668,7 +708,13 @@ mod tests {
     fn render_scene(scene: &Scene, w: f32, h: f32) -> CpuRenderer {
         let mut r = CpuRenderer::new(w, h, 1.0);
         // 形状测试不依赖字体：engine = None 跳过 Text 命令。
-        r.render_inner(None, scene);
+        r.render_inner(None, scene, None);
+        r
+    }
+
+    fn render_scene_damaged(scene: &Scene, w: f32, h: f32, d: Rect) -> CpuRenderer {
+        let mut r = CpuRenderer::new(w, h, 1.0);
+        r.render_inner(None, scene, Some(d));
         r
     }
 
@@ -768,5 +814,36 @@ mod tests {
         assert_eq!(r.physical_size(), (32, 32));
         assert_eq!(r.buf.len(), 32 * 32 * 4);
         assert!(r.buf.iter().all(|&b| b == 0));
+    }
+
+    /// S4：局部重绘 —— 首帧全量画左半，第二帧 damage 右半 → 仅右半被当前命令
+    /// 影响，左半保留首帧像素（未受影响区域不重光栅）。
+    #[test]
+    fn damage_redraw_keeps_untouched_region() {
+        // 帧 1：左半边白。
+        let mut scene1 = Scene::default();
+        scene1.fill_rect(Color::new(1.0, 1.0, 1.0, 1.0), Rect::new(0.0, 0.0, 4.0, 8.0));
+        let mut r = render_scene(&scene1, 8.0, 8.0);
+        assert_eq!(px_at(&r, 2, 4), [255, 255, 255, 255], "帧1左半白");
+
+        // 帧 2：右半边红，只报右侧 damage → 左半保留帧1白，右半重绘为红。
+        let mut scene2 = Scene::default();
+        scene2.fill_rect(Color::new(1.0, 0.0, 0.0, 1.0), Rect::new(4.0, 0.0, 4.0, 8.0));
+        r.render_inner(None, &scene2, Some(Rect::new(4.0, 0.0, 4.0, 8.0)));
+        assert_eq!(px_at(&r, 2, 4), [255, 255, 255, 255], "左侧未重光栅保持帧1");
+        assert_eq!(px_at(&r, 6, 4), [255, 0, 0, 255], "右侧重绘为红");
+    }
+
+    /// S4：无 damage + 全量 → 整表面被当前命令覆盖（旧行为）。
+    #[test]
+    fn full_redraw_clears_all() {
+        let mut scene1 = Scene::default();
+        scene1.fill_rect(Color::new(1.0, 1.0, 1.0, 1.0), Rect::new(0.0, 0.0, 8.0, 8.0));
+        let mut r = render_scene(&scene1, 8.0, 8.0);
+        let mut scene2 = Scene::default();
+        scene2.fill_rect(Color::new(0.0, 0.0, 1.0, 1.0), Rect::new(0.0, 0.0, 8.0, 8.0));
+        r.render_inner(None, &scene2, None);
+        assert_eq!(px_at(&r, 2, 4), [0, 0, 255, 255], "全量覆盖");
+        assert_eq!(px_at(&r, 6, 4), [0, 0, 255, 255]);
     }
 }

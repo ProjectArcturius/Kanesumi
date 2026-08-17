@@ -172,6 +172,21 @@ impl MetroDropdownMenu {
             || self.submenu.as_ref().is_some_and(|s| s.menu.is_animating())
     }
 
+    /// 当前悬停项矩形（顶层 + 子菜单各一），无悬停返回空。S4 局部损坏重绘用
+    /// （宿主取「旧 + 新」并集作为 damage 矩形 —— 悬停高亮只重绘这一小区域）。
+    pub fn hovered_rects(&self) -> Vec<Rect> {
+        let mut out = Vec::new();
+        if let Some(i) = self.hovered {
+            out.push(self.item_rect(i));
+        }
+        if let Some(s) = self.submenu.as_ref()
+            && let Some(k) = s.menu.hovered
+        {
+            out.push(s.menu.item_rect(k));
+        }
+        out
+    }
+
     /// 面板尺寸：宽 = 最宽项（含图标/快捷键占位）+ 边距，高 = 项数 × 项高 + 分隔线。
     ///
     /// **V21 缓存**：结果按 `items` / `item_height` 稳定，首次计算后走 `panel_size_cache`。
