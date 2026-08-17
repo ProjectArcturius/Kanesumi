@@ -277,10 +277,14 @@ impl CpuRenderer {
                     if is_fully_clipped(&clip_stack) || rect.is_empty() {
                         continue;
                     }
-                    // 文字裁剪 = (有效裁剪 ∩ damage) ∩ rect；不相交 → 该项不在损坏区，跳过。
+                    // 文字裁剪 = (有效裁剪 ∩ damage) ∩ rect。None = 无裁剪上下文
+                    // （全量帧、无 PushClip）→ 回退表面边界（镜像 GPU 路径 surface_bounds
+                    // 语义，参 render.rs emit_text）——⚠ 曾把 None 当「不相交」跳过：
+                    // 全量帧无 clip 文本永不绘制，仅局部 damage 帧与损坏区相交才显示
+                    // （静止时中文全部缺失、悬停一闪即出，S4 回归）。
                     let text_clip = match clip_through_damage(effective_clip(&clip_stack)) {
                         Some(parent) => intersect_logical(parent, *rect),
-                        None => None,
+                        None => intersect_logical(Rect::new(0.0, 0.0, self.lw, self.lh), *rect),
                     };
                     let Some(text_clip) = text_clip else { continue };
                     self.emit_text(
@@ -705,6 +709,37 @@ fn fnv1a(data: &[u8]) -> u32 {
 mod tests {
     use super::*;
 
+    use kanesumi_canvas::text::TextEngine;
+    use kanesumi_core::{Color, FontWeight, TextStyle};
+
+    fn test_font_path() -> Option<std::path::PathBuf> {
+        if let Ok(p) = std::env::var("KANESUMI_TEST_FONT") {
+            let p = std::path::PathBuf::from(p);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+        [
+            "/usr/local/share/fonts/s/SourceHanSansSC_Bold.otf",
+            "/usr/local/share/fonts/s/SourceHanSansTC_Regular.otf",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        ]
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .find(|p| p.exists())
+    }
+
+    /// 统计缓冲内非零像素数。
+    fn painted_count(r: &CpuRenderer) -> usize {
+        r.buf
+            .chunks_exact(4)
+            .filter(|px| px[0] != 0 || px[1] != 0 || px[2] != 0 || px[3] != 0)
+            .count()
+    }
+
     fn render_scene(scene: &Scene, w: f32, h: f32) -> CpuRenderer {
         let mut r = CpuRenderer::new(w, h, 1.0);
         // 形状测试不依赖字体：engine = None 跳过 Text 命令。
@@ -845,5 +880,97 @@ mod tests {
         r.render_inner(None, &scene2, None);
         assert_eq!(px_at(&r, 2, 4), [0, 0, 255, 255], "全量覆盖");
         assert_eq!(px_at(&r, 6, 4), [0, 0, 255, 255]);
+    }
+
+    /// S4 回归：无 PushClip 的文本命令在全量帧必须绘制。
+    ///
+    /// 曾把「无裁剪上下文（None）」误判为「与损坏区不相交 → 跳过」，导致全量帧
+    /// 全部无 clip 文本（TopBar 时钟/活跃应用/菜单标题、Dock 图标标签等）永不
+    /// 绘制 —— 静止时中文全部缺失，仅局部 damage 帧与损坏区相交才显示。
+    #[test]
+    fn text_without_clip_draws_in_full_frame() {
+        let Some(path) = test_font_path() else {
+            return;
+        };
+        let engine = TextEngine::load(path).unwrap();
+        let style = TextStyle::new(20.0, 24.0, FontWeight::Normal);
+        let mut scene = Scene::default();
+        scene.text(
+            "中文测试".to_string(),
+            Rect::new(2.0, 4.0, 56.0, 24.0),
+            Color::WHITE,
+            style,
+            TextAlign::Left,
+        );
+        let mut r = CpuRenderer::new(64.0, 32.0, 1.0);
+        r.render(&engine, &scene, None);
+        let painted = painted_count(&r);
+        assert!(painted > 0, "全量帧无 clip 文本必须绘制（曾整体跳过）");
+        // 文本只落在给定矩形附近，不越界污染表面。
+        let mut outside = 0;
+        for py in 0..32u32 {
+            for px in 0..64u32 {
+                if !(px >= 2 && px < 58 && py >= 4 && py < 28) {
+                    let idx = (py * 64 + px) as usize * 4;
+                    if r.buf[idx + 3] != 0 {
+                        outside += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(outside, 0, "文本不得绘制在 rect 之外");
+    }
+
+    /// S4：局部 damage 与文本 rect 不相交 → 该项跳过（保留上帧像素）；
+    /// 相交 → 只重绘相交区。配合 damage 语义不得引入「无 clip 全跳过」回归。
+    #[test]
+    fn text_damage_intersects_or_keeps_previous_frame() {
+        let Some(path) = test_font_path() else {
+            return;
+        };
+        let engine = TextEngine::load(path).unwrap();
+        let style = TextStyle::new(20.0, 24.0, FontWeight::Normal);
+        // 帧 1：全量，左半画中文。
+        let mut scene1 = Scene::default();
+        scene1.text(
+            "中文".to_string(),
+            Rect::new(2.0, 4.0, 40.0, 24.0),
+            Color::WHITE,
+            style,
+            TextAlign::Left,
+        );
+        let mut r = CpuRenderer::new(64.0, 32.0, 1.0);
+        r.render(&engine, &scene1, None);
+        let painted1 = painted_count(&r);
+        assert!(painted1 > 0);
+
+        // 帧 2：damage 右侧（不覆盖文本）→ 文本区像素保留帧 1。
+        let mut scene2 = Scene::default();
+        scene2.fill_rect(Color::new(1.0, 0.0, 0.0, 1.0), Rect::new(48.0, 0.0, 16.0, 32.0));
+        r.render(&engine, &scene2, Some(Rect::new(48.0, 0.0, 16.0, 32.0)));
+        assert_eq!(painted_count(&r), painted1 + 16 * 32, "文本区保留、右侧新增");
+
+        // 帧 3：damage 覆盖文本区 → 新文本（右侧）只画在损坏区内。
+        let mut scene3 = Scene::default();
+        scene3.text(
+            "字".to_string(),
+            Rect::new(52.0, 4.0, 20.0, 24.0),
+            Color::WHITE,
+            style,
+            TextAlign::Left,
+        );
+        r.render(&engine, &scene3, Some(Rect::new(48.0, 0.0, 16.0, 32.0)));
+        let mut in_damage = 0;
+        for py in 0..32u32 {
+            for px in 48..64u32 {
+                let idx = (py * 64 + px) as usize * 4;
+                if r.buf[idx + 3] != 0 {
+                    in_damage += 1;
+                }
+            }
+        }
+        assert!(in_damage > 0, "损坏区内文本必须重绘");
+        // 左半文本像素不得被破坏（上帧保留）。
+        assert!(painted_count(&r) > in_damage, "文本区未损坏部分保留上帧");
     }
 }

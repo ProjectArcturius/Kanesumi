@@ -223,6 +223,19 @@ impl MetroMenuBar {
         }
     }
 
+    /// 当前悬停项矩形（打开的 flyout 内），无悬停返回空。S5 局部损坏重绘用
+    /// （宿主取「旧 + 新」并集作为 damage 矩形 —— 悬停高亮只重绘这一小区域）。
+    pub fn hovered_rects(&self) -> Vec<Rect> {
+        let mut out = Vec::new();
+        if let Some(i) = self.open_index
+            && let Some(f) = self.flyouts.get(i)
+            && let Some(j) = f.hovered
+        {
+            out.push(f.item_rect(j));
+        }
+        out
+    }
+
     /// 命中 flyout 项：仅当有 flyout 展开时有效，返回 (header_idx, item_idx)。
     pub fn item_at(&self, p: Point) -> Option<(usize, usize)> {
         let i = self.open_index?;
