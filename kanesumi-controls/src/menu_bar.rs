@@ -214,6 +214,15 @@ impl MetroMenuBar {
         }
     }
 
+    /// 打开的 flyout 内当前悬停项 `(header 索引, 项索引)`；未开 → None。
+    /// S2 悬停语义签名用（App::hover_signature：flyout 内悬停变化触发重绘）。
+    pub fn hovered_item(&self) -> Option<(usize, Option<usize>)> {
+        match self.open_index {
+            Some(i) if i < self.flyouts.len() => Some((i, self.flyouts[i].hovered)),
+            _ => None,
+        }
+    }
+
     /// 命中 flyout 项：仅当有 flyout 展开时有效，返回 (header_idx, item_idx)。
     pub fn item_at(&self, p: Point) -> Option<(usize, usize)> {
         let i = self.open_index?;
