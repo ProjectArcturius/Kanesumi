@@ -13,7 +13,7 @@ use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::Scene;
 use kanesumi_core::{MetroTheme, Point, Rect};
 
-use crate::dropdown_menu::{MenuItem, MenuPath, MetroDropdownMenu};
+use crate::dropdown_menu::{MenuItem, MenuPath, MenuInteractionSignature, MetroDropdownMenu};
 use crate::popup::{PopupState, place_context_menu};
 
 /// 右键菜单控件 —— 无遮罩弹层，锚定指针。
@@ -80,8 +80,19 @@ impl MetroContextMenu {
     }
 
     /// 悬停路由（复用 DropdownMenu 级联语义）：命中项高亮，悬停嵌套项自动展开子菜单。
-    pub fn hover(&mut self, engine: &TextEngine, screen: Rect, pos: Point) {
-        self.menu.hover(engine, screen, pos);
+    /// 返回悬停语义是否改变（S1 输入门控：无变化 → 宿主不置脏）。
+    pub fn hover(&mut self, engine: &TextEngine, screen: Rect, pos: Point) -> bool {
+        self.menu.hover(engine, screen, pos)
+    }
+
+    /// 悬停语义签名（S1 输入门控用。参 `MetroDropdownMenu::interaction_signature`）。
+    pub fn interaction_signature(&self) -> MenuInteractionSignature {
+        self.menu.interaction_signature()
+    }
+
+    /// 是否处于开/关动画推进中（静态 Open 不需要逐帧重绘）。
+    pub fn is_animating(&self) -> bool {
+        self.menu.is_animating()
     }
 
     /// 命中测试（含级联）：返回 `(parent, child)` 路径或顶层索引。

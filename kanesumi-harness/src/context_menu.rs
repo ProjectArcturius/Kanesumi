@@ -12,7 +12,7 @@ use kanesumi_canvas::Scene;
 use kanesumi_core::{MetroTheme, Point, Rect};
 
 use crate::app::{InputEvent, Key, PointerButton};
-use kanesumi_controls::{MenuItem, MetroContextMenu};
+use kanesumi_controls::{MenuItem, MenuInteractionSignature, MetroContextMenu};
 
 /// 指针/键盘事件经菜单路由的结果。
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +60,20 @@ impl ContextMenuState {
     /// 菜单是否处于完全打开态（稳定 Open）。
     pub fn is_open(&self) -> bool {
         self.open && self.menu.is_open()
+    }
+
+    /// 悬停语义签名（S1 输入门控：纯 Move 前后比对，未变化 → 宿主不置脏）。
+    pub fn interaction_signature(&self) -> MenuInteractionSignature {
+        if self.open {
+            self.menu.interaction_signature()
+        } else {
+            None
+        }
+    }
+
+    /// 菜单是否处于开/关动画推进中（静态 Open 不逐帧重绘）。
+    pub fn is_animating(&self) -> bool {
+        self.open && self.menu.is_animating()
     }
 
     /// 菜单是否可见（含开关动画期间）。

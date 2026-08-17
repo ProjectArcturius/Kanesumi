@@ -288,6 +288,8 @@ struct Shell {
     /// 已请求主表面 frame callback 但尚未到达（去重，避免一帧多请求）。
     frame_pending: bool,
     pointer_pos: (f32, f32),
+    /// 当前按下的指针键数（S1 输入门控：按键期间 Move 恒置脏，拖拽/滑动逐帧回馈）。
+    pointer_buttons: u32,
     /// 双击检测器（Press 判定 → 追加 `InputEvent::DoubleClick`）。
     click_tracker: crate::app::ClickTracker,
     /// 右键菜单状态机（harness 接管右键路由，参 CONTEXT_MENU_SPEC §Ⅵ.2）。
@@ -738,6 +740,7 @@ impl Shell {
             running: true,
             frame_pending: false,
             pointer_pos: (-1.0, -1.0),
+            pointer_buttons: 0,
             click_tracker: crate::app::ClickTracker::default(),
             ctx_menu: crate::context_menu::ContextMenuState::new(),
             text_input_manager,
@@ -1075,8 +1078,8 @@ impl Shell {
         if self.app.needs_redraw() {
             self.dirty = true;
         }
-        if self.ctx_menu.is_visible() {
-            // 右键菜单开（含开/关动画推进中）→ 需要呈现。
+        if self.ctx_menu.is_animating() {
+            // 右键菜单开/关动画推进中 → 逐帧呈现；静态 Open 不再锁帧（S1）。
             self.dirty = true;
         }
     }
@@ -1181,6 +1184,20 @@ impl Shell {
     ///   None → 右键照常投递（App 自处理）。
     /// - 菜单开着 → 事件喂状态机（悬停/点选/LightDismiss/Esc/再右键），点选 → `on_context_command`。
     fn emit_input(&mut self, event: InputEvent) {
+        // 按键计数：按键按住期间 Move 恒置脏（拖拽/滑杆拖动需逐帧回馈，不套用门控）。
+        if let InputEvent::PointerPressed { .. } = &event {
+            self.pointer_buttons += 1;
+        }
+        if let InputEvent::PointerReleased { .. } | InputEvent::PointerLeft = &event {
+            self.pointer_buttons = self.pointer_buttons.saturating_sub(1);
+        }
+
+        // S1 输入门控：纯 Move 且无按键 → 路由前后比对「悬停语义签名」——
+        // 菜单激活时以菜单自身签名为准；否则用 App::hover_signature（None → 旧行为）。
+        let is_move = matches!(event, InputEvent::PointerMoved { .. });
+        let app_sig_before = if is_move { self.app.hover_signature() } else { None };
+        let menu_sig_before = self.ctx_menu.interaction_signature();
+
         let action = {
             // 仅「菜单关着 + 右键按下」才请求 App 内容（&mut app 与 &mut ctx 分开借用）。
             let items = if !self.ctx_menu.is_visible() {
@@ -1221,8 +1238,24 @@ impl Shell {
                 }
             }
         }
-        // 事件到达即置脏（I-4）：输入独立于渲染循环，循环死亡不再导致输入失效。
-        self.dirty = true;
+
+        // S1 门控判定：纯 Move + 无按键时按签名决定是否置脏（I-4 兜底保留：
+        // 输入独立于渲染循环，循环死亡不再导致输入失效 —— 签名无签名app fallback 置脏）。
+        if is_move && self.pointer_buttons == 0 {
+            let menu_active = self.ctx_menu.is_visible();
+            let changed = if menu_active {
+                menu_sig_before != self.ctx_menu.interaction_signature()
+            } else if let Some(sig0) = app_sig_before {
+                sig0 != self.app.hover_signature().unwrap_or(sig0)
+            } else {
+                true // App 未提供签名 → 保持旧行为（每次 Move 都重绘）。
+            };
+            if changed {
+                self.dirty = true;
+            }
+        } else {
+            self.dirty = true;
+        }
     }
 
     /// 表面焦点变化通知：`App::focus_changed`（失焦关闭弹层，错误边界隔离）。
@@ -1857,8 +1890,8 @@ impl PointerHandler for Shell {
                 }
             }
         }
-        // 指针事件改变 hover/焦点状态 → 置脏（I-3；route_input 已置，此处兜底）。
-        self.dirty = true;
+        // 指针事件很大一部分是纯 Move —— 脏标记由 emit_input 的 S1 门控决定
+        // （签名变化才置位），此处不再无条件置脏。
     }
 }
 

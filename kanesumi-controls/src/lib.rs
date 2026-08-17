@@ -77,7 +77,7 @@ pub use decl::{
 };
 pub use dialog::{DialogButton, DialogButtons, DialogDefaultButton, DialogState, MetroDialog};
 pub use drop_down_button::MetroDropDownButton;
-pub use dropdown_menu::{MenuItem, MenuPath, MetroDropdownMenu, SubmenuState};
+pub use dropdown_menu::{MenuItem, MenuPath, MenuInteractionSignature, MetroDropdownMenu, SubmenuState};
 pub use expander::{ExpandDirection, MetroExpander};
 pub use icon_button::MetroIconButton;
 pub use ime::{ImeContentHint, ImeContext};

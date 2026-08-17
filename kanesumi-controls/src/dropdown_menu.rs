@@ -156,6 +156,22 @@ impl MetroDropdownMenu {
         self.anim.state()
     }
 
+    /// 悬停语义签名：`(顶层 hovered, 子菜单 (父项索引, 子菜单 hovered))`。
+    /// S1 输入门控：宿主在「指针纯 Move + 无按键」前后比对签名，未变化则不置脏。
+    pub fn interaction_signature(&self) -> MenuInteractionSignature {
+        Some((
+            self.hovered,
+            self.submenu.as_ref().map(|s| (s.parent, s.menu.hovered)),
+        ))
+    }
+
+    /// 是否处于开/关动画推进中（Opening/Closing）。静态 Open 不需要逐帧重绘
+    /// （宿主 needs_redraw 脏标记语义用，参 TOPBAR_RENDER_REFACTOR §4.6）。
+    pub fn is_animating(&self) -> bool {
+        matches!(self.anim.state(), PopupState::Opening | PopupState::Closing)
+            || self.submenu.as_ref().is_some_and(|s| s.menu.is_animating())
+    }
+
     /// 面板尺寸：宽 = 最宽项（含图标/快捷键占位）+ 边距，高 = 项数 × 项高 + 分隔线。
     ///
     /// **V21 缓存**：结果按 `items` / `item_height` 稳定，首次计算后走 `panel_size_cache`。
@@ -244,7 +260,17 @@ impl MetroDropdownMenu {
     /// **跨缝隙保持**：指针从父项移入已开子菜单时，会经过父项↔子菜单之间的桥接带
     /// （水平条：顶层面板左缘 → 子菜单右缘，覆盖子菜单 y 范围）。在桥接带内保持
     /// 展开，否则移动途中子菜单会闪没（旧 bug）。
-    pub fn hover(&mut self, engine: &TextEngine, screen: Rect, pos: Point) {
+    ///
+    /// 返回本次调用是否改变了悬停语义（顶层 `hovered` / 子菜单开合 / 子菜单 `hovered`）——
+    /// 宿主（harness）据此做 S1 输入门控：菜单静止时纯 Move 不再触发整帧重绘。
+    pub fn hover(&mut self, engine: &TextEngine, screen: Rect, pos: Point) -> bool {
+        let before = self.interaction_signature();
+        self.hover_inner(engine, screen, pos);
+        before != self.interaction_signature()
+    }
+
+    /// `hover` 主体（额外包装用于前后签名比对）。
+    fn hover_inner(&mut self, engine: &TextEngine, screen: Rect, pos: Point) {
         // 子菜单已开：指针在子菜单面板内 → 子菜单接管（悬停其项高亮）；
         // 在桥接带内 → 保持展开（不收起、不改父项高亮）。
         if let Some(s) = self.submenu.as_ref() {
@@ -579,6 +605,9 @@ pub struct MenuPath {
     pub index: usize,
 }
 
+/// 悬停语义签名（S1 输入门控）：`(顶层 hovered, 子菜单 (父项索引, 子菜单 hovered))`。
+pub type MenuInteractionSignature = Option<(Option<usize>, Option<(usize, Option<usize>)>)>;
+
 /// 菜单项文本样式：14px 正常。
 fn menu_item_style() -> TextStyle {
     TextStyle::new(14.0, 20.0, kanesumi_core::FontWeight::Normal)
@@ -684,8 +713,8 @@ mod tests {
             Rect::new(0.0, 0.0, 800.0, 600.0),
             &mut scene,
         );
-        // 遮罩 + 面板底 + 边框 + 项文本
-        assert!(scene.commands.len() >= 4);
+        // 遮罩 + 面板底 + 项文本（Kanesumi 铁律：无边框，故无 border 命令）。
+        assert!(scene.commands.len() >= 3);
     }
 
     /// 回归 V1：文本 rect 宽度不可为负，且必须完全落在面板内。

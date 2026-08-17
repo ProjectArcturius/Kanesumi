@@ -301,6 +301,17 @@ pub trait App {
         true
     }
 
+    /// 本表面「运动语义」签名（S1 输入门控）。
+    ///
+    /// 返回 `Some(sig)`：外壳在「指针纯 Move + 无按键」事件路由前后比对该签名；
+    /// 签名未变 → 不置脏（不再每次 move 都触发整帧重绘 —— 菜单/普通悬停即刻性）。
+    /// 签名应涵盖本 App 内所有「悬停会改变视觉」的状态（悬停目标、菜单悬停项、
+    /// 列表悬停行、页签 hover 等），**不得包含指针坐标本身**（否则永远变化）。
+    /// 返回 `None`（默认）：保持旧行为（每次 Move 都置脏），简单应用无需实现。
+    fn hover_signature(&self) -> Option<u64> {
+        None
+    }
+
     /// 表面键盘焦点变化回调。`focused=false` 时 App 应关闭弹层（右键菜单/对话框等），
     /// 避免「失焦残留」（参 CONTEXT_MENU_SPEC §Ⅵ LightDismiss 之外的应用侧关闭路径）。
     /// 外壳在 wl_keyboard enter/leave 时调用。

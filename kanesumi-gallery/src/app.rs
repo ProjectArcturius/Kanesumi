@@ -116,7 +116,7 @@ fn page_from_index(i: usize) -> GalleryPage {
 }
 
 /// 交互目标 —— 常规控件命中标识。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Target {
     /// 页导航栏（顶部 TabRow，UWP NavigationView Top）。切换 GalleryPage。
     Nav,
@@ -1817,6 +1817,29 @@ impl App for GalleryApp {
     fn font_path(&self) -> Option<std::path::PathBuf> {
         // 外壳从 KANESUMI_TEST_FONT 或系统字体查找；此处无需指定。
         None
+    }
+
+    /// S1 输入门控：悬停语义签名。覆盖所有「Move 会改变视觉」的状态，
+    /// 不含指针坐标本身（否则签名永远变化、门控失效）。
+    fn hover_signature(&self) -> Option<u64> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        // 页签 / 悬停目标（kind）/ 列表 / 下拉 + 级联 / 选择器 / 命令条 / 磁贴 / 滑杆。
+        (self.nav.hovered, self.nav.selected).hash(&mut h);
+        self.hovered.hash(&mut h);
+        self.list.hovered.hash(&mut h);
+        self.list.selected.hash(&mut h);
+        self.dropdown.hovered.hash(&mut h);
+        self.dropdown
+            .submenu_state()
+            .map(|s| (s.parent, s.menu.hovered))
+            .hash(&mut h);
+        self.selector.hovered.hash(&mut h);
+        self.command_bar.hovered.hash(&mut h);
+        self.tile_hovered.hash(&mut h);
+        (self.tile_page, self.tabs.hovered).hash(&mut h);
+        (self.slider.state as u8).hash(&mut h);
+        Some(h.finish())
     }
 
     fn ime_focus(&self) -> Option<kanesumi_harness::ImeContext> {
