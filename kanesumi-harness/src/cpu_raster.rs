@@ -11,7 +11,8 @@
 // 与 tiny_skia 方案的差异（有意偏离）：tiny_skia 在 sRGB 空间预乘，无法复刻
 // 「线性空间预乘 → sRGB 编码」契约；此处自实现 4× 超采样光栅器与 GPU MSAA 4× 同构。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::sync::OnceLock;
 
 use kanesumi_canvas::geometry::{Triangle, rounded_rect_polygon, triangulate_arc, triangulate_stroke};
@@ -19,7 +20,7 @@ use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, SceneCommand, TextAlign};
 use kanesumi_core::{Color, Point, Rect, TextStyle};
 
-use crate::render::{GlyphKey, layout_text_glyphs};
+use crate::render::{GlyphKey, PlacedGlyph, layout_text_glyphs};
 
 /// 每像素超采样数（与 GPU 路径 MSAA 4× 同构；样本位 (0.25,0.25)…(0.75,0.75)）。
 const SAMPLES: f32 = 4.0;
@@ -128,6 +129,22 @@ pub struct CpuRenderer {
     glyph_bitmaps: HashMap<GlyphKey, (fontdue::Metrics, Vec<u8>)>,
     /// 图标缓存（FNV 内容去重，同 render.rs 思路）。
     images: HashMap<u32, (Vec<u8>, u32, u32)>,
+    /// 文本布局缓存（egui GalleyCache 同构思想，参 reference/egui fonts.rs 1061-1292）：
+    /// key = 布局参数打包（内容 fnv1a + rect/style/align/wrap/max_lines/overflow/scale）。
+    /// 静态文本每帧零重排版 —— 命中只 blit（字形位图已在 glyph_bitmaps）。
+    /// generation GC：保留「本帧 ∪ 上帧」使用过的条目，其余淘汰（局部 damage 帧
+    /// 未重绘的静态文本因上帧使用而保留，避免下个全量帧重排）。
+    layout_cache: HashMap<u64, LayoutEntry>,
+    layout_used: HashSet<u64>,
+    layout_prev_used: HashSet<u64>,
+    /// 布局 miss 计数（诊断/测试：静态文本重复渲染应不增长）。
+    layout_misses: u64,
+}
+
+/// 布局缓存条目：内容（精确比较防 hash 碰撞误用）+ 放置结果。
+struct LayoutEntry {
+    content: Arc<str>,
+    placed: Vec<PlacedGlyph>,
 }
 
 impl CpuRenderer {
@@ -142,6 +159,10 @@ impl CpuRenderer {
             buf: Vec::new(),
             glyph_bitmaps: HashMap::new(),
             images: HashMap::new(),
+            layout_cache: HashMap::new(),
+            layout_used: HashSet::new(),
+            layout_prev_used: HashSet::new(),
+            layout_misses: 0,
         };
         r.resize(width, height, scale);
         r
@@ -307,6 +328,16 @@ impl CpuRenderer {
                 }
             }
         }
+        // 布局缓存 generation GC：保留「本帧 ∪ 上帧」使用的条目（egui GalleyCache
+        // 同款）；局部 damage 帧未重绘的静态文本因上帧使用而保留。淘汰条目的字形
+        // 位图仍在 glyph_bitmaps（只增不减），重排时直接复用。
+        let keep: HashSet<u64> = self
+            .layout_used
+            .union(&self.layout_prev_used)
+            .copied()
+            .collect();
+        self.layout_cache.retain(|k, _| keep.contains(k));
+        self.layout_prev_used = std::mem::take(&mut self.layout_used);
         &self.buf
     }
 
@@ -387,30 +418,61 @@ impl CpuRenderer {
     }
 
     /// 三角形列表 4× 超采样填充（圆角矩形 / 环 / 弧 / 三角）。与 GPU MSAA 4× 同构。
+    ///
+    /// 性能（参考：reference/tiny-skia scan/path.rs、reference/raqote rasterizer.rs ——
+    /// 扫描线区间裁剪，替代「每像素 × 每三角形 × 4 样本」）：
+    /// 逐行收集覆盖区间 [xl, xr]（行中心扫描线 + 边斜率插值），只遍历区间 ± 斜率
+    /// 外扩的像素；整像素完全位于区间内部（距边界 ≥ EXT，EXT = ⌈max|dx/dy|·¼⌉+1）
+    /// 且行距每个相交三角形带边界 ≥ 0.5 → 4 样本必然全中 → cov 直写，跳过逐样本判定。
+    /// 输出与逐像素 4× 超采样**逐位一致**：内部像素数学严格全中；边缘像素判定不变；
+    /// 范围外像素（样本 x 距行中心区间 ≥ EXT-0.75 > max|dx/dy|·¼）严格不命中任何三角形。
     fn fill_triangles(&mut self, tris: Vec<Triangle>, color: Color, clip: Option<Rect>) {
         if tris.is_empty() {
             return;
         }
         let c = [color.r, color.g, color.b, color.a];
-        // 三角形 → 物理坐标 + 包围盒。
         let scale = self.scale;
+        // 三角形 → 物理坐标 + 三条边（斜率 dx/dy + y 半开带 [lo, hi)）。
+        struct TriE {
+            pts: [[f32; 2]; 3],
+            y_lo: f32,
+            y_hi: f32,
+            edges: [[f32; 5]; 3],
+        }
         let mut min_x = f32::MAX;
         let mut min_y = f32::MAX;
         let mut max_x = f32::MIN;
         let mut max_y = f32::MIN;
-        let phys: Vec<[[f32; 2]; 3]> = tris
-            .iter()
-            .map(|t| {
-                let a = [t.p0.x * scale, t.p0.y * scale];
-                let b = [t.p1.x * scale, t.p1.y * scale];
-                let c2 = [t.p2.x * scale, t.p2.y * scale];
-                min_x = min_x.min(a[0]).min(b[0]).min(c2[0]);
-                min_y = min_y.min(a[1]).min(b[1]).min(c2[1]);
-                max_x = max_x.max(a[0]).max(b[0]).max(c2[0]);
-                max_y = max_y.max(a[1]).max(b[1]).max(c2[1]);
-                [a, b, c2]
-            })
-            .collect();
+        let mut phys: Vec<TriE> = Vec::with_capacity(tris.len());
+        for t in &tris {
+            let pts = [
+                [t.p0.x * scale, t.p0.y * scale],
+                [t.p1.x * scale, t.p1.y * scale],
+                [t.p2.x * scale, t.p2.y * scale],
+            ];
+            for p in &pts {
+                min_x = min_x.min(p[0]);
+                min_y = min_y.min(p[1]);
+                max_x = max_x.max(p[0]);
+                max_y = max_y.max(p[1]);
+            }
+            let mut edges = [[0.0f32; 5]; 3];
+            for (k, (a, b)) in [(0, 1), (1, 2), (2, 0)].into_iter().enumerate() {
+                let (p, q) = (pts[a], pts[b]);
+                let (y_lo, y_hi) = if p[1] <= q[1] { (p[1], q[1]) } else { (q[1], p[1]) };
+                // 水平边（dy==0）不参与扫描线求交，斜率置 0（该边无覆盖率贡献）。
+                let dx_dy = if q[1] != p[1] { (q[0] - p[0]) / (q[1] - p[1]) } else { 0.0 };
+                edges[k] = [p[0], p[1], dx_dy, y_lo, y_hi];
+            }
+            let y_lo = pts[0][1].min(pts[1][1]).min(pts[2][1]);
+            let y_hi = pts[0][1].max(pts[1][1]).max(pts[2][1]);
+            phys.push(TriE {
+                pts,
+                y_lo,
+                y_hi,
+                edges,
+            });
+        }
         // 裁剪：包围盒 ∩ clip（物理）。
         let (mut cx0, mut cy0, mut cx1, mut cy1) = (0.0f32, 0.0f32, self.w as f32, self.h as f32);
         if let Some(cl) = clip {
@@ -426,41 +488,143 @@ impl CpuRenderer {
         if bx1 <= bx0 || by1 <= by0 {
             return;
         }
-        let px0 = bx0.floor().max(0.0) as u32;
         let py0 = by0.floor().max(0.0) as u32;
-        let px1 = (bx1.ceil().min(self.w as f32)) as u32;
         let py1 = (by1.ceil().min(self.h as f32)) as u32;
+        let px0 = bx0.floor().max(0.0) as u32;
+        let px1 = (bx1.ceil().min(self.w as f32)) as u32;
+        // 每行：收集投影区间（像素遍历范围）与行中心区间（内部快路径），分别合并。
+        // 投影区间 = 带∩行中点处覆盖 ± ½·max|dx/dy|（覆盖端点随 y 线性变化，带∩行
+        // 半宽 ≤0.5 → 保守包含该行所有可能命中的样本 x —— 关键：带与像素行部分重叠
+        // 时行中心 y_c 可在带外而样本 y 在带内，必须用带∩行投影，否则漏像素）。
         for py in py0..py1 {
-            for px in px0..px1 {
-                // 裁剪覆盖率（解析；clip 为轴对齐矩形）。
-                let clip_cov_x =
-                    (cx1.min((px + 1) as f32) - cx0.max(px as f32)).clamp(0.0, 1.0);
-                let clip_cov_y =
-                    (cy1.min((py + 1) as f32) - cy0.max(py as f32)).clamp(0.0, 1.0);
-                let clip_cov = clip_cov_x * clip_cov_y;
-                if clip_cov <= 0.0 {
+            let y_c = py as f32 + 0.5;
+            let row_top = py as f32;
+            let row_bot = py as f32 + 1.0;
+            let mut spans: Vec<(f32, f32, f32)> = Vec::new();
+            let mut centers: Vec<(f32, f32, f32)> = Vec::new();
+            let mut band_margin = f32::MAX;
+            for t in &phys {
+                if t.y_lo >= row_bot || t.y_hi <= row_top {
                     continue;
                 }
-                // 4× 超采样计数。
-                let mut hits = 0u8;
-                for (ox, oy) in SAMPLE_OFFSETS {
-                    let sx = px as f32 + ox;
-                    let sy = py as f32 + oy;
-                    for [a, b, c2] in &phys {
-                        if point_in_triangle(sx, sy, a, b, c2) {
-                            hits += 1;
-                            break;
-                        }
+                let y_lo = t.y_lo.max(row_top);
+                let y_hi = t.y_hi.min(row_bot);
+                let y_m = (y_lo + y_hi) * 0.5;
+                let mut xl = f32::MAX;
+                let mut xr = f32::MIN;
+                let mut n = 0usize;
+                let mut ms = 0.0f32;
+                for e in &t.edges {
+                    if y_m >= e[3] && y_m < e[4] {
+                        let x = e[0] + (y_m - e[1]) * e[2];
+                        xl = xl.min(x);
+                        xr = xr.max(x);
+                        n += 1;
+                        ms = ms.max(e[2].abs());
                     }
                 }
-                if hits == 0 {
-                    continue;
+                if n >= 2 && xr > xl {
+                    let half = ms * 0.5;
+                    spans.push((xl - half, xr + half, ms));
                 }
-                let cov = hits as f32 / SAMPLES * clip_cov;
-                let idx = (py * self.w + px) as usize * 4;
-                let mut px4 = [self.buf[idx], self.buf[idx + 1], self.buf[idx + 2], self.buf[idx + 3]];
-                blend_px(&mut px4, c, cov);
-                self.buf[idx..idx + 4].copy_from_slice(&px4);
+                // 行中心区间：仅带覆盖行中心时可用作内部快路径。
+                if y_c >= t.y_lo && y_c < t.y_hi {
+                    band_margin = band_margin.min((y_c - t.y_lo).min(t.y_hi - y_c));
+                    let mut xl = f32::MAX;
+                    let mut xr = f32::MIN;
+                    let mut n = 0usize;
+                    let mut ms = 0.0f32;
+                    for e in &t.edges {
+                        if y_c >= e[3] && y_c < e[4] {
+                            let x = e[0] + (y_c - e[1]) * e[2];
+                            xl = xl.min(x);
+                            xr = xr.max(x);
+                            n += 1;
+                            ms = ms.max(e[2].abs());
+                        }
+                    }
+                    if n >= 2 && xr > xl {
+                        centers.push((xl, xr, ms));
+                    }
+                }
+            }
+            if spans.is_empty() {
+                continue;
+            }
+            // 合并重叠/相邻区间（并集语义），斜率取 max。
+            let merge = |v: &mut Vec<(f32, f32, f32)>| {
+                v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                let mut out: Vec<(f32, f32, f32)> = Vec::new();
+                for s in v.drain(..) {
+                    if let Some(last) = out.last_mut() {
+                        if s.0 <= last.1 {
+                            last.1 = last.1.max(s.1);
+                            last.2 = last.2.max(s.2);
+                            continue;
+                        }
+                    }
+                    out.push(s);
+                }
+                *v = out;
+            };
+            merge(&mut spans);
+            merge(&mut centers);
+            let row_cov_y = (cy1.min((py + 1) as f32) - cy0.max(py as f32)).clamp(0.0, 1.0);
+            if row_cov_y <= 0.0 {
+                continue;
+            }
+            // 内部行：样本 y（py+0.25 / py+0.75）仍在每个「带覆盖行中心」的三角形带内。
+            let inside_row = band_margin >= 0.5;
+            for (pl, pr, _ms) in &spans {
+                // 像素范围：命中像素样本 x ∈ [px+0.25, px+0.75] 必与投影区间相交。
+                let px_lo = ((pl.ceil() as i64 - 1).max(cx0.floor() as i64)).max(px0 as i64);
+                let px_hi = ((pr.floor() as i64 + 1).min(cx1.ceil() as i64)).min(px1 as i64);
+                for px in px_lo..px_hi {
+                    // 裁剪覆盖率（解析；clip 为轴对齐矩形）。
+                    let clip_cov_x =
+                        (cx1.min((px + 1) as f32) - cx0.max(px as f32)).clamp(0.0, 1.0);
+                    let clip_cov = clip_cov_x * row_cov_y;
+                    if clip_cov <= 0.0 {
+                        continue;
+                    }
+                    let idx = (py * self.w + px as u32) as usize * 4;
+                    let mut px4 = [self.buf[idx], self.buf[idx + 1], self.buf[idx + 2], self.buf[idx + 3]];
+                    // 内部像素快路径：在行中心合并区间内部（距边界 ≥ EXT）且内部行
+                    // → 4 样本必然全中（数学严格，见函数注释），cov = clip_cov 直写。
+                    let mut internal = false;
+                    if inside_row {
+                        for (xl, xr, ms) in &centers {
+                            let ext = ((ms * 0.25).ceil() as i64 + 1).max(1);
+                            if (px as i64) >= (xl.ceil() as i64) + ext
+                                && (px as i64) + 1 <= (xr.floor() as i64) - ext
+                            {
+                                internal = true;
+                                break;
+                            }
+                        }
+                    }
+                    if internal {
+                        blend_px(&mut px4, c, clip_cov);
+                    } else {
+                        // 4× 超采样计数（并集语义：任一三角形命中即 +1）。
+                        let mut hits = 0u8;
+                        for (ox, oy) in SAMPLE_OFFSETS {
+                            let sx = px as f32 + ox;
+                            let sy = py as f32 + oy;
+                            for t in &phys {
+                                if point_in_triangle(sx, sy, &t.pts[0], &t.pts[1], &t.pts[2]) {
+                                    hits += 1;
+                                    break;
+                                }
+                            }
+                        }
+                        if hits == 0 {
+                            continue;
+                        }
+                        blend_px(&mut px4, c, hits as f32 / SAMPLES * clip_cov);
+                    }
+                    self.buf[idx..idx + 4].copy_from_slice(&px4);
+                }
             }
         }
     }
@@ -468,6 +632,9 @@ impl CpuRenderer {
     // ── 文本 / 图标 ──────────────────────────────────────────────────────────
 
     /// 文本命令 → 字形位图覆盖 blit。placement 与 GPU emit_text 共用 layout_text_glyphs。
+    ///
+    /// 布局缓存（egui GalleyCache 思想）：静态文本（菜单标题/活跃应用名/Dock 标签等）
+    /// 每帧命中缓存零重排版，只做字形 blit（clip 每次独立 —— 布局结果不依赖 clip）。
     #[allow(clippy::too_many_arguments)]
     fn emit_text(
         &mut self,
@@ -483,28 +650,48 @@ impl CpuRenderer {
         clip: Option<Rect>,
     ) {
         let scale = self.scale;
-        // 缓存移出 self：layout + blit 期间以局部变量借用（避免 HashMap 与 self 的
-        // 借用冲突），零克隆。
-        let mut cache = std::mem::take(&mut self.glyph_bitmaps);
-        let placed = layout_text_glyphs(
-            engine,
-            &mut cache,
-            content,
-            rect,
-            style,
-            align,
-            wrap,
-            max_lines,
-            overflow,
-            scale,
-        );
         let c = [color.r, color.g, color.b, color.a];
-        for g in &placed {
-            if let Some((_, bitmap)) = cache.get(&g.key) {
-                self.blit_coverage(bitmap, g.x, g.y, g.w, g.h, c, clip);
+        let key = layout_key(content, rect, style, align, wrap, max_lines, overflow, scale);
+        self.layout_used.insert(key);
+        // 缓存与字形位图移出 self（避免与 self.buf 借用冲突），零克隆。
+        let mut cache = std::mem::take(&mut self.layout_cache);
+        let mut glyphs = std::mem::take(&mut self.glyph_bitmaps);
+        // 命中：直接 blit（字形位图已在 glyph_bitmaps，静态文本零重排版）。
+        let hit = match cache.get(&key) {
+            Some(e) if e.content.as_ref() == content => {
+                for g in &e.placed {
+                    if let Some((_, bitmap)) = glyphs.get(&g.key) {
+                        self.blit_coverage(bitmap, g.x, g.y, g.w, g.h, c, clip);
+                    }
+                }
+                true
             }
+            _ => false,
+        };
+        if !hit {
+            // miss：layout + 光栅化字形 + 入缓存。
+            self.layout_misses += 1;
+            let placed = layout_text_glyphs(
+                engine,
+                &mut glyphs,
+                content,
+                rect,
+                style,
+                align,
+                wrap,
+                max_lines,
+                overflow,
+                scale,
+            );
+            for g in &placed {
+                if let Some((_, bitmap)) = glyphs.get(&g.key) {
+                    self.blit_coverage(bitmap, g.x, g.y, g.w, g.h, c, clip);
+                }
+            }
+            cache.insert(key, LayoutEntry { content: Arc::from(content), placed });
         }
-        self.glyph_bitmaps = cache;
+        self.layout_cache = cache;
+        self.glyph_bitmaps = glyphs;
     }
 
     /// 覆盖位图 blit：`bitmap` 为灰度覆盖（0..=255），目标左上角 / 尺寸为逻辑坐标。
@@ -702,6 +889,36 @@ fn fnv1a(data: &[u8]) -> u32 {
         h ^= b as u32;
         h = h.wrapping_mul(0x0100_0193);
     }
+    h
+}
+
+/// 布局缓存 key：内容 fnv1a + 全部布局参数打包（u64 旋转混合）。参数值精确进 key
+/// （内容相等但参数不同 → 不同 key）；命中后再比内容防碰撞误用。
+#[allow(clippy::too_many_arguments)]
+fn layout_key(
+    content: &str,
+    rect: Rect,
+    style: TextStyle,
+    align: TextAlign,
+    wrap: bool,
+    max_lines: Option<usize>,
+    overflow: kanesumi_canvas::TextOverflow,
+    scale: f32,
+) -> u64 {
+    let mut h = fnv1a(content.as_bytes()) as u64;
+    h = h.rotate_left(13) ^ rect.origin.x.to_bits() as u64;
+    h = h.rotate_left(13) ^ rect.origin.y.to_bits() as u64;
+    h = h.rotate_left(13) ^ rect.size.width.to_bits() as u64;
+    h = h.rotate_left(13) ^ rect.size.height.to_bits() as u64;
+    h = h.rotate_left(13) ^ style.size.to_bits() as u64;
+    h = h.rotate_left(13) ^ style.line_height.to_bits() as u64;
+    h = h.rotate_left(13) ^ style.letter_spacing_em.to_bits() as u64;
+    h = h.rotate_left(13) ^ style.weight as u64;
+    h = h.rotate_left(13) ^ align as u64;
+    h = h.rotate_left(13) ^ wrap as u64;
+    h = h.rotate_left(13) ^ max_lines.unwrap_or(0) as u64;
+    h = h.rotate_left(13) ^ overflow as u64;
+    h = h.rotate_left(13) ^ scale.to_bits() as u64;
     h
 }
 
@@ -972,5 +1189,171 @@ mod tests {
         assert!(in_damage > 0, "损坏区内文本必须重绘");
         // 左半文本像素不得被破坏（上帧保留）。
         assert!(painted_count(&r) > in_damage, "文本区未损坏部分保留上帧");
+    }
+
+    /// 扫描线区间裁剪与朴素「每像素 × 每三角形 × 4 样本」参考实现逐位一致
+    /// （零容差契约的硬保证，参函数注释的严格性推导）。
+    #[test]
+    fn fill_triangles_scanline_matches_naive() {
+        use kanesumi_canvas::geometry::{rounded_rect_polygon, triangulate_arc, triangulate_stroke};
+        use kanesumi_core::{Point, Rect};
+        // 场景：圆角矩形 + 弧 + stroke 环 + 两个独立三角形 + 圆角 clip。
+        let mut tris: Vec<kanesumi_canvas::geometry::Triangle> = Vec::new();
+        // 圆角矩形（中心扇出 12 三角）。
+        let rect = Rect::new(2.0, 3.0, 40.0, 28.0);
+        let pts = rounded_rect_polygon(rect, 5.0, 12);
+        let center = Point::new(rect.origin.x + rect.size.width / 2.0, rect.origin.y + rect.size.height / 2.0);
+        for i in 0..pts.len() {
+            let j = (i + 1) % pts.len();
+            tris.push(kanesumi_canvas::geometry::Triangle::new(center, pts[i], pts[j]));
+        }
+        // 弧（环形扇带）。
+        tris.extend(triangulate_arc(Point::new(50.0, 10.0), 8.0, 2.0, 20.0, 200.0));
+        // stroke 环。
+        tris.extend(triangulate_stroke(Rect::new(60.0, 2.0, 12.0, 12.0), 2.0, 1.5));
+        // 独立三角形。
+        tris.push(kanesumi_canvas::geometry::Triangle::new(
+            Point::new(78.0, 4.0),
+            Point::new(82.0, 14.0),
+            Point::new(74.0, 16.0),
+        ));
+        let clip = Rect::new(0.0, 0.0, 84.0, 30.0);
+
+        // 参考实现（朴素每像素 4 样本；保留旧 fill_triangles 语义）。
+        let naive = |src: &[kanesumi_canvas::geometry::Triangle]| {
+            let mut r = CpuRenderer::new(84.0, 30.0, 1.0);
+            let c = [0.4f32, 0.8, 1.0, 0.7]; // 半透明覆盖 blend 全路径
+            let phys: Vec<[[f32; 2]; 3]> = src
+                .iter()
+                .map(|t| {
+                    [
+                        [t.p0.x, t.p0.y],
+                        [t.p1.x, t.p1.y],
+                        [t.p2.x, t.p2.y],
+                    ]
+                })
+                .collect();
+            let clip_rect = [
+                clip.origin.x,
+                clip.origin.y,
+                clip.right(),
+                clip.bottom(),
+            ];
+            let (cx0, cy0, cx1, cy1) =
+                (clip_rect[0], clip_rect[1], clip_rect[2], clip_rect[3]);
+            let (bx0, by0, bx1, by1) = (cx0, cy0, cx1, cy1);
+            for py in by0.floor().max(0.0) as u32..by1.ceil().min(r.h as f32) as u32 {
+                for px in bx0.floor().max(0.0) as u32..bx1.ceil().min(r.w as f32) as u32 {
+                    let clip_cov_x =
+                        (cx1.min((px + 1) as f32) - cx0.max(px as f32)).clamp(0.0, 1.0);
+                    let clip_cov_y =
+                        (cy1.min((py + 1) as f32) - cy0.max(py as f32)).clamp(0.0, 1.0);
+                    let clip_cov = clip_cov_x * clip_cov_y;
+                    if clip_cov <= 0.0 {
+                        continue;
+                    }
+                    let mut hits = 0u8;
+                    for (ox, oy) in SAMPLE_OFFSETS {
+                        let sx = px as f32 + ox;
+                        let sy = py as f32 + oy;
+                        for a in &phys {
+                            if point_in_triangle(sx, sy, &a[0], &a[1], &a[2]) {
+                                hits += 1;
+                                break;
+                            }
+                        }
+                    }
+                    if hits == 0 {
+                        continue;
+                    }
+                    let idx = (py * r.w + px) as usize * 4;
+                    let mut px4 = [
+                        r.buf[idx],
+                        r.buf[idx + 1],
+                        r.buf[idx + 2],
+                        r.buf[idx + 3],
+                    ];
+                    blend_px(&mut px4, c, hits as f32 / SAMPLES * clip_cov);
+                    r.buf[idx..idx + 4].copy_from_slice(&px4);
+                }
+            }
+            r
+        };
+
+        let ref_r = naive(&tris);
+        let mut fast = CpuRenderer::new(84.0, 30.0, 1.0);
+        fast.fill_triangles(tris, Color::new(0.4, 0.8, 1.0, 0.7), Some(clip));
+        let f = |r: &CpuRenderer| r.buf.iter().filter(|&&b| b != 0).count();
+        if fast.buf != ref_r.buf {
+            let mut first = None;
+            for (i, (a, b)) in fast.buf.iter().zip(ref_r.buf.iter()).enumerate() {
+                if a != b {
+                    let px = (i / 4) as u32;
+                    let (py, px) = (px / 84, px % 84);
+                    first = Some((py, px, *a, *b));
+                    break;
+                }
+            }
+            panic!(
+                "fast={} naive={} 首个差异 {:?}",
+                f(&fast),
+                f(&ref_r),
+                first
+            );
+        }
+    }
+
+    /// 文本布局缓存（egui GalleyCache）：同内容同参数重复渲染零重排版。
+    #[test]
+    fn text_layout_cache_hits_repeat_render() {
+        let Some(path) = test_font_path() else {
+            return;
+        };
+        let engine = TextEngine::load(path).unwrap();
+        let style = TextStyle::new(20.0, 24.0, FontWeight::Normal);
+        let mut r = CpuRenderer::new(200.0, 50.0, 1.0);
+        // 帧 1：miss（入缓存）。
+        let mut s1 = Scene::default();
+        s1.text(
+            "缓存命中验证".to_string(),
+            Rect::new(2.0, 4.0, 100.0, 24.0),
+            Color::WHITE,
+            style,
+            TextAlign::Left,
+        );
+        r.render(&engine, &s1, None);
+        assert_eq!(r.layout_misses, 1, "首帧 miss");
+        assert!(painted_count(&r) > 0, "首帧文本已绘制");
+        // 帧 2：同内容 → 命中（miss 不增长）。
+        let mut s2 = Scene::default();
+        s2.text(
+            "缓存命中验证".to_string(),
+            Rect::new(2.0, 4.0, 100.0, 24.0),
+            Color::WHITE,
+            style,
+            TextAlign::Left,
+        );
+        r.render(&engine, &s2, None);
+        assert_eq!(r.layout_misses, 1, "同内容重复渲染必须命中缓存（零重排版）");
+        // 帧 3：不同内容 → miss（时钟等动态文本每变一次重排一次）。
+        let mut s3 = Scene::default();
+        s3.text(
+            "另一段文本".to_string(),
+            Rect::new(2.0, 4.0, 100.0, 24.0),
+            Color::WHITE,
+            style,
+            TextAlign::Left,
+        );
+        r.render(&engine, &s3, None);
+        assert_eq!(r.layout_misses, 2, "内容变化才 miss");
+        // 局部 damage 帧：无文本命令。generation GC 保留「本帧 ∪ 上帧」使用条目。
+        // 帧 3 用了 B（prev={B}）→ 帧 4 后 B 保留；A 连续两帧未用被淘汰。
+        let mut s4 = Scene::default();
+        s4.fill_rect(Color::new(1.0, 0.0, 0.0, 1.0), Rect::new(150.0, 0.0, 50.0, 50.0));
+        r.render(&engine, &s4, Some(Rect::new(150.0, 0.0, 50.0, 50.0)));
+        assert_eq!(r.layout_cache.len(), 1, "上帧使用窗口保留 B、淘汰久未用的 A");
+        // 静态文本持续使用即持续命中：帧 5 再渲染 A → miss（被淘汰后重排一次）。
+        r.render(&engine, &s1, None);
+        assert_eq!(r.layout_misses, 3, "淘汰后的 A 重排一次后入缓存");
     }
 }
