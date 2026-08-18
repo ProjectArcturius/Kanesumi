@@ -424,6 +424,14 @@ pub trait App {
     /// 渲染一帧：把当前状态解析为绘制命令。
     /// `engine` 为外壳注入的 TextEngine（排版唯一真源），App 用它量测文本、外壳用它光栅化。
     fn render(&mut self, engine: &TextEngine, size: Size) -> Scene;
+
+    /// 渲染到复用缓冲（egui PaintList 思路）：App 覆写可每帧 `out.commands.clear()`
+    /// 复用 Vec 容量（避免每帧重分配），并可省去 Scene 的克隆（memo 直接就地重建）。
+    /// 默认委托 `render`（按值返回，行为不变）；外壳优先调用本方法。
+    /// 参 egui `ShapeList`/iced `Cache` 的帧缓冲复用模式。
+    fn render_into(&mut self, engine: &TextEngine, size: Size, out: &mut Scene) {
+        *out = self.render(engine, size);
+    }
 }
 
 /// harness `Key` → 控件层 `TextInputKey` 转换（TextBox 等文本控件路由用）。

@@ -8,6 +8,7 @@
 use std::time::Instant;
 
 use kanesumi_canvas::text::TextEngine;
+use kanesumi_canvas::Scene;
 use kanesumi_core::{Rect, Size};
 use smithay_client_toolkit::reexports::{
     calloop::EventLoop, calloop_wayland_source::WaylandSource,
@@ -372,6 +373,9 @@ struct Shell {
     floating_shm: Vec<ShmBuffers>,
     /// 上次 update 的时刻（合成器时钟：dt 限幅防卡顿后跳变，§4.1 不变量 2）。
     last_update: Instant,
+    /// 主表面 Scene 复用缓冲（egui PaintList）：每帧 `render_into` 就地清空重建，
+    /// 复用 Vec 容量，避免每帧 `Scene::default()` + push 重分配。
+    scene_buf: Scene,
 }
 
 /// 单个 layer-shell 表面的 SHM 缓冲（双缓冲；尺寸变化时重建 pool/buffer）。
@@ -787,6 +791,7 @@ impl Shell {
             main_shm,
             floating_shm,
             last_update: Instant::now(),
+            scene_buf: Scene::default(),
         })
     }
 
@@ -1158,21 +1163,24 @@ impl Shell {
         }
 
         let size = self.size();
+        // 主表面 Scene 复用缓冲（egui PaintList）：App::render_into 就地清空重建，
+        // 复用 Vec 容量，不做每帧 `Scene::default()` + 逐 push 重分配。
+        // `mem::take` 移动出旧缓冲（容量保留），渲染后再放回（绕过 &mut self 分裂借用）。
+        let mut scene_buf = std::mem::take(&mut self.scene_buf);
         let scene_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.app.render(&self.engine, size)
+            self.app.render_into(&self.engine, size, &mut scene_buf)
         }));
-        let mut scene = match scene_result {
-            Ok(s) => s,
-            Err(_) => {
-                log::error!("App::render panic，跳过本帧");
-                return;
-            }
-        };
+        if scene_result.is_err() {
+            log::error!("App::render panic，跳过本帧");
+            self.scene_buf = scene_buf;
+            return;
+        }
+        self.scene_buf = scene_buf;
 
         // 右键菜单叠加（主表面渲染，App 内容之上）。
         if self.ctx_menu.is_visible() {
             self.ctx_menu
-                .render(&self.app.theme(), &self.engine, &mut scene);
+                .render(&self.app.theme(), &self.engine, &mut self.scene_buf);
         }
 
         // 渲染后仍在动画 → 请求下一帧（vsync 提示，I-2）。App 在 render() 内清除
@@ -1186,7 +1194,7 @@ impl Shell {
         let damage = self.take_damage();
         if let Some(cpu) = self.cpu.as_mut() {
             let (pw, ph) = cpu.physical_size();
-            let rgba = cpu.render(&self.engine, &scene, damage);
+            let rgba = cpu.render(&self.engine, &self.scene_buf, damage);
             if let Some(shm) = self.shm.clone() {
                 commit_shm_buffers(
                     &shm,
@@ -1201,7 +1209,7 @@ impl Shell {
                 );
             }
         } else if let Some(r) = self.renderer.as_mut() {
-            r.render(&self.engine, &scene);
+            r.render(&self.engine, &self.scene_buf);
         }
     }
 
