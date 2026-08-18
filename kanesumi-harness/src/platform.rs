@@ -390,6 +390,11 @@ struct ShmBuffers {
     in_flight: [bool; 2],
     /// 下一个使用的槽位索引。
     next: usize,
+    /// 槽位内容是否不可用（pool 新建/重建）→ 下次写入必须全量（否则零填充区域透明）。
+    needs_full: [bool; 2],
+    /// 槽位自上次写入后累积的局部损伤（物理像素）—— 该槽未写期间其它区域变化过，
+    /// 下次写该槽须一并回补（buffer-age 语义，参 compositor render/damage.rs）。
+    partial: [Option<Rect>; 2],
 }
 
 impl ShmBuffers {
@@ -471,6 +476,8 @@ impl Default for ShmBuffers {
             buffers: [None, None],
             in_flight: [false, false],
             next: 0,
+            needs_full: [true, true],
+            partial: [None, None],
         }
     }
 }
@@ -2691,6 +2698,26 @@ fn union_rect(a: Rect, b: Rect) -> Rect {
     Rect::new(x0, y0, x1 - x0, y1 - y0)
 }
 
+/// 计算本槽位需写入区（物理像素）：全量帧 / 槽位内容不可用（新建）→ 全量（None）；
+/// 局部帧 → 本帧 damage ∪ 自上次写该槽后的累积损伤（buffer-age 回补）。
+/// 纯函数，单测覆盖回补逻辑。
+fn compute_write_region(
+    fresh_pool: bool,
+    needs_full: bool,
+    damage: Option<Rect>,
+    partial: Option<Rect>,
+) -> Option<Rect> {
+    if fresh_pool || needs_full || damage.is_none() {
+        None
+    } else {
+        let d = damage.unwrap();
+        Some(match partial {
+            Some(p) => union_rect(p, d),
+            None => d,
+        })
+    }
+}
+
 fn commit_shm_buffers(
     shm: &wl_shm::WlShm,
     qh: &QueueHandle<Shell>,
@@ -2711,7 +2738,8 @@ fn commit_shm_buffers(
         return;
     }
     // 尺寸变化或 pool 未建 → 重建（pool 大小 = 2×expected，容纳双缓冲）。
-    if state.pool.is_none() || state.width != width || state.height != height {
+    let fresh_pool = state.pool.is_none() || state.width != width || state.height != height;
+    if fresh_pool {
         state.pool.take().map(|p| p.destroy());
         for b in state.buffers.iter_mut() {
             b.take().map(|b| b.destroy());
@@ -2719,6 +2747,8 @@ fn commit_shm_buffers(
         state.mmap = None;
         state.in_flight = [false, false];
         state.next = 0;
+        state.needs_full = [true, true];
+        state.partial = [None, None];
         let fd = shm_open(expected * 2);
         let mmap = unsafe { memmap2::MmapMut::map_mut(&fd) }.ok();
         let pool = shm.create_pool(fd.as_fd(), (expected * 2) as i32, qh, ());
@@ -2747,38 +2777,73 @@ fn commit_shm_buffers(
     } else {
         return;
     };
+    // 本槽位需写入区（物理像素）：
+    // - 全量帧 / 槽位内容不可用（新建）→ 整面；
+    // - 局部帧 → 本帧 damage ∪ 自上次写该槽后的累积损伤（buffer-age 回补：
+    //   该槽可能两帧未写，其间其它区域变化过 —— 与合成器侧 damage 上传区间对齐）。
+    // 参 compositor render/damage.rs 的 age 回补同款思路。
+    let write_region = compute_write_region(fresh_pool, state.needs_full[idx], damage, state.partial[idx]);
+    // 物理拷贝区（与下方 damage_buffer 发送区间一致 —— 合成器只上传该区，
+    // mmap 须恰好写完该区，槽位经 partial 累积回补保持与 CpuRenderer buf 同步）。
+    let (cx0, cy0, cw, ch) = match write_region {
+        Some(d) => {
+            let x0 = (d.origin.x * scale).floor().clamp(0.0, width as f32) as u32;
+            let y0 = (d.origin.y * scale).floor().clamp(0.0, height as f32) as u32;
+            let x1 = (d.right() * scale).ceil().clamp(0.0, width as f32) as u32;
+            let y1 = (d.bottom() * scale).ceil().clamp(0.0, height as f32) as u32;
+            (x0, y0, (x1 - x0).max(0), (y1 - y0).max(0))
+        }
+        None => (0, 0, width, height),
+    };
+    // 局部拷贝 + R/B 交换：只写写入区行（其余像素保留槽位上帧内容）。
     if let Some(mmap) = state.mmap.as_mut() {
-        let offset = idx * expected;
-        let n = bgra.len().min(expected);
-        // wl_shm Argb8888 内存序为 B,G,R,A；wgpu Rgba8UnormSrgb 读回为 R,G,B,A。
-        // 不交换则屏幕 R/B 通道互换（纯灰不受影响、彩色全错位）。按 4 字节组交换。
-        for (dst, src) in mmap[offset..offset + n]
-            .chunks_exact_mut(4)
-            .zip(bgra[..n].chunks_exact(4))
-        {
-            dst[0] = src[2];
-            dst[1] = src[1];
-            dst[2] = src[0];
-            dst[3] = src[3];
+        let base = idx * expected;
+        let row_bytes = cw as usize * 4;
+        for py in cy0..cy0 + ch {
+            let src_start = (py * width + cx0) as usize * 4;
+            let dst_start = base + src_start;
+            if src_start + row_bytes > bgra.len() || dst_start + row_bytes > mmap.len() {
+                break;
+            }
+            for (dst, src) in mmap[dst_start..dst_start + row_bytes]
+                .chunks_exact_mut(4)
+                .zip(bgra[src_start..src_start + row_bytes].chunks_exact(4))
+            {
+                dst[0] = src[2];
+                dst[1] = src[1];
+                dst[2] = src[0];
+                dst[3] = src[3];
+            }
+        }
+    }
+    // 槽位状态更新（buffer-age 回补登记）。
+    state.needs_full[idx] = false;
+    state.partial[idx] = None;
+    match damage {
+        Some(d) => {
+            // 另一槽未写期间本帧损伤发生 → 累积，下次写该槽时回补。
+            if state.needs_full[1 - idx] {
+                state.partial[1 - idx] = None;
+            } else {
+                state.partial[1 - idx] = Some(match state.partial[1 - idx] {
+                    Some(p) => union_rect(p, d),
+                    None => d,
+                });
+            }
+        }
+        None => {
+            // 全量帧：另一槽内容相对当前帧整体过期。
+            state.needs_full[1 - idx] = true;
+            state.partial[1 - idx] = None;
         }
     }
     if let Some(buf) = state.buffers[idx].as_ref() {
         surface.attach(Some(buf), 0, 0);
-        // damage：S4 局部变化只报变化区（缓冲仍整帧拷贝保证双缓冲槽位一致）；
-        // None = 全量。不报 damage 时 KWin 等合成器可能不重绘表面。
+        // damage：与 mmap 写入区一致（合成器只上传该区）；None = 全量。
+        // 不报 damage 时 KWin 等合成器可能不重绘表面。
         if surface.version() >= 4 {
-            let (dx, dy, dw, dh) = match damage {
-                Some(d) => {
-                    let x0 = (d.origin.x * scale).floor().clamp(0.0, width as f32) as i32;
-                    let y0 = (d.origin.y * scale).floor().clamp(0.0, height as f32) as i32;
-                    let x1 = (d.right() * scale).ceil().clamp(0.0, width as f32) as i32;
-                    let y1 = (d.bottom() * scale).ceil().clamp(0.0, height as f32) as i32;
-                    (x0, y0, (x1 - x0).max(0), (y1 - y0).max(0))
-                }
-                None => (0, 0, width as i32, height as i32),
-            };
-            surface.damage_buffer(dx, dy, dw, dh);
-        } else if let Some(d) = damage {
+            surface.damage_buffer(cx0 as i32, cy0 as i32, cw as i32, ch as i32);
+        } else if let Some(d) = write_region {
             // 旧协议 damage 用表面坐标（逻辑）；未提供 scale 换算时四舍五入。
             surface.damage(
                 d.origin.x.round() as i32,
@@ -2847,5 +2912,50 @@ impl Dispatch<wl_buffer::WlBuffer, ()> for Shell {
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn r(x: f32, y: f32, w: f32, h: f32) -> Rect {
+        Rect::new(x, y, w, h)
+    }
+
+    /// 局部帧 + 无历史 → 写区 = 本帧 damage。
+    #[test]
+    fn write_region_plain_damage() {
+        let d = Some(r(10.0, 0.0, 40.0, 10.0));
+        assert_eq!(compute_write_region(false, false, d, None), d);
+    }
+
+    /// 局部帧 + 槽位累积损伤（buffer-age 回补）→ 写区 = 两区并集。
+    #[test]
+    fn write_region_backfills_partial() {
+        let d = Some(r(10.0, 0.0, 40.0, 10.0));
+        let p = Some(r(200.0, 5.0, 8.0, 8.0));
+        let out = compute_write_region(false, false, d, p).unwrap();
+        assert_eq!(out, r(10.0, 0.0, 198.0, 13.0)); // 并集外接框
+    }
+
+    /// 槽位内容不可用（新建 pool）→ 全量。
+    #[test]
+    fn write_region_fresh_pool_is_full() {
+        let d = Some(r(10.0, 0.0, 40.0, 10.0));
+        assert_eq!(compute_write_region(true, false, d, None), None);
+    }
+
+    /// 槽位标记全量过期 → 全量。
+    #[test]
+    fn write_region_needs_full_is_full() {
+        let d = Some(r(10.0, 0.0, 40.0, 10.0));
+        assert_eq!(compute_write_region(false, true, d, None), None);
+    }
+
+    /// 全量帧（damage None）→ 全量，忽略历史。
+    #[test]
+    fn write_region_full_frame_is_full() {
+        assert_eq!(compute_write_region(false, false, None, Some(r(0.0, 0.0, 8.0, 8.0))), None);
     }
 }
