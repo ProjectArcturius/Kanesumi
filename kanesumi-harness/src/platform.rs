@@ -15,8 +15,9 @@ use smithay_client_toolkit::reexports::{
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
-    delegate_registry, delegate_seat, delegate_xdg_shell, delegate_xdg_window,
+    delegate_compositor, delegate_dmabuf, delegate_keyboard, delegate_layer, delegate_output,
+    delegate_pointer, delegate_registry, delegate_seat, delegate_xdg_shell, delegate_xdg_window,
+    dmabuf::{DmabufHandler, DmabufState},
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
@@ -243,7 +244,9 @@ fn fallback_fonts(primary: &std::path::Path) -> Vec<std::path::PathBuf> {
 // 注：以下字段保留以维持 Wayland 协议对象存活（Drop 即销毁表面/全局）：
 // compositor_state / layer_shell / xdg_shell / window / layer_surface / role。
 #[allow(dead_code)]
-struct Shell {
+/// 单个 layer-shell 表面的共享状态：App、引擎、表面、输入、IME、SHM/dmabuf 输出。
+/// 由 platform::run 创建；`Shell` 对 dmabuf 子模块（QueueHandle 类型）可见。
+pub(crate) struct Shell {
     app: &'static mut dyn App,
     engine: TextEngine,
     role: EtherRole,
@@ -376,6 +379,15 @@ struct Shell {
     /// 主表面 Scene 复用缓冲（egui PaintList）：每帧 `render_into` 就地清空重建，
     /// 复用 Vec 容量，避免每帧 `Scene::default()` + push 重分配。
     scene_buf: Scene,
+
+    // ── dmabuf 直通（layer-shell CPU 角色可选输出；未开 → 维持 SHM）─────
+    /// 客户端 dmabuf 全局（合成器提供 → Some）。参 linux-dmabuf 协议。
+    dmabuf: DmabufState,
+    /// 是否启用 dmabuf 直通：`ETHER_DMABUF=1` 且 gbm device 可用且 dmabuf 全局存在。
+    /// 默认关（SHM 保底）；DRM 会话验证通过后于全面切换时翻默认。参 LINUX_DMABUF_PLAN M2。
+    dmabuf_enabled: bool,
+    /// 主表面 dmabuf 输出缓冲（layer-shell CPU 角色；xdg 角色闲置）。
+    dmabuf_out: crate::dmabuf::DmabufBuffers,
 }
 
 /// 单个 layer-shell 表面的 SHM 缓冲（双缓冲；尺寸变化时重建 pool/buffer）。
@@ -689,6 +701,28 @@ impl Shell {
             .ok();
         let main_shm = ShmBuffers::default();
 
+        // 客户端 dmabuf 全局（linux-dmabuf-feedback 主设备协商见 M5）。
+        // ⚠ DMABUF 属性：非 XRGB8888（无 alpha）→ Alpha 通道读 0 → 整个 buffer 透明；
+        //   bo 用 ARGB8888（has_alpha），合成器按 alpha 合成。
+        let dmabuf_state = DmabufState::new(globals, qh);
+        let dmabuf_present = dmabuf_state.version().is_some();
+        let dmabuf_out = crate::dmabuf::DmabufBuffers::default();
+        // 开 dmabuf 直通：`ETHER_DMABUF=1` + 合成器提供 global + 客户端能开 gbm device。
+        // 默认关（SHM 保底，防 DRM 会话未验证前回归；全面切换时再翻）。参 LINUX_DMABUF_PLAN §4 回退策略。
+        let dmabuf_enabled = std::env::var("ETHER_DMABUF").as_deref() == Ok("1")
+            && dmabuf_present
+            && dmabuf_out.ready();
+        if dmabuf_enabled {
+            log::info!("dmabuf 直通启用（ETHER_DMABUF=1）：合成器 global OK + gbm device 就绪");
+        } else {
+            log::info!(
+                "SHM 提交路径：ETHER_DMABUF={:?} global={} gbm_ready={}",
+                std::env::var("ETHER_DMABUF").unwrap_or_default(),
+                dmabuf_present,
+                dmabuf_out.ready()
+            );
+        }
+
         // 浮层表面：独立 layer-shell surface（透明底控件浮层）。非 layer-shell 角色无浮层。
         let floating = match &layer_shell {
             Some(s) => app
@@ -792,6 +826,9 @@ impl Shell {
             floating_shm,
             last_update: Instant::now(),
             scene_buf: Scene::default(),
+            dmabuf: dmabuf_state,
+            dmabuf_enabled,
+            dmabuf_out,
         })
     }
 
@@ -1195,7 +1232,12 @@ impl Shell {
         if let Some(cpu) = self.cpu.as_mut() {
             let (pw, ph) = cpu.physical_size();
             let rgba = cpu.render(&self.engine, &self.scene_buf, damage);
-            if let Some(shm) = self.shm.clone() {
+            if self.dmabuf_enabled {
+                // dmabuf 直通：CpuRenderer → gbm bo mmap → fd → 合成器 EGLImage（零上传）。
+                // 参 LINUX_DMABUF_PLAN §1。依赖合成器 dmabuf global + 客户端 gbm device。
+                self.dmabuf_out
+                    .commit(qh, &self.surface, &self.dmabuf, pw, ph, rgba, self.scale, damage);
+            } else if let Some(shm) = self.shm.clone() {
                 commit_shm_buffers(
                     &shm,
                     qh,
@@ -2176,12 +2218,62 @@ delegate_registry!(Shell);
 delegate_xdg_shell!(Shell);
 delegate_xdg_window!(Shell);
 delegate_layer!(Shell);
+delegate_dmabuf!(Shell);
 
 impl ProvidesRegistryState for Shell {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
     }
     registry_handlers![OutputState, SeatState];
+}
+
+// ── 客户端 dmabuf（linux-dmabuf-v1）────
+// create_immed 产出的 wl_buffer release → 合成器用毕，标记 dmabuf 槽可复用。
+// 参 LINUX_DMABUF_PLAN §3 客户端端。
+impl DmabufHandler for Shell {
+    fn dmabuf_state(&mut self) -> &mut DmabufState {
+        &mut self.dmabuf
+    }
+
+    fn dmabuf_feedback(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _proxy: &wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1,
+        _feedback: smithay_client_toolkit::dmabuf::DmabufFeedback,
+    ) {
+        // M5：按主设备协商 / 格式表校验（异构 GPU 安全）。当前单 GPU 直用 bo.modifier()。
+    }
+
+    fn created(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _params: &wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1,
+        _buffer: wl_buffer::WlBuffer,
+    ) {
+        // 仅在异步 create（非 create_immed）路径触发；我们只用 create_immed，不处理。
+    }
+
+    fn failed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _params: &wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1,
+    ) {
+        // create_immed 失败：合成器不接受该 fd/格式 → 本槽作废，等下一次尺寸/重建再试。
+        // 不在此降级（保持简单）；严重不兼容时用户可 ETHER_DMABUF=0 回 SHM。
+        log::warn!("dmabuf create_immed 失败（合成器可能未接受该格式/修饰符）");
+    }
+
+    fn released(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        buffer: &wl_buffer::WlBuffer,
+    ) {
+        self.dmabuf_out.mark_released(buffer);
+    }
 }
 
 // 无主用的 wl_region 事件（避免缺 Dispatch）。

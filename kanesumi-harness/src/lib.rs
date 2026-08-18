@@ -13,6 +13,9 @@ pub mod role;
 pub mod cpu_raster;
 
 #[cfg(target_os = "linux")]
+pub mod dmabuf;
+
+#[cfg(target_os = "linux")]
 pub mod platform;
 
 #[cfg(target_os = "linux")]

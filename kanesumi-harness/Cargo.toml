@@ -39,3 +39,6 @@ pollster = "0.3"
 bytemuck = { version = "1", features = ["derive"] }
 # wl_shm 提交（Ether 合成器 dmabuf 不可见 → 离屏读回 SHM）。参 ETHER_RENDER_LESSONS.md。
 memmap2 = "0.9"
+# 客户端 dmabuf 直通：gbm bo mmap CPU 写 + 导出 fd → zwp_linux_dmabuf_v1 → 合成器 EGLImage。
+# 消除 CpuRenderer → SHM → 合成器上传 的 CPU 搬运往返。参 Ether-main docs/LINUX_DMABUF_PLAN.md。
+gbm = "0.18"
