@@ -237,7 +237,10 @@ const LAYOUT_CACHE_MAX: usize = 4096;
 /// Measure 与 Paint 消费同一塑形结果，禁止逐字符宽度近似。
 #[derive(Clone)]
 pub struct TextEngine {
-    fonts: Vec<FontFace>,
+    /// 字体栈共享后端：`Arc<Vec<..>>` 使 `clone()` 零拷贝（只 bump 引用计数），
+    /// 消除每帧 `engine.clone()` 深拷贝整份字形表（fontdue `Font` 的 `Clone` 为
+    /// `Vec<Glyph>` + `HashMap<char,..>` 深拷贝，CJK 字体数 MB）。参 egui 共享后端思路。
+    fonts: Arc<Vec<FontFace>>,
     identity: u64,
     /// 塑形结果缓存（`Arc<Mutex<..>>` 使 Clone 共享同一缓存）。静态文本每帧重复
     /// BiDi 分析 + grapheme 切分 + rustybuzz 塑形是仅次于光栅化的 CPU 大头。
@@ -274,7 +277,7 @@ impl TextEngine {
             };
             let bytes: Arc<[u8]> = Arc::from(bytes);
             if let Ok(face) = FontFace::from_bytes(bytes, 0) {
-                engine.fonts.push(face);
+                Arc::make_mut(&mut engine.fonts).push(face);
             }
         }
         engine.refresh_identity();
@@ -284,7 +287,7 @@ impl TextEngine {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, TextLoadError> {
         let face = FontFace::from_bytes(Arc::from(bytes.to_vec()), 0)?;
         let mut engine = Self {
-            fonts: vec![face],
+            fonts: Arc::new(vec![face]),
             identity: 0,
             shape_cache: Arc::new(Mutex::new(HashMap::new())),
             layout_cache: Arc::new(Mutex::new(HashMap::new())),
@@ -304,7 +307,7 @@ impl TextEngine {
 
     fn refresh_identity(&mut self) {
         let mut hash = 0xcbf29ce484222325_u64;
-        for font in &self.fonts {
+        for font in self.fonts.iter() {
             for byte in font.bytes.iter() {
                 hash ^= u64::from(*byte);
                 hash = hash.wrapping_mul(0x100000001b3);
@@ -871,5 +874,14 @@ mod tests {
     #[test]
     fn load_missing_font_errors() {
         assert!(TextEngine::load("/definitely/missing/font.ttf").is_err());
+    }
+
+    /// clone 共享字体后端：`fonts` 为 `Arc`，clone 零拷贝（不重建字形表）。
+    /// 改前（`Vec<FontFace>` 深拷贝）此断言必失败 —— 回归守卫。
+    #[test]
+    fn clone_shares_font_backing() {
+        let Some(engine) = engine() else { return };
+        let cloned = engine.clone();
+        assert!(Arc::ptr_eq(&engine.fonts, &cloned.fonts));
     }
 }
