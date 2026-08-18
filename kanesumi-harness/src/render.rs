@@ -6,6 +6,7 @@
 // 注：本模块仅 Linux（wgpu 表面需 Wayland wl_surface）。
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use kanesumi_canvas::geometry::{Triangle, triangulate_arc, triangulate_fill, triangulate_stroke};
 use kanesumi_canvas::text::{TextEngine, TextLayoutOptions};
@@ -150,7 +151,7 @@ struct FrameData {
     image_runs: Vec<ImageRun>,
     steps: Vec<Step>,
     pending_glyphs: Vec<GlyphKey>,
-    pending_images: Vec<(u32, Vec<u8>, u32, u32)>,
+    pending_images: Vec<(u32, Arc<[u8]>, u32, u32)>,
 }
 
 /// 按 Scene 命令原始顺序记录绘制步（保 painter's algorithm 跨类型）。
@@ -767,7 +768,7 @@ impl Renderer {
         let mut pending_glyphs: Vec<GlyphKey> = Vec::new();
         let mut image: Vec<TextVertex> = Vec::new();
         let mut image_runs: Vec<ImageRun> = Vec::new();
-        let mut pending_images: Vec<(u32, Vec<u8>, u32, u32)> = Vec::new();
+        let mut pending_images: Vec<(u32, Arc<[u8]>, u32, u32)> = Vec::new();
         // 裁剪栈（box 语义，嵌套容器用）：`PushClip` / `PopClip` 严格配对。
         // 有效裁剪 = 栈内全部矩形的交集（子容器不放大父裁剪，只收窄）。
         let mut clip_stack: Vec<Option<Rect>> = Vec::new();
@@ -932,7 +933,7 @@ impl Renderer {
                         &mut image,
                         &mut image_runs,
                         &mut pending_images,
-                        rgba,
+                        rgba.as_ref(),
                         *width,
                         *height,
                         *rect,
@@ -984,7 +985,7 @@ impl Renderer {
         }
         // 再建图标纹理（借用分离）
         for (key, rgba, w, h) in &frame.pending_images {
-            self.ensure_image(*key, rgba, *w, *h);
+            self.ensure_image(*key, rgba.as_ref(), *w, *h);
         }
 
         let mut encoder = self
@@ -1551,7 +1552,7 @@ fn emit_image(
     ndc: &dyn Fn(f32, f32) -> [f32; 2],
     verts: &mut Vec<TextVertex>,
     runs: &mut Vec<ImageRun>,
-    pending: &mut Vec<(u32, Vec<u8>, u32, u32)>,
+    pending: &mut Vec<(u32, Arc<[u8]>, u32, u32)>,
     rgba: &[u8],
     width: u32,
     height: u32,
@@ -1575,7 +1576,7 @@ fn emit_image(
         start,
         count: 6,
     });
-    pending.push((key, rgba.to_vec(), width, height));
+    pending.push((key, Arc::from(rgba), width, height));
 }
 
 #[cfg(test)]

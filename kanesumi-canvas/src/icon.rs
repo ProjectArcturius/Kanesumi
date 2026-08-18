@@ -3,11 +3,14 @@
 // 输出直通 RGBA（非预乘），供 `Scene::image` 上传纹理。Metro 风格：纯色图标可用 tint 染色。
 
 use std::path::Path;
+use std::sync::Arc;
 
 /// 已光栅化的图标（直通 RGBA 像素）。
+/// `rgba` 用 `Arc<[u8]>` 共享：`Scene::image` 每帧 clone 只 bump 引用计数，
+/// 不深拷贝整张位图（参 egui texture atlas 引用共享思路）。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Icon {
-    pub rgba: Vec<u8>,
+    pub rgba: Arc<[u8]>,
     pub width: u32,
     pub height: u32,
 }
@@ -27,13 +30,15 @@ impl Icon {
         let (w, h) = (self.width as f32, self.height as f32);
         let (cx, cy) = (w / 2.0, h / 2.0);
         let r = (w.min(h) / 2.0).max(1.0);
+        // 构造期唯一持有 → make_mut 就地改（不触发整表拷贝）。
+        let rgba = Arc::make_mut(&mut self.rgba);
         for y in 0..self.height {
             for x in 0..self.width {
                 let dx = x as f32 + 0.5 - cx;
                 let dy = y as f32 + 0.5 - cy;
                 if dx * dx + dy * dy > r * r {
                     let i = ((y * self.width + x) * 4) as usize;
-                    self.rgba[i + 3] = 0;
+                    rgba[i + 3] = 0;
                 }
             }
         }
@@ -64,7 +69,7 @@ pub fn rasterize_png(path: impl AsRef<Path>) -> Option<Icon> {
         rgba.extend_from_slice(&[r, g, b, a]);
     }
     Some(Icon {
-        rgba,
+        rgba: Arc::from(rgba),
         width: w,
         height: h,
     })
@@ -107,7 +112,7 @@ pub fn rasterize_svg(path: impl AsRef<Path>, target_size: u32) -> Option<Icon> {
         rgba.extend_from_slice(&[r, g, b, a]);
     }
     Some(Icon {
-        rgba,
+        rgba: Arc::from(rgba),
         width: px_w,
         height: px_h,
     })

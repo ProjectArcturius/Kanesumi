@@ -318,7 +318,7 @@ impl CpuRenderer {
                         continue;
                     }
                     self.emit_image(
-                        rgba,
+                        rgba.as_ref(),
                         *width,
                         *height,
                         *rect,

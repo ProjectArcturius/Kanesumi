@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use kanesumi_core::color::Color;
 use kanesumi_core::geometry::{CornerRadius, Point, Rect};
 use kanesumi_core::typography::TextStyle;
@@ -55,8 +57,9 @@ pub enum SceneCommand {
     PopClip,
     /// 位图（SVG 光栅化的图标等）。`rgba` 为直通 RGBA（非预乘），`width`/`height` 为像素；
     /// `rect` 为绘制目标（逻辑坐标）；`tint` 为染色（None = 原色，Some = 用指定色替换非透明像素）。
+    /// `rgba` 用 `Arc<[u8]>` 共享 —— clone 零拷贝（每帧 Scene 构建不再深拷贝位图）。
     Image {
-        rgba: Vec<u8>,
+        rgba: Arc<[u8]>,
         width: u32,
         height: u32,
         rect: Rect,
@@ -308,7 +311,7 @@ mod tests {
         use super::super::icon::Icon;
         let mut scene = Scene::default();
         let icon = Icon {
-            rgba: vec![0; 16],
+            rgba: vec![0; 16].into(),
             width: 2,
             height: 2,
         };
