@@ -134,7 +134,12 @@ impl DmabufBuffers {
             return Some(b);
         }
         let params = dmabuf.create_params(qh).ok()?;
-        let modifier = slot.bo.modifier().into();
+        // ⚠ 隐式修饰符（DRM_FORMAT_MOD_INVALID = 0）：与合成器广告集保持一致 —— smithay EGL
+        // 格式表对每个 fourcc 总广告 Modifier::Invalid，而是否广告 LINEAR 依驱动而定。
+        // Mesa 以隐式导入按 fd 实际修饰符（线性 bo → LINEAR）解析，通用且无协议/导入风险。
+        // 若改传 bo.modifier()（LINEAR）可能在未广告 LINEAR 的驱动上导入失败。参 smithay
+        // backend/egl/display.rs get_dmabuf_formats（每 fourcc 附 Modifier::Invalid）。
+        let modifier = 0u64;
         let fd = slot.bo.fd().ok()?;
         params.add(fd.as_fd(), 0, 0, slot.bo.stride(), modifier);
         let (buffer, _params) = params.create_immed(
