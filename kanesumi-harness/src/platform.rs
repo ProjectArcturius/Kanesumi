@@ -707,11 +707,11 @@ impl Shell {
         let dmabuf_state = DmabufState::new(globals, qh);
         let dmabuf_present = dmabuf_state.version().is_some();
         let dmabuf_out = crate::dmabuf::DmabufBuffers::default();
-        // 开 dmabuf 直通：`ETHER_DMABUF=1` + 合成器提供 global + 客户端能开 gbm device。
-        // 默认关（SHM 保底，防 DRM 会话未验证前回归；全面切换时再翻）。参 LINUX_DMABUF_PLAN §4 回退策略。
-        let dmabuf_enabled = std::env::var("ETHER_DMABUF").as_deref() == Ok("1")
-            && dmabuf_present
-            && dmabuf_out.ready();
+        // 开 dmabuf 直通：`ETHER_DMABUF=1` + 合成器提供 global。
+        // ⚠ 不做 gbm ready 预检（那会无条件 gbm::Device::new → 部分 Mesa 驱动段错误，
+        //   见 dmabuf.rs Default 注释）；gbm 设备改在真正 dmabuf 提交时惰性打开。
+        // 默认关（SHM 保底，防回归）；全面切换时再翻。参 LINUX_DMABUF_PLAN §4 回退策略。
+        let dmabuf_enabled = std::env::var("ETHER_DMABUF").as_deref() == Ok("1") && dmabuf_present;
         if dmabuf_enabled {
             log::info!("dmabuf 直通启用（ETHER_DMABUF=1）：合成器 global OK + gbm device 就绪");
         } else {

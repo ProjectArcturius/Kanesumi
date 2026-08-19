@@ -61,20 +61,40 @@ pub struct DmabufBuffers {
 
 impl Default for DmabufBuffers {
     fn default() -> Self {
-        let dev = open_render_node().and_then(|f| Device::new(f).ok());
-        let ready = dev.is_some();
+        // ⚠ 绝不能在此打开 gbm device！Shell::new 对**所有**客户端都会构造 DmabufBuffers，
+        // 而 gbm::Device::new 在部分 Mesa 驱动上（如 Debian 25.0.x libgallium）会直接段错误
+        // （libgallium→libc memcpy 空指针，崩溃栈见 LINUX_DMABUF_PLAN 排障）：这会让每个
+        // harness 客户端启动即崩 → 桌面层永不连接 → 纯黑启动遮罩。改为惰性：仅当真正走
+        // dmabuf 提交路径（ETHER_DMABUF=1 + 合成器提供 global）时才 init_device()。
         DmabufBuffers {
-            dev,
+            dev: None,
             width: 0,
             height: 0,
             slots: [None, None],
             next: 0,
-            ready,
+            ready: false,
         }
     }
 }
 
 impl DmabufBuffers {
+    /// 惰性初始化 gbm device（仅在 dmabuf 提交路径调用；默认 SHM 路径不触发）。
+    /// 返回 device 是否可用。opens the render node + gbm::Device::new（详见 Default 注释
+    /// 的 Mesa 段错误风险——故只在真正需要 dmabuf 时调用一次）。
+    fn init_device(&mut self) -> bool {
+        if self.dev.is_some() {
+            return true;
+        }
+        if let Some(f) = open_render_node() {
+            if let Ok(d) = Device::new(f) {
+                self.dev = Some(d);
+                self.ready = true;
+                return true;
+            }
+        }
+        false
+    }
+
     pub(crate) fn ready(&self) -> bool {
         self.ready
     }
@@ -170,6 +190,10 @@ impl DmabufBuffers {
             .saturating_mul(height as usize)
             .saturating_mul(4);
         if rgba.len() < expected || width == 0 || height == 0 {
+            return;
+        }
+        // 惰性 gbm device：仅在真正走 dmabuf 提交时初始化（默认 SHM 路径不触发）。
+        if !self.init_device() {
             return;
         }
         if self.ensure_slots(qh, width, height).is_none() {
