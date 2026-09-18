@@ -128,6 +128,12 @@ pub fn run(app: &mut dyn App) -> ! {
 
 /// 主逻辑。错误以 String 上报（调用方 exit）。
 fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
+    // dmabuf gbm 探测子进程入口（由 crate::dmabuf::probe_gbm_crash_safe 拉起）：
+    // 只做一次 gbm 打开即退出 —— 段错误/失败 = 该驱动上直通不可用 → 父进程回退 SHM。
+    // ⚠ 必须在任何 Wayland/字体/日志初始化之前：探测子进程不留副作用。
+    if std::env::var_os("ETHER_DMABUF_PROBE").is_some() {
+        std::process::exit(if crate::dmabuf::probe_gbm_raw() { 0 } else { 1 });
+    }
     env_logger::init();
 
     let conn = Connection::connect_to_env()
@@ -367,27 +373,95 @@ pub(crate) struct Shell {
     /// 渲染帧计数（诊断：验证静止唤醒是否重启渲染）。
     frame_count: u64,
 
-    // ── SHM 输出（layer-shell 角色 CPU 光栅化 → wl_shm 提交）─────
-    /// wl_shm 全局（layer-shell 表面用 SHM 提交；合成器未提供 → None，退化直接 present）。
+    // ── 输出缓冲（SHM 回退 + dmabuf 直通；主表面 / 各浮层 / IME 候选窗各一份）─────
+    /// wl_shm 全局（dmabuf 不可用时的回退；合成器未提供 → None）。
     shm: Option<wl_shm::WlShm>,
-    /// 主表面 SHM 缓冲状态。
-    main_shm: ShmBuffers,
-    /// 各浮层表面的 SHM 缓冲状态（与 `floating` 等长）。
-    floating_shm: Vec<ShmBuffers>,
+    /// 主表面输出（layer-shell CPU 角色 / xdg 角色闲置）。
+    main_out: SurfaceOutput,
+    /// 各浮层表面的输出缓冲（与 `floating` 等长）。
+    floating_out: Vec<SurfaceOutput>,
     /// 上次 update 的时刻（合成器时钟：dt 限幅防卡顿后跳变，§4.1 不变量 2）。
     last_update: Instant,
     /// 主表面 Scene 复用缓冲（egui PaintList）：每帧 `render_into` 就地清空重建，
     /// 复用 Vec 容量，避免每帧 `Scene::default()` + push 重分配。
     scene_buf: Scene,
 
-    // ── dmabuf 直通（layer-shell CPU 角色可选输出；未开 → 维持 SHM）─────
+    // ── dmabuf 直通（所有 CPU 光栅化表面默认走直通，SHM 为回退）─────
     /// 客户端 dmabuf 全局（合成器提供 → Some）。参 linux-dmabuf 协议。
     dmabuf: DmabufState,
-    /// 是否启用 dmabuf 直通：`ETHER_DMABUF=1` 且 gbm device 可用且 dmabuf 全局存在。
-    /// 默认关（SHM 保底）；DRM 会话验证通过后于全面切换时翻默认。参 LINUX_DMABUF_PLAN M2。
-    dmabuf_enabled: bool,
-    /// 主表面 dmabuf 输出缓冲（layer-shell CPU 角色；xdg 角色闲置）。
-    dmabuf_out: crate::dmabuf::DmabufBuffers,
+    /// dmabuf 直通是否可用（合成器提供 global + 未 `ETHER_DMABUF=0` + gbm 探测通过）。
+    /// 默认**开**；`ETHER_DMABUF=0` 可强制回退 SHM（保底）。参 LINUX_DMABUF_PLAN §4 M6。
+    dmabuf_allowed: bool,
+    /// 合成器 `zwp_linux_dmabuf_feedback_v1` 快照（主设备 + 格式表）—— 浮层/popup 后建时补灌。
+    dmabuf_feedback: Option<(libc::dev_t, Vec<(u32, u64)>)>,
+    /// feedback 协议对象（保活：drop 即销毁对象，后续 done/格式事件不再到达）。
+    #[allow(dead_code)]
+    dmabuf_feedback_obj: Option<
+        wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1,
+    >,
+}
+
+/// 单个表面的输出缓冲：SHM 双缓冲（回退）+ dmabuf 双缓冲（直通）+ 模式决策。
+/// 主表面 / 各浮层 / IME 候选窗各一份 —— 直通覆盖**所有 CPU 光栅化表面**（2026-09-18）。
+/// 提交优先 dmabuf；不可用/失败则回退 SHM，**绝不丢帧**。
+struct SurfaceOutput {
+    shm: ShmBuffers,
+    dmabuf: crate::dmabuf::DmabufBuffers,
+    /// 是否允许尝试 dmabuf（进程级门控：合成器 global + `ETHER_DMABUF!=0` + gbm 探测）。
+    allow: bool,
+}
+
+impl SurfaceOutput {
+    fn new(allow: bool) -> Self {
+        Self {
+            shm: ShmBuffers::default(),
+            dmabuf: crate::dmabuf::DmabufBuffers::default(),
+            allow,
+        }
+    }
+
+    /// 灌合成器 feedback（主设备 + 格式表）；后建的表面用 `set_feedback` 补上。
+    fn set_feedback(&mut self, main_device: libc::dev_t, formats: &[(u32, u64)]) {
+        self.dmabuf.set_feedback(main_device, formats.to_vec());
+    }
+
+    /// 提交一帧：dmabuf 优先，失败回退 SHM。
+    #[allow(clippy::too_many_arguments)]
+    fn commit(
+        &mut self,
+        qh: &QueueHandle<Shell>,
+        shm: Option<&wl_shm::WlShm>,
+        dmabuf_state: &DmabufState,
+        surface: &wl_surface::WlSurface,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+        scale: f32,
+        damage: Option<kanesumi_core::Rect>,
+    ) {
+        use crate::dmabuf::CommitOutcome;
+        if self.allow {
+            match self
+                .dmabuf
+                .commit(qh, surface, dmabuf_state, width, height, rgba, scale, damage)
+            {
+                CommitOutcome::Committed | CommitOutcome::Skipped => return,
+                CommitOutcome::Unavailable => {
+                    // 单表面失败 → 该表面永久回退 SHM（其它表面不受影响）。
+                    self.allow = false;
+                    log::warn!("dmabuf 直通在该表面不可用 → 回退 SHM（不丢帧）");
+                }
+            }
+        }
+        if let Some(shm) = shm {
+            commit_shm_buffers(shm, qh, surface, &mut self.shm, width, height, rgba, scale, damage);
+        }
+    }
+
+    /// `wl_buffer.release` → 标记对应槽位可复用（SHM 与 dmabuf 槽都要认）。
+    fn mark_released(&mut self, buffer: &wl_buffer::WlBuffer) -> bool {
+        self.shm.mark_released(buffer) || self.dmabuf.mark_released(buffer)
+    }
 }
 
 /// 单个 layer-shell 表面的 SHM 缓冲（双缓冲；尺寸变化时重建 pool/buffer）。
@@ -475,9 +549,10 @@ struct ImPopupSurface {
     /// popup surface 对象（角色标记，保持存活）。
     #[allow(dead_code)]
     popup: wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_popup_surface_v2::ZwpInputPopupSurfaceV2,
-    /// CPU 光栅化器（popup surface 走 SHM 提交；resize 复用，不重建）。
+    /// CPU 光栅化器（popup surface 走 SHM/dmabuf 提交；resize 复用，不重建）。
     cpu: Option<CpuRenderer>,
-    shm: ShmBuffers,
+    /// 输出缓冲（dmabuf 直通优先，SHM 回退）。
+    out: SurfaceOutput,
     width: f32,
     height: f32,
 }
@@ -699,27 +774,40 @@ impl Shell {
                 log::warn!("wl_shm 不可用，SHM 提交降级为直接 present：{e}");
             })
             .ok();
-        let main_shm = ShmBuffers::default();
-
         // 客户端 dmabuf 全局（linux-dmabuf-feedback 主设备协商见 M5）。
         // ⚠ DMABUF 属性：非 XRGB8888（无 alpha）→ Alpha 通道读 0 → 整个 buffer 透明；
-        //   bo 用 ARGB8888（has_alpha），合成器按 alpha 合成。
+        //   bo 用带 alpha 的 fourcc（ARGB8888/ABGR8888），合成器按 alpha 合成。
         let dmabuf_state = DmabufState::new(globals, qh);
         let dmabuf_present = dmabuf_state.version().is_some();
-        let dmabuf_out = crate::dmabuf::DmabufBuffers::default();
-        // 开 dmabuf 直通：`ETHER_DMABUF=1` + 合成器提供 global。
-        // ⚠ 不做 gbm ready 预检（那会无条件 gbm::Device::new → 部分 Mesa 驱动段错误，
-        //   见 dmabuf.rs Default 注释）；gbm 设备改在真正 dmabuf 提交时惰性打开。
-        // 默认关（SHM 保底，防回归）；全面切换时再翻。参 LINUX_DMABUF_PLAN §4 回退策略。
-        let dmabuf_enabled = std::env::var("ETHER_DMABUF").as_deref() == Ok("1") && dmabuf_present;
-        if dmabuf_enabled {
-            log::info!("dmabuf 直通启用（ETHER_DMABUF=1）：合成器 global OK + gbm device 就绪");
+        // dmabuf 直通**默认开**（2026-09-18 M6）：合成器提供 global 且未显式 `ETHER_DMABUF=0`，
+        // 且 **崩溃安全探测** 通过（gbm 打开在部分 Mesa 上段错误 —— Debian 2026-08-19 黑屏根因，
+        // 段错误无法进程内捕获 → 子进程探测，见 crate::dmabuf::probe_gbm_crash_safe）。
+        // ⚠ 探测与 gbm device 都不在此处无条件执行：探测在子进程里、device 仍惰性。
+        let dmabuf_opt_out = std::env::var("ETHER_DMABUF").as_deref() == Ok("0");
+        let dmabuf_allowed =
+            dmabuf_present && !dmabuf_opt_out && crate::dmabuf::probe_gbm_crash_safe();
+        // 主动请求 per-surface dmabuf feedback（v4+）：拿主设备 dev_t + 格式表。
+        // ⚠ 必须显式请求 —— 合成器只对 protocol version < 4 发 legacy format/modifier 事件，
+        //   v5 global 下不请求 feedback 则一个格式事件都收不到（无法做设备/格式校验）。
+        let dmabuf_feedback_obj = if dmabuf_present && dmabuf_state.version().unwrap_or(0) >= 4 {
+            match dmabuf_state.get_surface_feedback(&surface, qh) {
+                Ok(fb) => Some(fb),
+                Err(e) => {
+                    log::warn!("dmabuf feedback 请求失败（设备/格式校验降级为默认）：{e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        if dmabuf_allowed {
+            log::info!("dmabuf 直通启用（默认；ETHER_DMABUF=0 可回退 SHM）—— 覆盖主表面/浮层/候选窗");
         } else {
             log::info!(
-                "SHM 提交路径：ETHER_DMABUF={:?} global={} gbm_ready={}",
-                std::env::var("ETHER_DMABUF").unwrap_or_default(),
+                "SHM 提交路径：global={} opt_out={} probe_ok={}",
                 dmabuf_present,
-                dmabuf_out.ready()
+                dmabuf_opt_out,
+                dmabuf_allowed
             );
         }
 
@@ -741,9 +829,10 @@ impl Shell {
                 .collect::<Result<Vec<_>, String>>()?,
             None => Vec::new(),
         };
-        let floating_shm = std::iter::repeat_with(ShmBuffers::default)
+        let floating_out = std::iter::repeat_with(|| SurfaceOutput::new(dmabuf_allowed))
             .take(floating.len())
             .collect();
+        let main_out = SurfaceOutput::new(dmabuf_allowed);
 
         // 全局应用菜单：App 声明了菜单树 → 安装（D-Bus 服务 + Wayland 绑定 + Registrar）。
         // 服务线程在后台跑，命令经通道回主线程每帧排干（App::on_menu_command）。
@@ -822,13 +911,14 @@ impl Shell {
             diag_logged: false,
             frame_count: 0,
             shm,
-            main_shm,
-            floating_shm,
+            main_out,
+            floating_out,
             last_update: Instant::now(),
             scene_buf: Scene::default(),
             dmabuf: dmabuf_state,
-            dmabuf_enabled,
-            dmabuf_out,
+            dmabuf_allowed,
+            dmabuf_feedback: None,
+            dmabuf_feedback_obj,
         })
     }
 
@@ -934,19 +1024,19 @@ impl Shell {
         if let Some(cpu) = f.cpu.as_mut() {
             let (pw, ph) = cpu.physical_size();
             let rgba = cpu.render(&self.engine, &scene, None);
-            if let Some(shm) = self.shm.clone() {
-                commit_shm_buffers(
-                    &shm,
-                    qh,
-                    &f.surface,
-                    &mut self.floating_shm[idx],
-                    pw,
-                    ph,
-                    rgba,
-                    f.scale,
-                    None,
-                );
-            }
+            // 浮层同样走 dmabuf 直通（默认）—— 控制面板 / Launcher / 菜单等浮层一并受益。
+            let scale = f.scale;
+            self.floating_out[idx].commit(
+                qh,
+                self.shm.as_ref(),
+                &self.dmabuf,
+                &s,
+                pw,
+                ph,
+                rgba,
+                scale,
+                None,
+            );
         }
     }
 
@@ -1232,24 +1322,18 @@ impl Shell {
         if let Some(cpu) = self.cpu.as_mut() {
             let (pw, ph) = cpu.physical_size();
             let rgba = cpu.render(&self.engine, &self.scene_buf, damage);
-            if self.dmabuf_enabled {
-                // dmabuf 直通：CpuRenderer → gbm bo mmap → fd → 合成器 EGLImage（零上传）。
-                // 参 LINUX_DMABUF_PLAN §1。依赖合成器 dmabuf global + 客户端 gbm device。
-                self.dmabuf_out
-                    .commit(qh, &self.surface, &self.dmabuf, pw, ph, rgba, self.scale, damage);
-            } else if let Some(shm) = self.shm.clone() {
-                commit_shm_buffers(
-                    &shm,
-                    qh,
-                    &self.surface,
-                    &mut self.main_shm,
-                    pw,
-                    ph,
-                    rgba,
-                    self.scale,
-                    damage,
-                );
-            }
+            // dmabuf 直通优先（零 CPU 上传），不可用自动回退 SHM。参 LINUX_DMABUF_PLAN §1。
+            self.main_out.commit(
+                qh,
+                self.shm.as_ref(),
+                &self.dmabuf,
+                &self.surface.clone(),
+                pw,
+                ph,
+                rgba,
+                self.scale,
+                damage,
+            );
         } else if let Some(r) = self.renderer.as_mut() {
             r.render(&self.engine, &self.scene_buf);
         }
@@ -2240,9 +2324,29 @@ impl DmabufHandler for Shell {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _proxy: &wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1,
-        _feedback: smithay_client_toolkit::dmabuf::DmabufFeedback,
+        feedback: smithay_client_toolkit::dmabuf::DmabufFeedback,
     ) {
-        // M5：按主设备协商 / 格式表校验（异构 GPU 安全）。当前单 GPU 直用 bo.modifier()。
+        // M5：合成器主设备 + 格式表协商（多 GPU 安全 + 免 R/B 交换的快路径）。
+        // 客户端据此 ① 优先打开与主设备同 dev_t 的 DRM 节点；② 只在广告表内选 fourcc，
+        // 未广告 → 回退 SHM（避免合成器导入失败导致表面不可见）。
+        let dev = feedback.main_device();
+        let formats: Vec<(u32, u64)> = feedback
+            .format_table()
+            .iter()
+            .map(|f| (f.format, f.modifier))
+            .collect();
+        log::info!(
+            "dmabuf feedback：main_device=0x{dev:x} 格式表 {} 项",
+            formats.len()
+        );
+        self.dmabuf_feedback = Some((dev, formats.clone()));
+        self.main_out.set_feedback(dev, &formats);
+        for out in self.floating_out.iter_mut() {
+            out.set_feedback(dev, &formats);
+        }
+        if let Some(popup) = self.im_popup.as_mut() {
+            popup.out.set_feedback(dev, &formats);
+        }
     }
 
     fn created(
@@ -2261,9 +2365,17 @@ impl DmabufHandler for Shell {
         _qh: &QueueHandle<Self>,
         _params: &wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1,
     ) {
-        // create_immed 失败：合成器不接受该 fd/格式 → 本槽作废，等下一次尺寸/重建再试。
-        // 不在此降级（保持简单）；严重不兼容时用户可 ETHER_DMABUF=0 回 SHM。
-        log::warn!("dmabuf create_immed 失败（合成器可能未接受该格式/修饰符）");
+        // 合成器拒绝了该缓冲（格式/修饰符/设备不匹配）→ 本进程 dmabuf 判定不可用，
+        // **所有表面立即回退 SHM**（无法归属到具体 params，取保守全局降级），不丢帧。
+        log::warn!("dmabuf 被合成器拒绝 → 全表面回退 SHM（ETHER_DMABUF=0 可显式回退）");
+        self.dmabuf_allowed = false;
+        self.main_out.dmabuf.mark_unavailable();
+        for out in self.floating_out.iter_mut() {
+            out.dmabuf.mark_unavailable();
+        }
+        if let Some(popup) = self.im_popup.as_mut() {
+            popup.out.dmabuf.mark_unavailable();
+        }
     }
 
     fn released(
@@ -2272,7 +2384,17 @@ impl DmabufHandler for Shell {
         _qh: &QueueHandle<Self>,
         buffer: &wl_buffer::WlBuffer,
     ) {
-        self.dmabuf_out.mark_released(buffer);
+        if self.main_out.mark_released(buffer) {
+            return;
+        }
+        for out in self.floating_out.iter_mut() {
+            if out.mark_released(buffer) {
+                return;
+            }
+        }
+        if let Some(popup) = self.im_popup.as_mut() {
+            popup.out.mark_released(buffer);
+        }
     }
 }
 
@@ -2718,11 +2840,15 @@ impl Shell {
             surface.set_buffer_scale(self.scale.round().max(1.0) as i32);
             let popup = im.get_input_popup_surface(&surface, qh, ());
             log::info!("IME 候选窗 popup 创建：{pw:.0}×{ph:.0} scale={}", self.scale);
+            let mut out = SurfaceOutput::new(self.dmabuf_allowed);
+            if let Some((dev, formats)) = self.dmabuf_feedback.clone() {
+                out.set_feedback(dev, &formats);
+            }
             self.im_popup = Some(ImPopupSurface {
                 surface: surface.clone(),
                 popup,
                 cpu: None,
-                shm: ShmBuffers::default(),
+                out,
                 width: pw,
                 height: ph,
             });
@@ -2760,19 +2886,19 @@ impl Shell {
         if let Some(cpu) = im_popup.cpu.as_mut() {
             let (srw, srh) = cpu.physical_size();
             let rgba = cpu.render(&self.engine, &scene, None);
-            if let Some(shm) = self.shm.clone() {
-                commit_shm_buffers(
-                    &shm,
-                    qh,
-                    &im_popup.surface,
-                    &mut im_popup.shm,
-                    srw,
-                    srh,
-                    rgba,
-                    self.scale,
-                    None,
-                );
-            }
+            // 候选窗同样走 dmabuf 直通（打字时每键一提交 → 收益最直接的表面）。
+            let surface = im_popup.surface.clone();
+            im_popup.out.commit(
+                qh,
+                self.shm.as_ref(),
+                &self.dmabuf,
+                &surface,
+                srw,
+                srh,
+                rgba,
+                self.scale,
+                None,
+            );
         }
     }
 }
@@ -3010,17 +3136,18 @@ impl Dispatch<wl_buffer::WlBuffer, ()> for Shell {
     ) {
         // release：合成器用完了该缓冲 → 标记可复用（避免重复 attach 同缓冲触发 EBUSY）。
         if let wl_buffer::Event::Release = event {
-            if state.main_shm.mark_released(proxy) {
+            // 主表面 / 各浮层 / IME 候选窗 —— 每份输出缓冲（SHM 或 dmabuf 槽）都要认领，
+            // 否则双缓冲耗尽后该表面冻结（dmabuf 槽同样靠 release 复位 in_flight）。
+            if state.main_out.mark_released(proxy) {
                 return;
             }
-            for slot in &mut state.floating_shm {
+            for slot in &mut state.floating_out {
                 if slot.mark_released(proxy) {
                     return;
                 }
             }
-            // IME 候选窗 popup 的 SHM 缓冲也须处理 release，否则双缓冲耗尽后候选窗冻结。
             if let Some(popup) = state.im_popup.as_mut()
-                && popup.shm.mark_released(proxy)
+                && popup.out.mark_released(proxy)
             {
                 return;
             }

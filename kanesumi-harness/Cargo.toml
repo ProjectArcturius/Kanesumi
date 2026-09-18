@@ -42,3 +42,6 @@ memmap2 = "0.9"
 # 客户端 dmabuf 直通：gbm bo mmap CPU 写 + 导出 fd → zwp_linux_dmabuf_v1 → 合成器 EGLImage。
 # 消除 CpuRenderer → SHM → 合成器上传 的 CPU 搬运往返。参 Ether-main docs/LINUX_DMABUF_PLAN.md。
 gbm = "0.18"
+# dev_t（按合成器 feedback 主设备选 DRM 节点）+ RLIMIT_CORE=0（gbm 崩溃安全探测
+# 子进程不得往 /var/crash 灌 core —— Debian 2026-08-19 黑屏根因即 gbm 打开段错误）。
+libc = "0.2"
