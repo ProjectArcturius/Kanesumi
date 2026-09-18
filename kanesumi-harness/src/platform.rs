@@ -2479,13 +2479,26 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                 state: kstate,
                 ..
             } => {
-                // 合成器转发的硬件按键 → 引擎。仅按下（state==Pressed）且引擎激活时处理。
+                // 合成器转发的硬件按键 → 引擎。仅按下（state==Pressed）时处理。
                 use wayland_client::WEnum;
                 let is_pressed = matches!(
                     kstate,
                     WEnum::Value(wayland_client::protocol::wl_keyboard::KeyState::Pressed)
                 );
-                if !is_pressed || !state.im_active {
+                if !is_pressed {
+                    return;
+                }
+                // ⚠ 引擎不可用（文本字段未聚焦 / keymap 未建立）时**绝不吞键**：直接经虚拟
+                // 键盘重放给焦点客户端。旧实现在此 `return`，而合成器在 grab 有效期内**始终**
+                // 把按键转发给 IME（smithay `active_text_input_serial_or_default` 恒回调）→
+                // IME 一失活整个键盘静默失效（2026-09-18 Ceyboard 故障复盘发现）。
+                // 安全性：本事件只可能来自 grab（客户端此时收不到原始按键），故重放不会重复投递。
+                if !state.im_active || state.im_xkb.is_none() {
+                    if let Some(vk) = state.virtual_keyboard.clone() {
+                        vk.key(state.im_key_time, key, 1); // 按下
+                        vk.key(state.im_key_time, key, 0); // 释放（透传完整按键）
+                    }
+                    state.im_key_time += 1;
                     return;
                 }
                 let Some(xkb) = state.im_xkb.as_ref() else {
