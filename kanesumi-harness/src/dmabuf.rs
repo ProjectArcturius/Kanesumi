@@ -475,11 +475,34 @@ pub fn probe_gbm_crash_safe() -> bool {
         return ok;
     }
     let ok = match std::env::current_exe() {
-        Ok(exe) => std::process::Command::new(exe)
+        Ok(exe) => match std::process::Command::new(exe)
             .env("ETHER_DMABUF_PROBE", "1")
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false),
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(mut child) => {
+                // 最多等 2s：gbm 打开是本地操作（正常 < 100ms）；超时按不可用处理并杀掉，
+                // 绝不让探测卡住客户端启动（黑屏事故教训：客户端不可用 = 整个桌面不可用）。
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(status)) => break status.success(),
+                        Ok(None) if std::time::Instant::now() < deadline => {
+                            std::thread::sleep(std::time::Duration::from_millis(20));
+                        }
+                        _ => {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            log::warn!("dmabuf gbm 探测超时（2s）→ 按不可用处理");
+                            break false;
+                        }
+                    }
+                }
+            }
+            Err(_) => false,
+        },
         Err(_) => false,
     };
     let note = if ok { "ok" } else { "fail" };
