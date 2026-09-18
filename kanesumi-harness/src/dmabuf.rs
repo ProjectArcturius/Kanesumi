@@ -471,9 +471,32 @@ impl DmabufBuffers {
 
 // ── gbm 崩溃安全探测（dmabuf 默认开启的前置门）───────────────────────────────
 
-/// 子进程入口用：真开一次 gbm device（**会段错误的驱动上直接死掉**，这正是要检测的）。
-/// 先关 core dump —— 探测失败很可能以 SIGSEGV 结束，绝不能往 /var/crash 灌 core。
-pub fn probe_gbm_raw() -> bool {
+/// 探测阶段（子进程退出码 = 阶段号，便于零交互定位失败原因）。
+pub const PROBE_OK: u8 = 0;
+pub const PROBE_NO_NODE: u8 = 1;
+pub const PROBE_DEVICE: u8 = 2;
+pub const PROBE_BO: u8 = 3;
+pub const PROBE_MAP: u8 = 4;
+pub const PROBE_FD: u8 = 5;
+
+/// 阶段名（日志用）。
+pub fn probe_stage_name(code: u8) -> &'static str {
+    match code {
+        PROBE_OK => "可用",
+        PROBE_NO_NODE => "无可用 DRM 节点",
+        PROBE_DEVICE => "gbm device 打开失败/崩溃",
+        PROBE_BO => "LINEAR bo 分配失败",
+        PROBE_MAP => "bo mmap 写失败",
+        PROBE_FD => "bo 导出 dmabuf fd 失败",
+        _ => "探测子进程被信号杀死（疑似段错误）",
+    }
+}
+
+/// 子进程入口用：**完整链路烟测** —— 真开 gbm device（会段错误的驱动上直接死掉，这正是
+/// 要检测的）→ 分配 LINEAR ARGB8888 bo → mmap 写入 → 导出 dmabuf fd，与真实提交路径同款。
+/// 返回阶段码（0 = 可用）。先关 core dump —— 探测失败很可能以 SIGSEGV 结束，绝不能往
+/// /var/crash 灌 core。
+pub fn probe_gbm_raw() -> u8 {
     unsafe {
         let lim = libc::rlimit {
             rlim_cur: 0,
@@ -481,10 +504,33 @@ pub fn probe_gbm_raw() -> bool {
         };
         libc::setrlimit(libc::RLIMIT_CORE, &lim);
     }
-    match open_node_for(None) {
-        Some((f, _)) => Device::new(f).is_ok(),
-        None => false,
+    let Some((f, _)) = open_node_for(None) else {
+        return PROBE_NO_NODE;
+    };
+    let Ok(dev) = Device::new(f) else {
+        return PROBE_DEVICE;
+    };
+    // 与真实输出同款：LINEAR（CPU 可 mmap）+ 带 alpha fourcc。
+    let Ok(mut bo) = dev.create_buffer_object::<()>(
+        64,
+        64,
+        Format::Argb8888,
+        BufferObjectFlags::LINEAR,
+    ) else {
+        return PROBE_BO;
+    };
+    let mapped = bo.map_mut(0, 0, 64, 64, |mem| {
+        if let Some(b) = mem.buffer_mut().first_mut() {
+            *b = 0;
+        }
+    });
+    if mapped.is_err() {
+        return PROBE_MAP;
     }
+    if bo.fd().is_err() {
+        return PROBE_FD;
+    }
+    PROBE_OK
 }
 
 /// 探测结果缓存路径（会话级 tmpfs：每次登录重新探测，跨会话不残留陈旧结论）。
@@ -500,10 +546,15 @@ pub fn probe_gbm_crash_safe() -> bool {
     if let Some(p) = cache.as_ref()
         && let Ok(s) = std::fs::read_to_string(p)
     {
-        let ok = s.trim() == "ok";
-        log::info!("dmabuf gbm 探测（缓存）：{}", if ok { "可用" } else { "不可用" });
+        let s = s.trim().to_string();
+        let ok = s == "ok";
+        log::info!(
+            "dmabuf gbm 探测（缓存）：{}",
+            if ok { "可用".to_string() } else { format!("不可用（{s}）") }
+        );
         return ok;
     }
+    let mut stage = PROBE_DEVICE;
     let ok = match std::env::current_exe() {
         Ok(exe) => match std::process::Command::new(exe)
             .env("ETHER_DMABUF_PROBE", "1")
@@ -513,12 +564,15 @@ pub fn probe_gbm_crash_safe() -> bool {
             .spawn()
         {
             Ok(mut child) => {
-                // 最多等 2s：gbm 打开是本地操作（正常 < 100ms）；超时按不可用处理并杀掉，
+                // 最多等 2s：完整烟测正常 < 200ms；超时按不可用处理并杀掉，
                 // 绝不让探测卡住客户端启动（黑屏事故教训：客户端不可用 = 整个桌面不可用）。
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
                 loop {
                     match child.try_wait() {
-                        Ok(Some(status)) => break status.success(),
+                        Ok(Some(status)) => {
+                            stage = status.code().unwrap_or(255) as u8;
+                            break stage == PROBE_OK;
+                        }
                         Ok(None) if std::time::Instant::now() < deadline => {
                             std::thread::sleep(std::time::Duration::from_millis(20));
                         }
@@ -526,6 +580,7 @@ pub fn probe_gbm_crash_safe() -> bool {
                             let _ = child.kill();
                             let _ = child.wait();
                             log::warn!("dmabuf gbm 探测超时（2s）→ 按不可用处理");
+                            stage = 254;
                             break false;
                         }
                     }
@@ -535,14 +590,21 @@ pub fn probe_gbm_crash_safe() -> bool {
         },
         Err(_) => false,
     };
-    let note = if ok { "ok" } else { "fail" };
+    let note = if ok {
+        "ok".to_string()
+    } else {
+        format!("fail:{stage}:{}", probe_stage_name(stage))
+    };
     if let Some(p) = cache.as_ref() {
-        let _ = std::fs::write(p, note);
+        let _ = std::fs::write(p, &note);
     }
     if ok {
-        log::info!("dmabuf gbm 探测：可用（子进程）");
+        log::info!("dmabuf gbm 探测：可用（完整链路烟测通过）");
     } else {
-        log::warn!("dmabuf gbm 探测：不可用（子进程失败/崩溃）→ 全部表面走 SHM");
+        log::warn!(
+            "dmabuf gbm 探测：不可用（{}，阶段码 {stage}）→ 全部表面走 SHM",
+            probe_stage_name(stage)
+        );
     }
     ok
 }

@@ -132,7 +132,8 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
     // 只做一次 gbm 打开即退出 —— 段错误/失败 = 该驱动上直通不可用 → 父进程回退 SHM。
     // ⚠ 必须在任何 Wayland/字体/日志初始化之前：探测子进程不留副作用。
     if std::env::var_os("ETHER_DMABUF_PROBE").is_some() {
-        std::process::exit(if crate::dmabuf::probe_gbm_raw() { 0 } else { 1 });
+        // 退出码 = 探测阶段（0 = 可用；非 0 = 失败阶段，父进程据此给出可读原因）。
+        std::process::exit(crate::dmabuf::probe_gbm_raw() as i32);
     }
     env_logger::init();
 
