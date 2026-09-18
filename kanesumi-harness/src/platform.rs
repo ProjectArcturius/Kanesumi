@@ -394,6 +394,8 @@ pub(crate) struct Shell {
     dmabuf_allowed: bool,
     /// 合成器 `zwp_linux_dmabuf_feedback_v1` 快照（主设备 + 格式表）—— 浮层/popup 后建时补灌。
     dmabuf_feedback: Option<(libc::dev_t, Vec<(u32, u64)>)>,
+    /// 进程级共享 gbm device 句柄（所有表面 clone 同一个 → 只开一次 DRM fd/Mesa screen）。
+    dmabuf_device: crate::dmabuf::DmabufDevice,
     /// feedback 协议对象（保活：drop 即销毁对象，后续 done/格式事件不再到达）。
     #[allow(dead_code)]
     dmabuf_feedback_obj: Option<
@@ -412,10 +414,13 @@ struct SurfaceOutput {
 }
 
 impl SurfaceOutput {
-    fn new(allow: bool) -> Self {
+    /// `device` 为**进程共享**句柄（所有表面共用一个 gbm device，避免每表面一次 Mesa screen）。
+    fn new(allow: bool, device: crate::dmabuf::DmabufDevice) -> Self {
+        let mut dmabuf = crate::dmabuf::DmabufBuffers::default();
+        dmabuf.set_device(device);
         Self {
             shm: ShmBuffers::default(),
-            dmabuf: crate::dmabuf::DmabufBuffers::default(),
+            dmabuf,
             allow,
         }
     }
@@ -829,10 +834,14 @@ impl Shell {
                 .collect::<Result<Vec<_>, String>>()?,
             None => Vec::new(),
         };
-        let floating_out = std::iter::repeat_with(|| SurfaceOutput::new(dmabuf_allowed))
-            .take(floating.len())
-            .collect();
-        let main_out = SurfaceOutput::new(dmabuf_allowed);
+        // 进程共享 gbm device 句柄（惰性：首次 dmabuf 提交才真正打开）。
+        let dmabuf_device = crate::dmabuf::DmabufDevice::default();
+        let floating_out = std::iter::repeat_with(|| {
+            SurfaceOutput::new(dmabuf_allowed, dmabuf_device.clone())
+        })
+        .take(floating.len())
+        .collect();
+        let main_out = SurfaceOutput::new(dmabuf_allowed, dmabuf_device.clone());
 
         // 全局应用菜单：App 声明了菜单树 → 安装（D-Bus 服务 + Wayland 绑定 + Registrar）。
         // 服务线程在后台跑，命令经通道回主线程每帧排干（App::on_menu_command）。
@@ -919,6 +928,7 @@ impl Shell {
             dmabuf_allowed,
             dmabuf_feedback: None,
             dmabuf_feedback_obj,
+            dmabuf_device,
         })
     }
 
@@ -2840,7 +2850,7 @@ impl Shell {
             surface.set_buffer_scale(self.scale.round().max(1.0) as i32);
             let popup = im.get_input_popup_surface(&surface, qh, ());
             log::info!("IME 候选窗 popup 创建：{pw:.0}×{ph:.0} scale={}", self.scale);
-            let mut out = SurfaceOutput::new(self.dmabuf_allowed);
+            let mut out = SurfaceOutput::new(self.dmabuf_allowed, self.dmabuf_device.clone());
             if let Some((dev, formats)) = self.dmabuf_feedback.clone() {
                 out.set_feedback(dev, &formats);
             }

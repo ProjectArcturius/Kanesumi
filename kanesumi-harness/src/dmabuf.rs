@@ -13,8 +13,10 @@
 // （见 `probe_gbm_crash_safe`），且按合成器 `zwp_linux_dmabuf_feedback_v1` 的主设备/格式表
 // 校验（多 GPU 安全 + 免 R/B 交换的快路径）。
 
+use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::os::fd::AsFd;
+use std::rc::Rc;
 
 use gbm::{BufferObject, BufferObjectFlags, Device, Format};
 use kanesumi_core::Rect;
@@ -84,6 +86,54 @@ fn open_node_for(main_device: Option<libc::dev_t>) -> Option<(File, String)> {
     None
 }
 
+/// 进程级**共享** gbm device 句柄：同一客户端的所有表面（主表面 / 浮层 / 候选窗）共用
+/// 一个 DRM fd 与一份 Mesa screen。
+/// 为什么必须共享：直通铺到多表面后，若每表面各建一个 device，一个 ether-settings 进程会
+/// 开 5+ 个 gbm device（各自一次 Mesa screen 创建——**正是 2026-08-19 Debian 段错误所在
+/// 调用`driCreateNewScreen3`**），既拖慢启动又浪费 fd/driver 资源。
+/// 惰性：仅在真正走 dmabuf 提交时创建（`Default` 绝不碰 gbm）。
+#[derive(Clone, Default)]
+pub struct DmabufDevice {
+    dev: Rc<RefCell<Option<Rc<Device<File>>>>>,
+    /// 打开失败过 → 不再重试（避免每个表面重复尝试）。
+    failed: Rc<Cell<bool>>,
+}
+
+impl DmabufDevice {
+    /// 取共享 device（首次调用时惰性创建）；失败返回 None（调用方回退 SHM）。
+    fn get(&self, main_device: Option<libc::dev_t>) -> Option<Rc<Device<File>>> {
+        if let Some(d) = self.dev.borrow().as_ref() {
+            return Some(d.clone());
+        }
+        if self.failed.get() {
+            return None;
+        }
+        match open_node_for(main_device) {
+            Some((f, path)) => match Device::new(f) {
+                Ok(d) => {
+                    log::info!(
+                        "dmabuf gbm device 就绪（进程共享）：{path}（main_device={:?}）",
+                        main_device.map(|v| format!("0x{v:x}"))
+                    );
+                    let d = Rc::new(d);
+                    *self.dev.borrow_mut() = Some(d.clone());
+                    Some(d)
+                }
+                Err(e) => {
+                    log::warn!("dmabuf gbm device 打开失败（{path}）：{e}");
+                    self.failed.set(true);
+                    None
+                }
+            },
+            None => {
+                log::warn!("dmabuf 不可用：没有可打开的 DRM 节点");
+                self.failed.set(true);
+                None
+            }
+        }
+    }
+}
+
 /// 单个 dmabuf 槽：gbm bo（CPU mmap 写）+ 由它 create_immed 得到的 wl_buffer。
 struct Slot {
     bo: BufferObject<()>,
@@ -95,7 +145,8 @@ struct Slot {
 
 /// 客户端 dmabuf 双缓冲池（CPU 光栅化角色用：主表面 / 浮层 / IME 候选窗各一份）。
 pub struct DmabufBuffers {
-    dev: Option<Device<File>>,
+    /// 进程级共享 gbm device（多表面共用一个 fd/screen）。
+    device: DmabufDevice,
     width: u32,
     height: u32,
     slots: [Option<Slot>; 2],
@@ -108,10 +159,9 @@ pub struct DmabufBuffers {
     unavailable: bool,
     /// 已选定的输出格式（首次提交时依广告表决议）。
     chosen: Option<FormatChoice>,
-    /// 诊断：是否已记录「选定节点的路径」。
-    logged_node: bool,
 }
 
+#[allow(clippy::derivable_impls)] // 手写 Default 是为保留「绝不在 Default 里开 gbm」的说明
 impl Default for DmabufBuffers {
     fn default() -> Self {
         // ⚠ 绝不能在此打开 gbm device！Shell::new 对**所有**客户端都会构造 DmabufBuffers，
@@ -120,7 +170,7 @@ impl Default for DmabufBuffers {
         // harness 客户端启动即崩 → 桌面层永不连接 → 纯黑启动遮罩。改为惰性：仅当真正走
         // dmabuf 提交路径时才 init_device()。
         DmabufBuffers {
-            dev: None,
+            device: DmabufDevice::default(),
             width: 0,
             height: 0,
             slots: [None, None],
@@ -129,12 +179,16 @@ impl Default for DmabufBuffers {
             formats: Vec::new(),
             unavailable: false,
             chosen: None,
-            logged_node: false,
         }
     }
 }
 
 impl DmabufBuffers {
+    /// 灌入进程共享 device 句柄（同进程所有表面共用一份 gbm device）。
+    pub(crate) fn set_device(&mut self, device: DmabufDevice) {
+        self.device = device;
+    }
+
     /// 合成器 `zwp_linux_dmabuf_feedback_v1` → 主设备 + 格式表（多 GPU 选设备 + 格式校验）。
     pub(crate) fn set_feedback(&mut self, main_device: libc::dev_t, formats: Vec<(u32, u64)>) {
         self.main_device = Some(main_device);
@@ -146,39 +200,10 @@ impl DmabufBuffers {
         self.unavailable = true;
     }
 
+    /// 仅供单测断言用（生产路径只看 `commit` 的返回结果）。
+    #[cfg(test)]
     pub(crate) fn is_unavailable(&self) -> bool {
         self.unavailable
-    }
-
-    /// 惰性初始化 gbm device（仅在 dmabuf 提交路径调用；SHM 路径不触发）。
-    /// 设备选择优先合成器 feedback 的主设备（多 GPU 安全），其次 renderD*，最后 card*。
-    fn init_device(&mut self) -> bool {
-        if self.dev.is_some() {
-            return true;
-        }
-        match open_node_for(self.main_device) {
-            Some((f, path)) => match Device::new(f) {
-                Ok(d) => {
-                    if !self.logged_node {
-                        self.logged_node = true;
-                        log::info!(
-                            "dmabuf gbm device 就绪：{path}（main_device={:?}）",
-                            self.main_device.map(|d| format!("0x{d:x}"))
-                        );
-                    }
-                    self.dev = Some(d);
-                    true
-                }
-                Err(e) => {
-                    log::warn!("dmabuf gbm device 打开失败（{path}）：{e}");
-                    false
-                }
-            },
-            None => {
-                log::warn!("dmabuf 不可用：没有可打开的 DRM 节点");
-                false
-            }
-        }
     }
 
     /// `wl_buffer.release` → 标记对应槽位可复用。命中返回 true。
@@ -243,8 +268,13 @@ impl DmabufBuffers {
     }
 
     /// 尺寸变化或未建 → 重建双槽（新建 bo + create_immed 得 wl_buffer）。
-    fn ensure_slots(&mut self, width: u32, height: u32, fourcc: Format) -> Option<()> {
-        let dev = self.dev.as_ref()?;
+    fn ensure_slots(
+        &mut self,
+        dev: &Device<File>,
+        width: u32,
+        height: u32,
+        fourcc: Format,
+    ) -> Option<()> {
         let fresh = self.width != width || self.height != height || self.slots[0].is_none();
         if !fresh {
             return Some(());
@@ -333,12 +363,12 @@ impl DmabufBuffers {
             self.unavailable = true;
             return CommitOutcome::Unavailable;
         };
-        // 惰性 gbm device：仅在真正走 dmabuf 提交时初始化（SHM 路径不触发）。
-        if !self.init_device() {
+        // 惰性共享 gbm device：首次真正提交时创建，同进程所有表面复用（SHM 路径不触发）。
+        let Some(device) = self.device.get(self.main_device) else {
             self.unavailable = true;
             return CommitOutcome::Unavailable;
-        }
-        if self.ensure_slots(width, height, choice.fourcc).is_none() {
+        };
+        if self.ensure_slots(&device, width, height, choice.fourcc).is_none() {
             self.unavailable = true;
             return CommitOutcome::Unavailable;
         }
