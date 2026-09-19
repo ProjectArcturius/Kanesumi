@@ -8,7 +8,7 @@
 
 ## §Ⅰ 源码分类
 
-WinUI 2 控件按微软对源码的开放度分两类。移植策略截然不同。
+WinUI 2 控件按规格来源分三类。移植策略截然不同。
 
 ### A. **开源**（`microsoft-ui-xaml`）
 
@@ -32,6 +32,43 @@ WinUI 2 时代加入 microsoft-ui-xaml 的新控件多属此类：MenuBar / Navi
 Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（ListView 派生）/ MetroDropdownMenu（MenuFlyout 派生）/ MetroDialog（ContentDialog 派生）/ MetroSelectorFlyout（ComboBox 派生）**全部属于闭源类**，规格由 `CONTROL_SPEC.md` 记录（这就是 CONTROL_SPEC 存在的意义）。
 
 **辨认标志**：`reference/microsoft-ui-xaml/dev/` 里**不存在该目录**，或仅有 `*Helper.cpp` + `*_themeresources.xaml`（WinUI 只加 helper，主体仍在 Windows）。
+
+### C. **实证**（Windows 扇区，`Kanesumi-sec-w`）
+
+Repo：<https://github.com/ProjectArcturius/Kanesumi-sec-w>。**C# + WinUI 2 的 Windows 扇区** —— 用真 UWP 跑 Kanesumi 的控件，把实测结果回流到本仓。
+
+**这不是第三种推断来源，而是把前两类的结论从「读出来的」升格为「验过的」。**
+
+| | 来源 A（开源） | 来源 B（闭源） | **来源 C（实证）** |
+|---|---|---|---|
+| 手段 | 读 `.cpp` / `.h` / themeresources | 读 `generic.xaml` + Gallery 观察 + 逆推 | **在真 UWP 上跑，量像素、掐时长、跑状态机** |
+| 可信度 | 高（源码即真相） | 中（推断，可能漏） | **最高（实测）** |
+| 覆盖 | 仅开源控件 | 全部 | **全部** |
+
+**用法**：某一控件的规格存疑时，去扇区仓的 `docs/UWP_FEEDBACK.md` 查是否有对应条目。
+该表按固定模板记录：`UWP 实证 / 现行规格 / 差异 / 处置 / 状态`。
+
+**辨认标志**：扇区仓 `docs/UWP_FEEDBACK.md` 里存在该控件的条目。
+
+**处置分歧时的原则**：**以 Kanesumi 正典为准，不以 UWP 默认为准。**
+
+UWP 默认仍带 Fluent 时代残留（圆角、部分 Acrylic、动效时长），而 Kanesumi 与
+UWP 的偏离是**刻意**的：深底而非浅色优先、单一强调色而非 Metro 的色彩密度、
+混合运动而非纯时间轴、无圆角（UWP 默认 4px/8px）。
+
+所以「差异」有两种，处置不同：
+
+1. **正典刻意偏离 UWP** → 保留 Kanesumi 取值，**在 `CONTROL_SPEC.md` 对应节
+   补一句注明偏离理由**。这类差异过去没有记录，是隐患 —— 后来者会以为是笔误。
+2. **正典未覆盖、UWP 有实测值** → **采用实测值**并补进 `CONTROL_SPEC.md`。
+
+已知第 2 类的典型空缺：**IME 组合串的视觉规格**（下划线样式 / 颜色 / 透明度）。
+`IME_WIRING_PLAN.md` §B 明确写「CONTROL_SPEC 未定 preedit 规格，走平台默认」——
+UWP 的 TextBox 有真实实现，实测后即可把规格补齐。
+
+> **两个扇区共享什么**：设计正典 · Sokuou 曲线 · 控件规格 · 命名与 API 惯例。
+> **不共享什么**：任何一行实现代码。
+> 参 `Kanesumi-sec-w/AGENTS.md` 与正典 `KANESUMI_DESIGN.md` 的扇区模型。
 
 ---
 
@@ -275,10 +312,30 @@ settings/ceyboard 不再被输入控件阻塞（IME 接入仍待 Phase 2-1）。
 每移植一个控件：
 
 1. **判类** —— 目录在 `reference/microsoft-ui-xaml/dev/<Name>/` 且有 `.cpp` = 开源；否则闭源。
-2. **开源路径**：读 `.cpp` + `.h` + `_themeresources.xaml`，直接抄尺寸/状态/动画。
-3. **闭源路径**：`CONTROL_SPEC.md` 新增一节，写清尺寸/视觉状态/动画时长/缓动。数据来源：Windows SDK generic.xaml + WinUI 2 Gallery 观察。
-4. **实现**：`kanesumi-controls/src/<name>.rs`，`render(theme, engine, rect, scene) -> Scene`；输入接口 `press/release/hover` 返回消费/命中信息（参考 MetroMenuBar / MetroDropdownMenu 模式）。
-5. **测试**：至少覆盖布局命中 / 状态切换 / 渲染命令数 / 关键动画数值。
-6. **落库**：`lib.rs` 导出 + `CONTROL_MATRIX.md` 加验收行 + 本表 §Ⅲ 加行 + 从 §Ⅳ/Ⅴ 删行。
+2. **查实证** —— 先看 `Kanesumi-sec-w/docs/UWP_FEEDBACK.md` 是否已有该控件的实测条目（§Ⅰ 来源 C）。有则直接采用，跳过 3 的推断。
+3. **开源路径**：读 `.cpp` + `.h` + `_themeresources.xaml`，直接抄尺寸/状态/动画。
+4. **闭源路径**：`CONTROL_SPEC.md` 新增一节，写清尺寸/视觉状态/动画时长/缓动。数据来源：Windows SDK generic.xaml + WinUI 2 Gallery 观察。
+5. **实现**：`kanesumi-controls/src/<name>.rs`，`render(theme, engine, rect, scene) -> Scene`；输入接口 `press/release/hover` 返回消费/命中信息（参考 MetroMenuBar / MetroDropdownMenu 模式）。
+6. **测试**：至少覆盖布局命中 / 状态切换 / 渲染命令数 / 关键动画数值。
+7. **落库**：`lib.rs` 导出 + `CONTROL_MATRIX.md` 加验收行 + 本表 §Ⅲ 加行 + 从 §Ⅳ/Ⅴ 删行。
 
 用户铁律：**UWP 派生控件先拉 reference**（memory `uwp_reference_first.md`）—— 猜测过的都返工。
+
+### 回流（Windows 扇区 → 本仓）
+
+§Ⅰ 来源 C 是**双向**的，不是单向参考：
+
+| 方向 | 内容 | 落在哪 |
+|---|---|---|
+| 本仓 → 扇区 | 控件规格、正典 token、Sokuou 曲线 | 扇区实现时照着做 |
+| **扇区 → 本仓** | 实测默认值、真实状态机、边界情况 | **`CONTROL_SPEC.md` 补节 / 本节 §Ⅰ 更新** |
+
+扇区侧规则（参 `Kanesumi-sec-w/AGENTS.md` 铁律 4）：**发现即记录，不要攒着。**
+
+发现与现行规格不符时，按 §Ⅰ C 的两分法处置：
+
+- **刻意偏离** → 保留 Kanesumi 取值，在 `CONTROL_SPEC.md` 补一句偏离理由
+- **规格空缺** → 采用 UWP 实测值并补进 `CONTROL_SPEC.md`
+
+> 第一类差异过去完全没有记录。这不是小事：**没有记录下来的刻意偏离，
+> 半年后会被当成笔误改掉。**
