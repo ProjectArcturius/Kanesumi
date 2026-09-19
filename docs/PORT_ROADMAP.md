@@ -33,9 +33,15 @@ Kanesumi 现有的 MetroButton / MetroTabRow（Pivot 派生）/ MetroList（List
 
 **辨认标志**：`reference/microsoft-ui-xaml/dev/` 里**不存在该目录**，或仅有 `*Helper.cpp` + `*_themeresources.xaml`（WinUI 只加 helper，主体仍在 Windows）。
 
-### C. **实证**（Windows 扇区，`Kanesumi-sec-w`）
+### C. **实证**（Windows 扇区）
 
-Repo：<https://github.com/ProjectArcturius/Kanesumi-sec-w>。**C# + WinUI 2 的 Windows 扇区** —— 用真 UWP 跑 Kanesumi 的控件，把实测结果回流到本仓。
+**C# + WinUI 2 的 Windows 实现** —— 用真 UWP 跑 Kanesumi 的控件与动画，
+把实测结果**直接回流到本仓**。
+
+> **不另开仓。** 实测结论落进本仓的 `CONTROL_SPEC.md` / `ANIMATION_SPEC.md`；
+> 只在需要时保留一个隔离的验证工程用于取数，结论一到手就回流。
+> 理由：**规格是资产，跑规格的工程不是。** 三个平台若各自有一份规格副本，
+> 必然漂移 —— 这正是本表要防的事。
 
 **这不是第三种推断来源，而是把前两类的结论从「读出来的」升格为「验过的」。**
 
@@ -45,10 +51,7 @@ Repo：<https://github.com/ProjectArcturius/Kanesumi-sec-w>。**C# + WinUI 2 的
 | 可信度 | 高（源码即真相） | 中（推断，可能漏） | **最高（实测）** |
 | 覆盖 | 仅开源控件 | 全部 | **全部** |
 
-**用法**：某一控件的规格存疑时，去扇区仓的 `docs/UWP_FEEDBACK.md` 查是否有对应条目。
-该表按固定模板记录：`UWP 实证 / 现行规格 / 差异 / 处置 / 状态`。
-
-**辨认标志**：扇区仓 `docs/UWP_FEEDBACK.md` 里存在该控件的条目。
+**辨认标志**：`CONTROL_SPEC.md` / `ANIMATION_SPEC.md` 的条目注明了实测来源与条件。
 
 **处置分歧时的原则**：**以 Kanesumi 正典为准，不以 UWP 默认为准。**
 
@@ -66,9 +69,9 @@ UWP 的偏离是**刻意**的：深底而非浅色优先、单一强调色而非
 `IME_WIRING_PLAN.md` §B 明确写「CONTROL_SPEC 未定 preedit 规格，走平台默认」——
 UWP 的 TextBox 有真实实现，实测后即可把规格补齐。
 
-> **两个扇区共享什么**：设计正典 · Sokuou 曲线 · 控件规格 · 命名与 API 惯例。
+> **扇区共享什么**：设计正典 · Sokuou 曲线 · 控件规格 · 命名与 API 惯例。
 > **不共享什么**：任何一行实现代码。
-> 参 `Kanesumi-sec-w/AGENTS.md` 与正典 `KANESUMI_DESIGN.md` 的扇区模型。
+> 参正典 `KANESUMI_DESIGN.md` 的扇区模型，与 `ANIMATION_SPEC.md`。
 
 ---
 
@@ -312,7 +315,7 @@ settings/ceyboard 不再被输入控件阻塞（IME 接入仍待 Phase 2-1）。
 每移植一个控件：
 
 1. **判类** —— 目录在 `reference/microsoft-ui-xaml/dev/<Name>/` 且有 `.cpp` = 开源；否则闭源。
-2. **查实证** —— 先看 `Kanesumi-sec-w/docs/UWP_FEEDBACK.md` 是否已有该控件的实测条目（§Ⅰ 来源 C）。有则直接采用，跳过 3 的推断。
+2. **查实证** —— 先看 `CONTROL_SPEC.md` 该节是否已注明实测来源（§Ⅰ 来源 C）。有则直接采用，跳过 3 的推断。
 3. **开源路径**：读 `.cpp` + `.h` + `_themeresources.xaml`，直接抄尺寸/状态/动画。
 4. **闭源路径**：`CONTROL_SPEC.md` 新增一节，写清尺寸/视觉状态/动画时长/缓动。数据来源：Windows SDK generic.xaml + WinUI 2 Gallery 观察。
 5. **实现**：`kanesumi-controls/src/<name>.rs`，`render(theme, engine, rect, scene) -> Scene`；输入接口 `press/release/hover` 返回消费/命中信息（参考 MetroMenuBar / MetroDropdownMenu 模式）。
@@ -327,10 +330,11 @@ settings/ceyboard 不再被输入控件阻塞（IME 接入仍待 Phase 2-1）。
 
 | 方向 | 内容 | 落在哪 |
 |---|---|---|
-| 本仓 → 扇区 | 控件规格、正典 token、Sokuou 曲线 | 扇区实现时照着做 |
-| **扇区 → 本仓** | 实测默认值、真实状态机、边界情况 | **`CONTROL_SPEC.md` 补节 / 本节 §Ⅰ 更新** |
+| 本仓 → 实测工程 | 控件规格、正典 token、Sokuou 曲线 | 照着做、照着跑 |
+| **实测 → 本仓** | 实测默认值、真实状态机、边界情况 | **`CONTROL_SPEC.md` / `ANIMATION_SPEC.md` 补节** |
 
-扇区侧规则（参 `Kanesumi-sec-w/AGENTS.md` 铁律 4）：**发现即记录，不要攒着。**
+规则：**发现即记录，不要攒着** —— 攒到最后必然丢失。
+实测只在**隔离的验证工程**里进行，结论一到手就回流，不留在那边。
 
 发现与现行规格不符时，按 §Ⅰ C 的两分法处置：
 
