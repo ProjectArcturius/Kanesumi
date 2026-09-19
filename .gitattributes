@@ -1,0 +1,17 @@
+# 行尾统一为 LF。
+#
+# 不设这条时，Windows 上 git 的 autocrlf 会把检出文件转成 CRLF，于是「没人改过
+# 的文件」也会在 diff 里整篇变化 —— 历史立刻不可读。本仓在 Windows 上做 UWP
+# 实测（verify/uwp），这条是实际需要，不是教条。
+* text=auto eol=lf
+
+# 二进制
+*.png binary
+*.ico binary
+*.msix binary
+*.appx binary
+*.winmd binary
+
+# Windows 脚本惯用 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf

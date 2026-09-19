@@ -13,5 +13,12 @@ Thumbs.db
 # Agent session data
 .claude/
 
-# 外部参考仓库 —— 只克隆不入版本控制（对照 CONTROL_SPEC 数据源，参 A1）
+# 澶栭儴鍙傝€冧粨搴?鈥斺€?鍙厠闅嗕笉鍏ョ増鏈帶鍒讹紙瀵圭収 CONTROL_SPEC 鏁版嵁婧愶紝鍙?A1锛?
 /reference
+
+# verify/uwp 的构建产物（UWP 走 MSBuild，产物与 Rust 的 /target 无关）
+bin/
+obj/
+AppPackages/
+*.user
+*.suo
