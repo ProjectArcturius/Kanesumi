@@ -135,26 +135,61 @@ Windows Runtime 动画库存在这一对词汇，**独立确证了该记录**。
 弹簧五预设：`standard_interaction(0.50, 0.825)` · `quick_interaction(0.30, 0.60)` ·
 `slow_reveal(0.65, 0.85)` · `dialog_enter(0.45, 0.70)` · `page_transition(0.40, 0.80)`。
 
-### UWP 默认值：**待实测**
+### UWP 默认值：已从 SDK 取到一部分，其余待实测
 
-⬜ **本表故意留空。**
+**权威来源已确认**：Windows SDK 的主题资源字典，不是 `microsoft-ui-xaml`：
 
-UWP 的动画时长由平台主题资源定义（如 `ControlFastAnimationDuration`、
-`ControlNormalAnimationDuration`、`ScrollViewScrollBarsSeparatorExpandDuration` 等），
-**其中一部分不在 `microsoft-ui-xaml` 的开源部分里** —— `Generic.xaml` 只**引用**
-这些键，定义在平台侧。
+```
+C:\Program Files (x86)\Windows Kits\10\DesignTime\CommonConfiguration\
+  Neutral\UAP\<SDK 版本>\Generic\themeresources.xaml
+```
 
-**填表方式**：在 Windows 扇区跑控件、掐时长，回填并标注实测条件。
+`microsoft-ui-xaml` 的 `Generic.xaml` 只**引用**这些键（`{ThemeResource …}`），
+定义在平台侧 —— 所以读开源仓是读不到的，必须读 SDK 里的这份。
+
+已取到的取值（**不是猜的，是从上述文件读出的字面量**）：
+
+| UWP 键 | 值 | 用途 |
+|---|---|---|
+| `ScrollBarContractDuration` | **0.1 s** | 滚动条收起 |
+| `ScrollBarExpandDuration` | **0.1 s** | 滚动条展开 |
+| `ScrollBarContractDelay` | **2 s** | 收起前的静止延迟 |
+| `ScrollBarExpandBeginTime` | **0.4 s** | 展开前的延迟 |
+| `ScrollViewerSeparatorExpandDuration` | **0.1 s** | 滚动条分隔线展开 |
+| `ScrollViewerSeparatorContractDuration` | **0.1 s** | 分隔线收起 |
+| `ScrollViewerSeparatorContractDelay` | **2 s** | 分隔线收起延迟 |
+| `ScrollViewerSeparatorExpandBeginTime` | **0.4 s** | 分隔线展开延迟 |
+| `SplitViewPaneAnimationOpenDuration` | **0.2 s** | 面板打开 |
+| `SplitViewPaneAnimationCloseDuration` | **0.1 s** | 面板关闭 |
+| `SplitViewPaneAnimationOpenPreDuration` | **0.19999 s** | 面板打开前置阶段 |
+| `HandwritingViewGestureTipsElementEaseInDuration` | **0.1 s** | 手写笔手势提示 |
+
+**⚠ 一处需要更正。** 本表早先列过 `ControlFastAnimationDuration`、
+`ControlNormalAnimationDuration`、`ControlFasterAnimationDuration` 三个键 ——
+**这三项在该 SDK 版本里查不到定义，也未在 `Generic.xaml` 中被引用。**
+
+因此下面这一条注释是**未经证实的**，不要当成依据：
+
+> ~~`DURATION_QUICK_SWITCH` = 0.167 s（对齐 UWP `ControlFastAnimationDuration`）~~
+
+`0.167 s` 这个值本身是 Kanesumi 既有的、有效的取值（§Ⅴ 上表），
+但「它对齐某个 UWP 常量」这个说法**没有证据**。要么在应用里实测确认，
+要么把注释改成「Kanesumi 自定」。
+
+### 观察到的量级特征（有信息量）
+
+已取到的值几乎都围绕 **0.1 s / 0.2 s**，而**延迟**是 **0.4 s / 2 s** 量级。
+这与 Kanesumi 的 `METRO_STANDARD_DURATION = 0.25 s` 处于同一量级，
+但 Kanesumi 的取值偏慢一档。
+
+这类「同量级、偏一档」的差异正是需要决定归属的地方 ——
+是 Kanesumi 刻意放慢，还是当年读数就偏了。参 §Ⅵ 的两分法。
+
+### 待实测
+
+上表未覆盖的键（尤其是控件状态切换类）仍需在 `verify/uwp` 里实测回填。
+**填表方式**：跑控件、掐时长，标注实测条件。
 **不要凭文档或记忆填** —— 这份表会被多平台实现照做，填错比留空代价大。
-
-| UWP 键 | 用途 | 实测值 | 状态 |
-|---|---|---|---|
-| `ControlFastAnimationDuration` | 快速状态切换 | ? | ⬜ |
-| `ControlNormalAnimationDuration` | 常规状态切换 | ? | ⬜ |
-| `ControlFasterAnimationDuration` | 更快 | ? | ⬜ |
-| `ScrollViewScrollBarsSeparatorExpandDuration` | 滚动条展开 | ? | ⬜ |
-| `ScrollViewScrollBarsSeparatorContractDuration` | 滚动条收起 | ? | ⬜ |
-| （其余键待列举） | | ? | ⬜ |
 
 ---
 
