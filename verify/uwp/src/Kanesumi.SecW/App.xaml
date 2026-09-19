@@ -9,12 +9,21 @@
             <ResourceDictionary.MergedDictionaries>
                 <!--
                   WinUI 2 控件样式。必须是第一项 —— 它定义了下文被覆盖的那些键。
-                  参 AGENTS.md 铁律 1：用 WinUI 2，不用 WinUI 3。
+                  参 README：用 WinUI 2，不用 WinUI 3。
                 -->
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
 
-                <!-- Kanesumi Design token（正典落地取值） -->
+                <!--
+                  Kanesumi 的 UWP 控件画刷覆盖。放在 XamlControlsResources 之后，
+                  才能覆盖它定义的那些键 —— 顺序有意义，不要调换。
+                -->
+                <ResourceDictionary Source="Themes/KanesumiTheme.xaml" />
+
+                <!-- 应用层 token（系统没有对应键的那些） -->
                 <ResourceDictionary Source="Themes/KanesumiTokens.xaml" />
+
+                <!-- 列表行样式（必须重写模板才能清掉默认留白） -->
+                <ResourceDictionary Source="Themes/KanesumiListRow.xaml" />
             </ResourceDictionary.MergedDictionaries>
 
             <!--
@@ -29,8 +38,8 @@
                  You can override these values in your App.xaml to change the
                  rounding across all controls in your app."
 
-              这里而不是逐控件设 CornerRadius="0"：逐控件必然遗漏，
-              新增控件时会忘。参 AGENTS.md 铁律 2。
+              在这里一次做完，而不是逐控件设 CornerRadius="0" —— 逐控件必然遗漏，
+              新增控件时会忘。
             -->
             <CornerRadius x:Key="ControlCornerRadius">0</CornerRadius>
             <CornerRadius x:Key="OverlayCornerRadius">0</CornerRadius>
