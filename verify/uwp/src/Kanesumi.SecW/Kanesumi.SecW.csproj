@@ -22,6 +22,12 @@
     <GenerateAppInstallerFile>False</GenerateAppInstallerFile>
     <AppxAutoIncrementPackageRevision>False</AppxAutoIncrementPackageRevision>
     <AppxBundle>Never</AppxBundle>
+    <!--
+      UWP 的默认语言版本是 C# 7.3（沿袭 .NET Native 时代的工具链），
+      而现代写法（`is not` 模式、switch 表达式、记录）需要更高版本。
+      不提这一行会在 `is not` 上报 CS8370，而报错位置离真实原因很远。
+    -->
+    <LangVersion>10.0</LangVersion>
   </PropertyGroup>
 
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
@@ -33,6 +39,16 @@
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
     <UseVSHostingProcess>false</UseVSHostingProcess>
+    <!--
+      用 .NET Native 工具链编译 —— 这是 UWP 应用的**发布形态**。
+
+      不启用时，产物依赖 `Microsoft.NET.CoreRuntime.2.x` 框架包，而那个包在
+      较新的 Windows 上默认不预装，导致 `Add-AppxPackage -Register` 报
+      0x80073CF3「依赖找不到的框架」。
+
+      启用后应用自包含，这也是 Store 提交所要求的形态。
+    -->
+    <UseDotNetNativeToolchain>true</UseDotNetNativeToolchain>
   </PropertyGroup>
 
   <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
@@ -42,6 +58,7 @@
     <DefineConstants>TRACE;NETFX_CORE;WINDOWS_UWP</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
+    <UseDotNetNativeToolchain>true</UseDotNetNativeToolchain>
   </PropertyGroup>
 
   <!-- 平台目标。UWP 只有 x86 / x64 / ARM64 三种。 -->
@@ -67,8 +84,25 @@
     <Compile Include="App.xaml.cs">
       <DependentUpon>App.xaml</DependentUpon>
     </Compile>
-    <Compile Include="MainPage.xaml.cs">
-      <DependentUpon>MainPage.xaml</DependentUpon>
+    <Compile Include="Models\SessionItem.cs" />
+    <Compile Include="Models\KanesumiTheme.cs" />
+    <Compile Include="ShellPage.xaml.cs">
+      <DependentUpon>ShellPage.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="SessionsPage.xaml.cs">
+      <DependentUpon>SessionsPage.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="SessionDetailPage.xaml.cs">
+      <DependentUpon>SessionDetailPage.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="WorkspacesPage.xaml.cs">
+      <DependentUpon>WorkspacesPage.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="ToolsPage.xaml.cs">
+      <DependentUpon>ToolsPage.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="SettingsPage.xaml.cs">
+      <DependentUpon>SettingsPage.xaml</DependentUpon>
     </Compile>
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
@@ -78,7 +112,39 @@
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </ApplicationDefinition>
-    <Page Include="MainPage.xaml">
+    <Page Include="ShellPage.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="SessionsPage.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="SessionDetailPage.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="WorkspacesPage.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="ToolsPage.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="SettingsPage.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="Themes\KanesumiTheme.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="Themes\KanesumiTokens.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="Themes\KanesumiListRow.xaml">
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </Page>

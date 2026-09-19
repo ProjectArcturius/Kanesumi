@@ -77,14 +77,27 @@ across all controls in your app."*
 $msbuild = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe"
 
 # 还原
-& $msbuild src\Kanesumi.SecW\Kanesumi.SecW.csproj /t:Restore /p:Configuration=Debug /p:Platform=x64
+& $msbuild src\Kanesumi.SecW\Kanesumi.SecW.csproj /t:Restore /p:Configuration=Release /p:Platform=x64
 
 # 构建（产出 exe + msix）
-& $msbuild src\Kanesumi.SecW\Kanesumi.SecW.csproj /p:Configuration=Debug /p:Platform=x64
+& $msbuild src\Kanesumi.SecW\Kanesumi.SecW.csproj /p:Configuration=Release /p:Platform=x64
 
 # 图标（正典配色，生成物不入库）
 dotnet run --project tools\make-icons -- src\Kanesumi.SecW\Assets
 ```
+
+**用 Release 配置，不要用 Debug。** 两个原因：
+
+1. Debug 的 .NET Native 依赖 `Microsoft.NET.Native.Framework.**Debug**.2.2` ——
+   调试运行时通常未随系统预装，导致激活失败。
+2. Release 才是 UWP 应用的发布形态，也是唯一值得验证的形态。
+
+csproj 里已经设好的两处非默认项，**不要删**：
+
+| 设置 | 为什么 |
+|---|---|
+| `<LangVersion>10.0</LangVersion>` | UWP 默认 7.3，现代写法（`is not`、switch 表达式）会报 `CS8370` |
+| `<UseDotNetNativeToolchain>true</UseDotNetNativeToolchain>` | 让应用自包含，摆脱对 .NET CoreRuntime 框架包的依赖 |
 
 环境（已核实）：MSBuild **17.14.51** @ BuildTools · UWP XAML 目标已装 ·
 VC 14.44.35207 · Windows SDK 10.0.22621/26100 · .NET SDK 9.0.316。
@@ -92,20 +105,93 @@ VC 14.44.35207 · Windows SDK 10.0.22621/26100 · .NET SDK 9.0.316。
 
 ## 踩过的坑（记下来免得重踩）
 
+### 编译期
+
 | 坑 | 现象 | 处置 |
 |---|---|---|
-| WinUI 2 新增控件不在默认 XAML 命名空间 | `XamlCompiler error WMC0001: Unknown type 'InfoBar'` | 加 `xmlns:muxc="using:Microsoft.UI.Xaml.Controls"`，用 `muxc:InfoBar` |
+| WinUI 2 新增控件不在默认 XAML 命名空间 | `WMC0001: Unknown type 'InfoBar'` | 加 `xmlns:muxc="using:Microsoft.UI.Xaml.Controls"`，用 `muxc:InfoBar` |
+| **但系统控件在 muxc: 里也不存在** | `WMC0001: Unknown type 'AutoSuggestBox'`（用 `muxc:` 前缀时） | `AutoSuggestBox` / `Button` / `TextBox` / `ListView` 是 UWP 自带，用**默认**命名空间。分界线只能靠编译器确认 |
+| C# 语言版本默认 7.3 | `CS8370: 「not 模式」在 C# 7.3 中不可用` | csproj 加 `<LangVersion>10.0</LangVersion>`。报错位置离真实原因很远 |
+| `NavigationView` 有两份 | 生成代码报「没有与委托匹配的重载」 | `Windows.UI.Xaml.Controls` 与 `Microsoft.UI.Xaml.Controls` **都有** `NavigationView`。事件处理器参数必须完全限定用后者 |
 | `Properties/Logo` 走 **StoreLogo** 校验 | `APPX1619: 必须为 50x50 像素` | 它是独立一项，与 `Square150x150Logo` 不同。单独出 50×50 图 |
+| 清单缺 `PhoneIdentity` | `APPX1673: 缺少必需元素 PhoneIdentity` | 桌面清单里它也是必需元素 |
 | `dotnet build` 不支持 UWP | —— | 必须用 MSBuild |
+
+### 部署期（尚未在本机跑通，见下）
+
+| 坑 | 现象 | 说明 |
+|---|---|---|
+| UWP 不能直接运行 exe | 进程起来随即崩溃 | 必须经包注册/安装后由 Activator 启动 |
+| `Add-AppxPackage -Register` 松散文件 | 注册**成功**，但激活报 `0x8027025B 应用未启动` | 松散注册不保证 AppContainer 可运行 |
+| Debug 配置的 .NET Native | 依赖 `Microsoft.NET.Native.Framework.**Debug**.2.2` | 调试运行时通常未预装。要跑用 **Release** |
+| MSIX 自签名安装 | `0x800B0109: 根证书必须是受信任的证书` | 需把测试证书装进**受信任的根**，而那只写 `CurrentUser\Root` 需要**管理员权限** |
+
+## 已知问题：本机无法启动已构建的应用
+
+**代码是完整的、能编译、产出可安装的 MSIX。但在此开发机上启动失败。**
+
+排查过程与结论（都做了对照实验，不是推测）：
+
+| 实验 | 结果 |
+|---|---|
+| 本工程（完整应用） | 激活 `0x8027025B` |
+| **纯空白 UWP 应用**（不含本工程任何代码） | **同样 `0x8027025B`** |
+| **系统自带计算器**（同一探针、同一方式） | **启动成功，88 MB** |
+| 装齐 `Microsoft.NET.CoreRuntime.2.2` 等框架包 | 无改善 |
+| 关闭 .NET Native 工具链 | 无改善 |
+| 签名后 `Add-AppxPackage` 装 MSIX | 被证书信任链挡住（需管理员写 `Root` 存储） |
+
+**结论：UWP 激活机制本身正常（计算器可跑），问题出在「旁加载应用的信任链」** ——
+自签名证书未被信任，而安装可信根需要管理员权限，本会话没有。
+
+这不是代码缺陷：空白应用到完整应用表现完全一致，说明触发点是**部署前置条件**而非实现。
+
+### 在有管理员权限的机器上应该这么跑
+
+```powershell
+# 1) 用 Release 配置构建（Debug 依赖未预装的调试运行时）
+$msbuild = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe"
+& $msbuild src\Kanesumi.SecW\Kanesumi.SecW.csproj /p:Configuration=Release /p:Platform=x64
+
+# 2) 生成并信任测试证书（需要管理员）
+$cert = New-SelfSignedCertificate -Type Custom -Subject "CN=TakahashiRinta" `
+    -KeyUsage DigitalSignature -FriendlyName "Kanesumi Test" `
+    -CertStoreLocation "Cert:\CurrentUser\My" `
+    -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3","2.5.29.19={text}")
+Export-Certificate -Cert $cert -FilePath KanesumiTest.cer
+Import-Certificate -FilePath KanesumiTest.cer -CertStoreLocation Cert:\LocalMachine\Root   # ← 需管理员
+
+# 3) 签名并安装
+& "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe" `
+    sign /fd SHA256 /a src\Kanesumi.SecW\AppPackages\**\*_x64.msix
+Add-AppxPackage -Path src\Kanesumi.SecW\AppPackages\**\*_x64.msix
+
+# 4) 启动
+Start-Process "shell:appsFolder\TakahashiRinta.KanesumiSecW_98kk3q0vty278!App"
+```
+
+> **排查用过的工具**：`ApplicationActivationManager` 的 COM 接口（`IApplicationActivationManager.ActivateApplication`）。
+> `Start-Process shell:appsFolder\...` 只告诉你「已请求启动」，失败时给不出 HRESULT；
+> 直接调这个接口才能拿到 `0x8027025B` 这类真实原因。**下次先用它。**
+>
+> 另：`Get-AppxPackage -Name` **不接受通配符数组**（`-Name "*a*","*b*"` 会报参数类型错误），
+> 用 `Where-Object { $_.Name -match ... }` 过滤。我因此一度误判「框架包没装」。
 
 ## 目录
 
 ```
 src/Kanesumi.SecW/
-├── App.xaml                    圆角归零 + 资源装配
-├── Themes/KanesumiTokens.xaml  正典落地 token（色板 / 字号 / 间距）
-├── MainPage.xaml               **控件验证台** —— 逐控件核验直角是否生效
-└── Package.appxmanifest
+├── App.xaml                    圆角归零 + 资源字典装配
+├── Themes/
+│   ├── KanesumiTheme.xaml      **UWP 控件画刷覆盖**（深/浅/高对比三态）
+│   └── KanesumiListRow.xaml    列表行模板重写（清掉默认留白）
+├── ShellPage.xaml              NavigationView + Frame 外壳
+├── SessionsPage.xaml           会话列表（顶栏 = 列表第一项）
+├── SessionDetailPage.xaml      会话详情（工具卡片 / 代码块 / 输入框）
+├── WorkspacesPage.xaml         工作区
+├── ToolsPage.xaml              **控件覆盖台** —— 逐控件核验直角
+├── SettingsPage.xaml           色板实况 + 关于
+└── Models/                     数据模型与主题装配
 tools/make-icons/               图标生成（正典配色，生成物不入库）
 ```
 
@@ -113,14 +199,17 @@ tools/make-icons/               图标生成（正典配色，生成物不入库
 
 | 项 | 状态 |
 |---|---|
-| 工程骨架 + WinUI 2 引用 | ✅ 构建通过，产出 MSIX |
-| 圆角全局归零 | ✅ 已写入 `App.xaml`，待逐控件目视核验 |
-| 正典 token 字典 | ✅ 色板 / 字号 / 间距 |
-| 控件验证台 | ✅ 已建，待核验并填写 `docs/UWP_FEEDBACK.md` |
-| 实测回流 | ⏳ **核心职责，进行中** |
+| 完整 UWP 应用（NavigationView + 5 页 + 约 16 个控件） | ✅ **编译通过，产出 MSIX** |
+| 圆角全局归零（`App.xaml` 两个资源） | ✅ 已落地 |
+| UWP 控件画刷覆盖成 Kanesumi 色板 | ✅ 深 / 浅 / 高对比三态 |
+| 列表行模板重写（贴边） | ✅ |
+| 系统标题栏配色 | ✅ 走 `ApplicationView` API |
+| **启动运行** | ❌ **本机受信任链限制**，需管理员权限（见上） |
+| 实测回流 `CONTROL_SPEC` / `ANIMATION_SPEC` | ⏳ 待应用能跑起来后进行 |
 
 ## 待办
 
+- [ ] 在有管理员权限处签名部署，真正跑起来
 - [ ] 逐控件核验：哪些控件未走那两个圆角资源
 - [ ] 实测 `ANIMATION_SPEC.md §Ⅴ` 里留空的 UWP 时长键
 - [ ] 实测 IME 组合串的视觉规格（正典空白项）
