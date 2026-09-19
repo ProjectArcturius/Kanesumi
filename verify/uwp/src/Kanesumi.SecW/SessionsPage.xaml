@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="Kanesumi.SecW.SessionsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:Kanesumi.SecW"
+    Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+
+    <!--
+      会话列表。
+
+      两处正典约定的落地：
+
+      1. **顶栏 = 滚动列表第一项**（正典 §Ⅲ.2）。所以这里用 ListView 的 Header
+         承载大字页面名，而不是 Page.TopAppBar / 独立标题栏。
+         MetroShell 没有 topBar 槽，正是这条约定。
+
+      2. **列表行贴屏边（0 左 padding）**。ListViewItem 的默认样式带左右留白，
+         这里在 ItemContainerStyle 里清掉 —— 否则「贴边」会变成「缩进」。
+    -->
+    <Grid>
+        <ListView
+            x:Name="SessionList"
+            SelectionMode="Single"
+            IsItemClickEnabled="True"
+            ItemClick="OnSessionClick"
+            Padding="0"
+            ItemContainerStyle="{StaticResource KanesumiListRowStyle}">
+
+            <!-- 顶栏就是列表第一项 -->
+            <ListView.Header>
+                <StackPanel Padding="24,32,24,16" Spacing="6">
+                    <TextBlock
+                        Text="会话"
+                        FontSize="{StaticResource KanesumiPageHeadingSize}"
+                        Foreground="{ThemeResource SystemControlForegroundBaseHighBrush}" />
+                    <TextBlock
+                        Text="based on Kanesumi Design"
+                        FontSize="{StaticResource KanesumiCaptionSize}"
+                        Foreground="{StaticResource KanesumiOnSurfaceVariantBrush}" />
+                </StackPanel>
+            </ListView.Header>
+
+            <ListView.ItemTemplate>
+                <DataTemplate x:DataType="local:SessionItem">
+                    <Grid Padding="24,14,24,14" ColumnSpacing="14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <!--
+                          缩略方块：直角（正典：封面、图片、色块一律通铺裁直）。
+                          底色用 primary 叠 alpha —— 单一强调色，不做多色头像。
+                        -->
+                        <Border
+                            Grid.Column="0"
+                            Width="40"
+                            Height="40"
+                            CornerRadius="0"
+                            Background="{ThemeResource SystemControlHighlightListAccentLowBrush}"
+                            VerticalAlignment="Top">
+                            <TextBlock
+                                Text="{x:Bind Initials}"
+                                FontSize="{StaticResource KanesumiCaptionSize}"
+                                Foreground="{ThemeResource SystemControlForegroundBaseHighBrush}"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center" />
+                        </Border>
+
+                        <StackPanel Grid.Column="1" Spacing="4">
+                            <TextBlock
+                                Text="{x:Bind Title}"
+                                FontSize="{StaticResource KanesumiBodySize}"
+                                TextTrimming="CharacterEllipsis"
+                                MaxLines="1"
+                                Foreground="{ThemeResource SystemControlForegroundBaseHighBrush}" />
+                            <TextBlock
+                                Text="{x:Bind Preview}"
+                                FontSize="{StaticResource KanesumiCaptionSize}"
+                                Foreground="{StaticResource KanesumiOnSurfaceVariantBrush}"
+                                TextTrimming="CharacterEllipsis"
+                                MaxLines="2"
+                                TextWrapping="Wrap" />
+                            <TextBlock
+                                FontSize="{StaticResource KanesumiLabelSize}"
+                                Foreground="{StaticResource KanesumiOnSurfaceVariantBrush}">
+                                <Run Text="{x:Bind Workspace}" />
+                                <Run Text=" · " />
+                                <Run Text="{x:Bind TurnCount}" />
+                                <Run Text=" 轮" />
+                            </TextBlock>
+                        </StackPanel>
+
+                        <TextBlock
+                            Grid.Column="2"
+                            Text="{x:Bind UpdatedAt}"
+                            FontSize="{StaticResource KanesumiLabelSize}"
+                            Foreground="{StaticResource KanesumiOnSurfaceVariantBrush}"
+                            VerticalAlignment="Top" />
+                    </Grid>
+                </DataTemplate>
+            </ListView.ItemTemplate>
+        </ListView>
+    </Grid>
+</Page>
