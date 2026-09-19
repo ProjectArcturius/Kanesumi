@@ -319,11 +319,60 @@
 
 ## 11 · 未在快照中（勿再翻代码）
 
+### 11.1 权威来源已改：查 SDK，不查开源仓
+
+早先这一节写「后续可从 Win10 SDK `Common_themeresources` 核对一次固化」——
+**这件事已经做了（2026-09-19）**，并确认了权威来源的准确位置：
+
+```
+C:\Program Files (x86)\Windows Kits\10\DesignTime\CommonConfiguration\
+  Neutral\UAP\<SDK 版本>\Generic\
+    generic.xaml           控件模板
+    themeresources.xaml    ← 主题资源**定义**（色值、时长、尺寸）
+```
+
+**关键认识**：`microsoft-ui-xaml` 的 `Generic.xaml` 只**引用**这些资源
+（`{ThemeResource …}`），**定义不在开源仓里**。所以「未在快照中」的那些项
+永远不可能靠读 `microsoft-ui-xaml` 补全 —— 必须读 SDK 这份。
+
+已取到的动画时长见 `ANIMATION_SPEC.md §Ⅴ`（12 个键，含具体值）。
+`SystemControl*` 笔刷的深/浅/高对比三态色值同理，可在同文件读出。
+
+### 11.2 构建期边界：WinUI 2 新增控件 vs 系统控件
+
+**这条是动手做 UWP 实现时才暴露的，规格层面看不出来：**
+
+| 类别 | 命名空间 | 例子 |
+|---|---|---|
+| UWP **系统**控件 | 默认 XAML 命名空间 | `Button` `TextBox` `ListView` `ComboBox` **`AutoSuggestBox`** `Slider` `ToggleSwitch` |
+| **WinUI 2 新增**控件 | `using:Microsoft.UI.Xaml.Controls`（XAML 里写 `muxc:`） | `InfoBar` `Expander` `DropDownButton` `SplitButton` `NumberBox` `RatingControl` `PipsPager` `BreadcrumbBar` `NavigationView` `TabView` `TeachingTip` |
+
+**分界线只能靠编译器确认** —— 猜错会得到 `WMC0001: Unknown type`，
+而两个方向的错法都存在：给系统控件加 `muxc:` 会报错，给新增控件用默认命名空间也会报错。
+
+**另一处同类陷阱**：`NavigationView` 在 `Windows.UI.Xaml.Controls` 与
+`Microsoft.UI.Xaml.Controls` **两个命名空间里都有**。事件处理器的参数类型
+必须完全限定用后者，否则生成代码报「没有与委托匹配的重载」，报错位置离真实原因很远。
+
+### 11.3 UWP 实现侧的既有约定
+
+动手做 Windows 实现时（参 `verify/uwp/README.md`）另外确认的：
+
+| 项 | 值 / 结论 | 来源 |
+|---|---|---|
+| 圆角 | 由 `ControlCornerRadius`（4px）/ `OverlayCornerRadius`（8px）两个**全局资源**控制，覆盖为 0 即得直角，**无需重写控件模板** | 官方文档，已在工程中落地 |
+| 列表行贴边 | `ListViewItem` 的**默认模板本身**带左右留白，只设 `Padding=0` 清不掉，**必须重写模板** | 实测 |
+| `ListViewItem` 状态名 | `Normal` / `PointerOver` / `Pressed` / `Selected` / `PointerOverSelected` / `PressedSelected` 固定不变 —— **改名等于状态不再触发** | 模板实现 |
+| 系统标题栏配色 | **不在 XAML 资源系统里**，必须走 `ApplicationView.TitleBar` API | 实测 |
+| `ThemeDictionaries` | 必须为**每个存在的主题**给出同一组键；缺一个会在 XAML 解析期抛异常（表现为启动即崩、日志无消息） | 实测 |
+
+### 11.4 仍未在快照中的项
+
 | 项 | 位置 | 处理 |
 |---|---|---|
-| `SystemControl*` 笔刷具体色值 | OS 主题 | 按 §1–§8 标注的近似值/惯例定；后续可从 Win10 SDK `Common_themeresources` 核对一次固化为常量 |
-| `PointerDown/UpThemeAnimation` 时长/像素 | OS 主题动画 | ~100ms Y 位移微反馈；可调 token |
-| `SplitOpen/CloseThemeAnimation` | OS | 面板展开 ~333ms，用 `sheet_appear` 对齐 |
+| `SystemControl*` 笔刷具体色值 | SDK `themeresources.xaml` | **来源已定位**（见 11.1）；取具体值待做 |
+| `PointerDown/UpThemeAnimation` 时长/像素 | OS 主题动画 | ~100ms Y 位移微反馈；**该动画在 Windows Runtime 动画库中存在，词汇表已确证**（参 `ANIMATION_SPEC §Ⅲ`），仅时长待实测 |
+| `SplitOpen/CloseThemeAnimation` | OS | 面板展开 ~333ms，用 `sheet_appear` 对齐。**词汇存在性已确证**，时长待实测 |
 | `PivotPanel` 头面板平移 | OS | 签名动效"非选中头滑出 +40px/0.33s"已记录，可选实现 |
 | `ListViewItemPresenter` 原生选中绘制 | OS | 行为已由 §7 覆盖 |
 | `ComboBox.cpp` 开合定位 | OS | 方向判据已由 `ComboBoxHelper` 记录（Top>0 向下） |
