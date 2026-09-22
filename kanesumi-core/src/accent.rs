@@ -81,9 +81,13 @@ impl Accent {
             dark1: mix(Color::BLACK, DARK_MIX[0]),
             dark2: mix(Color::BLACK, DARK_MIX[1]),
             dark3: mix(Color::BLACK, DARK_MIX[2]),
-            // 阈值 0.5 与 Chorus 一致。相对亮度是 gamma 校正后的量，
-            // 不能用「(r+g+b)/3 > 0.5」这类朴素判据代替。
-            on_accent: if base.relative_luminance() > 0.5 {
+            // 前景不按「相对亮度 > 0.5」这类固定阈值判（Chorus `derive_accent()` 现用此法），
+            // 而是**直接比较黑 / 白各自的 WCAG 对比度、取大者**：
+            // 固定阈值在中等亮度 accent 上会不达标 —— 例如青绿 #00897B 的亮度 0.19 < 0.5
+            // 会判给白字，而白字在其上仅 4.36:1（低于正文阈值 4.5）。
+            // 取大者则恒有 max(黑, 白) ≥ 4.5（两种判据的可行区间互补，覆盖全部亮度）。
+            // 这是对 Chorus 的**有意偏离**，理由登记于 docs/CANON_VS_TEMPORARY.md，Chorus 侧应对齐。
+            on_accent: if Color::BLACK.contrast_ratio(base) >= Color::WHITE.contrast_ratio(base) {
                 Color::BLACK
             } else {
                 Color::WHITE
@@ -203,6 +207,27 @@ mod tests {
         assert_eq!(light_accent.on_accent, Color::BLACK);
         // 深色强调色上白字必须达正文对比度阈值。
         assert!(dark_accent.on_accent.contrast_ratio(dark_accent.base) >= 4.5);
+    }
+
+    /// 守卫：自动前景必须**恒**达 4.5:1，覆盖整个色域。
+    /// 旧判据（相对亮度 > 0.5）在青绿 #00897B 上只给 4.36:1 —— 该断言会失败。
+    #[test]
+    fn on_accent_always_meets_text_contrast_across_gamut() {
+        let mut checked = 0;
+        for r in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+            for g in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+                for b in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+                    let a = Accent::from_base(Color::rgb(r, g, b));
+                    let ratio = a.on_accent.contrast_ratio(a.base);
+                    assert!(
+                        ratio >= 4.5,
+                        "accent #{r}/{g}/{b} 的前景对比度仅 {ratio}，低于 4.5"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 125);
     }
 
     /// 焦点描边在两种方案下都必须与背景可分辨（≥ 3:1 非文本阈值）。
