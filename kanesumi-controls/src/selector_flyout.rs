@@ -104,16 +104,20 @@ impl MetroSelectorFlyout {
     ) {
         // 触发器
         let colors = &theme.colors;
-        // 聚焦衬底 = 强调色低透（CONTROL_SPEC §237 HighlightListAccentLow）。
+        // 聚焦衬底 = 强调色 AccentLow。**一手源**（2026-09-22）：UWP ComboBox 的面板里有一个
+        // `HighlightBackground` 矩形，其 Background = `ComboBoxBackgroundUnfocused`
+        // → `SystemControlHighlightListAccentLowBrush`（themeresources L666 → L304/L4220：
+        // accent 0.6 暗 / 0.4 亮），平时 Opacity 0，**聚焦态动画抬到 1**
+        // （generic.xaml L10381-10385 + L10237）；同态边框 `ComboBoxBackgroundBorderBrushFocused`
+        // = **全透明**（L667）——即权威的 ComboBox 聚焦**只加衬底、不加边框**。
+        // 本库原先的「强调色 24% 衬底 + 1px 边框」：思路对（确有衬底），强度错（24%），
+        // 边框属多余（UWP 聚焦时边框是透明的）。
         let bg = if self.focused {
-            colors.accent_low_tint
+            colors.selection_tint
         } else {
             colors.surface
         };
         scene.fill_rounded_rect(bg, trigger, theme.tokens.corner_radius);
-        if self.focused {
-            scene.stroke_rounded_rect(colors.primary, trigger, 1.0, theme.tokens.corner_radius);
-        }
 
         let style = TextStyle::new(14.0, 20.0, kanesumi_core::FontWeight::Normal);
         let text = self
@@ -165,8 +169,11 @@ impl MetroSelectorFlyout {
             );
             let selected = self.selected == Some(i);
             if selected {
-                // 项选中 = 强调色低透（CONTROL_SPEC §247 ListAccentLow）。
-                scene.fill_rect(colors.accent_low_tint, item_rect);
+                // 项选中 = 强调色 AccentLow（暗 0.6 / 亮 0.4）。
+                // 一手源：`ComboBoxItemBackgroundSelected` = `SystemControlHighlightListAccentLowBrush`
+                // （themeresources L648 → L304/L4220）——与 ListView 行选中**同一个笔刷**，
+                // 故直接共用 selection_tint，不再另设一个「低透」令牌。
+                scene.fill_rect(colors.selection_tint, item_rect);
             } else if self.hovered == Some(i) {
                 scene.fill_rect(theme.indication.hover_tint, item_rect);
             }
