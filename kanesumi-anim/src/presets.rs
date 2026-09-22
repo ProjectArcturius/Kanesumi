@@ -3,11 +3,24 @@ use sokuou::{EasingMode, MetroAnim, SpringAnim, UwpEasing};
 /// Kanesumi 标准动画时长：0.25s。轻盈短促、60Hz 友好。参 PLAN.md §2。
 pub const METRO_STANDARD_DURATION: f64 = 0.25;
 
-/// 面板 / 弹窗入场时长。
+/// 面板 / 弹窗入场时长。一手源：UWP `CommandBarFlyoutCommandBar` 的
+/// `OpeningStoryboard` = **300ms**，`KeySpline="0.1,0.9 0.2,1"`（SDK 26100 `generic.xaml` L22093-22118）。
+/// 这是 UWP 快照里唯一一组显式 flyout 开合时长（`FlyoutPresenter`/`MenuFlyoutPresenter`
+/// 模板零 Storyboard，开关全靠系统预置）。
 pub const DURATION_SHEET_APPEAR: f64 = 0.30;
-/// 面板 / 弹窗收起时长。短促收敛，避免拖尾。
-pub const DURATION_SHEET_DISMISS: f64 = 0.26;
-/// 快速切换（列表高亮、播放/暂停图标）。对齐 UWP ControlFastAnimationDuration 0.167s。
+/// 面板 / 弹窗收起时长。同源 = **150ms**、`KeySpline="0.7,0 1,0.5"`（同文件 L22110-22118）。
+///
+/// ⚠ 旧值 0.26 无依据（既不对应开合比，也不对应任何一手值），已按 150ms 更正 ——
+/// UWP 的收起比展开快一倍，是「短促收敛」的量级来源。
+pub const DURATION_SHEET_DISMISS: f64 = 0.15;
+/// 快速切换（列表高亮、播放/暂停图标）。对齐 **WinUI**（非 UWP）`ControlFastAnimationDuration`
+/// = 167ms。
+///
+/// ⚠ 归属更正（2026-09-22 实测）：`Control*AnimationDuration` 一族**不是 UWP 运行时资源** ——
+/// UWP SDK 的 `generic.xaml`/`themeresources.xaml`（26100 与 22621）与
+/// `C:\Windows\System32\Windows.UI.Xaml.dll` 全部 0 命中；它们只存在于 WinUI 的 resources.pri
+/// （Normal 250 / Fast 167 / FastAnimationAfter 168 / Faster 83ms，无 Slow）。
+/// 因此这些键**不可在 UWP 风格 XAML 里引用**，数值本身正确。
 pub const DURATION_QUICK_SWITCH: f64 = 0.167;
 /// 封面 / 大图淡入。
 pub const DURATION_COVER_FADE: f64 = 0.40;
@@ -214,6 +227,17 @@ mod tests {
     fn durations_are_distinct() {
         assert!(DURATION_SHEET_DISMISS < DURATION_SHEET_APPEAR);
         assert!(DURATION_QUICK_SWITCH < DURATION_COVER_FADE);
+    }
+
+    /// 弹窗开合时长与一手源逐字对齐：开 300ms / 关 150ms。
+    #[test]
+    fn sheet_open_close_match_commandbarflyout_storyboards() {
+        assert_eq!(DURATION_SHEET_APPEAR, 0.30);
+        assert_eq!(DURATION_SHEET_DISMISS, 0.15);
+        assert!(
+            (DURATION_SHEET_APPEAR / DURATION_SHEET_DISMISS - 2.0).abs() < 1e-9,
+            "UWP 收起恰为展开的一半时长"
+        );
     }
 
     #[test]
