@@ -36,6 +36,19 @@ pub struct StatusColors {
     pub solid_neutral: Color,
     /// 「注意」面板底 —— attention 即 accent，故底色是强调色之外唯一的语义补充。
     pub attention_background: Color,
+    /// 错误态**实心填充**：ProgressBar Error 指示条。
+    ///
+    /// 取值 `#E81123`（Windows 系统错误红），两方案同值 —— 它是「系统错误」这一语义的
+    /// 固有标识，不随背景变浅深。`CONTROL_SPEC` §4 只写「Error：错误色」，未给笔刷名，
+    /// 故登记于 `docs/CANON_VS_TEMPORARY.md`（T12），待取到权威值后改。
+    pub error_fill: Color,
+    /// 危险操作**实心底**：SwipeControl `SwipeItemAction::Danger` 项。
+    ///
+    /// 取值 `#E5534A` 属 Kanesumi（UWP SwipeItem 未在快照中给出 Danger 底色，
+    /// 参 `CONTROL_SPEC` §32），登记于 `docs/CANON_VS_TEMPORARY.md`（T13）。
+    /// 注意：它同时是**文字底**，与 `on_surface` 的对比度仅约 3.2:1（低于正文 4.5），
+    /// 待实测后决定是换值还是改用自动前景（`Color::most_readable_on`）。
+    pub danger_fill: Color,
 }
 
 impl StatusColors {
@@ -54,6 +67,8 @@ impl StatusColors {
             neutral_background: Color::from_hex(0xFF_FF_FF_08),
             solid_neutral: Color::from_hex(0x9D_9D_9D),
             attention_background: Color::from_hex(0xFF_FF_FF_08),
+            error_fill: Color::from_hex(0xE8_11_23),
+            danger_fill: Color::from_hex(0xE5_53_4A),
         }
     }
 
@@ -72,6 +87,9 @@ impl StatusColors {
             neutral_background: Color::from_rgba(0x00_00_00_06),
             solid_neutral: Color::from_hex(0x8A_8A_8A),
             attention_background: Color::from_hex(0xF6_F6_F6_80),
+            // 实心语义填充两方案同值（见字段文档：系统错误红是语义固有标识）。
+            error_fill: Color::from_hex(0xE8_11_23),
+            danger_fill: Color::from_hex(0xE5_53_4A),
         }
     }
 
@@ -147,5 +165,42 @@ mod tests {
                 assert!(ratio >= 3.0, "{scheme:?}/{name} 面板底与正文对比度仅 {ratio}");
             }
         }
+    }
+
+    /// 实心语义填充（错误指示条 / 危险操作底）必须实心、且在两种方案的承载面上可辨
+    /// （非文本元素阈值 3.0，WCAG 1.4.11）。
+    #[test]
+    fn solid_semantic_fills_are_opaque_and_visible_on_surfaces() {
+        use crate::accent::Accent;
+        use crate::colors::MetroColors;
+
+        for scheme in [ColorScheme::Dark, ColorScheme::Light] {
+            let status = StatusColors::for_scheme(scheme);
+            let colors = MetroColors::for_scheme(scheme, Accent::default());
+            for (name, fill) in [
+                ("error_fill", status.error_fill),
+                ("danger_fill", status.danger_fill),
+            ] {
+                assert_eq!(fill.a, 1.0, "{scheme:?}/{name} 必须实心，不得透出下层");
+                for (carrier, surface) in
+                    [("surface", colors.surface), ("background", colors.background)]
+                {
+                    let ratio = fill.contrast_ratio(surface);
+                    assert!(
+                        ratio >= 3.0,
+                        "{scheme:?}/{name} 在 {carrier} 上对比度仅 {ratio}，低于 3.0"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 实心语义填充是「系统语义固有标识」：不随方案、也不随 accent 变。
+    #[test]
+    fn solid_semantic_fills_are_scheme_invariant() {
+        let dark = StatusColors::dark();
+        let light = StatusColors::light();
+        assert_eq!(dark.error_fill, light.error_fill);
+        assert_eq!(dark.danger_fill, light.danger_fill);
     }
 }
