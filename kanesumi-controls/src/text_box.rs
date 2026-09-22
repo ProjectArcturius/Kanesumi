@@ -122,9 +122,12 @@ impl MetroTextBox {
     }
 
     /// 处理一个编辑键（转发给编辑核心）。返回 true = 内容/光标变化。
+    ///
+    /// 水平滚动在 `render` 里按「光标可见」推进（那里才有 `TextEngine` 与矩形），
+    /// 此处只保证光标立刻亮起。
     pub fn handle_key(&mut self, key: TextInputKey) -> bool {
         let changed = self.field.handle_key(key);
-        self.ensure_caret_visible();
+        self.reset_blink();
         changed
     }
 
@@ -252,16 +255,48 @@ impl MetroTextBox {
         true
     }
 
-    /// 确保光标在可视范围内（水平滚动夹紧）。内容宽 / 光标 x 由调用方（App 层）
-    /// 结合视口宽度驱动 `scroll`；此处仅重设闪烁（内容变化后立刻亮起）。
-    fn ensure_caret_visible(&mut self) {
+    /// 确保光标在可视范围内（水平滚动夹紧），并重置闪烁。
+    ///
+    /// **此前是个空壳**（只 `reset_blink()`，`scroll` 无人写入）：单行输入一旦超过内容宽，
+    /// 文本被省略号截断而 `scroll` 恒为 0 —— 用户**看不见自己正在打的字**
+    /// （`COMPOSITION.md` 要求「绘制与实际显示一致」，`auto_suggest_box` 早有正解）。
+    /// 现按「光标必须可见」推进滚动，并夹到 `[0, 文本宽 − 视口宽]`。
+    fn ensure_caret_visible(&mut self, theme: &MetroTheme, engine: &TextEngine, body: Rect) {
         self.reset_blink();
+        let content = self.content_rect(theme, body);
+        let view = content.size.width;
+        let style = theme.typography.body;
+        let text = self.field.display_text();
+        if text.is_empty() || view <= 0.0 {
+            self.scroll = 0.0;
+            return;
+        }
+        let geometry = engine.line_geometry(&text, style.size, style.letter_spacing_em);
+        let caret = geometry.caret_x(self.visual_caret_index());
+        let total = engine.measure_with_spacing(&text, style.size, style.letter_spacing_em);
+        // 光标右缘留一点呼吸，避免贴着框边；向左则滚到 0。
+        let pad = TEXTBOX_CARET_W + 1.0;
+        if caret - self.scroll > view - pad {
+            self.scroll = caret - view + pad;
+        } else if caret - self.scroll < 0.0 {
+            self.scroll = caret;
+        }
+        self.scroll = self.scroll.clamp(0.0, (total - view).max(0.0));
     }
 
     // ── 渲染 ──────────────────────────────────────────────────
 
     /// 渲染到 `rect`。顺序：Header → 底色 → 选区 → 文本/占位 → 光标 → 删除按钮 → 边框。
-    pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
+    ///
+    /// 取 `&mut self`：渲染前要先按「光标可见」推进水平滚动（`ensure_caret_visible`）——
+    /// 与 `auto_suggest_box::render` 同款（那里的做法是滚动到文本末尾，这里跟光标）。
+    pub fn render(
+        &mut self,
+        theme: &MetroTheme,
+        engine: &TextEngine,
+        rect: Rect,
+        scene: &mut Scene,
+    ) {
         let colors = &theme.colors;
         let style = theme.typography.body;
         let disabled = self.state == ControlState::Disabled;
@@ -302,6 +337,14 @@ impl MetroTextBox {
         scene.fill_rounded_rect(bg, inner, theme.tokens.corner_radius);
 
         let content = self.content_rect(theme, body_rect);
+
+        // 渲染前推进水平滚动，让光标（含 IME 组合态）落在视口内。
+        self.ensure_caret_visible(theme, engine, body_rect);
+
+        // 容器语义：内容一律裁到内容区（`COMPOSITION.md` 强制契约）。
+        // 此前 **完全没有裁剪** —— 选区块与 preedit 虚线下划线都可能画到框外
+        // （文本本身因 `Scene::text` 默认省略号而侥幸不出框，故问题长期未被发现）。
+        scene.push_clip(content);
 
         // 选区高亮（TextControlSelectionHighlightColor → 强调色 35%）
         if let Some((lo, hi)) = self.field.selection() {
@@ -374,6 +417,9 @@ impl MetroTextBox {
                 TextAlign::Left,
             );
         }
+
+        // 内容区裁剪结束（与上面的 push_clip 成对；删除键/边框在其外，不受裁剪）。
+        scene.pop_clip();
 
         // 光标（聚焦 + 可见时显示）
         if self.focused && self.caret_visible() {
@@ -554,6 +600,65 @@ mod tests {
         MetroTheme::ether_dark()
     }
 
+    /// 关键回归：单行输入超宽时**必须水平滚动跟随光标**，否则用户看不见自己在打什么。
+    /// 旧实现 `ensure_caret_visible()` 只重置闪烁、`scroll` 恒为 0，长文本被省略号截断而
+    /// 光标停在右缘 —— 输入体验实际是坏的（2026-09-22 由 sec-a 对照发现）。
+    #[test]
+    fn long_text_scrolls_to_keep_caret_visible() {
+        if !font_available() {
+            return;
+        }
+        let mut tb = MetroTextBox::from_text("Ether Kanesumi 一行很长很长的文本用于触发水平滚动");
+        tb.focus();
+        let theme = theme();
+        let mut scene = Scene::default();
+        tb.render(
+            &theme,
+            &engine(),
+            Rect::new(0.0, 0.0, 80.0, 32.0),
+            &mut scene,
+        );
+        assert!(tb.scroll > 0.0, "超宽文本必须滚动，实际 scroll={}", tb.scroll);
+        // 滚动不得超过「文本宽 − 视口宽」
+        let content_w = tb.content_rect(&theme, tb.body_rect(&theme, Rect::new(0.0, 0.0, 80.0, 32.0))).size.width;
+        let text_w = engine().measure(&tb.field.display_text(), theme.typography.body.size);
+        assert!(
+            tb.scroll <= (text_w - content_w).max(0.0) + 0.01,
+            "滚动量不得超出可滚范围"
+        );
+        // 容器语义：内容区裁剪成对（COMPOSITION.md 强制契约）
+        let clips = scene
+            .commands
+            .iter()
+            .filter(|c| matches!(c, SceneCommand::PushClip { .. }))
+            .count();
+        let pops = scene
+            .commands
+            .iter()
+            .filter(|c| matches!(c, SceneCommand::PopClip))
+            .count();
+        assert!(clips >= 1, "内容必须被裁到内容区");
+        assert_eq!(clips, pops, "PushClip / PopClip 必须成对");
+    }
+
+    /// 反向：装得下就不滚动（滚动量 0），避免「无超宽也偏移」的过修。
+    #[test]
+    fn short_text_does_not_scroll() {
+        if !font_available() {
+            return;
+        }
+        let mut tb = MetroTextBox::from_text("Hi");
+        tb.focus();
+        let mut scene = Scene::default();
+        tb.render(
+            &theme(),
+            &engine(),
+            Rect::new(0.0, 0.0, 200.0, 32.0),
+            &mut scene,
+        );
+        assert_eq!(tb.scroll, 0.0, "装得下不得滚动");
+    }
+
     #[test]
     fn typing_via_handle_key() {
         let mut tb = MetroTextBox::new();
@@ -572,7 +677,7 @@ mod tests {
         if !font_available() {
             return;
         }
-        let tb = MetroTextBox::with_placeholder("搜索…");
+        let mut tb = MetroTextBox::with_placeholder("搜索…");
         let mut scene = Scene::default();
         tb.render(
             &theme(),
@@ -599,7 +704,7 @@ mod tests {
         if !font_available() {
             return;
         }
-        let tb = MetroTextBox::with_placeholder("搜索…").with_text("Ether");
+        let mut tb = MetroTextBox::with_placeholder("搜索…").with_text("Ether");
         let mut scene = Scene::default();
         tb.render(
             &theme(),
@@ -795,7 +900,7 @@ mod tests {
         if !font_available() {
             return;
         }
-        let tb = MetroTextBox::from_text("Ether");
+        let mut tb = MetroTextBox::from_text("Ether");
         let mut scene = Scene::default();
         tb.render(
             &theme(),

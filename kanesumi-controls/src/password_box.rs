@@ -103,8 +103,14 @@ impl MetroPasswordBox {
         self.boxed.state
     }
 
-    /// 渲染（委托 TextBox，掩码已注入）。
-    pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
+    /// 渲染（委托 TextBox，掩码已注入）。取 `&mut self` 是因为内层 TextBox 渲染时要推进水平滚动。
+    pub fn render(
+        &mut self,
+        theme: &MetroTheme,
+        engine: &TextEngine,
+        rect: Rect,
+        scene: &mut Scene,
+    ) {
         self.boxed.render(theme, engine, rect, scene);
     }
 
@@ -176,7 +182,7 @@ mod tests {
         }
         let engine = TextEngine::load(find_font().unwrap()).unwrap();
         let theme = MetroTheme::ether_dark();
-        let p = MetroPasswordBox::with_text("abc");
+        let mut p = MetroPasswordBox::with_text("abc");
         let mut scene = Scene::default();
         p.render(&theme, &engine, Rect::new(0.0, 0.0, 200.0, 32.0), &mut scene);
         let texts: Vec<String> = scene
