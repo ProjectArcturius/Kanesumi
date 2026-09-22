@@ -39,6 +39,23 @@ pub struct MetroColors {
     /// 列表选中行底：强调色 60%。来源 `CONTROL_SPEC` §215 的 Kanesumi 修正
     /// （UWP 为 75%，Ether 深色桌面调低一档至 0.60）。
     pub selection_tint: Color,
+    /// 文本选区高亮：强调色 35%。来源 `CONTROL_SPEC` §34（`TextControlSelectionHighlightColor`
+    /// → 强调色 **35%**，preedit 虚线下划线 60% 同节）。
+    ///
+    /// 与 [`selection_tint`](Self::selection_tint)（行选中 60%）**分角色**：选区是叠在正文
+    /// 字形之下的临时高亮，行选中是整行底色 —— 前者更淡才不压字形。
+    pub text_selection_tint: Color,
+    /// 强调色低透底（24%）：ComboBox 触发器聚焦衬底 / 下拉项选中
+    /// （`CONTROL_SPEC` §237 `HighlightListAccentLow`、§247 `ListAccentLow`）。
+    ///
+    /// 规格只写「强调色低透」未给数值，0.24 属 Kanesumi 取值（登记于
+    /// `docs/CANON_VS_TEMPORARY.md`，待实测定稿）。
+    pub accent_low_tint: Color,
+    /// 弱化轨道底：`surface_variant` 的 60% 强度（ProgressBar 轨道，`CONTROL_SPEC` §4）。
+    ///
+    /// Slider 轨道用**不透明** `surface_variant`（§1451）；ProgressBar 更低一档，
+    /// 以免轨道与指示条抢注意（指示条才是信息）。
+    pub track_subtle: Color,
     /// 焦点描边（由 accent 派生，两种方案下都可辨）。
     pub focus_stroke: Color,
 }
@@ -50,10 +67,11 @@ impl MetroColors {
     /// 正典 `KANESUMI_DESIGN.md` §Ⅲ.3 要求 OLED 纯黑 `#000000`。两者的差异见
     /// `docs/CANON_VS_TEMPORARY.md`；在维护者裁定前**不得**把它当成正典。
     pub fn dark(accent: Accent) -> Self {
+        let surface_variant = Color::from_hex(0x2E_2E_2E);
         Self {
             background: Color::from_hex(0x1A_1A_1A),
             surface: Color::from_hex(0x24_24_24),
-            surface_variant: Color::from_hex(0x2E_2E_2E),
+            surface_variant,
             divider: Color::from_hex(0x3A_3A_3A),
             primary: accent.base,
             primary_hover: accent.hover_for(ColorScheme::Dark),
@@ -63,16 +81,20 @@ impl MetroColors {
             on_surface: Color::from_hex(0xF0_F0_F0),
             on_surface_variant: Color::from_hex(0x9A_A0_A6),
             selection_tint: accent.base.with_alpha(0.60),
+            text_selection_tint: accent.base.with_alpha(0.35),
+            accent_low_tint: accent.base.with_alpha(0.24),
+            track_subtle: surface_variant.with_alpha(0.60),
             focus_stroke: accent.focus_for(ColorScheme::Dark),
         }
     }
 
     /// 亮色方案。与暗色**字段一一对应** —— 缺少任一字段即编译失败，以此强制「深浅对称」。
     pub fn light(accent: Accent) -> Self {
+        let surface_variant = Color::from_hex(0xF0_F0_F0);
         Self {
             background: Color::from_hex(0xFA_FA_FA),
             surface: Color::from_hex(0xFF_FF_FF),
-            surface_variant: Color::from_hex(0xF0_F0_F0),
+            surface_variant,
             divider: Color::from_hex(0xD6_D6_D6),
             primary: accent.base,
             primary_hover: accent.hover_for(ColorScheme::Light),
@@ -82,6 +104,9 @@ impl MetroColors {
             on_surface: Color::from_hex(0x1A_1A_1A),
             on_surface_variant: Color::from_hex(0x5A_5F_66),
             selection_tint: accent.base.with_alpha(0.60),
+            text_selection_tint: accent.base.with_alpha(0.35),
+            accent_low_tint: accent.base.with_alpha(0.24),
+            track_subtle: surface_variant.with_alpha(0.60),
             focus_stroke: accent.focus_for(ColorScheme::Light),
         }
     }
@@ -128,6 +153,41 @@ mod tests {
         }
     }
 
+    /// 强调色低透族（选区 35% / 强调低透 24%）同样必须跟着 accent 走，
+    /// 且**弱于**行选中底（60%）—— 顺序反了就等于选区压住字形。
+    #[test]
+    fn accent_low_tints_track_accent_and_stay_below_selection() {
+        for scheme in [ColorScheme::Dark, ColorScheme::Light] {
+            for accent in [Accent::default(), Accent::parse("00897B")] {
+                let c = MetroColors::for_scheme(scheme, accent);
+                assert_eq!(c.text_selection_tint.a, 0.35);
+                assert_eq!(c.accent_low_tint.a, 0.24);
+                assert_eq!(c.text_selection_tint.r, c.primary.r, "选区高亮取自强调色");
+                assert_eq!(c.accent_low_tint.r, c.primary.r, "低透底取自强调色");
+                assert!(
+                    c.text_selection_tint.a < c.selection_tint.a,
+                    "选区高亮必须弱于行选中底"
+                );
+                assert!(
+                    c.accent_low_tint.a < c.text_selection_tint.a,
+                    "强调低透必须弱于选区高亮"
+                );
+            }
+        }
+    }
+
+    /// 弱轨道底 = `surface_variant` 的 60% 强度：同色系、更淡。
+    #[test]
+    fn track_subtle_is_a_weaker_surface_variant() {
+        for scheme in [ColorScheme::Dark, ColorScheme::Light] {
+            let c = MetroColors::for_scheme(scheme, Accent::default());
+            assert_eq!(c.track_subtle.a, 0.60);
+            assert_eq!(c.track_subtle.r, c.surface_variant.r);
+            assert_eq!(c.track_subtle.g, c.surface_variant.g);
+            assert_eq!(c.track_subtle.b, c.surface_variant.b);
+        }
+    }
+
     /// 关键回归：换 accent 必须改变全部强调相关令牌 ——
     /// 这是「Chorus 改 accent、应用仍旧橙色」那个 bug 的守卫。
     #[test]
@@ -138,6 +198,9 @@ mod tests {
         assert_ne!(orange.primary_hover, teal.primary_hover);
         assert_ne!(orange.primary_pressed, teal.primary_pressed);
         assert_ne!(orange.focus_stroke, teal.focus_stroke);
+        assert_ne!(orange.selection_tint, teal.selection_tint);
+        assert_ne!(orange.text_selection_tint, teal.text_selection_tint);
+        assert_ne!(orange.accent_low_tint, teal.accent_low_tint);
     }
 
     /// 深浅对称：前景与背景的明暗方向必须互换，否则浅色主题必然「白字白底」。
