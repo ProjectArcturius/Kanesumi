@@ -19,6 +19,7 @@ pub mod dialog;
 pub mod drop_down_button;
 pub mod dropdown_menu;
 pub mod expander;
+pub mod focus;
 pub mod icon_button;
 pub mod ime;
 pub mod info_badge;

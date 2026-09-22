@@ -2317,6 +2317,16 @@ impl KeyboardHandler for Shell {
             .filter(|text| text.chars().count() > 1)
             .map(str::to_owned);
         let key = map_key(event.keysym, if text.is_some() { None } else { event.utf8 });
+        // Tab / Shift+Tab：框架级焦点推进（App 可选实现 `App::focus_move`）。
+        // 仅在 IME 未接管键盘时抢路由 —— 否则会破坏输入法内的候选选择。
+        if key == Key::Tab && !self.ime_enabled {
+            let backward = self.modifiers.shift;
+            let consumed = guard("focus_move", || self.app.focus_move(backward)).unwrap_or(false);
+            if consumed {
+                self.dirty = true;
+                return;
+            }
+        }
         self.emit_input(InputEvent::KeyPressed {
             key,
             modifiers: self.modifiers,

@@ -313,6 +313,18 @@ pub trait App {
         false
     }
 
+    /// Tab / Shift+Tab 焦点推进（框架统一路由）。
+    ///
+    /// 外壳在 Tab 按下、且 IME 未接管键盘时先调用本方法：
+    /// 返回 `true` = 已消费（不再投递 `KeyPressed`）；返回 `false`（默认）= 保持旧行为，
+    /// 照常投递 `KeyPressed { key: Tab }`。
+    ///
+    /// 典型实现：转发给 [`kanesumi_controls::focus::FocusRing::focus_next`] 并置脏重绘。
+    /// 这是「纯键盘不可用」与「两个控件同时亮焦点环」的系统性解法 —— 焦点环是全局唯一真源。
+    fn focus_move(&mut self, _backward: bool) -> bool {
+        false
+    }
+
     /// 本表面「运动语义」签名（S1 输入门控）。
     ///
     /// 返回 `Some(sig)`：外壳在「指针纯 Move + 无按键」事件路由前后比对该签名；
