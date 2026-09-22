@@ -5,6 +5,7 @@
 // 2026-08-10：Scene/TextEngine 已迁出至 `kanesumi-canvas`（渲染命令 + 排版），
 // 本 crate 回归纯运行时（tokens/主题/排版/几何），参 PLAN.md §6.1。
 
+pub mod accent;
 pub mod color;
 pub mod colors;
 pub mod geometry;
@@ -13,6 +14,7 @@ pub mod theme;
 pub mod tokens;
 pub mod typography;
 
+pub use accent::{Accent, ColorScheme};
 pub use color::Color;
 pub use colors::MetroColors;
 pub use geometry::{CornerRadius, Point, Rect, Size};
