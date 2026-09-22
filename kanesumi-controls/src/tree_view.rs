@@ -260,9 +260,14 @@ impl MetroTreeView {
             let selected = self.selected.as_deref() == Some(row.path.as_slice());
             let hovered = self.hovered.as_deref() == Some(row.path.as_slice());
 
-            // 底：Selected / hover 白 15%（CONTROL_SPEC §936 SubtleFillColorSecondary）
-            if selected || hovered {
-                scene.fill_rect(theme.indication.subtle_hover_tint, r);
+            // 底：选中用强调色 AccentLow，悬停用中性 ListLow（一手源 themeresources L1838-1841：
+            // `TreeViewItemBackgroundPointerOver` = `SystemControlHighlightListLowBrush` = 10%，
+            // `TreeViewItemBackgroundSelected` = `SystemControlHighlightAccent3RevealBrush`）。
+            // 旧实现两态都用「白 15%」（§936 的 SubtleFill 说法），一手字典里 TreeView 行没有该档。
+            if selected {
+                scene.fill_rect(theme.colors.selection_tint, r);
+            } else if hovered {
+                scene.fill_rect(theme.indication.hover_tint, r);
             }
 
             // chevron

@@ -102,12 +102,19 @@ impl MetroList {
             let hovered = self.hovered == Some(i);
 
             if selected {
-                // 选中高亮：UWP ListViewItem Selected = 强调色 ~75%（ListAccentMediumLow）。
-                // Ether 深色空间桌面下调一档至 0.60（参 CONTROL_SPEC §7）。
-                scene.fill_rect(theme.colors.selection_tint.with_alpha(theme.colors.selection_tint.a * alpha), row_rect);
+                // 选中高亮 = 强调色 AccentLow（暗 0.6 / 亮 0.4，一手源 themeresources L304/L4220）。
+                scene.fill_rect(
+                    theme
+                        .colors
+                        .selection_tint
+                        .with_alpha(theme.colors.selection_tint.a * alpha),
+                    row_rect,
+                );
             } else if hovered && !self.disabled {
-                // 悬停 = 中性高亮（HighlightListLow ≈30% 白），非强调色（CONTROL_SPEC §5 规律 5）。
-                scene.fill_rect(theme.indication.list_hover_tint, row_rect);
+                // 悬停 = 中性高亮。**一手源更正**：ListView 行 PointerOver 用的就是
+                // `SystemControlHighlightListLowBrush`（= 通用悬停强度 10%），与 AppBarButton 同值；
+                // 旧记录「≈30%」在一手字典里没有对应档（L1783 → L307 → L228）。
+                scene.fill_rect(theme.indication.hover_tint, row_rect);
             }
 
             let base = if selected {

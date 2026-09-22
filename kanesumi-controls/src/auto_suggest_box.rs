@@ -348,12 +348,8 @@ impl MetroAutoSuggestBox {
         let (stroke, stroke_w) = if self.focused {
             (colors.focus_stroke, 2.0)
         } else if self.state == ControlState::Hovered {
-            (
-                colors
-                    .on_surface_variant
-                    .with_alpha(theme.indication.base_medium_high),
-                1.0,
-            )
+            // 悬停边框 = BaseMedium 实色（一手源 themeresources L855 → L212），同 TextBox。
+            (colors.on_surface_variant, 1.0)
         } else {
             (colors.divider, 1.0)
         };
@@ -371,8 +367,8 @@ impl MetroAutoSuggestBox {
                 }
                 if self.highlighted == Some(i) {
                     // 高亮 = 中性（参 CONTROL_SPEC §5 规律 5：悬停用中性）。
-                    // 建议列表与 ListView 行同族 —— 同取 30% 的列表悬停底。
-                    scene.fill_rect(theme.indication.list_hover_tint, item);
+                    // 建议列表与 ListView 行同族；一手源显示 UWP 两处都用 ListLow（10%）。
+                    scene.fill_rect(theme.indication.hover_tint, item);
                 }
                 // 建议项单行不换行 + 裁剪（超宽项截断进 item，不溢出面板）。
                 let text_rect = Rect::new(
