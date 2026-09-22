@@ -2267,6 +2267,11 @@ mod tests {
             }
         }
         for p in [
+            // 缺 Windows 路径时 find_font() 返回 None → 下面的 `find_font().unwrap()` 直接 panic，
+            // 33 个交互测试在 Windows 上一律「红」而非「跳过」——测试等于不存在。
+            // 首选雅黑（含 CJK，最接近 Source Han Sans SC 的覆盖），再退 Segoe UI。
+            "C:/Windows/Fonts/msyh.ttc",
+            "C:/Windows/Fonts/segoeui.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             "/usr/share/fonts/TTF/DejaVuSans.ttf",
         ] {

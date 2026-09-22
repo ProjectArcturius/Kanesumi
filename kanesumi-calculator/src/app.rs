@@ -387,6 +387,9 @@ mod tests {
             }
         }
         for p in [
+            // Windows 侧路径不可少：缺了它 find_font() 恒返回 None，点击测试会**静默跳过**
+            // 断言（旧表现为「点键后显示仍为空」的假失败），等于测试在这台机器上不生效。
+            "C:/Windows/Fonts/segoeui.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             "/usr/share/fonts/TTF/DejaVuSans.ttf",
         ] {

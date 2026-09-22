@@ -402,6 +402,9 @@ mod tests {
             }
         }
         for p in [
+            // Windows：雅黑含 CJK（本控件菜单名为中文），缺它时整组测试静默跳过。
+            "C:/Windows/Fonts/msyh.ttc",
+            "C:/Windows/Fonts/segoeui.ttf",
             "/usr/local/share/fonts/s/SourceHanSansSC_Bold.otf",
             "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",

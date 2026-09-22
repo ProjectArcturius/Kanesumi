@@ -593,6 +593,9 @@ mod tests {
 
     fn engine_or_skip() -> Option<TextEngine> {
         for p in [
+            // Windows 路径不可少：缺它则这些布局测试在 Windows 上静默跳过，
+            // 等于「改坏了也不知道」。
+            "C:/Windows/Fonts/segoeui.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             "/usr/share/fonts/TTF/DejaVuSans.ttf",
             "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",

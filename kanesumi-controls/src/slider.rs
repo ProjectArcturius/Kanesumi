@@ -469,6 +469,7 @@ mod tests {
             }
         }
         for p in [
+            "C:/Windows/Fonts/segoeui.ttf",
             "/usr/local/share/fonts/s/SourceHanSansSC-Regular.otf",
             "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",

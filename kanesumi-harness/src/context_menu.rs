@@ -244,6 +244,9 @@ mod tests {
             return TextEngine::load(p).ok();
         }
         for p in [
+            // 菜单项为中文 + emoji，Windows 上取雅黑；缺它时整组测试静默跳过。
+            "C:/Windows/Fonts/msyh.ttc",
+            "C:/Windows/Fonts/segoeui.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             "/usr/share/fonts/TTF/DejaVuSans.ttf",
         ] {
