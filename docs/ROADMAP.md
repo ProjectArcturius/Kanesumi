@@ -49,10 +49,31 @@ M6 是 A/B/C 的收尾（动画词汇补齐 + 优化可见化）。M7 是独立�
 
 | 批次 | 内容 | 状态 |
 |---|---|---|
-| M1-1 | **令牌分类学 + 来源对齐**：把魔法 alpha 按语义归族（中性交互 / 列表高亮 / 强调衬底 / 不透明度乘数 / 遮罩），每族对齐权威来源；**并裁定 `CONTROL_SPEC` 的一处自相矛盾**（§65 说 PointerOver 白 10%，§215 说列表 PointerOver ≈30%） | 🔵 |
-| M1-2 | **迁移**：剩余内联字面量 6 处 / 5 文件；魔法 alpha 约 30 处 / 20 文件 → 令牌 | ⬜ |
-| M1-3 | **静态检查**：测试扫描 `kanesumi-controls/src/*.rs` 生产段，禁止 `Color::from_hex/rgb/new/from_rgba` 与裸 `with_alpha(<数字>)` | ⬜ |
+| M1-1 | **令牌分类学 + 来源对齐**：把魔法 alpha 按语义归族，每族对齐权威来源 | ✅ 2026-09-22 |
+| M1-2 | **迁移**：剩余内联字面量 6 处 / 5 文件；魔法 alpha 约 30 处 / 20 文件 → 令牌 | 🔵 已迁 hover 族（14 处）、列表悬停/选中、subtle 族（3 处）；剩 0.15/0.24/0.25 与不透明度乘数 |
+| M1-3 | **静态检查**：测试扫描 `kanesumi-controls/src/*.rs` 生产段，禁止 `Color::from_hex/rgb/new/from_rgba` 与裸 `with_alpha(<数字>)` | ⬜ 须待 M1-2 清空 |
 | M1-4 | **对比度自检扩展**：新增令牌纳入 WCAG 断言（正文 ≥4.5 / 次级 ≥3.0） | ⬜ |
+
+#### M1-1 分类学（2026-09-22 定）
+
+**一句话：中性底色不是"一个 hover 值"，而是按角色分族。** UWP 的 `HighlightListLow`
+本来就是**按控件取值**的 —— AppBarButton 是白 10%（`CONTROL_SPEC` §65），ListView 行是
+≈白 30%（§215）。这两处曾被当成文档自相矛盾，查证后确认**两者都成立**（不同控件），
+因此令牌必须分角色，不能归一。
+
+| 族 | 令牌 | 暗色 | 亮色 | 来源 |
+|---|---|---|---|---|
+| 中性交互 | `MetroIndication::hover_tint` | 白 10% | 黑 5% | `CONTROL_SPEC` §65 |
+| 中性交互 | `MetroIndication::press_tint` | 白 22% | 黑 10% | `CONTROL_SPEC` §65 |
+| 中性交互 | `MetroIndication::subtle_tint` | 白 5.9% | 黑 3.5% | WinUI 3 `SubtleFillColorSecondary` |
+| 列表 | `MetroIndication::list_hover_tint` | 白 30% | 黑 9.4% | §215；亮色取 WinUI 3 `ControlAltFillColorQuarternary`（待实测） |
+| 列表 | `MetroColors::selection_tint` | accent 60% | 同 | `CONTROL_SPEC` §215 Kanesumi 修正（UWP 75% → 60%） |
+| 语义 | `MetroColors::focus_stroke` / `StatusColors` | — | — | 见 `REFERENCE.md` §9.2 |
+
+**不透明度乘数不算色调**（`0.9/0.8/0.6/0.5/0.25` 等）：它们表达"次要/禁用/水印"的**透明度**，
+不是叠加色。处置：归入 M1-2 的具名常量（如 `MetroIndication::disabled_opacity` 已存在），
+**不得**与 tint 混为一谈。
+
 
 **验收**：M1-3 的静态检查通过 + 全量测试绿 + `CANON_VS_TEMPORARY` 临时项减少。
 
@@ -149,8 +170,12 @@ M6 是 A/B/C 的收尾（动画词汇补齐 + 优化可见化）。M7 是独立�
 | 1 | 三套布局的去留（`canvas/layout` / `structure/ui` / `structure/grid`） | M2-2（进而 M2-4） |
 | 2 | `place_popup` 契约是否可破（`CONTEXT_MENU_SPEC.md` 曾冻结其签名） | M5-3 |
 | 3 | T3：WinUI 的 Base/Secondary/Tertiary 分层 ↔ 本项目 background/surface/surface_variant 的映射 | M1-2 的亮色中性色替换 |
-| 4 | T8：两个 `press_tint`（`colors` 白 10% 与 `indication` 白 22%）收敛到哪一个 | M1-1 |
-| 5 | `CONTROL_SPEC` §65（PointerOver 白 10%）与 §215（列表 PointerOver ≈30%）哪个是本意 | M1-1 |
+| 4 | T8：两个 `press_tint`（`colors` 白 10% 与 `indication` 白 22%）收敛到哪一个 | M1-2 |
+
+> ~~5 · `CONTROL_SPEC` §65（PointerOver 白 10%）与 §215（列表 PointerOver ≈30%）哪个是本意~~
+> —— **2026-09-22 查证：非矛盾，已结**。§65 讲 AppBarButton、§215 讲 ListView 行，两个控件
+> 本就不同值（UWP 的 `HighlightListLow` 是按控件取值的笔刷）。已按「分角色令牌」处理，
+> 见 M1-1 分类学。
 
 ---
 
