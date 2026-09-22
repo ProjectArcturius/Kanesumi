@@ -38,6 +38,9 @@ pub struct MetroColors {
 
     /// 按下 tint（叠加在表面上表达按压）。
     pub press_tint: Color,
+    /// 列表选中行底：强调色 60%。来源 `CONTROL_SPEC` §215 的 Kanesumi 修正
+    /// （UWP 为 75%，Ether 深色桌面调低一档至 0.60）。
+    pub selection_tint: Color,
     /// 焦点描边（由 accent 派生，两种方案下都可辨）。
     pub focus_stroke: Color,
 }
@@ -62,6 +65,7 @@ impl MetroColors {
             on_surface: Color::from_hex(0xF0_F0_F0),
             on_surface_variant: Color::from_hex(0x9A_A0_A6),
             press_tint: Color::from_hex(0xFF_FF_FF_1A), // 白 10%
+            selection_tint: accent.base.with_alpha(0.60),
             focus_stroke: accent.focus_for(ColorScheme::Dark),
         }
     }
@@ -81,6 +85,7 @@ impl MetroColors {
             on_surface: Color::from_hex(0x1A_1A_1A),
             on_surface_variant: Color::from_hex(0x5A_5F_66),
             press_tint: Color::from_rgba(0x00_00_00_1A), // 黑 10%（半透明黑必须 from_rgba，参 V19 阈值坑）
+            selection_tint: accent.base.with_alpha(0.60),
             focus_stroke: accent.focus_for(ColorScheme::Light),
         }
     }

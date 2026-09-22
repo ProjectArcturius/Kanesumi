@@ -12,6 +12,14 @@ pub struct MetroIndication {
     pub hover_tint: Color,
     /// 按下 tint（叠加在表面上）。
     pub press_tint: Color,
+    /// 极轻的中性底色（分组底 / 次级容器 / 弱分隔）。来源：WinUI 3
+    /// `SubtleFillColorSecondary`（暗 `#0FFFFFFF` = 白 5.9%，亮 `#09000000` = 黑 3.5%）。
+    pub subtle_tint: Color,
+    /// 列表行悬停底。**与普通悬停不同值**：UWP 的 `HighlightListLow` 本就是按控件取值 ——
+    /// AppBarButton 是白 10%（`CONTROL_SPEC` §65），ListView 行是 ≈白 30%（§215）。
+    /// 暗色取 §215 的 30%；亮色暂用 WinUI 3 `ControlAltFillColorQuarternary` 亮 `#18000000`
+    /// （登记于 `docs/CANON_VS_TEMPORARY.md`，待实测）。
+    pub list_hover_tint: Color,
     /// 禁用态不透明度。UWP 惯例 0.38。
     pub disabled_opacity: f32,
     /// 焦点描边（由 accent 派生）。
@@ -26,6 +34,8 @@ impl MetroIndication {
             ColorScheme::Dark => Self {
                 hover_tint: Color::from_hex(0xFF_FF_FF_1A), // 白 10%
                 press_tint: Color::from_hex(0xFF_FF_FF_38), // 白 22%
+                subtle_tint: Color::from_hex(0xFF_FF_FF_0F), // 白 5.9%
+                list_hover_tint: Color::from_hex(0xFF_FF_FF_4D), // 白 30%
                 disabled_opacity: 0.38,
                 focus_stroke: accent.focus_for(ColorScheme::Dark),
             },
@@ -34,6 +44,8 @@ impl MetroIndication {
                 // 会静默变成不透明黑 —— 参 V19 阈值坑）。
                 hover_tint: Color::from_rgba(0x00_00_00_0D), // 黑 5%
                 press_tint: Color::from_rgba(0x00_00_00_1A), // 黑 10%
+                subtle_tint: Color::from_rgba(0x00_00_00_09), // 黑 3.5%
+                list_hover_tint: Color::from_rgba(0x00_00_00_18), // 黑 9.4%（待实测）
                 // ⚠ 亮色禁用不透明度沿用暗色 0.38，**未实测**（登记于 CANON_VS_TEMPORARY）。
                 disabled_opacity: 0.38,
                 focus_stroke: accent.focus_for(ColorScheme::Light),
