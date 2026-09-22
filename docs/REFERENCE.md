@@ -156,3 +156,78 @@
 - 命令栏溢出：<https://learn.microsoft.com/en-us/uwp/api/windows.ui.xaml.controls.commandbar.secondarycommands>
 - 动画与媒体优化指引：<https://learn.microsoft.com/en-us/windows/uwp/debug-test-perf/optimize-animations-and-media>
 - 2D：<https://github.com/microsoft/Win2D>
+
+---
+
+## §Ⅸ 已取到的权威值（2026-09-22 补）
+
+### 9.1 重大修正：WinUI 3 的主题色**定义是开源的**
+
+`CONTROL_SPEC.md` §11.1 说「`SystemControl*` 笔刷的定义不在开源仓里，必须读 SDK
+`themeresources.xaml`」—— 那句话针对的是 **UWP / WinUI 2**。**WinUI 3 的定义就在开源仓里**：
+
+```
+microsoft-ui-xaml/
+  controls/dev/CommonStyles/Common_themeresources_any.xaml   ← 全局色/时长定义（Default / Light / HighContrast 三套）
+  controls/dev/InfoBar/InfoBar_themeresources.xaml           ← 控件级取数入口（InfoBar 为例）
+  controls/dev/<Control>/<Control>_themeresources.xaml       ← 每个控件都有自己的
+```
+
+取数方式：`https://raw.githubusercontent.com/microsoft/microsoft-ui-xaml/main/<路径>`。
+许可 MIT。**Agent 不必再"猜"主题色** —— 先读这份，读不到才退回 `generic.xaml` + 实测。
+
+### 9.2 语义状态色（已落地为 `kanesumi-core::StatusColors`）
+
+| 令牌 | 暗色（`Default`） | 亮色（`Light`） |
+|---|---|---|
+| `SystemFillColorSuccess` | `#6CCB5F` | `#0F7B0F` |
+| `SystemFillColorCaution` | `#FCE100` | `#9D5D00` |
+| `SystemFillColorCritical` | `#FF99A4` | `#C42B1C` |
+| `SystemFillColorNeutral` | `#8BFFFFFF` | `#72000000` |
+| `SystemFillColorSolidNeutral` | `#9D9D9D` | `#8A8A8A` |
+| `SystemFillColorAttentionBackground` | `#08FFFFFF` | `#80F6F6F6` |
+| `SystemFillColorSuccessBackground` | `#393D1B` | `#DFF6DD` |
+| `SystemFillColorCautionBackground` | `#433519` | `#FFF4CE` |
+| `SystemFillColorCriticalBackground` | `#442726` | `#FDE7E9` |
+| `SystemFillColorNeutralBackground` | `#08FFFFFF` | `#06000000` |
+| `SystemFillColorSolidAttentionBackground` | `#2E2E2E` | （同族实心，按需取） |
+
+> **关键事实**：`SystemFillColorAttentionBrush` 直接绑定 `SystemAccentColor`（亮）/
+> `SystemAccentColorLight2`（暗）—— **attention 就是 accent**，不另设一套「注意色」。
+> 这也是「单一强调色」与「语义状态色」能并存的原因：attention 归 accent，其余三档归语义色。
+>
+> **换算陷阱**：WinUI 写 AARRGGBB，Kanesumi 的 `from_hex` 是 RRGGBBAA。逐项换算；半透明**黑**
+> 还必须用 `from_rgba`（其数值 ≤ `0x00FFFFFF`，走 `from_hex` 会被当成不透明 RGB）。
+
+### 9.3 中性色与文本色（可用于替换 `CANON_VS_TEMPORARY.md` 的临时值）
+
+| 令牌 | 暗色 | 亮色 |
+|---|---|---|
+| `SolidBackgroundFillColorBase` | `#202020` | `#F3F3F3` |
+| `SolidBackgroundFillColorSecondary` | `#1C1C1C` | `#EEEEEE` |
+| `SolidBackgroundFillColorTertiary` | `#282828` | `#F9F9F9` |
+| `SolidBackgroundFillColorBaseAlt` | `#0A0A0A` | `#DADADA` |
+| `TextFillColorPrimary` | `#FFFFFF` | `#E4000000` |
+| `TextFillColorSecondary` | `#C5FFFFFF` | `#9E000000` |
+| `TextFillColorTertiary` | `#87FFFFFF` | `#72000000` |
+| `DividerStrokeColorDefault` | `#15FFFFFF` | `#0F000000` |
+| `FocusStrokeColorOuter` | `#FFFFFF` | `#E4000000` |
+
+> 注意：**WinUI 的暗色基底是 `#202020` 而非纯黑**（最暗的是 `BaseAlt #0A0A0A`）。这印证了
+> 「OLED 纯黑」不是该体系的规则，只是暗色方案的一个可选取值。
+
+### 9.4 动画时长（**已解决既有文档矛盾**）
+
+同文件文末直接给出：
+
+```
+ControlNormalAnimationDuration      = 00:00:00.250   (0.250s)
+ControlFastAnimationDuration        = 00:00:00.167   (0.167s)
+ControlFastAnimationAfterDuration   = 00:00:00.168   (0.168s)
+ControlFasterAnimationDuration      = 00:00:00.083   (0.083s)
+ControlFastOutSlowInKeySpline       = 0,0,0,1
+```
+
+`ANIMATION_SPEC.md` 与 `kanesumi-anim/src/presets.rs` 注释里「180ms vs 0.167s」「对齐 UWP
+`ControlFastAnimationDuration`」的分歧到此为止：**权威值是 0.167s，缓动为 cubic-bezier(0,0,0,1)**。
+

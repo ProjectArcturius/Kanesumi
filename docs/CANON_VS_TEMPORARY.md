@@ -19,7 +19,7 @@
 |---|---|---|---|---|---|---|
 | T1 | 暗色背景 | `#1A1A1A` | `kanesumi-core/src/colors.rs` `MetroColors::dark` | **正典已修正（2026-09-22）**：不再规定「OLED 纯黑」，改为「深浅两套并列方案，取值属实现决策」 | `KANESUMI_DESIGN.md` §Ⅲ.3（已改） | **解除登记**：取值本身是方案内选择，不再是正典冲突；若仍想改纯黑，属视觉调优 |
 | T2 | 强调色基色来源 | 代码内默认 `#E57812` | `kanesumi-core/src/accent.rs` `Accent::DEFAULT_HEX` | 应**始终来自 Chorus** 的 `~/.config/ether/theme.toml` 的 `accent` | `Ether/chorus/src/theme.rs` | 机制已建（accent 派生 + 双态）；**消费端接线待做**（harness 读取 + App 跟随） |
-| T3 | 亮色中性色 | `#FAFAFA` / `#FFFFFF` / `#F0F0F0` / `#D6D6D6` / `#1A1A1A` / `#5A5F66` | `kanesumi-core/src/colors.rs` `MetroColors::light` | UWP light 主题的 `SystemControl*` 笔刷字面值 | Windows SDK `themeresources.xaml`（定位见 `CONTROL_SPEC.md` §11.1） | **待取数**（`CONTROL_SPEC.md` §11.4 早已列为「取具体值待做」）；当前值仅保证 WCAG 可读 |
+| T3 | 亮色中性色 | `#FAFAFA` / `#FFFFFF` / `#F0F0F0` / `#D6D6D6` / `#1A1A1A` / `#5A5F66` | `kanesumi-core/src/colors.rs` `MetroColors::light` | **候选权威值已取到**（见 `docs/REFERENCE.md` §9.3）：`SolidBackgroundFillColorBase` 亮 `#F3F3F3`、`Secondary` `#EEEEEE`、`Tertiary` `#F9F9F9`；`TextFillColorPrimary` 亮 `#E4000000` | **WinUI 3 开源仓**：`controls/dev/CommonStyles/Common_themeresources_any.xaml` | 待裁定映射：WinUI 的分层语义（Base/Secondary/Tertiary）与本项目（background/surface/surface_variant）并非一一对应，需先定映射再替换 |
 | T4 | 亮色禁用不透明度 | `0.38`（沿用暗色） | `kanesumi-core/src/indicator.rs` | UWP light 取值 | 同 T3 | 待取数 |
 | T5 | 亮色悬停 / 按下 tint | 黑 5% / 黑 10% | `kanesumi-core/src/indicator.rs` | UWP light `HighlightListLow/Medium` 字面值 | 同 T3 | 待取数 |
 | T6 | `on_accent` 判据 | 黑 / 白取对比度大者 | `kanesumi-core/src/accent.rs` | 与 Chorus `derive_accent()` **有意不一致**（Chorus 用亮度 0.5 阈值，青绿上白字仅 4.36:1） | 本表 §二·D1 | **有意偏离**：Chorus 侧应对齐 |
@@ -32,6 +32,8 @@
 > - 「省略号未启用、超长文本硬裁切」——2026-09-22 已改默认 `Ellipsis` 并补 `label/paragraph`。
 > - 「强调色无法派生 Light/Dark 档、控件 hover 不变色」——2026-09-22 已由 `Accent` 补齐。
 > - 「只有一套暗色常量、无亮色」——2026-09-22 已由 `MetroColors::{dark,light}` 补齐结构（数值见 T3~T5）。
+> - 「InfoBar / InfoBadge 内联四个状态色（且只有暗色版）」——2026-09-22 已由 `StatusColors` 令牌化，
+>   数值取自 WinUI 3 开源仓；语义色随方案变、不随 accent 变。
 
 ---
 
@@ -47,6 +49,7 @@
 | D4 | 圆角默认 `Square`，不用 UWP 的 `ControlCornerRadius=4px` | 正典 §Ⅲ.1「直角」；UWP 默认圆角属 Fluent 残留。 |
 | D5 | 不搬「依赖属性 / 附加属性」体系 | Rust 侧代价大于收益；只借其「失效传播」语义（参 `docs/REFERENCE.md` §Ⅴ）。 |
 | D6 | 正典不再规定「OLED 纯黑底」，改为「深浅两套并列方案」 | 原表述把**暗色方案的一个取值**写成了语言级规则 —— 纯黑是暗色模式的说法，浅色模式另有其道。文档局限已修正（`KANESUMI_DESIGN.md` §Ⅲ.3，2026-09-22）。 |
+| D7 | 「单一强调色」限定为**非语义**配色；语义状态色另成一组 | 维护者裁定（方案 B）。语义色与强调色是两类东西：InfoBar 用强调色表达「错误」，才是真正的不成熟。WinUI 的 `SystemFillColorAttention` 亦绑定 accent —— attention 归 accent，success/caution/critical 归语义色。 |
 
 ---
 
