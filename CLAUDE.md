@@ -6,10 +6,13 @@
 
 ```bash
 cargo check          # 检查所有 crate
-cargo test           # 单元测试（当前 686 个）
+cargo test           # 单元测试 710 个 + 静态检查 2 个 + doctest 2 个
 cargo clippy
 cargo fmt
 ```
+
+> Windows 上无 Linux 会话时，字体查找已补 Windows 路径（雅黑 / Segoe UI），
+> 测试不再因缺字体而 panic 或静默跳过（参 `docs/MATURITY_AUDIT_2026-09-22.md` §Ⅴ-5）。
 
 ### 路线与依据（先读这五份）
 

@@ -42,7 +42,7 @@ M6 是 A/B/C 的收尾（动画词汇补齐 + 优化可见化）。M7 是独立�
 
 状态记号：⬜ 未开始 ｜ 🔵 进行中 ｜ ✅ 已完成 ｜ ⏸ 待裁定阻塞
 
-### M1 · 令牌纪律（保险机制线）—— **进行中**
+### M1 · 令牌纪律（保险机制线）—— **已完成（2026-09-22）**
 
 **目标**：控件不可能再写出错颜色；未知令牌必须报错（对标 WinUI 的
 `XamlResourceReferenceFailed`：写错必须报错，不能静默回退成另一个样子）。
@@ -50,9 +50,9 @@ M6 是 A/B/C 的收尾（动画词汇补齐 + 优化可见化）。M7 是独立�
 | 批次 | 内容 | 状态 |
 |---|---|---|
 | M1-1 | **令牌分类学 + 来源对齐**：把魔法 alpha 按语义归族，每族对齐权威来源 | ✅ 2026-09-22 |
-| M1-2 | **迁移**：剩余内联字面量 6 处 / 5 文件；魔法 alpha 约 30 处 / 20 文件 → 令牌 | 🔵 已迁 hover 族（14 处）、列表悬停/选中、subtle 族（3 处）；剩 0.15/0.24/0.25 与不透明度乘数 |
-| M1-3 | **静态检查**：测试扫描 `kanesumi-controls/src/*.rs` 生产段，禁止 `Color::from_hex/rgb/new/from_rgba` 与裸 `with_alpha(<数字>)` | ⬜ 须待 M1-2 清空 |
-| M1-4 | **对比度自检扩展**：新增令牌纳入 WCAG 断言（正文 ≥4.5 / 次级 ≥3.0） | ⬜ |
+| M1-2 | **迁移**：内联字面量 6 处 / 5 文件；魔法 alpha 约 32 处 / 20 文件 → 令牌 | ✅ 2026-09-22（M1-2a 20 处 + M1-2b 38 处） |
+| M1-3 | **静态检查**：测试扫描 `kanesumi-controls/src/*.rs` 生产段，禁止 `Color::from_hex/rgb/new/from_rgba` 与裸 `with_alpha(<数字>)` | ✅ 2026-09-22（`tests/token_discipline.rs`，含反向自检） |
+| M1-4 | **对比度自检扩展**：新增令牌纳入 WCAG 断言（正文 ≥4.5 / 次级 ≥3.0） | ✅ 2026-09-22（tint 合成后判、实心件 ≥3.0、指示条 vs 轨道） |
 
 #### M1-1 分类学（2026-09-22 定）
 
@@ -65,17 +65,34 @@ M6 是 A/B/C 的收尾（动画词汇补齐 + 优化可见化）。M7 是独立�
 |---|---|---|---|---|
 | 中性交互 | `MetroIndication::hover_tint` | 白 10% | 黑 5% | `CONTROL_SPEC` §65 |
 | 中性交互 | `MetroIndication::press_tint` | 白 22% | 黑 10% | `CONTROL_SPEC` §65 |
-| 中性交互 | `MetroIndication::subtle_tint` | 白 5.9% | 黑 3.5% | WinUI 3 `SubtleFillColorSecondary` |
+| 中性交互 | `MetroIndication::subtle_tint` | 白 5.9% | 黑 3.5% | WinUI 3 `SubtleFillColorSecondary`（极轻容器底 / 分组底） |
+| 中性交互 | `MetroIndication::subtle_hover_tint` | 白 15% | 黑 15% | UWP 2.x `SubtleFillColorSecondary`：§471 标题栏返回键、§790、§864、§936 |
+| 中性交互 | `MetroIndication::subtle_press_tint` | 白 25% | 黑 25% | UWP 2.x `SubtleFillColorTertiary`：§791、§864 |
 | 列表 | `MetroIndication::list_hover_tint` | 白 30% | 黑 9.4% | §215；亮色取 WinUI 3 `ControlAltFillColorQuarternary`（待实测） |
 | 列表 | `MetroColors::selection_tint` | accent 60% | 同 | `CONTROL_SPEC` §215 Kanesumi 修正（UWP 75% → 60%） |
+| 文本 | `MetroColors::text_selection_tint` | accent 35% | 同 | §34 `TextControlSelectionHighlightColor`（叠在字形之下，故弱于行选中） |
+| 强调低透 | `MetroColors::accent_low_tint` | accent 24% | 同 | §237 `HighlightListAccentLow` / §247 `ListAccentLow`（值待实测，T14） |
 | 语义 | `MetroColors::focus_stroke` / `StatusColors` | — | — | 见 `REFERENCE.md` §9.2 |
 
-**不透明度乘数不算色调**（`0.9/0.8/0.6/0.5/0.25` 等）：它们表达"次要/禁用/水印"的**透明度**，
-不是叠加色。处置：归入 M1-2 的具名常量（如 `MetroIndication::disabled_opacity` 已存在），
-**不得**与 tint 混为一谈。
+**浅叠与极轻同源不同代**：`subtle_tint`（5.9%）取自 WinUI 3 的
+`SubtleFillColorSecondary`，而 §471/§790/§864/§936 的 15%/25% 取自 UWP 2.x 的同名令牌
+（WinUI 3 已把 Secondary/Tertiary 下调到 5.9%/3.9%）。这是**两代取值**，不是文档自相矛盾；
+处置同 §215：**按角色分族**（极轻容器底 vs 交互浅叠），两者都保留（见 §Ⅴ-6）。
 
+**不透明度乘数不算色调**（`0.9/0.8/0.7/0.6/0.5/0.35` 等）：它们表达"次要 / 禁用 / 水印"的
+**透明度**，不是叠加色。处置：具名为 `MetroIndication` 的前景强度档
+（`base_medium_high` 0.9 / `secondary_opacity` 0.8 / `placeholder_focused_opacity` 0.7 /
+`base_medium` 0.6 / `inactive_opacity` 0.5 / `base_medium_low` 0.35 / `disabled_opacity` 0.38），
+**不得**与 tint 混为一谈；档位与方案无关（叠加色已翻转），已有回归测试固定。
 
 **验收**：M1-3 的静态检查通过 + 全量测试绿 + `CANON_VS_TEMPORARY` 临时项减少。
+
+- 静态检查：`cargo test -p kanesumi-controls --test token_discipline` 绿（附反向自检：
+  在样例上验证检查器抓得到构造器与裸 alpha，并断言扫描文件数 ≥40，防「空集合静默通过」）。
+- 全量测试：本机（Windows）710 个单元测试 + 2 个静态检查 + 2 个 doctest 全绿（合计 714）；
+  `cargo clippy --workspace --all-targets` 告警数与基线逐条一致（无新增）。
+- 临时项：**总数上升**（T12~T16），但这是把原先**连名字都没有**的无源取值（0.8/0.5/0.7/
+  0.24/60% 轨道/两个错误红）第一次登记下来 —— 登记数上升、未登记的无源值归零，才是这条的真进展。
 
 **已记账（M0，2026-09-22 完成）**：溢出契约（默认省略号 + `label/paragraph` + 框矮于一行不静默消失）、
 容器裁剪 6 处、可达 panic 5 处、`shm_open`/IME 边界/`guard()` 鲁棒性、`Accent` 色阶、深浅双态令牌、
@@ -174,6 +191,9 @@ M6 是 A/B/C 的收尾（动画词汇补齐 + 优化可见化）。M7 是独立�
 | 3 | T3：WinUI 分层 ↔ 本项目分层的映射 | **不做映射** | WinUI 的 Base/Secondary/Tertiary 表达「基底 / 替代色阶」而非层级高度（暗色里 Secondary 比 Base **更暗**），与本项目 `background < surface < surface_variant` 的单调递增不同构。强行映射等于引入另一套心智模型；缺的令牌另行按名取 WinUI 值 |
 | 4 | T8：两个 `press_tint` 收敛 | 按角色收敛：`MetroIndication::press_tint`（22%，控件按压）与 `press_subtle_tint`（10%，大面积 / 次要按压）；**删除** `MetroColors::press_tint` | 与 hover 族同构 —— 同名不同义才是漂移源，分角色命名后两个值都成立 |
 | 5 | `47e480f`（已推送的大杂烩提交） | **不拆分、不改写历史** | 规则禁止 force-push；且该提交触及的文件已被后续主题重构覆盖，拆分的回滚收益低于改写已发布历史的代价。其价值转为反例，已写入 `AGENTS.md` |
+| 6 | `SubtleFillColorSecondary` 究竟是白 5.9% 还是白 15% | **两代取值并存、按角色分族**：`subtle_tint` 5.9%（WinUI 3，极轻容器底 / 分组底）、`subtle_hover_tint` 15% / `subtle_press_tint` 25%（UWP 2.x，交互浅叠） | `CONTROL_SPEC` §471/§790/§864/§936 明标 15% / 25% 且注明 `SubtleFillColorSecondary/Tertiary`；WinUI 3 已把这两档下调为 5.9% / 3.9%。同名不同代，与 §215 同款处置（M1-1 分类学）：分角色命名后两个值都成立，谁也不必改谁 |
+| 7 | `ControlFastAnimationDuration` 是否立即对齐 0.167s | **不动，留给 M6-3** | 权威值已取到（`REFERENCE.md` §9.4），但批量替换会同时改变 17 个交互控件的观感；须与 M6-1（PointerDown/Up 100ms 下沉）同批落地，避免两次视觉变更叠加、无从归因 |
+| 8 | M1-2 迁移中遇到的「无权威来源取值」怎么办 | **令牌化但登记为临时**（不猜、不丢） | 那些值（0.24 / 0.8 / 0.5 / 0.7 / 60% 轨道 / 两个错误红）原先连名字都没有，谈不上「登记」；现在先给名字与角色，再在 `CANON_VS_TEMPORARY.md` 登记（T12~T16）。**不借迁移之机顺手改视觉** —— 无实测就改值，等于把「临时」换成「另一个临时」 |
 
 ## §Ⅵ 跨仓联动（Ether 侧，不属本路线但会互相等待）
 

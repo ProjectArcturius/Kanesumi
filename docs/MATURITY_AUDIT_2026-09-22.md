@@ -91,6 +91,25 @@
 9. 无障碍导出（AT-SPI2）——对照 UWP 免费提供的 UIA，这是自绘路线最大的结构缺口。
 10. 系统剪贴板桥接、拖放。
 
+## §Ⅴ 续：M1 收官与「Windows 静态验证」通道（2026-09-22）
+
+按 `ROADMAP.md` M1 收官（令牌纪律），并把「没有 Linux 会话也能验证」这件事做实：
+
+1. **令牌层补齐**：`MetroIndication` 增浅叠族（15% / 25%）与前景强度档（0.9 / 0.8 / 0.7 /
+   0.6 / 0.5 / 0.35），`MetroColors` 增 `text_selection_tint` / `accent_low_tint` / `track_subtle`，
+   `StatusColors` 增 `error_fill` / `danger_fill`，`Color` 增 `most_readable_on`（自动前景）。
+2. **迁移**：控件生产段的 32 处魔法 alpha 与 6 处内联颜色字面量全部换成令牌；
+   无权威来源的取值不猜也不丢 —— 令牌化后在 `CANON_VS_TEMPORARY.md` 登记（T12~T16）。
+3. **静态守住**：`kanesumi-controls/tests/token_discipline.rs` 扫描生产段，禁止颜色构造器与
+   裸 `with_alpha(<数字>)`；含反向自检与「扫描文件数 ≥40」断言，防「检查形同虚设」。
+4. **自检扩展**：新增令牌纳入 WCAG 断言 —— tint 先 source-over 合成再判（直接拿未合成 RGB
+   会把「浅底叠白」判成合格），实心语义件 ≥3.0，指示条 vs 轨道 ≥3.0（亮色 2.7 为登记缺口 T15）。
+5. **测试通道修复**：全仓字体查找补 Windows 路径。此前 gallery 33 个交互测试直接 panic、
+   calculator 2 个假失败、menu_bar / `canvas::layout` / `harness::context_menu` 静默跳过 ——
+   静默跳过的测试比没有测试更危险（改坏了也不知道）。修复后本机 **710 个单元测试 + 2 个静态检查
+   + 2 个 doctest 全绿**（合计 714），`cargo clippy --workspace --all-targets` 告警数与基线**逐条一致**（无新增）。
+
+
 ## §Ⅳ 需维护者裁定
 
 1. `MetroGrid` / `structure::Ui` 是留是废？（决定 P0-1 的迁移终点）

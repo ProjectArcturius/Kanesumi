@@ -28,6 +28,11 @@
 | T9 | 焦点描边取值 | 由 accent 派生（暗色 = Light2），**原值 `#FFA626` 借自合成器 Dock 聚焦指示线** | `kanesumi-core/src/accent.rs` `focus_for` | 由 accent 派生的正典机制 | 本表 §二·D2 | 机制已换；取值变化需一次视觉确认 |
 | T10 | xdg-shell 角色不吃损伤重绘 | 全量重绘 | `kanesumi-harness/src/platform.rs` | 与 CPU 路径同等的损伤重绘 | — | 未开工（审计 §Ⅳ） |
 | T11 | 亮色 `list_hover_tint` | 黑 9.4%（`ControlAltFillColorQuarternary` 亮值） | `kanesumi-core/src/indicator.rs` | UWP 亮色 ListView 行 PointerOver 的实际笔刷值 | UWP `SystemControlHighlightListLowBrush` 亮色字面值（Windows SDK `themeresources.xaml`，参 `CONTROL_SPEC.md` §11.1） | 待实测：暗色 30% 有 §215 明文；亮色是**从 WinUI 3 邻近令牌借的**，非直接对应 |
+| T12 | ProgressBar 错误态指示条色 | `#E81123`（`StatusColors::error_fill`，两方案同值） | `kanesumi-core/src/status.rs` | UWP `SystemControlErrorTextForegroundBrush` 一类的错误红 | `CONTROL_SPEC.md` §4 只写「Error：错误色」，未给笔刷名 | 待取数：**机制已对**（不再内联在控件里、走语义色组），仅数值缺权威来源 |
+| T13 | SwipeControl Danger 项底色 | `#E5534A`（`StatusColors::danger_fill`） | `kanesumi-core/src/status.rs` | UWP SwipeItem Danger 的实际底色 | `CONTROL_SPEC.md` §32 未给色值 | 待实测。**已知缺口**：它是文字底，与 `on_surface` 对比度仅约 3.2:1（低于正文 4.5）；实测后要么换深一档的红，要么改用自动前景（`Color::most_readable_on`） |
+| T14 | `accent_low_tint` 强度 | 强调色 24% | `kanesumi-core/src/colors.rs` | UWP `HighlightListAccentLow` / `ListAccentLow` 的字面值 | `CONTROL_SPEC.md` §237/§247 只写「强调色低透」 | 待实测：ComboBox 聚焦衬底与下拉选中项共用，浓淡需一次眼看 |
+| T15 | ProgressBar 轨道底 | `surface_variant` 60%（`MetroColors::track_subtle`） | `kanesumi-core/src/colors.rs` | 亮色轨道与指示条的对比度应 ≥3.0（非文本阈值） | — | **已知缺口**：亮色实测仅 2.7~2.8（轨道本就浅灰再叠白），属亮色中性色待打磨（T3 家族）；`colors.rs` 的自检已钉住「不得更差」的下界 |
+| T16 | 前景强度档 0.8 / 0.5 / 0.7 | `secondary_opacity` / `inactive_opacity` / `placeholder_focused_opacity` | `kanesumi-core/src/indicator.rs` | UWP `BaseMediumHigh` 0.9 / `TextFillColorDisabled` / `TextControlPlaceholderForegroundFocused` 的字面值 | `CONTROL_SPEC.md` 仅给笔刷名或「低透」等描述 | 待取数：三档都是 Kanesumi 取值；机制正确（与 tint 分立、两方案同值），数值待权威值替换 |
 
 > **已消除的临时项**（保留在此作为历史，避免再次被误认）：
 > - 「省略号未启用、超长文本硬裁切」——2026-09-22 已改默认 `Ellipsis` 并补 `label/paragraph`。
@@ -35,6 +40,10 @@
 > - 「只有一套暗色常量、无亮色」——2026-09-22 已由 `MetroColors::{dark,light}` 补齐结构（数值见 T3~T5）。
 > - 「InfoBar / InfoBadge 内联四个状态色（且只有暗色版）」——2026-09-22 已由 `StatusColors` 令牌化，
 >   数值取自 WinUI 3 开源仓；语义色随方案变、不随 accent 变。
+> - 「控件里散着颜色字面量与魔法 alpha」——2026-09-22 已全部迁到令牌（M1-2），并由
+>   `kanesumi-controls/tests/token_discipline.rs` 静态守住（M1-3）；无源取值转为 T12~T16 登记。
+> - 「InfoBar 图标方块写死白字」——2026-09-22 改为 `Color::most_readable_on`（恒 ≥4.58:1），
+>   白字画在暗色成功绿上只有 1.9:1 的问题不复存在。
 
 ---
 
@@ -57,8 +66,12 @@
 ## 三、维护者待裁定
 
 > 2026-09-22 复检：**T1 已随正典修正解除**（「纯黑」不再是语言级规则）；**T8 已消除**（按角色拆名）。
-> 余下两项属"需真机眼看一次"的调优，不阻塞路线。
+> 2026-09-22 M1 收官复检：新增 T12~T16 均为「机制已对、数值待权威值或实测」的类型，
+> 不阻塞路线；其中 **T13（危险底与正文对比度仅 3.2:1）与 T15（亮色轨道对比度 2.7）是仅有的
+> 两条真缺口**，都需要一次真机眼看再定稿。
 
 1. **T2**：`theme.toml` 缺失时的回退强调色，是否就用 `#E57812`？（现 `Accent::DEFAULT_HEX` 与 Chorus `Theme::default()` 一致。）
 2. **T9**：焦点描边改用 accent 派生档后，是否需要一次真机视觉确认再定稿？
 3. **T11**：亮色 `list_hover_tint` 的取值（借自 WinUI 3 邻近令牌），需一次实测确认。
+4. **T13 / T15**：SwipeControl 危险项的文字可读性、亮色 ProgressBar 轨道与指示条的分辨度 ——
+   两条都需要一次真机确认；`colors.rs` 与 `status.rs` 的自检已把下界钉住，改值时会立刻有测试反馈。
