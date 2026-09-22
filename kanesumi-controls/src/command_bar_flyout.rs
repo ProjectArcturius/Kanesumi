@@ -214,7 +214,7 @@ impl MetroCommandBarFlyout {
             );
             if self.hovered == Some(i) {
                 // AppBarButton PointerOver = HighlightListLow（白 10%）
-                scene.fill_rect(colors.on_surface.with_alpha(0.10), btn);
+                scene.fill_rect(theme.indication.hover_tint, btn);
             }
             // 图标（16px 居中）
             scene.text(

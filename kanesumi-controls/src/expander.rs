@@ -202,7 +202,7 @@ impl MetroExpander {
         scene.fill_rect(colors.surface, header);
         // 交互 tint
         match self.state {
-            ControlState::Hovered => scene.fill_rect(colors.on_surface.with_alpha(0.06), header),
+            ControlState::Hovered => scene.fill_rect(theme.indication.subtle_tint, header),
             ControlState::Pressed => scene.fill_rect(colors.on_surface.with_alpha(0.10), header),
             _ => {}
         }

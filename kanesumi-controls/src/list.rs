@@ -104,10 +104,10 @@ impl MetroList {
             if selected {
                 // 选中高亮：UWP ListViewItem Selected = 强调色 ~75%（ListAccentMediumLow）。
                 // Ether 深色空间桌面下调一档至 0.60（参 CONTROL_SPEC §7）。
-                scene.fill_rect(colors.primary.with_alpha(0.60 * alpha), row_rect);
+                scene.fill_rect(theme.colors.selection_tint.with_alpha(theme.colors.selection_tint.a * alpha), row_rect);
             } else if hovered && !self.disabled {
                 // 悬停 = 中性高亮（HighlightListLow ≈30% 白），非强调色（CONTROL_SPEC §5 规律 5）。
-                scene.fill_rect(colors.on_surface.with_alpha(0.30), row_rect);
+                scene.fill_rect(theme.indication.list_hover_tint, row_rect);
             }
 
             let base = if selected {

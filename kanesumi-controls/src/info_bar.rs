@@ -315,7 +315,7 @@ impl MetroInfoBar {
         if let Some(label) = &self.action_label {
             let action_rect = geom.action;
             if self.action_hovered {
-                scene.fill_rect(colors.on_surface.with_alpha(0.10), action_rect);
+                scene.fill_rect(theme.indication.hover_tint, action_rect);
             }
             scene.text(
                 label.clone(),
@@ -331,7 +331,7 @@ impl MetroInfoBar {
             let close = Self::close_rect(rect);
             if self.close_hovered {
                 scene.fill_rounded_rect(
-                    colors.on_surface.with_alpha(0.10),
+                    theme.indication.hover_tint,
                     close,
                     kanesumi_core::CornerRadius::Slight,
                 );

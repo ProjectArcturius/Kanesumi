@@ -166,7 +166,7 @@ impl MetroSelectorFlyout {
             if selected {
                 scene.fill_rect(colors.primary.with_alpha(0.24), item_rect);
             } else if self.hovered == Some(i) {
-                scene.fill_rect(colors.on_surface.with_alpha(0.10), item_rect);
+                scene.fill_rect(theme.indication.hover_tint, item_rect);
             }
             let fg = if selected {
                 colors.on_surface

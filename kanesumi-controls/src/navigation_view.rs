@@ -347,7 +347,7 @@ impl MetroNavigationView {
         let tr = self.toggle_rect(rect);
         if self.toggle_hovered {
             scene.fill_rounded_rect(
-                colors.on_surface.with_alpha(0.10),
+                theme.indication.hover_tint,
                 tr,
                 theme.tokens.corner_radius,
             );
@@ -372,7 +372,7 @@ impl MetroNavigationView {
             let selected = self.selected.as_deref() == Some([i].as_slice());
             // 底
             if selected {
-                scene.fill_rect(colors.on_surface.with_alpha(0.08), r);
+                scene.fill_rect(theme.indication.subtle_tint, r);
             }
             // 选中指示条（3×16 强调色，左侧）
             if selected {
@@ -457,7 +457,7 @@ impl MetroNavigationView {
                     );
                     let csel = self.selected.as_deref() == Some([i, j].as_slice());
                     if csel {
-                        scene.fill_rect(colors.on_surface.with_alpha(0.08), cr);
+                        scene.fill_rect(theme.indication.subtle_tint, cr);
                     }
                     scene.text(
                         child.label.clone(),

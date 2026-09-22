@@ -347,7 +347,7 @@ impl MetroPagerControl {
                 PagerItem::Ellipsis => false,
             };
             let bg = if selected || hovered {
-                colors.on_surface.with_alpha(0.10)
+                theme.indication.hover_tint
             } else {
                 kanesumi_core::Color::TRANSPARENT
             };
@@ -437,7 +437,7 @@ impl MetroPagerControl {
         }
         if hovered {
             scene.fill_rounded_rect(
-                colors.on_surface.with_alpha(0.10),
+                theme.indication.hover_tint,
                 rect,
                 theme.tokens.corner_radius,
             );

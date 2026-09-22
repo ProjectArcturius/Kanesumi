@@ -409,7 +409,7 @@ impl MetroDropdownMenu {
             if self.hovered == Some(i)
                 || self.submenu.as_ref().map(|s| s.parent) == Some(i)
             {
-                scene.fill_rect(colors.on_surface.with_alpha(0.10), item_rect);
+                scene.fill_rect(theme.indication.hover_tint, item_rect);
             }
 
             let mut x = self.panel_rect.origin.x + 11.0;
@@ -516,7 +516,7 @@ impl MetroDropdownMenu {
                 self.item_height,
             );
             if sub.menu.hovered == Some(i) {
-                scene.fill_rect(colors.on_surface.with_alpha(0.10), item_rect);
+                scene.fill_rect(theme.indication.hover_tint, item_rect);
             }
             let mut x = sub.panel.origin.x + 11.0;
             if let Some(icon) = &item.icon {

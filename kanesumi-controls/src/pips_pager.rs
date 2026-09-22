@@ -343,7 +343,7 @@ impl MetroPipsPager {
         let colors = &theme.colors;
         if hovered {
             scene.fill_rounded_rect(
-                colors.on_surface.with_alpha(0.10),
+                theme.indication.hover_tint,
                 rect,
                 CornerRadius::Slight,
             );

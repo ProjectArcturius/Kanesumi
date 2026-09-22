@@ -241,7 +241,7 @@ impl MetroTabView {
             let bg = if selected {
                 colors.surface_variant
             } else if hovered {
-                colors.on_surface.with_alpha(0.08)
+                theme.indication.subtle_tint
             } else {
                 Color::TRANSPARENT
             };
@@ -294,7 +294,7 @@ impl MetroTabView {
         if let Some(a) = self.add_rect(rect) {
             if self.hovered == Some(TabHover::Add) {
                 scene.fill_rounded_rect(
-                    colors.on_surface.with_alpha(0.10),
+                    theme.indication.hover_tint,
                     a,
                     theme.tokens.corner_radius,
                 );

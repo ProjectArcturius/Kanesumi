@@ -294,7 +294,7 @@ impl MetroBreadcrumbBar {
             );
             if self.hovered_ellipsis {
                 scene.fill_rounded_rect(
-                    colors.on_surface.with_alpha(0.10),
+                    theme.indication.hover_tint,
                     er,
                     theme.tokens.corner_radius,
                 );
@@ -320,7 +320,7 @@ impl MetroBreadcrumbBar {
             let w = engine.measure(label, style.size) + ITEM_PAD_X * 2.0;
             let hovered = self.hovered_item == Some(i);
             let bg = if hovered && !is_last {
-                colors.on_surface.with_alpha(0.10)
+                theme.indication.hover_tint
             } else {
                 kanesumi_core::Color::TRANSPARENT
             };
