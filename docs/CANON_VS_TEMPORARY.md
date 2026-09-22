@@ -17,7 +17,7 @@
 
 | # | 项 | 现取值 | 位置 | 目标 / 正典 | 权威来源 | 状态 |
 |---|---|---|---|---|---|---|
-| T1 | 暗色背景 | `#1A1A1A` | `kanesumi-core/src/colors.rs` `MetroColors::dark` | 正典 §Ⅲ.3 要求 **OLED 纯黑 `#000000`** | `KANESUMI_DESIGN.md` §Ⅲ.3 | 待裁定：纯黑 vs 与合成器桌面底色（`#1E1E1E`）的层次关系需一次对比 |
+| T1 | 暗色背景 | `#1A1A1A` | `kanesumi-core/src/colors.rs` `MetroColors::dark` | **正典已修正（2026-09-22）**：不再规定「OLED 纯黑」，改为「深浅两套并列方案，取值属实现决策」 | `KANESUMI_DESIGN.md` §Ⅲ.3（已改） | **解除登记**：取值本身是方案内选择，不再是正典冲突；若仍想改纯黑，属视觉调优 |
 | T2 | 强调色基色来源 | 代码内默认 `#E57812` | `kanesumi-core/src/accent.rs` `Accent::DEFAULT_HEX` | 应**始终来自 Chorus** 的 `~/.config/ether/theme.toml` 的 `accent` | `Ether/chorus/src/theme.rs` | 机制已建（accent 派生 + 双态）；**消费端接线待做**（harness 读取 + App 跟随） |
 | T3 | 亮色中性色 | `#FAFAFA` / `#FFFFFF` / `#F0F0F0` / `#D6D6D6` / `#1A1A1A` / `#5A5F66` | `kanesumi-core/src/colors.rs` `MetroColors::light` | UWP light 主题的 `SystemControl*` 笔刷字面值 | Windows SDK `themeresources.xaml`（定位见 `CONTROL_SPEC.md` §11.1） | **待取数**（`CONTROL_SPEC.md` §11.4 早已列为「取具体值待做」）；当前值仅保证 WCAG 可读 |
 | T4 | 亮色禁用不透明度 | `0.38`（沿用暗色） | `kanesumi-core/src/indicator.rs` | UWP light 取值 | 同 T3 | 待取数 |
@@ -46,6 +46,7 @@
 | D3 | 暗色遮罩用黑 70%，而非 UWP dark 的白 60% | Ether 的 `surface` 与 `background` 只差一档，白洗会让背景比对话框更亮，层次倒挂（参 `CONTROL_SPEC.md` §9 + `VISUAL_ISSUES.md` V9）。 |
 | D4 | 圆角默认 `Square`，不用 UWP 的 `ControlCornerRadius=4px` | 正典 §Ⅲ.1「直角」；UWP 默认圆角属 Fluent 残留。 |
 | D5 | 不搬「依赖属性 / 附加属性」体系 | Rust 侧代价大于收益；只借其「失效传播」语义（参 `docs/REFERENCE.md` §Ⅴ）。 |
+| D6 | 正典不再规定「OLED 纯黑底」，改为「深浅两套并列方案」 | 原表述把**暗色方案的一个取值**写成了语言级规则 —— 纯黑是暗色模式的说法，浅色模式另有其道。文档局限已修正（`KANESUMI_DESIGN.md` §Ⅲ.3，2026-09-22）。 |
 
 ---
 
