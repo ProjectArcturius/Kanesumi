@@ -228,9 +228,20 @@ pub trait App {
     fn config(&self) -> &AppConfig;
 
     /// 应用主题（默认 Ether 深色空间桌面）。
+    ///
+    /// **想跟随系统主题（Chorus 的 accent / scheme）的应用不要在这里写死**：
+    /// 外壳会在启动时与配置变更时调用 [`App::set_theme`] 把系统主题推给应用，
+    /// 应用存下来、在此返回即可。返回 `MetroTheme::ether_dark()` 等于「不支持跟随」。
     fn theme(&self) -> MetroTheme {
         MetroTheme::ether_dark()
     }
+
+    /// 外壳注入系统主题（Chorus `theme.toml` 的 accent / scheme）。
+    ///
+    /// 调用时机：外壳启动后一次、以及检测到 `theme.toml` mtime 变化时。
+    /// 默认空实现 —— 不实现则行为与旧版一致（固定 `ether_dark`），不会破坏既有应用。
+    /// 实现者应保存该主题并在 [`App::theme`] 中返回，且置脏重绘。
+    fn set_theme(&mut self, _theme: MetroTheme) {}
 
     /// 字体路径。外壳据此加载 `TextEngine` 注入 `render`（排版唯一真源，SD §IX 禁止静默回退）。
     /// 默认 `None` → 外壳按 KANESUMI_TEST_FONT → 系统字体顺序查找。

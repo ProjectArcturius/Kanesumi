@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::Scene;
-use kanesumi_core::{Rect, Size};
+use kanesumi_core::{MetroTheme, Rect, Size};
 use smithay_client_toolkit::reexports::{
     calloop::EventLoop, calloop_wayland_source::WaylandSource,
 };
@@ -133,6 +133,33 @@ fn guard<T>(what: &str, f: impl FnOnce() -> T) -> Option<T> {
     }
 }
 
+impl Shell {
+    /// 读取系统主题（Chorus）并推给 App。
+    ///
+    /// 启动时一次；此后由 [`maybe_reload_system_theme`](Self::maybe_reload_system_theme)
+    /// 在检测到 `theme.toml` 变更时再次调用。
+    fn apply_system_theme(&mut self) {
+        self.system_theme = crate::system_theme::load();
+        self.theme_fingerprint = crate::system_theme::fingerprint();
+        let theme = self.system_theme;
+        guard("set_theme", || self.app.set_theme(theme));
+        self.dirty = true;
+    }
+
+    /// 节流检测 `theme.toml` 变更（约每 0.5s 一次 stat），变化则重推主题。
+    fn maybe_reload_system_theme(&mut self) {
+        if self.theme_check_countdown > 0 {
+            self.theme_check_countdown -= 1;
+            return;
+        }
+        self.theme_check_countdown = 30;
+        if crate::system_theme::fingerprint() != self.theme_fingerprint {
+            self.apply_system_theme();
+            log::info!("系统主题已重载：accent/scheme 变更");
+        }
+    }
+}
+
 pub fn run(app: &mut dyn App) -> ! {
     // `run` 永不返回（`-> !`）：`&mut dyn App` 借用可安全提升为 'static。
     let app: &'static mut dyn App = unsafe { std::mem::transmute(app) };
@@ -202,6 +229,9 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         .map_err(|e| format!("加载字体失败 {}：{e}", font_path.display()))?;
 
     let mut shell = Shell::new(app, engine, &conn, &globals, &qh, role)?;
+    // 系统主题：读 Chorus 的 theme.toml 并推给 App（accent / scheme）。
+    // 这是「用户在 Chorus 改 accent、应用却仍是写死橙色」那条断链的接回点。
+    shell.apply_system_theme();
     // 引擎宿主兜底：主循环内幂等绑定（每帧，seat 异步 announce 后自动创建）。
     // 绕过 new_capability 竞态——ceyboard 连接时 seat keyboard 能力可能已就绪，
     // 能力事件不触发 → grab 未建立 → 合成器转发的键收不到。
@@ -415,6 +445,14 @@ pub(crate) struct Shell {
     diag_logged: bool,
     /// 渲染帧计数（诊断：验证静止唤醒是否重启渲染）。
     frame_count: u64,
+
+    // ── 系统主题（Chorus）─────
+    /// 当前生效的系统主题。外壳拥有并在启动 / 配置变更时推给 App（`App::set_theme`）。
+    system_theme: MetroTheme,
+    /// `theme.toml` 的 mtime 指纹 —— 变化才重载，避免每帧读盘。
+    theme_fingerprint: Option<std::time::SystemTime>,
+    /// 主题变更检测的帧倒计时（节流 stat 调用）。
+    theme_check_countdown: u32,
 
     // ── 输出缓冲（SHM 回退 + dmabuf 直通；主表面 / 各浮层 / IME 候选窗各一份）─────
     /// wl_shm 全局（dmabuf 不可用时的回退；合成器未提供 → None）。
@@ -962,6 +1000,9 @@ impl Shell {
             appmenu_rx,
             diag_logged: false,
             frame_count: 0,
+            system_theme: MetroTheme::ether_dark(),
+            theme_fingerprint: None,
+            theme_check_countdown: 0,
             shm,
             main_out,
             floating_out,
@@ -1259,6 +1300,8 @@ impl Shell {
         // 错误边界：App update panic 不杀进程（§4.1 鲁棒性）。
         let update_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.app.update(dt);
+            // 主题变更检测（节流）：Chorus 改了 accent / scheme 后自动跟随。
+            self.maybe_reload_system_theme();
         }))
         .is_ok();
         if !update_ok {

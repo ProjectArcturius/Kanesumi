@@ -8,6 +8,7 @@ pub mod app;
 pub mod appmenu;
 pub mod context_menu;
 pub mod role;
+pub mod system_theme;
 
 #[cfg(target_os = "linux")]
 pub mod cpu_raster;
