@@ -3,8 +3,15 @@ use kanesumi_canvas::Scene;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_core::{CornerRadius, MetroTheme, Point, Rect};
 
-/// Paused 态指示条不透明度（`CONTROL_SPEC` §4「Paused：条色换灰 + Opacity→0.6」）。
-const PAUSED_OPACITY: f32 = 0.6;
+/// Paused 态指示条不透明度 —— 一手源：UWP `ProgressBarIndicatorPauseOpacity`
+/// = **暗 0.6 / 亮 1.0**（`themeresources.xaml` L71 / L2798；模板在 Paused 态把
+/// `ProgressBarIndicator` 的 Opacity 动画到该值）。
+///
+/// ⚠ 两方案不同值：亮色下暂停**根本不淡出**（1.0），旧实现两边都写 0.6，属漏抄。
+/// `CONTROL_SPEC` §4 只写「Opacity→0.6」，未区分方案。
+fn paused_opacity(theme: &MetroTheme) -> f32 {
+    if theme.scheme.is_dark() { 0.6 } else { 1.0 }
+}
 
 /// 进度指示模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,11 +121,12 @@ impl MetroProgressBar {
         scene.push_clip(bar_rect);
 
         // V17: Paused/Error 过渡色 —— error_blend 从 primary lerp 到语义错误色；
-        // paused_fade 把 alpha 从 1.0 拉到 `PAUSED_OPACITY`（CONTROL_SPEC §4）。
+        // paused_fade 把 alpha 从 1.0 拉到 `paused_opacity(theme)`（一手源见该函数）。
         let error_t = self.error_blend.value();
         let paused_t = self.paused_fade.value() as f32;
         let indicator_color = colors.primary.lerp(theme.status.error_fill, error_t);
-        let indicator_alpha = 1.0 - (1.0 - PAUSED_OPACITY) * paused_t;
+        let paused_alpha = paused_opacity(theme);
+        let indicator_alpha = 1.0 - (1.0 - paused_alpha) * paused_t;
         let color = indicator_color.with_alpha(indicator_color.a * indicator_alpha);
 
         match self.mode {
