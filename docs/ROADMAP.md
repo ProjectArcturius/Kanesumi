@@ -113,6 +113,18 @@ M6 是 A/B/C 的收尾（动画词汇补齐 + 优化可见化）。M7 是独立�
 **验收**：gallery 迁移后视觉回归通过；M2-5 两条通用测试覆盖全部已迁移控件。
 **风险**：高。**不碰 Ether 侧应用**（那属另一轮，需单独评估）。
 
+> **M2-1 实施前必读（2026-09-22 静态勘察，未动代码）**：`clips_children()` 默认 `true` 这条不能照字面实现。
+> 引擎现在只对**容器**节点 `push_clip`（`layout.rs::render_rec`），叶子自绘不裁剪；改成「叶子也默认裁到自身矩形」
+> 会切掉三类**故意画出矩形之外**的内容：
+> 1. 溢出式装饰 —— `MetroPersonPicture` 徽标按规格 Margin `0,-4,-4,0` 外溢 4px（`CONTROL_SPEC` §16），
+>    裁了就成缺角圆；
+> 2. 浮层 —— `MetroDropdownMenu` / `MetroSelectorFlyout` / `TeachingTip` / `CommandBarFlyout` 的面板画在触发器之外
+>    （gallery 因此把整屏矩形传给 `render`，见 `app.rs` 的 `Rect::new(0.0, 0.0, size.width, size.height)`）；
+>    矮表面（TopBar 30px / Dock）上裁到矩形即整块面板消失，正是审计 P1-6「弹层画在主 surface」的加重版；
+> 3. 焦点环 / 描边 —— 画在控件矩形之外一圈。
+> 故这一批**必须先做一次真机视觉确认**（或先给这三类控件显式 `clips_children() = false` 的名单并逐条核对）。
+> 「arrange 强制 `Constraints::max`」相对安全（只会收窄溢出者），但仍需 M2-5 的 `child ⊆ parent` 断言兜住。
+
 ### M3 · 交互协调（协调线）
 
 **目标**：纯键盘可操作；指针捕获与右键目标由框架记录，App 不再自己维护。
