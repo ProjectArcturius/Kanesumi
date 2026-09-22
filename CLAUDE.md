@@ -11,6 +11,14 @@ cargo clippy
 cargo fmt
 ```
 
+### 路线与依据（先读这五份）
+
+- `docs/ROADMAP.md` — **框架路线图**：M1~M7 分阶段、每批验收、决策记录。「接下来做什么」的唯一真源。
+- `docs/MATURITY_AUDIT_2026-09-22.md` — 成熟度审计：逐条缺口与 file:line 证据。
+- `docs/REFERENCE.md` — 微软栈源清单与对照表（含已取到的 WinUI 3 权威色值与动画时长）。
+- `docs/CANON_VS_TEMPORARY.md` — **临时值登记表**：临时方案必须登记，不得被当成设计。
+- `docs/PORT_ROADMAP.md` — 控件层移植路线（开源项已清空）。
+
 ### Gallery（daily driver，Linux）
 
 ```bash
