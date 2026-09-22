@@ -260,6 +260,7 @@ impl MetroSwitch {
     /// 指针释放 —— 两档决策（参 [`TAP_INTENT_MAX_DISPLACEMENT`]）：
     /// - 位移小于 15% 行程（含未越过 3px 阈值、以及拖出去又拖回起点）→ 当**点动**，翻转状态；
     /// - 否则按 knob 当前位置**就近吸附**（≥ 0.5 = on）。
+    ///
     /// 返回 true 表示 `checked` 变化。
     pub fn release(&mut self) -> bool {
         let Some(drag) = self.drag.take() else {
