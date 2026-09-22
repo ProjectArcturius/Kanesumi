@@ -25,13 +25,18 @@ pub enum InfoBadgeKind {
 
 impl InfoBadgeKind {
     /// 徽标底色。
+    ///
+    /// **一律取自主题令牌**：`Accent` 与 `Attention` 都是 accent（WinUI 的
+    /// `SystemFillColorAttention` 即 `SystemAccentColor`），其余取语义状态色组。
+    /// 旧实现把三个语义色写死为深色值 → 浅色主题下徽标底与文字必然失衡，
+    /// 且换 accent 时它们纹丝不动（语义色与强调色被混为一谈）。
     fn color(self, theme: &MetroTheme) -> kanesumi_core::Color {
+        let s = &theme.status;
         match self {
-            InfoBadgeKind::Accent => theme.colors.primary,
-            InfoBadgeKind::Attention => kanesumi_core::Color::from_hex(0x4F_C1_FF),
-            InfoBadgeKind::Success => kanesumi_core::Color::from_hex(0x4C_C3_8A),
-            InfoBadgeKind::Caution => kanesumi_core::Color::from_hex(0xE5_A9_4E),
-            InfoBadgeKind::Critical => kanesumi_core::Color::from_hex(0xE5_53_4A),
+            InfoBadgeKind::Accent | InfoBadgeKind::Attention => theme.colors.primary,
+            InfoBadgeKind::Success => s.success,
+            InfoBadgeKind::Caution => s.caution,
+            InfoBadgeKind::Critical => s.critical,
         }
     }
 }
@@ -269,13 +274,27 @@ mod tests {
         assert_eq!(*corner_radius, 2.0, "4×4 圆点 CornerRadius = 高/2 = 2");
     }
 
+    /// 徽标色一律来自令牌：Accent / Attention 都是 accent；语义档随方案变、不随 accent 变。
     #[test]
     fn kind_colors_map() {
-        let theme = MetroTheme::ether_dark();
-        assert_eq!(InfoBadgeKind::Accent.color(&theme), theme.colors.primary);
+        let dark = MetroTheme::dark(kanesumi_core::Accent::default());
+        let light = MetroTheme::light(kanesumi_core::Accent::default());
+
+        assert_eq!(InfoBadgeKind::Accent.color(&dark), dark.colors.primary);
         assert_eq!(
-            InfoBadgeKind::Success.color(&theme),
-            kanesumi_core::Color::from_hex(0x4C_C3_8A)
+            InfoBadgeKind::Attention.color(&dark),
+            dark.colors.primary,
+            "attention 即 accent（与 WinUI SystemFillColorAttention 一致）"
+        );
+        assert_eq!(
+            InfoBadgeKind::Success.color(&dark),
+            dark.status.success,
+            "语义档取状态色令牌，不再内联字面量"
+        );
+        assert_ne!(
+            InfoBadgeKind::Success.color(&dark),
+            InfoBadgeKind::Success.color(&light),
+            "语义色必须随深浅方案变化"
         );
     }
 }

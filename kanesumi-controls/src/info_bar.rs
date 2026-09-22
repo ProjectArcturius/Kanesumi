@@ -23,15 +23,21 @@ pub enum InfoBarSeverity {
 }
 
 impl InfoBarSeverity {
-    /// 面板底色 + 图标方块色（Kanesumi 深色适配，参 CONTROL_SPEC §12 表）。
-    fn colors(self) -> (Color, Color) {
+    /// 面板底色 + 图标色。**一律取自主题令牌**，不再内联字面量。
+    ///
+    /// - Informational = 「注意」= accent（与 WinUI `SystemFillColorAttention` 绑定
+    ///   `SystemAccentColor` 的做法一致）；
+    /// - Success / Warning / Error 取语义状态色组（`kanesumi_core::StatusColors`）。
+    ///
+    /// 为什么必须走令牌：旧实现在此处写死四个深色值，于是**浅色主题下必然浅底浅字**，
+    /// 且换强调色时「错误」仍是同一个红 —— 语义色与强调色被混为一谈。
+    fn colors(self, theme: &MetroTheme) -> (Color, Color) {
+        let s = &theme.status;
         match self {
-            InfoBarSeverity::Informational => {
-                (Color::from_hex(0x1E_2A_38), Color::from_hex(0x4F_C1_FF))
-            }
-            InfoBarSeverity::Success => (Color::from_hex(0x1E_33_28), Color::from_hex(0x4C_C3_8A)),
-            InfoBarSeverity::Warning => (Color::from_hex(0x33_2B_1E), Color::from_hex(0xE5_A9_4E)),
-            InfoBarSeverity::Error => (Color::from_hex(0x33_1E_1E), Color::from_hex(0xE5_53_4A)),
+            InfoBarSeverity::Informational => (s.attention_background, theme.colors.primary),
+            InfoBarSeverity::Success => (s.success_background, s.success),
+            InfoBarSeverity::Warning => (s.caution_background, s.caution),
+            InfoBarSeverity::Error => (s.critical_background, s.critical),
         }
     }
 
@@ -261,7 +267,7 @@ impl MetroInfoBar {
             return;
         }
         let colors = &theme.colors;
-        let (bg, icon_color) = self.severity.colors();
+        let (bg, icon_color) = self.severity.colors(theme);
         let (_, geom) = self.layout(engine, rect);
         let content_w = Self::content_width(rect);
         let content_h = (rect.size.height).max(geom.height);
@@ -521,11 +527,29 @@ mod tests {
         assert!(scene.is_empty());
     }
 
+    /// 语义色：三档互不相同；**换方案必须变**（旧实现写死深色值，浅色主题下纹丝不动）；
+    /// 且**不随 accent 变化** —— 语义色与强调色正交，换主题不该让「错误」变色。
     #[test]
-    fn severity_colors_are_distinct() {
-        let (bg1, _) = InfoBarSeverity::Error.colors();
-        let (bg2, _) = InfoBarSeverity::Success.colors();
-        assert_ne!(bg1, bg2);
+    fn severity_colors_are_distinct_and_scheme_aware() {
+        let dark = MetroTheme::dark(kanesumi_core::Accent::default());
+        let light = MetroTheme::light(kanesumi_core::Accent::default());
+        let teal = MetroTheme::dark(kanesumi_core::Accent::parse("00897B"));
+
+        let (d_err, _) = InfoBarSeverity::Error.colors(&dark);
+        let (d_ok, _) = InfoBarSeverity::Success.colors(&dark);
+        assert_ne!(d_err, d_ok, "错误与成功不得同色");
+
+        let (l_err, _) = InfoBarSeverity::Error.colors(&light);
+        assert_ne!(d_err, l_err, "语义色必须随深浅方案变化");
+
+        let (t_err, _) = InfoBarSeverity::Error.colors(&teal);
+        assert_eq!(d_err, t_err, "换 accent 不得改动语义色");
+
+        // Informational 走 attention = accent，故必须随 accent 变化。
+        let (_, d_info) = InfoBarSeverity::Informational.colors(&dark);
+        let (_, t_info) = InfoBarSeverity::Informational.colors(&teal);
+        assert_ne!(d_info, t_info, "Informational 的 attention 色即 accent");
+        assert_eq!(d_info, dark.colors.primary);
     }
 
     #[test]

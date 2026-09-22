@@ -2,6 +2,7 @@ use crate::accent::{Accent, ColorScheme};
 use crate::color::Color;
 use crate::colors::MetroColors;
 use crate::indicator::MetroIndication;
+use crate::status::StatusColors;
 use crate::tokens::Tokens;
 use crate::typography::MetroTypography;
 
@@ -16,6 +17,10 @@ pub struct MetroTheme {
     /// 强调色全阶（配置真源为 Chorus）。
     pub accent: Accent,
     pub colors: MetroColors,
+    /// 语义状态色（success / caution / critical / neutral）。
+    ///
+    /// 与 `accent` **正交**：换强调色不得改变「错误」的颜色（参 `status.rs` 的裁定）。
+    pub status: StatusColors,
     pub typography: MetroTypography,
     pub tokens: Tokens,
     pub indication: MetroIndication,
@@ -36,6 +41,7 @@ impl MetroTheme {
             scheme: ColorScheme::Dark,
             accent,
             colors: MetroColors::dark(accent),
+            status: StatusColors::dark(),
             typography: MetroTypography::metro(),
             tokens: Tokens::ether(),
             indication,
@@ -50,6 +56,7 @@ impl MetroTheme {
             scheme: ColorScheme::Light,
             accent,
             colors: MetroColors::light(accent),
+            status: StatusColors::light(),
             typography: MetroTypography::metro(),
             tokens: Tokens::ether(),
             indication,
