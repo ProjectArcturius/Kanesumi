@@ -298,9 +298,7 @@ impl MetroColorPicker {
                     track.size.height,
                 );
                 scene.fill_rounded_rect(
-                    colors
-                        .on_surface
-                        .with_alpha(theme.indication.base_medium),
+                    colors.on_surface.with_alpha(theme.indication.base_medium),
                     fill,
                     TRACK_CORNER,
                 );

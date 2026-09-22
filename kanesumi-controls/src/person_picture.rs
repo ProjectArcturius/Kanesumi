@@ -363,9 +363,15 @@ mod tests {
             let theme = MetroTheme::for_scheme(scheme, kanesumi_core::Accent::default());
             let (fill, stroke) = MetroPersonPicture::badge_colors(&theme);
             assert_eq!(fill, theme.colors.background, "{scheme:?} 底色取背景令牌");
-            assert_eq!(fill.a, 1.0, "{scheme:?} 底色必须不透明（规格的 #1A1A1A 无 alpha）");
+            assert_eq!(
+                fill.a, 1.0,
+                "{scheme:?} 底色必须不透明（规格的 #1A1A1A 无 alpha）"
+            );
             assert_eq!(stroke.a, 0.8, "{scheme:?} 0.8 是描边强度");
-            assert_eq!(stroke.r, theme.colors.divider.r, "{scheme:?} 描边取 divider");
+            assert_eq!(
+                stroke.r, theme.colors.divider.r,
+                "{scheme:?} 描边取 divider"
+            );
         }
     }
 

@@ -567,7 +567,8 @@ mod tests {
                         }
                         _ => None,
                     });
-                    let drawn = drawn.unwrap_or_else(|| panic!("{scheme:?}/{severity:?} 未见图标字形"));
+                    let drawn =
+                        drawn.unwrap_or_else(|| panic!("{scheme:?}/{severity:?} 未见图标字形"));
                     let ratio = drawn.contrast_ratio(icon_color);
                     assert!(
                         ratio >= 4.5,

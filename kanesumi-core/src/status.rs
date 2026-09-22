@@ -172,9 +172,10 @@ mod tests {
                 ("danger_fill", status.danger_fill),
             ] {
                 assert_eq!(fill.a, 1.0, "{scheme:?}/{name} 必须实心，不得透出下层");
-                for (carrier, surface) in
-                    [("surface", colors.surface), ("background", colors.background)]
-                {
+                for (carrier, surface) in [
+                    ("surface", colors.surface),
+                    ("background", colors.background),
+                ] {
                     let ratio = fill.contrast_ratio(surface);
                     assert!(
                         ratio >= 3.0,

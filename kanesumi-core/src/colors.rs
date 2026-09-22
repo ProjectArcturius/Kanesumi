@@ -239,7 +239,10 @@ mod tests {
             let floor = if scheme.is_dark() { 3.0 } else { 2.5 };
             for (name, indicator) in [
                 ("primary", c.primary),
-                ("error_fill", crate::status::StatusColors::for_scheme(scheme).error_fill),
+                (
+                    "error_fill",
+                    crate::status::StatusColors::for_scheme(scheme).error_fill,
+                ),
             ] {
                 let ratio = indicator.contrast_ratio(track);
                 assert!(

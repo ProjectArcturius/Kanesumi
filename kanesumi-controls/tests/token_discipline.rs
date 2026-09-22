@@ -180,8 +180,7 @@ mod tests {
     let mut hits = 0;
     for (_, raw) in &lines {
         let code = strip_comment(raw);
-        if FORBIDDEN_CONSTRUCTORS.iter().any(|c| code.contains(c)) || has_bare_numeric_alpha(code)
-        {
+        if FORBIDDEN_CONSTRUCTORS.iter().any(|c| code.contains(c)) || has_bare_numeric_alpha(code) {
             hits += 1;
         }
     }
