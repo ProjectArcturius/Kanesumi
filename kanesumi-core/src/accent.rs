@@ -10,8 +10,16 @@
 // 于是用户在 Chorus 里把 accent 改成青绿（`#00897B`），全部应用仍然显示橙色。
 // 这就是「临时方案被当成设计」的典型：机制缺失被误读为「Kanesumi 就是橙色」。
 //
-// 档位对齐 Win10 `SystemAccentColor` 的 Light1~3 / Dark1~3；派生参数与 Chorus
-// `derive_accent()` 保持一致（同源算法，两处必须同步修改）。
+// 档位**不**对齐 Win10 `SystemAccentColor` 的 Light1~3 / Dark1~3 —— 此处曾如此声明，
+// 2026-09-22 用本机 WinRT 真值证伪：以系统默认蓝 `#0078D4` 为例，OS 给出
+// Light1 `#0091F8` / Dark1 `#0067C0` / Dark2 `#003E92` / Dark3 `#001A68`，
+// 而本文件的 RGB 向白/黑 lerp 得到 `#409ADF` / `#0060AA` / `#004E8A` / `#003C6A`。
+// OS 的真实算法是 **HSV 的明度 V 缩放**（Light1 ×1.17、Light2 ×1.56、Light3 ×1.925；
+// Dark1 ×0.905、Dark2 ×0.689、Dark3 ×0.49 —— 四点与实测精确吻合），越界后 V 饱和、饱和度下降。
+// 实测数据与探针脚本：`docs/WINDOWS_RESEARCH_BACKLOG.md` §B4；
+// 现状登记为 `docs/CANON_VS_TEMPORARY.md` T20（要么改用 V 缩放模型，要么维持自定档位并改掉声明）。
+//
+// 派生参数与 Chorus `derive_accent()` 保持一致（同源算法，两处必须同步修改）。
 
 use crate::color::Color;
 

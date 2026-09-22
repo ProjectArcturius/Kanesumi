@@ -14,12 +14,14 @@ cargo fmt
 > Windows 上无 Linux 会话时，字体查找已补 Windows 路径（雅黑 / Segoe UI），
 > 测试不再因缺字体而 panic 或静默跳过（参 `docs/MATURITY_AUDIT_2026-09-22.md` §Ⅴ-5）。
 
-### 路线与依据（先读这六份）
+### 路线与依据（先读这七份）
 
 - `docs/ROADMAP.md` — **框架路线图**：M1~M7 分阶段、每批验收、决策记录。「接下来做什么」的唯一真源。
 - `docs/MATURITY_AUDIT_2026-09-22.md` — 成熟度审计：逐条缺口与 file:line 证据。
 - `docs/UWP_PRIMARY_SOURCES.md` — **一手源清单与取值对照**：Windows SDK 自带 OS 主题字典、
   WinUI 2.x 源码字典的路径与取数命令，以及被一手源推翻的旧值清单（**改任何数值前先读这份**）。
+- `docs/WINDOWS_RESEARCH_BACKLOG.md` — **Windows 侧待研究清单**：本机资产盘点（WinRT 真值 /
+  dotnet oracle / 兄弟仓）与「只剩最后一次 Windows 窗口时先做什么」。**在 Windows 上开工就先读它**。
 - `docs/REFERENCE.md` — 微软栈源清单与对照表（含已取到的 WinUI 3 权威色值与动画时长）。
 - `docs/CANON_VS_TEMPORARY.md` — **临时值登记表**：临时方案必须登记，不得被当成设计。
 - `docs/PORT_ROADMAP.md` — 控件层移植路线（开源项已清空）。

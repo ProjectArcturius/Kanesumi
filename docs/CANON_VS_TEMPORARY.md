@@ -36,6 +36,7 @@
 | T17 | 自定义的「Y 下沉」按压反馈（M6-1 计划） | 计划 100ms Y 下沉 | `kanesumi-anim`（未落地） | UWP 桌面语义是**缩小 + 倾斜**（写 `Projection`/`RenderTransform`），时长与幅度 OS 预置、XAML 读不到 | `UWP_PRIMARY_SOURCES.md` §Ⅲ.5 | **不得写成 UWP 规格**：若实现下沉，须在此登记为 Kanesumi 自定 |
 | T18 | ProgressRing 时长与角度 | 2.0s 循环 / 0→900° | `kanesumi-controls/src/progress.rs`（Ring 部分） | **UWP OS 一手值：3.47s / −110°→585°（净 +695°）/ 6 点 stagger 0.167s**（`generic.xaml` L12406-12506） | 同上 | 待裁定：现值为已丢弃快照的遗产，与其留一个来源不明的值，不如二选一后按 UWP 重定 |
 | T19 | 文本选区高亮 35% | `MetroColors::text_selection_tint` | `kanesumi-core/src/colors.rs` | UWP `TextControlSelectionHighlightColor` = `SystemControlHighlightAccentBrush` = **accent 100% 不透明**（`themeresources.xaml` L864→L282） | 同上 | **有意偏离候选**：accent 100% 叠在字形之下会压字，35% 是可读性与「看得出选中」的折中 —— 需一次真机确认后转 §二 正式登记 |
+| T20 | **强调色档位派生与 OS 不一致** | RGB 向白 lerp `[0.25,0.45,0.65]` / 向黑 lerp `[0.20,0.35,0.50]` | `kanesumi-core/src/accent.rs`（`LIGHT_MIX` / `DARK_MIX`） | OS 的真算法是 **HSV 明度缩放**：Light1/2/3 = V×1.17 / ×1.56 / ×1.925，Dark1/2/3 = V×0.905 / ×0.689 / ×0.49（越界后 V 饱和 + 饱和度下降） | **本机 WinRT 真值**（`UISettings.GetColorValue`，见 `WINDOWS_RESEARCH_BACKLOG.md` §B4）：以 `#0078D4` 为例，OS = `#0091F8`/`#4CC2FF`/`#99EBFF`/`#0067C0`/`#003E92`/`#001A68`，本仓 = `#409ADF`/`#73B5E7`/`#A6D0F0`/`#0060AA`/`#004E8A`/`#003C6A` | 待裁定：**原声明「档位对齐 Win10 SystemAccentColor」已证伪**（注释已改）。二选一：① 按 V 缩放模型改（`accent.rs` 一处 + 以上表为回归数据，约 30 分钟）；② 维持自定档位、把声明删干净。改则所有 hover/pressed/focus/on-accent 派生色随之变化，宜与 T9 真机确认同批 |
 
 > **已消除的临时项**（保留在此作为历史，避免再次被误认）：
 > - 「省略号未启用、超长文本硬裁切」——2026-09-22 已改默认 `Ellipsis` 并补 `label/paragraph`。
