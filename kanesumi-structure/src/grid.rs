@@ -73,9 +73,10 @@ pub struct MetroGrid {
 }
 
 impl MetroGrid {
+    /// 构造。**空行/空列不再 panic**（2026-09-22 审计 P0-3）：无轨道 = 不布局任何子单元，
+    /// `resolve` 返回空尺寸表、`child_rect` 夹紧到空矩形。退化输入由「绘制/命中为空」表达，
+    /// 不由进程 panic 表达。
     pub fn new(rows: Vec<GridLength>, cols: Vec<GridLength>) -> Self {
-        assert!(!rows.is_empty(), "Grid 至少 1 行");
-        assert!(!cols.is_empty(), "Grid 至少 1 列");
         Self {
             rows,
             cols,
@@ -167,7 +168,8 @@ impl MetroGrid {
 
     /// 子单元矩形。跨度合并多轨道 + 其间间距。
     ///
-    /// 入参 `heights`/`widths` 来自 [`Self::resolve`]。
+    /// 入参 `heights`/`widths` 来自 [`Self::resolve`]。索引一律夹到可用轨道范围 ——
+    /// `rows`/`cols` 是 pub 字段，宿主可能给出与 `GridChild` 不匹配的定义（审计 P0-3）。
     pub fn child_rect(
         &self,
         rect: Rect,
@@ -175,17 +177,18 @@ impl MetroGrid {
         widths: &[f32],
         child: GridChild,
     ) -> Rect {
-        let x0 = rect.origin.x
-            + widths[..child.col].iter().sum::<f32>()
-            + self.gap.1 * child.col as f32;
-        let y0 = rect.origin.y
-            + heights[..child.row].iter().sum::<f32>()
-            + self.gap.0 * child.row as f32;
-        let w = widths[child.col..child.col + child.col_span].iter().sum::<f32>()
-            + self.gap.1 * (child.col_span - 1) as f32;
-        let h = heights[child.row..child.row + child.row_span].iter().sum::<f32>()
-            + self.gap.0 * (child.row_span - 1) as f32;
-        Rect::new(x0, y0, w, h)
+        let col = child.col.min(widths.len());
+        let row = child.row.min(heights.len());
+        let col_end = col.saturating_add(child.col_span).min(widths.len());
+        let row_end = row.saturating_add(child.row_span).min(heights.len());
+
+        let x0 = rect.origin.x + widths[..col].iter().sum::<f32>() + self.gap.1 * col as f32;
+        let y0 = rect.origin.y + heights[..row].iter().sum::<f32>() + self.gap.0 * row as f32;
+        let w = widths[col..col_end].iter().sum::<f32>()
+            + self.gap.1 * col_end.saturating_sub(col).saturating_sub(1) as f32;
+        let h = heights[row..row_end].iter().sum::<f32>()
+            + self.gap.0 * row_end.saturating_sub(row).saturating_sub(1) as f32;
+        Rect::new(x0, y0, w.max(0.0), h.max(0.0))
     }
 }
 
@@ -518,5 +521,29 @@ mod tests {
         let origin = Rect::new(0.0, 0.0, 1000.0, 200.0);
         let result = std::panic::catch_unwind(|| wall.tile_rect(origin, 0, 0, 0, (1, 3)));
         assert!(result.is_err(), "纵向延长被硬约束（TILES_DESIGN §2）");
+    }
+
+    /// P0-3 回归：空行/空列定义不得 panic（旧 `new` 用 assert!）。
+    /// 退化输入应由「解析出空尺寸表 / 子矩形夹到空」表达。
+    #[test]
+    fn empty_definitions_do_not_panic() {
+        let g = MetroGrid::new(Vec::new(), Vec::new());
+        let rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let (rows, cols) = g.resolve(rect, &[], &[]);
+        assert!(rows.is_empty() && cols.is_empty());
+        let child = g.child_rect(rect, &rows, &cols, GridChild::at(0, 0));
+        assert_eq!(child.size.width, 0.0);
+        assert_eq!(child.size.height, 0.0);
+    }
+
+    /// P0-3 回归：`GridChild` 索引越界时夹紧，不得 panic（rows/cols 是 pub 字段）。
+    #[test]
+    fn child_rect_clamps_out_of_range_child() {
+        let g = MetroGrid::new(vec![GridLength::star()], vec![GridLength::star()]);
+        let rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let (rows, cols) = g.resolve(rect, &[], &[]);
+        let child = g.child_rect(rect, &rows, &cols, GridChild { row: 9, col: 9, row_span: 0, col_span: 0 });
+        assert!(child.size.width <= 100.0 + 0.01);
+        assert!(child.size.height <= 100.0 + 0.01);
     }
 }

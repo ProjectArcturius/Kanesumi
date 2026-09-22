@@ -196,15 +196,15 @@ impl MetroRadioButtons {
                 scene.fill_rounded_rect(colors.primary, dot, CornerRadius::Capsule);
             }
 
-            // 标签
-            let label_w = engine.measure(item, body.size);
+            // 标签：可用宽 = 行宽 − 圆钮 − 间距（非量测宽），单行省略号。
+            // 2026-09-22 审计 P0-1。
             let text_rect = Rect::new(
                 r.origin.x + RADIO_CIRCLE + RADIO_LABEL_GAP,
                 r.origin.y + (r.size.height - body.line_height) / 2.0,
-                label_w,
+                (r.size.width - RADIO_CIRCLE - RADIO_LABEL_GAP).max(0.0),
                 body.line_height,
             );
-            scene.text(
+            scene.label(
                 item.clone(),
                 text_rect,
                 colors.on_surface,

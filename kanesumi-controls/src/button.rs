@@ -57,7 +57,7 @@ impl MetroButton {
     }
 
     /// 渲染到 `rect`。顺序：底色 → 交互 tint → 焦点描边 → 居中标签。
-    pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
+    pub fn render(&self, theme: &MetroTheme, _engine: &TextEngine, rect: Rect, scene: &mut Scene) {
         let colors = &theme.colors;
         let indication = &theme.indication;
         let style = theme.typography.body;
@@ -90,17 +90,19 @@ impl MetroButton {
             );
         }
 
-        // 标签居中 —— rect 若小于内容（如 App 侧硬编码宽度不足），
-        // 用 `.max(0.0)` 夹紧偏移，避免文字左缘伸出按钮外（参 V6）。
-        let label_width = engine.measure(&self.label, style.size);
-        let x_offset = (rect.size.width - label_width).max(0.0) / 2.0;
+        // 标签：用**按钮内边距内的可用矩形**居中，单行省略号收束。
+        //
+        // 旧实现把绘制矩形宽度设成 `engine.measure(label)` —— 量测宽度只应决定 `measure()`
+        // 的固有尺寸，一旦 App 给的 rect 比固有尺寸窄，文字就画到按钮外（参 V6）。
+        // 2026-09-22 溢出审计 P0-1：绘制矩形必须由 rect 派生，永不由量测宽度派生。
+        const PAD_X: f32 = 8.0; // CONTROL_SPEC §1：Padding `8,5,8,6`
         let label_rect = Rect::new(
-            rect.origin.x + x_offset,
+            rect.origin.x + PAD_X,
             rect.origin.y + (rect.size.height - style.line_height) / 2.0,
-            label_width,
+            (rect.size.width - PAD_X * 2.0).max(0.0),
             style.line_height,
         );
-        scene.text(self.label.clone(), label_rect, fg, style, TextAlign::Left);
+        scene.label(self.label.clone(), label_rect, fg, style, TextAlign::Center);
     }
 }
 
@@ -197,5 +199,40 @@ mod tests {
         let rect = Rect::new(10.0, 10.0, 100.0, 38.0);
         assert!(btn.hit_test(rect, kanesumi_core::Point::new(60.0, 30.0)));
         assert!(!btn.hit_test(rect, kanesumi_core::Point::new(200.0, 30.0)));
+    }
+
+    /// P0-1 回归（2026-09-22 溢出审计）：窄按钮 + 长标签时，文本矩形必须落在按钮矩形内，
+    /// 且以省略号收束。旧实现把文本矩形宽度设成 `engine.measure(label)` → 文字画到按钮外。
+    #[test]
+    fn long_label_is_clamped_inside_button() {
+        let Some(p) = find_font() else { return };
+        let engine = TextEngine::load(p).unwrap();
+        let theme = MetroTheme::ether_dark();
+        let btn = MetroButton::new("很长很长的按钮文本很长很长的按钮文本");
+        let rect = Rect::new(10.0, 20.0, 60.0, 38.0);
+        let mut scene = Scene::default();
+        btn.render(&theme, &engine, rect, &mut scene);
+
+        let (text_rect, wrap, max_lines, overflow) = scene
+            .commands
+            .iter()
+            .find_map(|c| match c {
+                SceneCommand::Text {
+                    rect,
+                    wrap,
+                    max_lines,
+                    overflow,
+                    ..
+                } => Some((*rect, *wrap, *max_lines, *overflow)),
+                _ => None,
+            })
+            .expect("应有标签文本命令");
+        assert!(text_rect.origin.x >= rect.origin.x - 0.01, "标签不得越过按钮左缘");
+        assert!(text_rect.right() <= rect.right() + 0.01, "标签不得越过按钮右缘");
+        assert!(text_rect.origin.y >= rect.origin.y - 0.01);
+        assert!(text_rect.bottom() <= rect.bottom() + 0.01);
+        assert!(!wrap, "单行标签不换行");
+        assert_eq!(max_lines, Some(1));
+        assert_eq!(overflow, kanesumi_canvas::TextOverflow::Ellipsis);
     }
 }

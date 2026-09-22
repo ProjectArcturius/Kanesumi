@@ -153,6 +153,11 @@ impl MetroTabView {
 
     /// 命中。
     pub fn hit(&self, rect: Rect, pos: Point) -> TabViewAction {
+        // 控件矩形外一律不命中（2026-09-22 审计 P0-2）：页签横向滚动/`scroll_offset`
+        // 会让越界页签的矩形仍在坐标系里，旧实现只看子矩形 → 能从控件外点中不可见页签。
+        if !rect.contains(pos) {
+            return TabViewAction::None;
+        }
         if let Some(a) = self.add_rect(rect)
             && a.contains(pos)
         {
@@ -173,6 +178,11 @@ impl MetroTabView {
 
     /// 悬停路由。
     pub fn hover(&mut self, rect: Rect, pos: Point) {
+        // 同 `hit`：矩形外不产生 hover（否则滚动出视口的页签仍会高亮）。
+        if !rect.contains(pos) {
+            self.hovered = None;
+            return;
+        }
         if let Some(a) = self.add_rect(rect)
             && a.contains(pos)
         {
@@ -214,9 +224,12 @@ impl MetroTabView {
     }
 
     /// 渲染 tab strip（＋ Add 按钮）。
-    pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
+    pub fn render(&self, theme: &MetroTheme, _engine: &TextEngine, rect: Rect, scene: &mut Scene) {
         let colors = &theme.colors;
         let style = TextStyle::new(TABVIEW_ITEM_FONT, 16.0, FontWeight::Normal);
+
+        // 容器语义 = 裁到自身矩形（2026-09-22 审计 P0-2）：页签横向滚动后越界项仍会被绘制。
+        scene.push_clip(rect);
 
         for k in 0..self.tabs.len() {
             let tr = self.tab_rect(rect, k);
@@ -236,9 +249,9 @@ impl MetroTabView {
                 scene.fill_rect(bg, tr);
             }
 
-            // 标题（左 padding 8/9）
+            // 标题（左 padding 8/9）：可用宽由 tab 矩形派生，单行省略号收束
+            // （旧实现把 rect 宽写成 `label_w.min(title_w)`：量测宽当绘制宽 —— 审计 P0-1）。
             let pad = if selected { 9.0 } else { 8.0 };
-            let label_w = engine.measure(&self.tabs[k], style.size);
             let title_w = if self.closable && (selected || hovered) {
                 tr.size.width - pad - TABVIEW_CLOSE_W
             } else {
@@ -249,12 +262,12 @@ impl MetroTabView {
             } else {
                 colors.on_surface_variant
             };
-            scene.text(
+            scene.label(
                 self.tabs[k].clone(),
                 Rect::new(
                     tr.origin.x + pad,
                     tr.origin.y + (tr.size.height - style.line_height) / 2.0,
-                    (label_w.min(title_w)).max(0.0),
+                    title_w.max(0.0),
                     style.line_height,
                 ),
                 fg,
@@ -299,6 +312,8 @@ impl MetroTabView {
                 Rect::new(c.x - t / 2.0, c.y - r, t, r * 2.0),
             );
         }
+
+        scene.pop_clip();
     }
 }
 
@@ -422,9 +437,16 @@ mod tests {
 
     #[test]
     fn click_add_hit() {
-        let t = tabs();
+        let mut t = tabs();
         let a = area();
+        // 3 个 tab 各 200 + add 32 > 600：offset=0 时 add 按钮落在视口右侧之外，
+        // 容器边界（P0-2）下不可命中 —— 这正是旧实现「能从控件外点中不可见目标」的回归点。
+        let add0 = t.add_rect(a).unwrap();
+        assert_eq!(t.hit(a, add0.center()), TabViewAction::None);
+        // 滚到末端后 add 进入视口 → 可命中。
+        t.scroll_by(999.0, a.size.width);
         let add = t.add_rect(a).unwrap();
+        assert!(a.contains(add.center()), "滚动到末端后 add 应落在视口内");
         assert_eq!(t.hit(a, add.center()), TabViewAction::Add);
     }
 

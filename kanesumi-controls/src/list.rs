@@ -91,6 +91,10 @@ impl MetroList {
             return;
         };
 
+        // 容器语义 = 裁到自身矩形（2026-09-22 审计 P0-2）：虚拟化只保证「不渲染视口外的行」，
+        // 但部分滚出的行（半行）其高亮/文字仍会画到列表 rect 之外。
+        scene.push_clip(rect);
+
         for i in first..=last {
             let y = rect.origin.y - self.scroll + i as f32 * row_height;
             let row_rect = Rect::new(rect.origin.x, y, rect.size.width, row_height);
@@ -118,8 +122,10 @@ impl MetroList {
                 rect.size.width - self.padding_x * 2.0,
                 style.line_height,
             );
-            scene.text(self.rows[i].clone(), label_rect, fg, style, TextAlign::Left);
+            scene.label(self.rows[i].clone(), label_rect, fg, style, TextAlign::Left);
         }
+
+        scene.pop_clip();
     }
 }
 
@@ -304,8 +310,13 @@ mod tests {
             Rect::new(0.0, 0.0, 200.0, 200.0),
             &mut scene,
         );
-        let Some(SceneCommand::Text { color, .. }) = scene.commands.first() else {
-            panic!("首命令应为行文本");
+        // 首命令现在是成对 PushClip（容器裁剪，P0-2），故按类型查行文本命令。
+        let Some(SceneCommand::Text { color, .. }) = scene
+            .commands
+            .iter()
+            .find(|c| matches!(c, SceneCommand::Text { .. }))
+        else {
+            panic!("应有行文本命令");
         };
         assert!(color.a < 1.0, "禁用态行文字应降透明度，实际 a={}", color.a);
     }

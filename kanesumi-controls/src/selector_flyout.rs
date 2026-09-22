@@ -123,7 +123,7 @@ impl MetroSelectorFlyout {
         let text_rect = Rect::new(
             trigger.origin.x + 12.0,
             trigger.origin.y + (trigger.size.height - style.line_height) / 2.0,
-            trigger.size.width - 32.0 - 10.0,
+            (trigger.size.width - 42.0).max(0.0),
             style.line_height,
         );
         let fg = if self.selected.is_some() {
@@ -131,7 +131,7 @@ impl MetroSelectorFlyout {
         } else {
             colors.on_surface_variant
         };
-        scene.text(text, text_rect, fg, style, TextAlign::Left);
+        scene.label(text, text_rect, fg, style, TextAlign::Left);
 
         // 箭头 —— Metro 自绘 chevron（不依赖 Fluent codepoint，参 V7）。
         let arrow_rect = Rect::new(
@@ -150,6 +150,8 @@ impl MetroSelectorFlyout {
         crate::popup::render_panel_base(theme, self.panel_rect, self.anim.panel_progress(), scene);
 
         let mut y = self.panel_rect.origin.y;
+        // 容器语义 = 裁到面板矩形（审计 P0-2）：末项可能只露出半行，不裁会画到面板之外。
+        scene.push_clip(self.panel_rect);
         for (i, item) in self.items.iter().enumerate() {
             if y - self.panel_rect.origin.y >= self.panel_height() {
                 break;
@@ -174,12 +176,13 @@ impl MetroSelectorFlyout {
             let text_rect = Rect::new(
                 self.panel_rect.origin.x + 11.0,
                 y + (32.0 - style.line_height) / 2.0,
-                self.panel_rect.size.width - 22.0,
+                (self.panel_rect.size.width - 22.0).max(0.0),
                 style.line_height,
             );
-            scene.text(item.clone(), text_rect, fg, style, TextAlign::Left);
+            scene.label(item.clone(), text_rect, fg, style, TextAlign::Left);
             y += 32.0;
         }
+        scene.pop_clip();
     }
 }
 

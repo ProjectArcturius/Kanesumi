@@ -394,6 +394,9 @@ impl MetroDropdownMenu {
         let style = menu_item_style();
         let colors = &theme.colors;
         let mut y = self.panel_rect.origin.y;
+        // 容器语义 = 裁到面板矩形（2026-09-22 审计 P0-2）：开启动画期间面板只露出一部分，
+        // 各项仍按最终坐标绘制 → 不裁会画到面板外。
+        scene.push_clip(self.panel_rect);
         for (i, item) in self.items.iter().enumerate() {
             let item_rect = Rect::new(
                 self.panel_rect.origin.x,
@@ -422,11 +425,21 @@ impl MetroDropdownMenu {
                 );
                 x += 28.0;
             }
-            // 文本 —— 宽度 = 面板右缘（含右内边距 11）到当前笔位。
+            // 快捷键（右侧，右对齐）：**先量它，再让标签避让** —— 两者不得重叠。
+            // 旧实现 rect 宽 = 量测宽且标签不知情 → 超长快捷键会压到标签上，且永远不会省略
+            // （2026-09-22 审计 P0-1）。
+            let shortcut = item.shortcut.clone();
+            let sc_avail = (self.panel_rect.size.width - 24.0).max(0.0);
+            let sc_w = shortcut
+                .as_ref()
+                .map(|s| engine.measure(s, style.size).min(sc_avail))
+                .unwrap_or(0.0);
+            // 文本 —— 宽度 = 面板右缘（含右内边距 11）到当前笔位，再为快捷键留出 sc_w + 12。
             // 注意：panel_rect.size.width 是相对宽度，不能直接减 x（x 是绝对坐标）。
             // 旧 bug：`panel_rect.size.width - x` 得到巨大负值 → engine.layout 触发
             // CJK 单字硬断 → 菜单项变成字塔（每个字一个字）。
-            let text_right = self.panel_rect.right() - 11.0;
+            let reserve = if shortcut.is_some() { sc_w + 12.0 } else { 0.0 };
+            let text_right = self.panel_rect.right() - 11.0 - reserve;
             let text_w = (text_right - x).max(0.0);
             let text_rect = Rect::new(
                 x,
@@ -434,7 +447,7 @@ impl MetroDropdownMenu {
                 text_w,
                 style.line_height,
             );
-            scene.text(
+            scene.label(
                 item.label.clone(),
                 text_rect,
                 colors.on_surface,
@@ -451,17 +464,16 @@ impl MetroDropdownMenu {
                 );
                 kanesumi_canvas::glyph::chevron_right(scene, chevron_rect, colors.on_surface_variant);
             }
-            // 快捷键（右侧）
-            if let Some(sc) = &item.shortcut {
-                let sc_w = engine.measure(sc, style.size);
+            // 快捷键（右侧）：矩形由面板右缘派生并夹到可用宽，单行省略号。
+            if let Some(sc) = shortcut {
                 let sc_rect = Rect::new(
-                    self.panel_rect.origin.x + self.panel_rect.size.width - sc_w - 24.0,
+                    self.panel_rect.right() - 11.0 - sc_w,
                     y + (self.item_height - style.line_height) / 2.0,
                     sc_w,
                     style.line_height,
                 );
-                scene.text(
-                    sc.clone(),
+                scene.label(
+                    sc,
                     sc_rect,
                     colors.on_surface_variant,
                     style,
@@ -482,6 +494,7 @@ impl MetroDropdownMenu {
                 y += 2.0;
             }
         }
+        scene.pop_clip();
     }
 
     /// 渲染子菜单（若展开）。画在顶层面板之上。
@@ -493,6 +506,8 @@ impl MetroDropdownMenu {
         let style = menu_item_style();
         let colors = &theme.colors;
         let mut y = sub.panel.origin.y;
+        // 同 render_panel：容器语义 = 裁到子面板矩形（审计 P0-2）。
+        scene.push_clip(sub.panel);
         for (i, item) in sub.menu.items.iter().enumerate() {
             let item_rect = Rect::new(
                 sub.panel.origin.x,
@@ -523,7 +538,7 @@ impl MetroDropdownMenu {
                 text_w,
                 style.line_height,
             );
-            scene.text(
+            scene.label(
                 item.label.clone(),
                 text_rect,
                 colors.on_surface,
@@ -553,6 +568,7 @@ impl MetroDropdownMenu {
                 y += 2.0;
             }
         }
+        scene.pop_clip();
     }
 
     /// 子菜单 `update(dt)`（动画推进）。
@@ -599,7 +615,10 @@ impl MetroDropdownMenu {
         let Some(group) = group else {
             return false;
         };
-        let item = &mut sub.menu.items[path.index];
+        let item = match sub.menu.items.get_mut(path.index) {
+            Some(it) => it,
+            None => return false,
+        };
         if item.checked {
             return false;
         }

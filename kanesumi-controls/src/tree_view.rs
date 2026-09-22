@@ -250,8 +250,13 @@ impl MetroTreeView {
         let (_, rects) = self.layout(rect);
         let style = TextStyle::new(14.0, 20.0, FontWeight::Normal);
 
+        // 容器语义 = 裁到自身矩形（2026-09-22 审计 P0-2）：展平行自 rect.origin.y 向下排，
+        // 无视口上限时超出行高总和的项会画到控件之外。`rects` 应与 `rows` 等长，
+        // 仍用 get() 兜底 —— 不一致输入不得 panic（审计 P0-3）。
+        scene.push_clip(rect);
+
         for (i, row) in rows.iter().enumerate() {
-            let r = rects[i];
+            let Some(&r) = rects.get(i) else { break };
             let selected = self.selected.as_deref() == Some(row.path.as_slice());
             let hovered = self.hovered.as_deref() == Some(row.path.as_slice());
 
@@ -270,7 +275,7 @@ impl MetroTreeView {
                 }
             }
 
-            // 标签（缩进 + chevron 之后）
+            // 标签（缩进 + chevron 之后）：可用宽由行矩形派生，单行省略号（审计 P0-1）。
             let indent = row.depth as f32 * TREE_INDENT;
             let label_x = r.origin.x
                 + indent
@@ -285,7 +290,7 @@ impl MetroTreeView {
             } else {
                 colors.on_surface_variant
             };
-            scene.text(
+            scene.label(
                 row.label.clone(),
                 Rect::new(
                     label_x,
@@ -298,6 +303,8 @@ impl MetroTreeView {
                 TextAlign::Left,
             );
         }
+
+        scene.pop_clip();
     }
 }
 

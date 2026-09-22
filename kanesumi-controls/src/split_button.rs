@@ -234,14 +234,14 @@ impl MetroSplitButton {
         // 边框
         scene.stroke_rounded_rect(colors.divider, rect, 1.0, theme.tokens.corner_radius);
 
-        // Primary 标签
-        let label_w = engine.measure(&self.label, style.size);
-        scene.text(
+        // Primary 标签：可用宽取自 primary 区（非量测宽度），单行省略号。
+        // 2026-09-22 审计 P0-1：量测宽度只用于固有尺寸，绘制矩形必须由布局矩形派生。
+        scene.label(
             self.label.clone(),
             Rect::new(
-                rect.origin.x + 8.0,
-                rect.origin.y + (rect.size.height - style.line_height) / 2.0,
-                label_w,
+                primary.origin.x + 8.0,
+                primary.origin.y + (primary.size.height - style.line_height) / 2.0,
+                (primary.size.width - 16.0).max(0.0),
                 style.line_height,
             ),
             colors.on_surface,

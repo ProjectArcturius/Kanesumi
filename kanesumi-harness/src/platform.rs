@@ -84,10 +84,52 @@ use crate::role::{EtherRole, SurfaceKind};
 /// 职责：连 Wayland → 按 `EtherRole::surface_kind()` 建表面（xdg-shell / layer-shell）→
 /// wgpu 附着 → frame callback 驱动 `App::update(dt)` / `App::render(size)` → 光栅化 Scene。
 /// 诊断文件双写：/tmp + $HOME（LightDM 多会话 /tmp 可能隔离，home 跨 session 共享）。
+/// 诊断落盘。
+///
+/// **主路径必须持久**（`~/.local/state/ether/`）—— Debian 会话里崩溃/黑屏后无法开终端，
+/// 只能重启回主系统读盘；只写 tmpfs（`/tmp`）会随重启丢失（参 `AGENTS.md` 铁律）。
+/// 另外在 `$XDG_RUNTIME_DIR` 留一份便于会话内即时查看（无持久性要求）。
 fn write_diag(name: &str, content: &str) {
-    let _ = std::fs::write(format!("/tmp/{name}"), content);
     if let Ok(home) = std::env::var("HOME") {
-        let _ = std::fs::write(std::path::Path::new(&home).join(name), content);
+        let dir = std::path::Path::new(&home).join(".local/state/ether");
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join(name), content);
+    }
+    let session_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
+    let _ = std::fs::write(std::path::Path::new(&session_dir).join(name), content);
+}
+
+/// 把字节下标向下夹到最近的 UTF-8 字符边界。
+///
+/// IME 协议里的光标/删除偏移来自客户端，可能落在多字节字符中间；直接切片会 panic
+/// （2026-09-22 审计 P0-4）。`str::floor_char_boundary` 尚未稳定，故自带实现。
+fn floor_char_boundary(text: &str, index: usize) -> usize {
+    if index >= text.len() {
+        return text.len();
+    }
+    let mut i = index;
+    while i > 0 && !text.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// 在错误边界内调用 App 回调：panic → 记日志 + 落盘 + 返回 `None`，**绝不杀进程**。
+///
+/// 2026-09-22 审计 P0-4：`update`/`render`/`handle_input` 之外的回调（`ime_engine_*`、
+/// `focus_changed`、`context_menu` …）原本裸调，App 一 panic 就直达顶层 `exit(2)`，
+/// 表现为「TopBar/候选窗整个进程消失」。凡是每帧或每键都会走到的 App 回调都必须过这里。
+fn guard<T>(what: &str, f: impl FnOnce() -> T) -> Option<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(v) => Some(v),
+        Err(_) => {
+            log::error!("App::{what} panic，已隔离（本帧跳过）");
+            write_diag(
+                "ether-app-panic.log",
+                &format!("App::{what} panic —— 已隔离，进程存活\n"),
+            );
+            None
+        }
     }
 }
 
@@ -1243,7 +1285,7 @@ impl Shell {
         self.reconcile_ime();
 
         // App 请求关闭（文件选择器等交付结果后）→ 退出主循环（进程正常收尾）。
-        if self.app.should_close() {
+        if guard("should_close", || self.app.should_close()).unwrap_or(false) {
             self.running = false;
             return;
         }
@@ -1268,12 +1310,12 @@ impl Shell {
         if !self.configured {
             return;
         }
-        // 诊断：帧计数 + needs_redraw + frame_pending，写 /tmp 供会话外排查。
+        // 诊断：帧计数 + needs_redraw + frame_pending。落持久路径（write_diag），不用裸 /tmp。
         self.frame_count += 1;
         if self.frame_count <= 20 || self.frame_count % 30 == 0 {
-            let _ = std::fs::write(
-                "/tmp/ether-harness-trace.log",
-                format!(
+            write_diag(
+                "ether-harness-trace.log",
+                &format!(
                     "frame #{}, needs_redraw={}, frame_pending={}\n",
                     self.frame_count,
                     self.app.needs_redraw(),
@@ -1296,7 +1338,7 @@ impl Shell {
             if let Some(r) = self.renderer.as_ref() {
                 lines.push_str(&format!("renderer: {}\n", r.diagnostics()));
             }
-            let _ = std::fs::write("/tmp/ether-kanesumi-diag.txt", lines.as_bytes());
+            write_diag("ether-kanesumi-diag.txt", &lines);
             log::info!("{}", lines.trim_end());
         }
 
@@ -1394,7 +1436,8 @@ impl Shell {
                     x, y, button: PointerButton::Right, ..
                 } = &event
                 {
-                    self.app.context_menu(*x, *y)
+                    // 错误边界（P0-4）：App 构造菜单时 panic 不得杀掉整个客户端进程。
+                    guard("context_menu", || self.app.context_menu(*x, *y)).flatten()
                 } else {
                     None
                 }
@@ -1481,7 +1524,9 @@ impl Shell {
         let Some(ti) = self.text_input.clone() else {
             return;
         };
-        let focus_control = self.app.ime_focus().is_some();
+        let focus_control = guard("ime_focus", || self.app.ime_focus())
+            .flatten()
+            .is_some();
         let want = self.ime_focus_surface && focus_control;
 
         // 使能状态翻转才发 enable/disable（幂等，避免协议流量）。
@@ -1510,7 +1555,9 @@ impl Shell {
         }
 
         // 上下文无变化 → 不重灌（避免每帧 set_surrounding_text + commit）。
-        let ctx = self.app.ime_focus().unwrap_or_default();
+        let ctx = guard("ime_focus", || self.app.ime_focus())
+            .flatten()
+            .unwrap_or_default();
         if self.ime_context_cache.as_ref() == Some(&ctx) {
             return;
         }
@@ -2642,7 +2689,10 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                 // 引擎处理按键 → 更新 preedit/commit，随即 flush 上屏。
                 // 返回 false = 引擎未消费 → 经虚拟键盘重放给焦点客户端（fcitx5 同款
                 // 透传：arrow/backspace/Home 等导航键须到焦点应用）。
-                let consumed = state.app.ime_engine_key(logical, state.im_modifiers);
+                let consumed = guard("ime_engine_key", || {
+                    state.app.ime_engine_key(logical, state.im_modifiers)
+                })
+                .unwrap_or(false);
                 if let Some(im) = state.input_method.clone() {
                     state.flush_engine(&im);
                 }
@@ -2755,14 +2805,23 @@ impl Shell {
     fn flush_engine(&mut self, im: &ZwpInputMethodV2) {
         // 1. 待提交文本（选词/空格/回车）。
         let mut committed = false;
-        while let Some(text) = self.app.ime_engine_take_commit() {
+        loop {
+            let Some(text) = guard("ime_engine_take_commit", || self.app.ime_engine_take_commit())
+                .flatten()
+            else {
+                break;
+            };
             im.commit_string(text);
             committed = true;
         }
         // 2. 待删除周边文本（退格）。double-buffered → 须 commit 才生效。
         //    App 以「字符数」请求（before=1 = 删光标前一字符）；协议按字节，
         //    CJK 字符 3 字节，据周边文本缓存换算字节数（整字符删，不劈码点）。
-        let (before_chars, after_chars) = self.app.ime_engine_take_delete();
+        let Some((before_chars, after_chars)) =
+            guard("ime_engine_take_delete", || self.app.ime_engine_take_delete())
+        else {
+            return;
+        };
         if before_chars > 0 || after_chars > 0 {
             let before_bytes = self.chars_to_bytes_before(before_chars);
             let after_bytes = self.chars_to_bytes_after(after_chars);
@@ -2770,7 +2829,11 @@ impl Shell {
             committed = true;
         }
         // 3. 组合态 preedit（变化才发）。double-buffered → 变化时 commit 才生效。
-        let (preedit, cursor_byte) = self.app.ime_engine_preedit();
+        let Some((preedit, cursor_byte)) =
+            guard("ime_engine_preedit", || self.app.ime_engine_preedit())
+        else {
+            return;
+        };
         let cursor = cursor_byte.map(|c| c as i32).unwrap_or(-1);
         if self.im_preedit_cache.as_deref() != Some(preedit.as_str()) {
             im.set_preedit_string(preedit.clone(), cursor, cursor);
@@ -2788,7 +2851,8 @@ impl Shell {
         let Some((text, cursor, _anchor)) = self.im_surrounding.as_ref() else {
             return n;
         };
-        let cursor = (*cursor as usize).min(text.len());
+        // 夹到字符边界：客户端给的光标可能是字节偏移且落在多字节字符中间（P0-4）。
+        let cursor = floor_char_boundary(text, (*cursor as usize).min(text.len()));
         let prefix = &text[..cursor];
         let n = (n as usize).min(prefix.chars().count());
         // 取前缀最后 n 字符的字节长度。
@@ -2802,7 +2866,7 @@ impl Shell {
         let Some((text, cursor, _anchor)) = self.im_surrounding.as_ref() else {
             return n;
         };
-        let cursor = (*cursor as usize).min(text.len());
+        let cursor = floor_char_boundary(text, (*cursor as usize).min(text.len()));
         let suffix = &text[cursor..];
         let n = (n as usize).min(suffix.chars().count());
         suffix.chars().take(n).map(|c| c.len_utf8()).sum::<usize>() as u32
@@ -2811,7 +2875,10 @@ impl Shell {
     /// 候选窗 popup surface 每帧刷新：按引擎状态建/调整 surface，渲染候选窗 Scene 提交。
     /// 合成器把 `zwp_input_popup_surface_v2` 渲染到 Layer 6 Overlay（跟随光标）。
     fn refresh_im_popup(&mut self, qh: &QueueHandle<Self>) {
-        let (pw, ph) = self.app.ime_engine_popup_size();
+        let Some((pw, ph)) = guard("ime_engine_popup_size", || self.app.ime_engine_popup_size())
+        else {
+            return;
+        };
         let active = self.im_active && pw > 0.0 && ph > 0.0;
         let has_input_method = self.input_method.is_some();
 
@@ -2917,7 +2984,10 @@ impl Shell {
 // ── SHM 提交（Ether 合成器 dmabuf 不可见 → 离屏读回 wl_shm 提交）─────────────
 
 /// 创建可共享内存文件（/dev/shm 优先，回退 /tmp）供 wl_shm pool 使用。参 settings/topbar.rs。
-fn shm_open(size: usize) -> std::fs::File {
+///
+/// 失败返回 `None` 而非 panic（2026-09-22 审计 P0-4）：`/dev/shm` 满或权限异常时，
+/// 旧实现的 `unwrap()` 会直接杀死整个客户端进程。正确行为是**丢帧 + 落盘诊断**。
+fn shm_open(size: usize) -> Option<std::fs::File> {
     let name = format!("ether-kanesumi-{}", std::process::id());
     let base = if std::path::Path::new("/dev/shm").exists() {
         "/dev/shm"
@@ -2925,15 +2995,24 @@ fn shm_open(size: usize) -> std::fs::File {
         "/tmp"
     };
     let path = format!("{}/{}", base, name);
-    let file = std::fs::File::options()
+    let file = match std::fs::File::options()
         .read(true)
         .write(true)
         .create(true)
         .open(&path)
-        .unwrap();
+    {
+        Ok(f) => f,
+        Err(e) => {
+            log::error!("shm_open 打开 {path} 失败: {e}");
+            return None;
+        }
+    };
     std::fs::remove_file(&path).ok();
-    file.set_len(size as u64).unwrap();
-    file
+    if let Err(e) = file.set_len(size as u64) {
+        log::error!("shm_open set_len({size}) 失败（{base} 是否已满？）: {e}");
+        return None;
+    }
+    Some(file)
 }
 
 /// 用渲染读回的像素更新 SHM 表面（RGBA→BGRA R/B 交换；单缓冲复用；尺寸变化重建）。
@@ -2990,6 +3069,15 @@ fn commit_shm_buffers(
     // 尺寸变化或 pool 未建 → 重建（pool 大小 = 2×expected，容纳双缓冲）。
     let fresh_pool = state.pool.is_none() || state.width != width || state.height != height;
     if fresh_pool {
+        // 先建新 pool 所需的 shm 文件，**成功后再拆旧的**：失败时保持旧 pool 原样并丢帧，
+        // 下一帧再试（2026-09-22 审计 P0-4 —— 旧实现 unwrap 直接杀进程）。
+        let Some(fd) = shm_open(expected * 2) else {
+            write_diag(
+                "ether-shm-error.log",
+                "shm_open 失败：无法为 wl_shm 建立共享内存池（/dev/shm 是否已满？）\n",
+            );
+            return;
+        };
         state.pool.take().map(|p| p.destroy());
         for b in state.buffers.iter_mut() {
             b.take().map(|b| b.destroy());
@@ -2999,7 +3087,6 @@ fn commit_shm_buffers(
         state.next = 0;
         state.needs_full = [true, true];
         state.partial = [None, None];
-        let fd = shm_open(expected * 2);
         let mmap = unsafe { memmap2::MmapMut::map_mut(&fd) }.ok();
         let pool = shm.create_pool(fd.as_fd(), (expected * 2) as i32, qh, ());
         for i in 0..2 {

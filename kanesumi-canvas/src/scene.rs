@@ -123,7 +123,59 @@ impl Scene {
         });
     }
 
+    /// 文本（宽松默认）：按框宽换行，超出高度时最后一行以省略号收束。
+    ///
+    /// 为什么默认 Ellipsis 而非 Clip（2026-09-22 溢出审计）：本 API 的调用方绝大多数是
+    /// **单行标签**（按钮/列表行/导航项/页签/菜单项/应用名）。旧默认 `Clip` 会让超长标签
+    /// 被硬裁掉半个字，既无省略号也无提示 —— 这是 Kanesumi「文字溢出机制不成熟」的直接来源。
+    /// Ellipsis 对「装得下」的文本零影响；装不下时给出可读收束。需要**明确裁切**（正文/段落）
+    /// 用 [`Scene::paragraph`]；需要**单行不换行**用 [`Scene::label`]。
     pub fn text(
+        &mut self,
+        content: String,
+        rect: Rect,
+        color: Color,
+        style: TextStyle,
+        align: TextAlign,
+    ) {
+        self.text_with_options(
+            content,
+            rect,
+            color,
+            style,
+            align,
+            true,
+            None,
+            TextOverflow::Ellipsis,
+        );
+    }
+
+    /// 单行标签：不换行，超出宽度以省略号收束。
+    ///
+    /// 「一行高」的标签框一律用本方法 —— 即便调用方给的框高于一行，也不会换行成两行
+    /// （对照 UWP `TextBlock.TextWrapping=NoWrap` + `TextTrimming=CharacterEllipsis`）。
+    pub fn label(
+        &mut self,
+        content: String,
+        rect: Rect,
+        color: Color,
+        style: TextStyle,
+        align: TextAlign,
+    ) {
+        self.text_with_options(
+            content,
+            rect,
+            color,
+            style,
+            align,
+            false,
+            Some(1),
+            TextOverflow::Ellipsis,
+        );
+    }
+
+    /// 多行段落：按框宽换行，超出高度直接裁切（正文/说明文字；不加省略号）。
+    pub fn paragraph(
         &mut self,
         content: String,
         rect: Rect,
@@ -277,6 +329,57 @@ mod tests {
             TextAlign::Left,
         );
         assert_eq!(scene.commands.len(), 2);
+    }
+
+    /// 溢出默认（2026-09-22 审计 P0-1）：`text()` 是「宽松默认」，超出时收束为省略号；
+    /// 旧默认 `Clip` 会把超长标签硬裁掉半个字（全仓仅 1 处曾用 Ellipsis）。
+    #[test]
+    fn text_defaults_to_ellipsis() {
+        let mut scene = Scene::default();
+        scene.text(
+            "很长的中文标签".into(),
+            Rect::new(0.0, 0.0, 40.0, 22.0),
+            Color::WHITE,
+            TextStyle::new(15.0, 22.0, kanesumi_core::FontWeight::Normal),
+            TextAlign::Left,
+        );
+        assert!(matches!(
+            scene.commands[0],
+            SceneCommand::Text {
+                wrap: true,
+                max_lines: None,
+                overflow: TextOverflow::Ellipsis,
+                ..
+            }
+        ));
+    }
+
+    /// `label()` = 单行不换行 + 省略号；`paragraph()` = 换行 + 裁切。两者靠类型区分意图，
+    /// 不靠调用方记得传对三个布尔/枚举参数。
+    #[test]
+    fn label_and_paragraph_pin_their_policies() {
+        let mut scene = Scene::default();
+        let style = TextStyle::new(15.0, 22.0, kanesumi_core::FontWeight::Normal);
+        scene.label("x".into(), Rect::new(0.0, 0.0, 40.0, 22.0), Color::WHITE, style, TextAlign::Left);
+        scene.paragraph("y".into(), Rect::new(0.0, 0.0, 40.0, 44.0), Color::WHITE, style, TextAlign::Left);
+        assert!(matches!(
+            scene.commands[0],
+            SceneCommand::Text {
+                wrap: false,
+                max_lines: Some(1),
+                overflow: TextOverflow::Ellipsis,
+                ..
+            }
+        ));
+        assert!(matches!(
+            scene.commands[1],
+            SceneCommand::Text {
+                wrap: true,
+                max_lines: None,
+                overflow: TextOverflow::Clip,
+                ..
+            }
+        ));
     }
 
     #[test]

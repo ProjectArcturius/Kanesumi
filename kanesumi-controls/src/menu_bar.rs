@@ -358,15 +358,15 @@ impl MetroMenuBar {
                 scene.fill_rect(colors.on_surface.with_alpha(a), hrect);
             }
 
-            // Label —— 竖直居中，靠左（padding 10）。
-            let label_w = engine.measure(&self.items[i].label, style.size);
+            // Label —— 竖直居中，靠左（padding 10）。可用宽取自 header 矩形（非量测宽），
+            // 单行省略号：2026-09-22 审计 P0-1（旧实现量测宽当 rect 宽 → 长菜单名画出 header）。
             let text_rect = Rect::new(
                 hrect.origin.x + HEADER_PAD_X,
                 rect.origin.y + (self.header_height - style.line_height) / 2.0,
-                label_w,
+                (hrect.size.width - HEADER_PAD_X * 2.0).max(0.0),
                 style.line_height,
             );
-            scene.text(
+            scene.label(
                 self.items[i].label.clone(),
                 text_rect,
                 colors.on_surface,
@@ -379,8 +379,13 @@ impl MetroMenuBar {
         // Flyout —— 每帧渲染一个（open_index 唯一）。菜单栏 flyout 无遮罩
         // （render_panel 而非 render：render 会 render_overlay 黑 70% 盖满主表面整宽，
         // 把 bar 与扩展区全压黑 → 「屏幕等宽大黑区」）。参 dropdown_menu render_overlay。
-        if let Some(i) = self.open_index {
-            self.flyouts[i].render_panel(theme, engine, scene);
+        //
+        // `items` 是 pub 字段而 `flyouts` 私有：App 直接 push `items` 会让两者长度失配，
+        // 旧实现 `self.flyouts[i]` 越界 panic（2026-09-22 审计 P0-3）。改用 get() 容错。
+        if let Some(i) = self.open_index
+            && let Some(flyout) = self.flyouts.get(i)
+        {
+            flyout.render_panel(theme, engine, scene);
         }
     }
 }

@@ -63,6 +63,14 @@ impl Default for MetroRepeater {
 }
 
 impl MetroRepeater {
+    /// 列数（夹到 ≥1）。
+    ///
+    /// `columns` 是 pub 字段，App 可置 0；网格算术（`div_ceil` / `%` / `/`）必须经本访问器，
+    /// 否则除零 panic（2026-09-22 审计 P0-3）。
+    fn columns_clamped(&self) -> usize {
+        self.columns.max(1)
+    }
+
     /// 纵向 Stack 便捷构造。
     pub fn stack_vertical(count: usize, item_height: f32) -> Self {
         Self {
@@ -110,7 +118,7 @@ impl MetroRepeater {
                 self.item_count as f32 * self.item_stride() - self.spacing
             }
             RepeaterLayout::UniformGrid => {
-                let rows = self.item_count.div_ceil(self.columns);
+                let rows = self.item_count.div_ceil(self.columns_clamped());
                 rows as f32 * self.item_stride() - self.spacing
             }
         }
@@ -122,8 +130,8 @@ impl MetroRepeater {
         match self.layout {
             RepeaterLayout::Stack => self.cross_extent,
             RepeaterLayout::UniformGrid => {
-                self.columns as f32 * self.main_extent
-                    + (self.columns as f32 - 1.0) * self.spacing
+                let columns = self.columns_clamped() as f32;
+                columns * self.main_extent + (columns - 1.0) * self.spacing
             }
         }
     }
@@ -187,8 +195,9 @@ impl MetroRepeater {
                 ),
             },
             RepeaterLayout::UniformGrid => {
-                let col = index % self.columns;
-                let row = index / self.columns;
+                let columns = self.columns_clamped();
+                let col = index % columns;
+                let row = index / columns;
                 Rect::new(
                     col as f32 * (self.main_extent + self.spacing),
                     row as f32 * (self.main_extent + self.spacing) - offset,
@@ -353,5 +362,20 @@ mod tests {
         let rects = r.visible_rects(Size::new(200.0, 100.0), 200.0);
         assert_eq!(rects.len(), 3, "offset 200 视口 100 → 3 项");
         assert_eq!(rects[0].origin.y, 5.0 * 40.0 - 200.0);
+    }
+
+    /// P0-3 回归：`columns` 是 pub 字段，App 置 0 时网格算术（`div_ceil` / `%` / `/`）
+    /// 不得除零 panic —— 一律经 `columns_clamped()`。
+    #[test]
+    fn zero_columns_does_not_panic() {
+        let mut r = MetroRepeater::grid(10, 40.0, 2, 4.0);
+        r.columns = 0;
+        let viewport = Size::new(200.0, 200.0);
+        let _ = r.content_length();
+        let _ = r.content_cross();
+        let _ = r.item_rect(3, viewport, 0.0);
+        let _ = r.visible_range(200.0, 0.0);
+        let _ = r.visible_rects(viewport, 0.0);
+        let _ = r.item_at(viewport, 0.0, Point::new(10.0, 10.0));
     }
 }

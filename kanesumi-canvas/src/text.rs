@@ -662,8 +662,17 @@ impl TextEngine {
                 width: self.measure_with_spacing(text, size, options.letter_spacing_em),
             }]
         };
-        let height_limit = if line_height > 0.0 && options.max_height.is_finite() {
-            (options.max_height / line_height).floor().max(0.0) as usize
+        // 高度上限折算成行数。两条防「文字静默消失」的铁律（2026-09-22 溢出审计）：
+        // 1. `wrap == false`（单行标签）**至少保留一行** —— 调用方给的框比一行还矮时，
+        //    旧实现 floor(h/line_height)=0 会把唯一一行也 truncate 掉，文字整段消失，
+        //    且没有任何日志；绘制仍受 paint clip 约束，故「画出来再裁」永远优于「不画」。
+        // 2. `wrap == true` 且框高 > 0 时同样至少一行 —— 半行可见也好过空白。
+        let height_limit = if options.max_height <= 0.0 {
+            0
+        } else if !options.wrap {
+            1
+        } else if line_height > 0.0 && options.max_height.is_finite() {
+            (options.max_height / line_height).floor().max(1.0) as usize
         } else {
             usize::MAX
         };
@@ -860,6 +869,39 @@ mod tests {
         let layout = engine.layout_box("one two three four", 15.0, options);
         assert_eq!(layout.lines.len(), 1);
         assert_eq!(layout.size.height, 22.0);
+    }
+
+    /// 回归守卫（2026-09-22 溢出审计）：单行标签框矮于一行时不得静默消失。
+    /// 旧实现 `floor(h/line_height)` = 0 → truncate(0) → 一行不剩，文字凭空不见。
+    #[test]
+    fn single_line_label_survives_box_shorter_than_one_line() {
+        let Some(engine) = engine() else { return };
+        let mut options = TextLayoutOptions::wrapped(40.0, 12.0, 22.0);
+        options.wrap = false;
+        options.max_lines = Some(1);
+        options.overflow = TextOverflow::Ellipsis;
+        let layout = engine.layout_box("hello world", 15.0, options);
+        assert_eq!(layout.lines.len(), 1, "框矮于一行也不得静默消失");
+        assert!(layout.lines[0].content.ends_with('…'));
+        assert!(layout.lines[0].width <= 40.0);
+    }
+
+    /// 同一防线的换行分支：框高 > 0 但不足一行时保留一行（绘制阶段仍受裁剪）。
+    #[test]
+    fn wrapped_text_in_sub_line_box_keeps_one_line() {
+        let Some(engine) = engine() else { return };
+        let options = TextLayoutOptions::wrapped(60.0, 10.0, 22.0);
+        let layout = engine.layout_box("one two three", 15.0, options);
+        assert_eq!(layout.lines.len(), 1);
+    }
+
+    /// 零高框是「显式收起」：必须什么都不画（不能与上一条混为一谈）。
+    #[test]
+    fn zero_height_box_draws_nothing() {
+        let Some(engine) = engine() else { return };
+        let options = TextLayoutOptions::wrapped(60.0, 0.0, 22.0);
+        let layout = engine.layout_box("one two three", 15.0, options);
+        assert!(layout.lines.is_empty());
     }
 
     #[test]

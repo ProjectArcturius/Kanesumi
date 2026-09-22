@@ -156,10 +156,19 @@ impl MetroTabRow {
     /// V17：管道从 prev tab 到 current tab 用 SpringAnim 滑行；两者的文字色按同一
     /// 进度做 crossfade（prev 淡出到 variant、current 淡入到 on_surface）。
     pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
+        // 退化输入守卫（2026-09-22 审计 P0-3）：空 TabRow 旧实现走 `geoms[self.selected]`
+        // 直接越界 panic（`MetroTabRow::default()` 即 `tabs: Vec::new()`）；空矩形无意义。
+        if self.tabs.is_empty() || rect.size.width <= 0.0 || rect.size.height <= 0.0 {
+            return;
+        }
         let colors = &theme.colors;
         let style = Self::header_style();
         let geoms = self.label_geoms(engine, rect);
         let progress = self.select_anim.value().clamp(0.0, 1.0) as f32;
+
+        // 容器语义 = 裁到自身矩形（2026-09-22 审计 P0-2）：页签按内容定宽，总宽可超控件宽，
+        // 无裁剪时最右页签会画到相邻控件上。
+        scene.push_clip(rect);
 
         for (i, tab) in self.tabs.iter().enumerate() {
             let (label_x, label_w) = geoms[i];
@@ -180,18 +189,24 @@ impl MetroTabRow {
                 base
             };
 
+            // 单行标签：不换行（旧实现给的是 header_height 高的框，宽度一旦不足便会折行）。
+            // 纵向位置沿用旧值（顶部对齐），只收窄语义不移动视觉。
             let text_rect =
-                Rect::new(label_x, rect.origin.y, label_w, self.header_height);
-            scene.text(tab.label.clone(), text_rect, fg, style, TextAlign::Left);
+                Rect::new(label_x, rect.origin.y, label_w, style.line_height);
+            scene.label(tab.label.clone(), text_rect, fg, style, TextAlign::Left);
         }
 
         // 选中管道：SpringAnim 从 prev 到 current 插值 x / w，强调色。
         // 稳态或首启（prev == current）时直接画在 current 下。
-        let (cur_x, cur_w) = geoms[self.selected];
-        let (pipe_x, pipe_w) = if self.prev_selected == self.selected {
+        // 索引夹紧：`tabs`/`selected` 均为 pub，App 可能先改 tabs 再改 selected。
+        let last = geoms.len() - 1;
+        let selected = self.selected.min(last);
+        let prev_selected = self.prev_selected.min(last);
+        let (cur_x, cur_w) = geoms[selected];
+        let (pipe_x, pipe_w) = if prev_selected == selected {
             (cur_x, cur_w)
         } else {
-            let (prev_x, prev_w) = geoms[self.prev_selected];
+            let (prev_x, prev_w) = geoms[prev_selected];
             (
                 prev_x + (cur_x - prev_x) * progress,
                 prev_w + (cur_w - prev_w) * progress,
@@ -201,6 +216,8 @@ impl MetroTabRow {
             colors.primary,
             Rect::new(pipe_x, rect.origin.y + self.header_height - 4.0, pipe_w, 2.0),
         );
+
+        scene.pop_clip();
     }
 }
 
@@ -229,6 +246,78 @@ mod tests {
     fn header_height_matches_spec() {
         assert_eq!(MetroTabRow::default().header_height, 48.0);
         assert_eq!(MetroTabRow::header_style().size, 24.0);
+    }
+
+    /// P0-3 回归：空 TabRow 渲染不得 panic（旧实现 `geoms[self.selected]` 越界）。
+    #[test]
+    fn empty_tab_row_render_is_noop() {
+        let Some(engine) = find_engine() else { return };
+        let row = MetroTabRow::default();
+        let mut scene = Scene::default();
+        row.render(
+            &MetroTheme::ether_dark(),
+            &engine,
+            Rect::new(0.0, 0.0, 300.0, 48.0),
+            &mut scene,
+        );
+        assert!(scene.is_empty(), "空表不得产生任何命令");
+    }
+
+    /// P0-3 回归：`selected`/`prev_selected` 是 pub 字段，App 可改成任意值 → 必须夹紧。
+    #[test]
+    fn out_of_range_selection_is_clamped() {
+        let Some(engine) = find_engine() else { return };
+        let mut row = MetroTabRow::new(vec![MetroTab::new("A"), MetroTab::new("B")]);
+        row.selected = 99;
+        row.prev_selected = 99;
+        let mut scene = Scene::default();
+        row.render(
+            &MetroTheme::ether_dark(),
+            &engine,
+            Rect::new(0.0, 0.0, 300.0, 48.0),
+            &mut scene,
+        );
+        assert!(!scene.is_empty());
+    }
+
+    /// P0-2 回归：容器语义 = 裁到自身矩形（成对 PushClip/PopClip）。
+    #[test]
+    fn tab_row_clips_to_its_rect() {
+        let Some(engine) = find_engine() else { return };
+        let row = MetroTabRow::new(vec![MetroTab::new("Home"), MetroTab::new("Settings")]);
+        let rect = Rect::new(10.0, 5.0, 300.0, 48.0);
+        let mut scene = Scene::default();
+        row.render(&MetroTheme::ether_dark(), &engine, rect, &mut scene);
+        assert!(
+            matches!(scene.commands.first(), Some(kanesumi_canvas::SceneCommand::PushClip { rect: r }) if *r == rect)
+        );
+        assert!(matches!(
+            scene.commands.last(),
+            Some(kanesumi_canvas::SceneCommand::PopClip)
+        ));
+    }
+
+    /// P0-1 回归：页签标签是单行省略号（旧实现给 header_height 高的框 + 默认换行 → 会折行）。
+    #[test]
+    fn tab_labels_are_single_line_ellipsis() {
+        let Some(engine) = find_engine() else { return };
+        let row = MetroTabRow::new(vec![MetroTab::new("标签很长很长很长很长很长")]);
+        let mut scene = Scene::default();
+        row.render(
+            &MetroTheme::ether_dark(),
+            &engine,
+            Rect::new(0.0, 0.0, 300.0, 48.0),
+            &mut scene,
+        );
+        assert!(scene.commands.iter().any(|c| matches!(
+            c,
+            kanesumi_canvas::SceneCommand::Text {
+                wrap: false,
+                max_lines: Some(1),
+                overflow: kanesumi_canvas::TextOverflow::Ellipsis,
+                ..
+            }
+        )));
     }
 
     #[test]

@@ -195,15 +195,16 @@ impl MetroDropDownButton {
             );
         }
 
-        // 标签（左侧，留出 chevron 区）
-        let label_w = engine.measure(&self.label, style.size);
+        // 标签（左侧，留出 chevron 区）：可用宽由 **rect 派生**，不用量测宽度。
+        // 旧实现 `label_w = engine.measure(...)` 当 rect 宽 → 长标签画进 chevron 甚至按钮外
+        // （2026-09-22 审计 P0-1）。可用宽 = 宽 − 左 8 − chevron 12 − 右 8 − 间隔 6。
         let text_rect = Rect::new(
             rect.origin.x + 8.0,
             rect.origin.y + (rect.size.height - style.line_height) / 2.0,
-            label_w,
+            (rect.size.width - 34.0).max(0.0),
             style.line_height,
         );
-        scene.text(
+        scene.label(
             self.label.clone(),
             text_rect,
             colors.on_surface,
