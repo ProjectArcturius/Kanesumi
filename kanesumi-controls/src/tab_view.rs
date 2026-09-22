@@ -280,9 +280,12 @@ impl MetroTabView {
                 && (selected || hovered)
             {
                 if close_hovered {
-                    // 关闭键悬停 = 浅叠 15%（CONTROL_SPEC §864 白 15% / 按压 25%）。
+                    // 关闭键悬停 = 极轻底（WinUI 2.x `TabViewItemHeaderCloseButtonBackgroundPointerOver`
+                    // → `SubtleFillColorSecondaryBrush` = 暗 5.9% / 亮 3.5%，
+                    // TabView_themeresources.xaml L52 → Common_themeresources_any.xaml）。
+                    // 旧值 15% 出自 §864 的同名笔刷但百分比抄错（按下真值更淡，为 Tertiary 3.9%）。
                     scene.fill_rounded_rect(
-                        theme.indication.subtle_hover_tint,
+                        theme.indication.subtle_tint,
                         c,
                         theme.tokens.corner_radius,
                     );

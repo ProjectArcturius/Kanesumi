@@ -242,7 +242,11 @@ impl MetroSwipeControl {
                 let bg = item_bg(item.action, theme);
                 scene.fill_rect(bg, r);
                 if self.hovered == Some((true, i)) {
-                    scene.fill_rect(theme.indication.subtle_hover_tint, r);
+                    // 悬停叠白 10%（通用悬停档）。⚠ 一手源：UWP `SwipeItem` 的 PointerOver 是
+                    // **空视觉状态**（`generic.xaml` L29495 区段无 Setter）、Pressed 才是中性 40%
+                    // （BaseMediumLow）——本库给鼠标加悬停反馈是**有意偏离**（桌面鼠标无按压预期），
+                    // 登记于 `CANON_VS_TEMPORARY` T13 同条。
+                    scene.fill_rect(theme.indication.hover_tint, r);
                 }
                 scene.text(
                     item.label.clone(),
@@ -269,7 +273,8 @@ impl MetroSwipeControl {
                 let bg = item_bg(item.action, theme);
                 scene.fill_rect(bg, r);
                 if self.hovered == Some((false, i)) {
-                    scene.fill_rect(theme.indication.subtle_hover_tint, r);
+                    // 同上：悬停叠白 10%（通用悬停档；UWP 的 SwipeItem 无悬停态，本库有意加）。
+                    scene.fill_rect(theme.indication.hover_tint, r);
                 }
                 scene.text(
                     item.label.clone(),

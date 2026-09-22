@@ -159,12 +159,15 @@ impl MetroTitleBar {
 
         // Back
         if let Some(b) = self.back_rect(rect) {
-            // 底：Hover 白 15% / Pressed 白 25%（CONTROL_SPEC §790/§791
-            // SubtleFillColorSecondary / Tertiary）。
+            // 底：悬停 / 按压 = 透明底控件的通用档（UWP `AppBarButtonBackgroundPointerOver/Pressed`
+            // → `SystemControlHighlightListLow/MediumBrush` = 10% / 20%，themeresources L1680/1681）。
+            // 旧值 15% / 25% 出自 `CONTROL_SPEC` §790/§791 的「SubtleFillColorSecondary/Tertiary
+            // = 白 15% / 25%」——一手源证明笔刷名对、百分比错（真值 5.9% / 3.9%），
+            // 且这里的返回键本就是透明底按钮，与 AppBarButton 同族。
             let bg = if self.back_pressed {
-                theme.indication.subtle_press_tint
+                theme.indication.press_tint
             } else if self.back_hovered {
-                theme.indication.subtle_hover_tint
+                theme.indication.hover_tint
             } else {
                 kanesumi_core::Color::TRANSPARENT
             };
