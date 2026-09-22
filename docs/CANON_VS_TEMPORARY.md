@@ -19,12 +19,12 @@
 |---|---|---|---|---|---|---|
 | T1 | 暗色背景 | `#1A1A1A` | `kanesumi-core/src/colors.rs` `MetroColors::dark` | **正典已修正（2026-09-22）**：不再规定「OLED 纯黑」，改为「深浅两套并列方案，取值属实现决策」 | `KANESUMI_DESIGN.md` §Ⅲ.3（已改） | **解除登记**：取值本身是方案内选择，不再是正典冲突；若仍想改纯黑，属视觉调优 |
 | T2 | 强调色基色来源 | 代码内默认 `#E57812` | `kanesumi-core/src/accent.rs` `Accent::DEFAULT_HEX` | 应**始终来自 Chorus** 的 `~/.config/ether/theme.toml` 的 `accent` | `Ether/chorus/src/theme.rs` | 机制已建（accent 派生 + 双态）；**消费端接线待做**（harness 读取 + App 跟随） |
-| T3 | 亮色中性色 | `#FAFAFA` / `#FFFFFF` / `#F0F0F0` / `#D6D6D6` / `#1A1A1A` / `#5A5F66` | `kanesumi-core/src/colors.rs` `MetroColors::light` | **候选权威值已取到**（见 `docs/REFERENCE.md` §9.3）：`SolidBackgroundFillColorBase` 亮 `#F3F3F3`、`Secondary` `#EEEEEE`、`Tertiary` `#F9F9F9`；`TextFillColorPrimary` 亮 `#E4000000` | **WinUI 3 开源仓**：`controls/dev/CommonStyles/Common_themeresources_any.xaml` | 待裁定映射：WinUI 的分层语义（Base/Secondary/Tertiary）与本项目（background/surface/surface_variant）并非一一对应，需先定映射再替换 |
+| T3 | 亮色中性色 | `#FAFAFA` / `#FFFFFF` / `#F0F0F0` / `#D6D6D6` / `#1A1A1A` / `#5A5F66` | `kanesumi-core/src/colors.rs` `MetroColors::light` | WinUI 3 的 `SolidBackgroundFillColorBase/Secondary/Tertiary` 与 `TextFillColorPrimary`（见 `docs/REFERENCE.md` §9.3） | WinUI 3 开源仓 `controls/dev/CommonStyles/Common_themeresources_any.xaml` | **已裁定不做映射**（`ROADMAP.md` §Ⅴ-3）：WinUI 的分层语义与本项目不同构。当前值仍视为待打磨的亮色取值，取 WinUI 值仅作参考 |
 | T4 | 亮色禁用不透明度 | `0.38`（沿用暗色） | `kanesumi-core/src/indicator.rs` | UWP light 取值 | 同 T3 | 待取数 |
 | T5 | 亮色悬停 / 按下 tint | 黑 5% / 黑 10% | `kanesumi-core/src/indicator.rs` | UWP light `HighlightListLow/Medium` 字面值 | 同 T3 | 待取数 |
 | T6 | `on_accent` 判据 | 黑 / 白取对比度大者 | `kanesumi-core/src/accent.rs` | 与 Chorus `derive_accent()` **有意不一致**（Chorus 用亮度 0.5 阈值，青绿上白字仅 4.36:1） | 本表 §二·D1 | **有意偏离**：Chorus 侧应对齐 |
 | T7 | 字重 | `FontWeight` 是死字段（5 种字重视觉全同） | `kanesumi-canvas/src/text.rs` 只按 `fonts[0]` 光栅化 | 按字重选字面 / 可变字体轴 | 待定 | 未开工（`docs/MATURITY_AUDIT_2026-09-22.md` P2-4） |
-| T8 | `MetroColors::press_tint` 与 `MetroIndication::press_tint` | 白 10% 与白 22%，**两个不同的按下 tint 并存** | `colors.rs` / `indicator.rs` | 收敛为一个令牌 | 待裁定 | 待收敛（重复即漂移） |
+| ~~T8~~ | ~~两个 `press_tint` 同名不同义~~ | — | — | **已消除**：按角色拆为 `MetroIndication::press_tint`（22%，控件按压）与 `press_subtle_tint`（10%，大面积 / 次要按压），`MetroColors::press_tint` 删除 | `ROADMAP.md` §Ⅴ-4 | ✅ 2026-09-22 |
 | T9 | 焦点描边取值 | 由 accent 派生（暗色 = Light2），**原值 `#FFA626` 借自合成器 Dock 聚焦指示线** | `kanesumi-core/src/accent.rs` `focus_for` | 由 accent 派生的正典机制 | 本表 §二·D2 | 机制已换；取值变化需一次视觉确认 |
 | T10 | xdg-shell 角色不吃损伤重绘 | 全量重绘 | `kanesumi-harness/src/platform.rs` | 与 CPU 路径同等的损伤重绘 | — | 未开工（审计 §Ⅳ） |
 | T11 | 亮色 `list_hover_tint` | 黑 9.4%（`ControlAltFillColorQuarternary` 亮值） | `kanesumi-core/src/indicator.rs` | UWP 亮色 ListView 行 PointerOver 的实际笔刷值 | UWP `SystemControlHighlightListLowBrush` 亮色字面值（Windows SDK `themeresources.xaml`，参 `CONTROL_SPEC.md` §11.1） | 待实测：暗色 30% 有 §215 明文；亮色是**从 WinUI 3 邻近令牌借的**，非直接对应 |
@@ -56,7 +56,9 @@
 
 ## 三、维护者待裁定
 
-1. **T1**：暗色底用正典的 OLED 纯黑 `#000000`，还是保留 `#1A1A1A` 以与合成器桌面底色拉开层次？（正典写的是 `#000000`。）
-2. **T2**：`theme.toml` 缺失时的回退强调色，是否就用 `#E57812`？（现 `Accent::DEFAULT_HEX` 与 Chorus `Theme::default()` 一致。）
-3. **T8**：两个 `press_tint` 收敛到哪一个值？
-4. **T9**：焦点描边改用 accent 派生档后，是否需要一次真机视觉确认再定稿？
+> 2026-09-22 复检：**T1 已随正典修正解除**（「纯黑」不再是语言级规则）；**T8 已消除**（按角色拆名）。
+> 余下两项属"需真机眼看一次"的调优，不阻塞路线。
+
+1. **T2**：`theme.toml` 缺失时的回退强调色，是否就用 `#E57812`？（现 `Accent::DEFAULT_HEX` 与 Chorus `Theme::default()` 一致。）
+2. **T9**：焦点描边改用 accent 派生档后，是否需要一次真机视觉确认再定稿？
+3. **T11**：亮色 `list_hover_tint` 的取值（借自 WinUI 3 邻近令牌），需一次实测确认。

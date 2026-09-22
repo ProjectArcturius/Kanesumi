@@ -163,21 +163,17 @@ M6 是 A/B/C 的收尾（动画词汇补齐 + 优化可见化）。M7 是独立�
 
 ---
 
-## §Ⅴ 阻塞本路线的待裁定项
+## §Ⅴ 决策记录（原「待裁定」）
 
-| # | 待裁定 | 阻塞 |
-|---|---|---|
-| 1 | 三套布局的去留（`canvas/layout` / `structure/ui` / `structure/grid`） | M2-2（进而 M2-4） |
-| 2 | `place_popup` 契约是否可破（`CONTEXT_MENU_SPEC.md` 曾冻结其签名） | M5-3 |
-| 3 | T3：WinUI 的 Base/Secondary/Tertiary 分层 ↔ 本项目 background/surface/surface_variant 的映射 | M1-2 的亮色中性色替换 |
-| 4 | T8：两个 `press_tint`（`colors` 白 10% 与 `indication` 白 22%）收敛到哪一个 | M1-2 |
+> 2026-09-22：以下各项经授权由代理裁定并落地，理由记录备查。**当前无阻塞项。**
 
-> ~~5 · `CONTROL_SPEC` §65（PointerOver 白 10%）与 §215（列表 PointerOver ≈30%）哪个是本意~~
-> —— **2026-09-22 查证：非矛盾，已结**。§65 讲 AppBarButton、§215 讲 ListView 行，两个控件
-> 本就不同值（UWP 的 `HighlightListLow` 是按控件取值的笔刷）。已按「分角色令牌」处理，
-> 见 M1-1 分类学。
-
----
+| # | 议题 | 裁定 | 理由 |
+|---|---|---|---|
+| 1 | 三套布局的去留 | **`canvas/layout` 为唯一布局引擎**；`structure/ui.rs` 标为 LEGACY，随 M2-4（gallery 迁移）删除；`structure/grid.rs` 保留并计划接入 `LayoutNode` 容器 | `grid` 是 `CONTROL_SPEC` §33 的规格控件（二维 Fixed/Auto/Star + span），不是竞品引擎；`ui.rs` 与 canvas 语义重叠且仅 gallery 使用，属历史形态 |
+| 2 | `place_popup` 契约是否可破 | **不破签名**，夹紧在函数内部完成 | 「签名冻结」约束的是调用形状，不是允许把面板画到屏幕外。已补「面板高于/宽于屏幕」两条回归测试 |
+| 3 | T3：WinUI 分层 ↔ 本项目分层的映射 | **不做映射** | WinUI 的 Base/Secondary/Tertiary 表达「基底 / 替代色阶」而非层级高度（暗色里 Secondary 比 Base **更暗**），与本项目 `background < surface < surface_variant` 的单调递增不同构。强行映射等于引入另一套心智模型；缺的令牌另行按名取 WinUI 值 |
+| 4 | T8：两个 `press_tint` 收敛 | 按角色收敛：`MetroIndication::press_tint`（22%，控件按压）与 `press_subtle_tint`（10%，大面积 / 次要按压）；**删除** `MetroColors::press_tint` | 与 hover 族同构 —— 同名不同义才是漂移源，分角色命名后两个值都成立 |
+| 5 | `47e480f`（已推送的大杂烩提交） | **不拆分、不改写历史** | 规则禁止 force-push；且该提交触及的文件已被后续主题重构覆盖，拆分的回滚收益低于改写已发布历史的代价。其价值转为反例，已写入 `AGENTS.md` |
 
 ## §Ⅵ 跨仓联动（Ether 侧，不属本路线但会互相等待）
 
