@@ -6,13 +6,17 @@
 > 来源：
 > - `microsoft-ui-xaml` **v2.8.7**（WinUI 2 最终版，Metro 时代）：`dev/CommonStyles/*_v1.xaml`（经典控件完整模板 + 视觉状态 + Storyboard）、`dev/{ProgressBar,ProgressRing,ComboBox}/`（C++ 实现）
 > - `WinUI-Gallery` **winui2 分支**：`WinUIGallery/ControlPages/*Page.xaml(.cs)`（用法/交互）
-> - 标注 **(OS)** 的 `SystemControl*` 资源为操作系统主题笔刷，**快照内无字面色值**，已按 Metro 时代惯例给出近似值或标注待定。
+> - 标注 **(OS)** 的 `SystemControl*` 资源为操作系统主题笔刷。**2026-09-22 起这些值已一手取到**：
+>   见 `docs/UWP_PRIMARY_SOURCES.md`（Windows SDK 自带 OS 主题字典 + WinUI 2.x 源码字典的路径与取数命令）。
+>   本文凡是与一手源冲突之处，均已就地标注并给出 `文件:行号`；未标注者仍是快照近似值。
 
 ## 通用规律（先读）
 
 1. **颜色切换是硬切换**：Metro 时代控件状态色用 `DiscreteObjectKeyFrame KeyTime="0"`，**无颜色过渡动画**。除明确标注外，视觉状态变化一律瞬时。
-2. **按压反馈 = 位移不是缩放**：`PointerDownThemeAnimation`/`PointerUpThemeAnimation`（OS 主题动画，Y 向微下沉/复位，~100ms，参数 OS 预置）。无 Scale 反馈。
+2. **按压反馈 = 缩放+倾斜，不是位移**：`PointerDownThemeAnimation`/`PointerUpThemeAnimation`（OS 主题动画，写 `Projection` 与 `RenderTransform`）。官方文档三处确证桌面语义是「**轻微缩小（shrink）+ 倾斜（tilt）**」，绕 Y 轴倾斜是 **Phone 分支**；时长与幅度 OS 预置、**XAML 里读不到**（一手源 A+A′ 共 64/195 个 Pointer 动画标签全部只有 `TargetName`，带 `Duration`/像素属性的 0 个）。
+   ⚠ **本文旧写「Y 向微下沉/复位 ~100ms」在任何 Microsoft 源里都不存在**，属推断；Kanesumi 若继续用「下沉」需登记为自定（见 `CANON_VS_TEMPORARY.md` T19）。
 3. **禁用态可辨识度靠前景降透明度**（前景 40%，即 `disabled_opacity = 0.4` 语义；我们取 0.38）。
+   ⚠ 一手源更正：OS UWP **没有**通用控件禁用不透明度这一档（`SystemControlDisabledBaseMediumLowBrush` 等是纯字面转发、不带 Opacity），唯一明写的是列表行 `ListViewItemDisabledThemeOpacity` = **0.55**（`themeresources.xaml` L1772）。故 0.38 属 Kanesumi 取值。
 4. **无 Focused 视觉状态**：焦点用系统焦点视觉（外框，Margin -3），与控制状态机解耦。Kanesumi 可自绘焦点环（`indication.focus_stroke`），但它是**自适应增强**，非 Metro 状态。
 5. **悬停/按压在列表类控件用中性高亮**，不用强调色；**只有选中态用强调色**。
 6. 动画时长对 Kanesumi 预设的修正见 §9。
@@ -141,13 +145,15 @@
 
 ### 确定模式
 - 指示条宽 = `(value−min)/(max−min) × (宽 − padding)`
-- 值变化 → `RepositionThemeAnimation FromHorizontalOffset=IndicatorLengthDelta` → **150ms 滑动**
-- Paused：条色换灰 + Opacity→0.6（**0.25s** 淡出）；Error：错误色（0.25s）；恢复 0.25s
+- 值变化 → `RepositionThemeAnimation FromHorizontalOffset=IndicatorLengthDelta` → **150ms 滑动**（两源均未给该时长，属沿用）
+- Paused：条色换灰 + Opacity → **暗 0.6 / 亮 1.0**（`ProgressBarIndicatorPauseOpacity`，一手源 `themeresources.xaml` L71 / L2798；0.25s 过渡）；恢复 0.25s
+- Error：**一手源更正 —— UWP 不换色，只把指示条 `Opacity` 归零**（`generic.xaml` L12228-12235；`SystemControlErrorTextForegroundBrush` 在 ProgressBar 模板里零引用），过渡 0.25s。
+  Kanesumi 保留「错误色指示条」（桌面进度条上「消失」比「变色」更不可读），属**有意偏离**，取值见 `StatusColors::error_fill`
 
-### 不确定模式（核心参数）
-- **循环 2.0s**，`RepeatBehavior=Forever`，KeySpline `0.4,0,0.6,1`（对称 ease-in-out）
-- **两波脉冲**：Indicator1 宽 40%、起点 −100%、0→1.5s 滑到 +300%、2s 保持；Indicator2 宽 60%、起点 −150%、0.75s 保持、0.75→2.0s 滑到 +166%
-- 相位差 **0.75s**
+### 不确定模式（两套权威，须二选一）
+- **WinUI 2.8.6**：**2.0s** 循环 + `KeySpline="0.4, 0.0, 0.6, 1.0"`（`Themes\Generic.xaml` L3231-3241）——**与本库现用一致**
+- **UWP OS 26100**：**3.917s** 整体位移 + 五个圆点 E1–E5（`generic.xaml` L12117-12156），同 0.4/0/0.6/1 曲线
+- 两波脉冲：Indicator1 宽 40%、起点 −100%、0→1.5s 滑到 +300%、2s 保持；Indicator2 宽 60%、起点 −150%、0.75s 保持、0.75→2.0s 滑到 +166%；相位差 **0.75s**（Kanesumi 现用近似）
 
 ---
 
@@ -156,10 +162,11 @@
 ### 尺寸
 - 默认 **32×32**，Min 16；StrokeThickness 4；`Maximum=100`
 
-### 不确定模式（Lottie）
-- **循环 2.0s**（`c_durationTicks = 20000000`）
-- 整体旋转 **0°→900°（2.5 圈）**，双段 cubic-bezier `(0.167,0.167,0.833,0.833)`（平滑 ease-in-out）→ 平均 **450°/s**
-- 弧形态：前 1s `TrimEnd 0→0.5`（弧长到 180°），后 1s `TrimStart 0→0.5`（弧尾前推）——「半圆弧 + 旋转」呼吸
+### 不确定模式
+- **UWP OS 一手值**（`generic.xaml` L12406-12506）：周期 **3.47s**；`E1R` 角度 **−110° → 585°**（净 **+695°**，不是 900°）；**6 点 stagger 0.167s**；关键帧 0 / 0.433 / 1.2 / 1.617 / 2.017 / 2.783 / 3.217s；非对称 KeySpline 串（`0.13,0.21,0.1,0.7` / `0.02,0.33,0.38,0.77` / `0.57,0.17,0.95,0.75` / `0,0.19,0.07,0.72` / `0,0,0.95,0.37`）；**无 `TrimStart/TrimEnd`**
+- **WinUI 2.8.6**：改用 Lottie（`AnimatedVisualPlayer`，`Themes\Generic.xaml` L3313-3347），XAML 内**无任何时长**
+- ⚠ 本文旧写「同一份快照里的 c_durationTicks = 2.0s / 0→900° / 双段 bezier (0.167,0.167,0.833,0.833)」：该快照已丢弃，且 UWP 一手源与之不符；另外 `0.167` 在 UWP 里是**时间（stagger 步长）**，被误当成了贝塞尔控制点。本库现用 2.0s/900° 须二选一后重定（登记 `CANON_VS_TEMPORARY.md` T20）
+- 弧形态（Kanesumi 自定，需保留说明）：前 1s `TrimEnd 0→0.5`、后 1s `TrimStart 0→0.5` —— 「半圆弧 + 旋转」呼吸
 - 线帽 round
 
 ### 确定模式
@@ -209,19 +216,27 @@
 
 ### 选中/悬停视觉（单选）
 
-| 状态 | 底 |
-|---|---|
-| 默认 | Transparent |
-| PointerOver | **中性**高亮（`HighlightListLow`，≈30% 白/黑，非强调色） |
-| Pressed | 中性高亮 Medium |
-| **Selected** | **强调色 75% 不透明整行填充**（`ListAccentMediumLow`） |
-| SelectedPointerOver | 强调色低档；SelectedPressed 强调色 90% |
+| 状态 | 底 | 一手源（2026-09-22 实测） |
+|---|---|---|
+| 默认 | Transparent | `ListViewItemBackground` = Transparent（`themeresources.xaml` L1782） |
+| PointerOver | **中性高亮 `HighlightListLow` = 白 10%（暗）/ 黑 10%（亮）** | `ListViewItemBackgroundPointerOver` → `SystemControlHighlightListLowBrush` → `SystemListLowColor` `#19FFFFFF`/`#19000000`（L1783→L307→L228/L4144） |
+| Pressed | 中性高亮 Medium = **20%** | `ListViewItemBackgroundPressed` → `HighlightListMediumBrush`（L1784） |
+| **Selected** | **强调色 60%（暗）/ 40%（亮）**（`HighlightListAccentLow`） | `ListViewItemBackgroundSelected`（L1785→L304/L4220） |
+| SelectedPointerOver | 强调色 80%（暗）/ 60%（亮）；SelectedPressed 90%/70% | `…AccentMediumBrush` / `…AccentHighBrush`（L1786 / L4221/L303） |
 
-> Kanesumi 修正：现实现 selected = `primary.with_alpha(0.15)` **明显偏轻**，不达 UWP 规格。改为 **0.60**（UWP 为 0.75，Ether 深色桌面调低一档），`padding_x` 16→**12**，行高下限 **40**（现 38）。
+> **2026-09-22 更正（一手源）**：本表原写「PointerOver ≈30% 白」与「Selected = 强调色 75%」，
+> 两者都被推翻。30% 的真出处是一个**定义了却从未被任何样式引用**的 Win8 遗留键
+> `ListViewItemPointerOverBackgroundThemeBrush` = `#4DFFFFFF`（`generic.xaml` L1912）；
+> 75% 在一手源里不存在 —— ListLow/ListAccentLow 的真值是 10% 与 0.6。详见
+> `docs/UWP_PRIMARY_SOURCES.md` §Ⅱ。
+> Kanesumi 取值现与 UWP 一致（暗 0.6），故「调低一档」的旧说明作废；亮色 0.4 由
+> `MetroColors::selection_tint` 按方案给。
 
 ### 多选（备） | 网格（备）
 - 多选：左侧 20×20、2px 边框勾选框，出现动画 X 位移 0↔−32，**0.333s**，spline `0.1,0.9,0.2,1`
 - 网格：右上 34×34 对勾角标
+- 禁用：整行 `ListViewItemDisabledThemeOpacity` = **0.55**（`themeresources.xaml` L1772；
+  注意 OS UWP **没有**通用控件禁用不透明度，只有这一条是明写的）
 
 ---
 
@@ -234,7 +249,14 @@
 | MinHeight 32 / MinWidth 64；Padding `12,5,0,7` | |
 | 箭头区 | 右列固定 **32px**，glyph `E70D`（ChevronDown）FontSize 12，Margin `0,0,10,0` |
 | 状态色 | Normal=`AltMediumLow`；PointerOver=`PageBackgroundAltMedium`；Pressed=`ListMedium`；Disabled=`BaseLow`（均瞬时） |
-| 聚焦 | 强调色低透明衬底（`HighlightListAccentLow`）+ 边框 |
+| 聚焦 | **强调色 AccentLow 衬底（暗 0.6 / 亮 0.4）、边框全透明** |
+
+> **2026-09-22 更正（一手源）**：原写「聚焦 强调色低透明衬底（`HighlightListAccentLow`）+ 边框」，
+> 现已取到三段转发：模板 `HighlightBackground` 的 Background = `ComboBoxBackgroundUnfocused`
+> → `SystemControlHighlightListAccentLowBrush`（accent 0.6/0.4，L666→L304/L4220），
+> 平时 Opacity 0、**聚焦动画抬到 1**（`generic.xaml` L10381-10385 + L10237）；
+> 同态边框 `ComboBoxBackgroundBorderBrushFocused` = **Transparent**（L667）。
+> 即：**只加衬底、不加边框**；本库原先的「24% 衬底 + 1px 边框」思路对、强度错、边框多。
 
 ### 下拉面板
 
@@ -244,8 +266,8 @@
 | 面板 MinWidth | 80（触控 240） |
 | 底色 | Metro 时代纯色（`BackgroundChromeMediumLow`），Win10 后期 Acrylic |
 | 边框 | 1px；项 Padding 鼠标 `11,5,11,7` / 触控 `11,11,11,13` |
-| 项选中 | Selected=`ListAccentLow`（强调色低透）；SelectedPointerOver=`ListAccentMedium`；SelectedPressed=`ListAccentHigh` |
-| 面板动画 | 遮罩淡入 **0.383s**、淡出 **0.216s**（spline `0.1,0.9,0.2,1`）；面板 SplitOpen ~333ms（OS，**未在快照**） |
+| 项选中 | Selected=`ListAccentLow`（强调色 **0.6 暗 / 0.4 亮**）；SelectedPointerOver=`ListAccentMedium`（0.8/0.6）；SelectedPressed=`ListAccentHigh`（0.9/0.7） |
+| 面板动画 | 遮罩淡入 **0.383s**、淡出 **0.216s**（spline `0.1,0.9,0.2,1`，一手源 `generic.xaml` L10166-10177 ✅ 与实现逐字吻合）；面板开合**唯一显式权威**：`CommandBarFlyoutCommandBar` 开 **300ms** / 关 **150ms**（L22093-22118）——`FlyoutPresenter`/`MenuFlyoutPresenter` 模板零 Storyboard，无自身时长 |
 | 方向自适应 | `ComboBoxHelper` 判据：弹出容器相对触发器的 `Top > 0` 即向下展开 |
 
 ### MenuFlyout（DropdownMenu）
@@ -371,7 +393,7 @@ C:\Program Files (x86)\Windows Kits\10\DesignTime\CommonConfiguration\
 | 项 | 位置 | 处理 |
 |---|---|---|
 | `SystemControl*` 笔刷具体色值 | SDK `themeresources.xaml` | **来源已定位**（见 11.1）；取具体值待做 |
-| `PointerDown/UpThemeAnimation` 时长/像素 | OS 主题动画 | ~100ms Y 位移微反馈；**该动画在 Windows Runtime 动画库中存在，词汇表已确证**（参 `ANIMATION_SPEC §Ⅲ`），仅时长待实测 |
+| `PointerDown/UpThemeAnimation` 时长/像素 | OS 主题动画 | 桌面为**缩小+倾斜**（写 `Projection`/`RenderTransform`），时长与幅度 OS 预置、XAML 读不到；本文旧写「~100ms Y 位移」无一手依据（参 §通用规律 2） |
 | `SplitOpen/CloseThemeAnimation` | OS | 面板展开 ~333ms，用 `sheet_appear` 对齐。**词汇存在性已确证**，时长待实测 |
 | `PivotPanel` 头面板平移 | OS | 签名动效"非选中头滑出 +40px/0.33s"已记录，可选实现 |
 | `ListViewItemPresenter` 原生选中绘制 | OS | 行为已由 §7 覆盖 |
@@ -468,7 +490,7 @@ C:\Program Files (x86)\Windows Kits\10\DesignTime\CommonConfiguration\
 - 铁律 4：展开只动 Content 位移（视觉属性），不动宿主布局。
 
 ### 视觉状态（Header 头）
-- Normal / PointerOver / Pressed / Disabled：前景恒 `on_surface`（上游各态同 TextFillColorPrimaryBrush）；Chevron 按钮 PointerOver `secondary`（白 15%）底、Pressed `tertiary`（白 25%）。
+- Normal / PointerOver / Pressed / Disabled：前景恒 `on_surface`（上游各态同 TextFillColorPrimaryBrush）；Chevron 按钮 PointerOver = `SubtleFillColorSecondary`（**白 5.9%**，一手源 WinUI 2.x 字典）、Pressed = `SubtleFillColorTertiary`（**白 3.9%**；注意 Tertiary 比 Secondary 更淡）。
 
 ---
 
@@ -787,8 +809,8 @@ else → SinglePane（PanePriority 指定单面板）
 |---|---|
 | Activated | `on_surface`（TextFillColorPrimary） |
 | Deactivated | `on_surface_variant`（TextFillColorTertiary，转暗） |
-| Back Hover | 底 `SubtleFillColorSecondary`（白 15%） |
-| Back Pressed | 底 `SubtleFillColorTertiary`（白 25%） |
+| Back Hover | 底 = 透明底控件通用档 **白 10%**（`AppBarButtonBackgroundPointerOver` → `HighlightListLowBrush`，一手源 `themeresources.xaml` L1680→L228） |
+| Back Pressed | 底 = **白 20%**（`AppBarButtonBackgroundPressed` → `HighlightListMediumBrush`，L1681→L229） |
 
 ### 交互
 - Back 点击 → 返回 `Back`（宿主导航）。
@@ -861,7 +883,7 @@ else → SinglePane（PanePriority 指定单面板）
 | 未选中 | Transparent | `on_surface_variant` |
 | PointerOver | `on_surface` 8% | `on_surface_variant` |
 | **Selected** | `surface_variant`（SolidBackgroundFillColorTertiary） | `on_surface` |
-| Close 按钮 | hover 白 15% / press 白 25% | — |
+| Close 按钮 | hover = `SubtleFillColorSecondary`（**白 5.9%** 暗 / 3.5% 亮）/ press = `SubtleFillColorTertiary`（**白 3.9%** / 2.4%）。一手源：WinUI 2.8 `TabView_themeresources.xaml` L51-52 → `Common_themeresources_any.xaml`；本文旧写 15%/25% 是笔刷名对、百分比错 | — |
 
 ### 行为
 - 点 tab → `Select`；点 Close（hovered/selected 显示）→ `Close`；点 ＋ → `Add`。
@@ -933,10 +955,15 @@ else → SinglePane（PanePriority 指定单面板）
 | 态 | 底 | 前景 |
 |---|---|---|
 | 默认 | Transparent | `on_surface` |
-| PointerOver | 白 15%（SubtleFillColorSecondary） | `on_surface` |
-| Pressed | 白 25%（Tertiary） | `on_surface_variant` |
-| **Selected** | 白 15%（同 PointerOver，SubtleFillColorSecondary） | `on_surface` |
-| 选中指示 | 多选时强调色（单选用底高亮） | — |
+| PointerOver | **白 9.4%**（`TreeViewItemBackgroundPointerOver` → `SystemControlHighlightListLowRevealBackgroundBrush`，一手源 `themeresources.xaml` L1838） | `on_surface` |
+| Pressed | **白 18.8%**（`…ListMediumRevealBackgroundBrush` = `#30FFFFFF`，L1839） | `on_surface_variant` |
+| **Selected** | **强调色（`SystemControlHighlightAccent3RevealBackgroundBrush` = `SystemAccentColorDark3` 暗 / `Light3` 亮，L1841）** | `on_surface` |
+| SelectedPointerOver / SelectedPressed | Accent2Reveal（Dark2/Light2，L1842）/ ListMediumReveal（L1843） | — |
+
+> **2026-09-22 更正（一手源）**：本表原写「PointerOver/Selected 都是白 15%（SubtleFillColorSecondary）」，
+> 与 UWP 字典不符 —— 树行悬停是 **9.4%**、选中**根本不是中性白而是强调色**（角色错了）。
+> Kanesumi 现实现：悬停用 `hover_tint`（10%，与列表行同族）、选中用 `selection_tint`（强调色，
+> 与列表行同族），即已按本表更正；精确采用 Accent3/Dark3 需要的令牌见 `CANON_VS_TEMPORARY` T18。
 
 ### 交互
 - 点 chevron → toggle 展开/收起（翻转 0.1s）。
@@ -1136,10 +1163,15 @@ clamp 到 [−MaxShift, +MaxShift]，MaxShift = MaxShiftRatio × 视口主轴
 
 | 态 | 边框 | 底 |
 |---|---|---|
-| Normal | `TextControlBorderBrush`（BaseMedium → divider） | `TextControlBackground`（surface） |
-| PointerOver | `TextControlBorderBrushPointerOver`（Highlight → on_surface_variant） | 同 Normal |
-| Focused | `TextControlBorderBrushFocused`（**2px**，Kanesumi focus_stroke） | `TextControlBackgroundFocused`（AltHigh） |
+| Normal | `TextControlBorderBrush` → `SystemControlForegroundBaseMediumLowBrush` = **BaseMediumLow 40%**，粗细 **2px** | `TextControlBackground`（surface） |
+| PointerOver | `TextControlBorderBrushPointerOver` → `HighlightBaseMedium` = **BaseMedium 60% 实色**（本库用 `on_surface_variant`） | 同 Normal |
+| Focused | `TextControlBorderBrushFocused` → accent，粗细**仍 2px**（一手源：模板内无 BorderThickness 动画） | `TextControlBackgroundFocused` = `SystemControlBackgroundChromeWhiteBrush` = **`#FFFFFFFF`**（暗色下「聚焦变白纸」，并把 `RequestedTheme` 切 Light）——**本库不采用该行为**，用 `surface` |
 | Disabled | 前景降透明度 | 前景降透明度 |
+
+> **2026-09-22 一手源补全**（`themeresources.xaml` L850-871 / `generic.xaml` L11564、L28949-28968）：
+> 边框粗细恒为 **2px**（本文旧写 1px+divider）；悬停边框是 **60% 实色**而非「on_surface_variant × 90%」；
+> 聚焦底在 UWP 暗色下是**纯白**，故其占位文本笔刷为「黑 40%」——本库保留暗底暗字，
+> 该组合属**有意偏离**（登记 `CANON_VS_TEMPORARY.md` T16）。
 
 ### 交互
 
@@ -1213,7 +1245,7 @@ clamp 到 [−MaxShift, +MaxShift]，MaxShift = MaxShiftRatio × 视口主轴
 |---|---|---|---|
 | Unchecked | Transparent | `on_surface_variant`（BaseMedium） | 无 |
 | UncheckedPointerOver | Transparent | `on_surface`（Highlight） | 无 |
-| UncheckedPressed | `on_surface_variant` 35%（BaseMediumLow） | 无 | 无 |
+| UncheckedPressed | `on_surface_variant` **40%**（BaseMediumLow = `#66FFFFFF`，一手源 `themeresources.xaml` L214；本文旧写 35% 无出处） | 无 | 无 |
 | **Checked** | **强调色** | Transparent | 白 ✓ |
 | CheckedPointerOver | 强调色提亮（Accent Light1） | — | 白 ✓ |
 | CheckedPressed | 强调色压暗（Accent Dark1） | — | 白 ✓ |

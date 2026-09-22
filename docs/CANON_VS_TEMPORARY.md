@@ -20,19 +20,22 @@
 | T1 | 暗色背景 | `#1A1A1A` | `kanesumi-core/src/colors.rs` `MetroColors::dark` | **正典已修正（2026-09-22）**：不再规定「OLED 纯黑」，改为「深浅两套并列方案，取值属实现决策」 | `KANESUMI_DESIGN.md` §Ⅲ.3（已改） | **解除登记**：取值本身是方案内选择，不再是正典冲突；若仍想改纯黑，属视觉调优 |
 | T2 | 强调色基色来源 | 代码内默认 `#E57812` | `kanesumi-core/src/accent.rs` `Accent::DEFAULT_HEX` | 应**始终来自 Chorus** 的 `~/.config/ether/theme.toml` 的 `accent` | `Ether/chorus/src/theme.rs` | 机制已建（accent 派生 + 双态）；**消费端接线待做**（harness 读取 + App 跟随） |
 | T3 | 亮色中性色 | `#FAFAFA` / `#FFFFFF` / `#F0F0F0` / `#D6D6D6` / `#1A1A1A` / `#5A5F66` | `kanesumi-core/src/colors.rs` `MetroColors::light` | WinUI 3 的 `SolidBackgroundFillColorBase/Secondary/Tertiary` 与 `TextFillColorPrimary`（见 `docs/REFERENCE.md` §9.3） | WinUI 3 开源仓 `controls/dev/CommonStyles/Common_themeresources_any.xaml` | **已裁定不做映射**（`ROADMAP.md` §Ⅴ-3）：WinUI 的分层语义与本项目不同构。当前值仍视为待打磨的亮色取值，取 WinUI 值仅作参考 |
-| T4 | 亮色禁用不透明度 | `0.38`（沿用暗色） | `kanesumi-core/src/indicator.rs` | UWP light 取值 | 同 T3 | 待取数 |
-| T5 | 亮色悬停 / 按下 tint | 黑 5% / 黑 10% | `kanesumi-core/src/indicator.rs` | UWP light `HighlightListLow/Medium` 字面值 | 同 T3 | 待取数 |
+| ~~T4~~ | ~~亮色禁用不透明度~~ | 两方案同取 `0.38` | `kanesumi-core/src/indicator.rs` | — | **一手源已查证**：OS UWP 无通用禁用不透明度档（`SystemControlDisabled*` 是纯字面转发），唯一明写的是列表行 `ListViewItemDisabledThemeOpacity` = **0.55**（`themeresources.xaml` L1772） | **结案为 Kanesumi 取值**：0.38 属自定，不再是「待取数」；若要向 UWP 靠，只需把列表行单独提到 0.55 |
+| ~~T5~~ | ~~亮色悬停 / 按下 tint~~ | 黑 **10% / 20%** | `kanesumi-core/src/indicator.rs` | UWP 亮色 `SystemListLowColor` / `SystemListMediumColor` | **一手源已取到**：`#19000000` / `#33000000`（`themeresources.xaml` L4144/L4145） | ✅ 2026-09-22 结案（旧值 5%/10% 无依据；UWP 两方案强度对称） |
 | T6 | `on_accent` 判据 | 黑 / 白取对比度大者 | `kanesumi-core/src/accent.rs` | 与 Chorus `derive_accent()` **有意不一致**（Chorus 用亮度 0.5 阈值，青绿上白字仅 4.36:1） | 本表 §二·D1 | **有意偏离**：Chorus 侧应对齐 |
 | T7 | 字重 | `FontWeight` 是死字段（5 种字重视觉全同） | `kanesumi-canvas/src/text.rs` 只按 `fonts[0]` 光栅化 | 按字重选字面 / 可变字体轴 | 待定 | 未开工（`docs/MATURITY_AUDIT_2026-09-22.md` P2-4） |
-| ~~T8~~ | ~~两个 `press_tint` 同名不同义~~ | — | — | **已消除**：按角色拆为 `MetroIndication::press_tint`（22%，控件按压）与 `press_subtle_tint`（10%，大面积 / 次要按压），`MetroColors::press_tint` 删除 | `ROADMAP.md` §Ⅴ-4 | ✅ 2026-09-22 |
+| ~~T8~~ | ~~两个 `press_tint` 同名不同义~~ | — | — | **已消除**：按角色拆为 `MetroIndication::press_tint`（**20%**，控件按压）与 `press_subtle_tint`（10%，大面积 / 次要按压），`MetroColors::press_tint` 删除 | `ROADMAP.md` §Ⅴ-4 | ✅ 2026-09-22（20% 为 2026-09-22 一手源更正後的值） |
 | T9 | 焦点描边取值 | 由 accent 派生（暗色 = Light2），**原值 `#FFA626` 借自合成器 Dock 聚焦指示线** | `kanesumi-core/src/accent.rs` `focus_for` | 由 accent 派生的正典机制 | 本表 §二·D2 | 机制已换；取值变化需一次视觉确认 |
 | T10 | xdg-shell 角色不吃损伤重绘 | 全量重绘 | `kanesumi-harness/src/platform.rs` | 与 CPU 路径同等的损伤重绘 | — | 未开工（审计 §Ⅳ） |
-| T11 | 亮色 `list_hover_tint` | 黑 9.4%（`ControlAltFillColorQuarternary` 亮值） | `kanesumi-core/src/indicator.rs` | UWP 亮色 ListView 行 PointerOver 的实际笔刷值 | UWP `SystemControlHighlightListLowBrush` 亮色字面值（Windows SDK `themeresources.xaml`，参 `CONTROL_SPEC.md` §11.1） | 待实测：暗色 30% 有 §215 明文；亮色是**从 WinUI 3 邻近令牌借的**，非直接对应 |
-| T12 | ProgressBar 错误态指示条色 | `#E81123`（`StatusColors::error_fill`，两方案同值） | `kanesumi-core/src/status.rs` | UWP `SystemControlErrorTextForegroundBrush` 一类的错误红 | `CONTROL_SPEC.md` §4 只写「Error：错误色」，未给笔刷名 | 待取数：**机制已对**（不再内联在控件里、走语义色组），仅数值缺权威来源 |
-| T13 | SwipeControl Danger 项底色 | `#E5534A`（`StatusColors::danger_fill`） | `kanesumi-core/src/status.rs` | UWP SwipeItem Danger 的实际底色 | `CONTROL_SPEC.md` §32 未给色值 | 待实测。**已知缺口**：它是文字底，与 `on_surface` 对比度仅约 3.2:1（低于正文 4.5）；实测后要么换深一档的红，要么改用自动前景（`Color::most_readable_on`） |
-| T14 | `accent_low_tint` 强度 | 强调色 24% | `kanesumi-core/src/colors.rs` | UWP `HighlightListAccentLow` / `ListAccentLow` 的字面值 | `CONTROL_SPEC.md` §237/§247 只写「强调色低透」 | 待实测：ComboBox 聚焦衬底与下拉选中项共用，浓淡需一次眼看 |
-| T15 | ProgressBar 轨道底 | `surface_variant` 60%（`MetroColors::track_subtle`） | `kanesumi-core/src/colors.rs` | 亮色轨道与指示条的对比度应 ≥3.0（非文本阈值） | — | **已知缺口**：亮色实测仅 2.7~2.8（轨道本就浅灰再叠白），属亮色中性色待打磨（T3 家族）；`colors.rs` 的自检已钉住「不得更差」的下界 |
-| T16 | 前景强度档 0.8 / 0.5 / 0.7 | `secondary_opacity` / `inactive_opacity` / `placeholder_focused_opacity` | `kanesumi-core/src/indicator.rs` | UWP `BaseMediumHigh` 0.9 / `TextFillColorDisabled` / `TextControlPlaceholderForegroundFocused` 的字面值 | `CONTROL_SPEC.md` 仅给笔刷名或「低透」等描述 | 待取数：三档都是 Kanesumi 取值；机制正确（与 tint 分立、两方案同值），数值待权威值替换 |
+| ~~T11~~ | ~~亮色 `list_hover_tint`~~ | — | — | **已消除**：一手源证明 UWP 列表行悬停就是 `HighlightListLow` = 10%（`themeresources.xaml` L1783→L228/L4144），故该令牌与 `hover_tint` 同值同义，已整体删除 | `UWP_PRIMARY_SOURCES.md` §Ⅱ | ✅ 2026-09-22 |
+| ~~T12~~ | ~~ProgressBar 错误态指示条色~~ | `#E81123`（`StatusColors::error_fill`） | `kanesumi-core/src/status.rs` | — | **一手源查证**：UWP 的 `Error` 视觉状态**不换色**，只把指示条 `Opacity` 归零（`generic.xaml` L12228-12235） | **改判为有意偏离**（D8）：桌面上「消失」比「变色」更不可读；数值仍属 Kanesumi |
+| ~~T13~~ | ~~SwipeControl Danger 项底色~~ | `#E5534A`（`StatusColors::danger_fill`） | `kanesumi-core/src/status.rs` | — | **一手源查证**：UWP 的 `SwipeItem` **没有**危险底色（危险语义靠调用方自赋 `Background`），其 `PointerOver` 是空状态、`Pressed` = 中性 40% | **改判为有意偏离**（D9）：本库提供内置 Danger 色与鼠标悬停反馈；**已知缺口**：它是文字底，与 `on_surface` 对比度仅约 3.2:1，待真机定夺换值或改用自动前景 |
+| ~~T14~~ | ~~`accent_low_tint` 强度~~ | — | — | **已消除**：一手源给出 `HighlightListAccentLow` = accent **0.6 暗 / 0.4 亮**，与列表行选中共用同一笔刷，故令牌删除、选中底统一走 `selection_tint` | `UWP_PRIMARY_SOURCES.md` §Ⅱ | ✅ 2026-09-22 |
+| T15 | ProgressBar 轨道底 | `surface_variant` 60%（`MetroColors::track_subtle`） | `kanesumi-core/src/colors.rs` | 亮色轨道与指示条的对比度应 ≥3.0（非文本阈值） | — | **已知缺口**：亮色实测仅 2.7~2.8（轨道本就浅灰再叠白），属亮色中性色待打磨（T3 家族）；`colors.rs` 的自检已钉住「不得更差」的下界。UWP 的轨道笔刷名仍待取（`ProgressBar` 模板内是模板局部） |
+| T16 | 前景强度档 0.5 / 0.7 | `inactive_opacity` / `placeholder_focused_opacity` | `kanesumi-core/src/indicator.rs` | UWP `TextFillColorDisabled` / `TextControlPlaceholderForegroundFocused` | **一手源**：Focused 占位 = `SystemChromeBlackMediumLowColor` `#66000000`（黑 40%），但它建立在「暗色聚焦文本框变纯白底」之上（`TextControlBackgroundFocused` = `#FFFFFFFF`）——本库不采用白纸行为，故该值不可直接移植 | 待裁定：**要么接受白纸行为并照抄，要么明确登记为有意偏离**；`secondary_opacity` 0.8 同理（UWP 无独立 0.8 档） |
+| T17 | 自定义的「Y 下沉」按压反馈（M6-1 计划） | 计划 100ms Y 下沉 | `kanesumi-anim`（未落地） | UWP 桌面语义是**缩小 + 倾斜**（写 `Projection`/`RenderTransform`），时长与幅度 OS 预置、XAML 读不到 | `UWP_PRIMARY_SOURCES.md` §Ⅲ.5 | **不得写成 UWP 规格**：若实现下沉，须在此登记为 Kanesumi 自定 |
+| T18 | ProgressRing 时长与角度 | 2.0s 循环 / 0→900° | `kanesumi-controls/src/progress.rs`（Ring 部分） | **UWP OS 一手值：3.47s / −110°→585°（净 +695°）/ 6 点 stagger 0.167s**（`generic.xaml` L12406-12506） | 同上 | 待裁定：现值为已丢弃快照的遗产，与其留一个来源不明的值，不如二选一后按 UWP 重定 |
+| T19 | 文本选区高亮 35% | `MetroColors::text_selection_tint` | `kanesumi-core/src/colors.rs` | UWP `TextControlSelectionHighlightColor` = `SystemControlHighlightAccentBrush` = **accent 100% 不透明**（`themeresources.xaml` L864→L282） | 同上 | **有意偏离候选**：accent 100% 叠在字形之下会压字，35% 是可读性与「看得出选中」的折中 —— 需一次真机确认后转 §二 正式登记 |
 
 > **已消除的临时项**（保留在此作为历史，避免再次被误认）：
 > - 「省略号未启用、超长文本硬裁切」——2026-09-22 已改默认 `Ellipsis` 并补 `label/paragraph`。
@@ -44,6 +47,11 @@
 >   `kanesumi-controls/tests/token_discipline.rs` 静态守住（M1-3）；无源取值转为 T12~T16 登记。
 > - 「InfoBar 图标方块写死白字」——2026-09-22 改为 `Color::most_readable_on`（恒 ≥4.58:1），
 >   白字画在暗色成功绿上只有 1.9:1 的问题不复存在。
+> - 「浅叠族 15% / 25%」——2026-09-22 一手源证明是「笔刷名对、百分比错」（真值 Secondary 5.9%、
+>   Tertiary 3.9%，且按下比悬停更淡），两个令牌删除、消费者改用 `hover_tint`/`press_tint`/`subtle_tint`。
+> - 「列表行悬停 30%」——一手源证明 UWP 用 `ListLow`（10%）；30% 出自一个**从未被引用的** Win8 遗留键。
+> - 「按下 tint 22%」「BaseMediumHigh 90%」「BaseMediumLow 35%」「ComboBox 聚焦衬底 24% + 边框」
+>   「输入框悬停边框 ×90%」「弹窗收起 0.26s」——均于 2026-09-22 被一手源更正，见 `UWP_PRIMARY_SOURCES.md` §Ⅱ。
 
 ---
 
@@ -60,18 +68,30 @@
 | D5 | 不搬「依赖属性 / 附加属性」体系 | Rust 侧代价大于收益；只借其「失效传播」语义（参 `docs/REFERENCE.md` §Ⅴ）。 |
 | D6 | 正典不再规定「OLED 纯黑底」，改为「深浅两套并列方案」 | 原表述把**暗色方案的一个取值**写成了语言级规则 —— 纯黑是暗色模式的说法，浅色模式另有其道。文档局限已修正（`KANESUMI_DESIGN.md` §Ⅲ.3，2026-09-22）。 |
 | D7 | 「单一强调色」限定为**非语义**配色；语义状态色另成一组 | 维护者裁定（方案 B）。语义色与强调色是两类东西：InfoBar 用强调色表达「错误」，才是真正的不成熟。WinUI 的 `SystemFillColorAttention` 亦绑定 accent —— attention 归 accent，success/caution/critical 归语义色。 |
+| D8 | ProgressBar 错误态**保留错误色指示条**，而非 UWP 的「把指示条 Opacity 归零」 | 一手源：UWP 的 `Error` 状态只隐藏指示条（`generic.xaml` L12228-12235），在桌面上「进度条突然消失」比「变红」更难判断。取值 `StatusColors::error_fill`（Kanesumi）。 |
+| D9 | SwipeControl 提供内置 Danger 色与**鼠标悬停**反馈 | 一手源：UWP `SwipeItem` 无危险底色（靠调用方自赋 `Background`）、`PointerOver` 是空状态、`Pressed` = 中性 40%。本库面向桌面鼠标：需要可点的危险色与悬停可辨性。**遗留**：Danger 底与 `on_surface` 对比度仅 3.2:1，待真机定夺。 |
+| D10 | 暗色下**不采用**「聚焦文本框变纯白底」 | 一手源：UWP 暗色 `TextControlBackgroundFocused` = `#FFFFFFFF`（并把 `RequestedTheme` 切 Light），其占位笔刷随之用「黑 40%」。这与 Kanesumi 的深底空间语言冲突（参 SD §II/§III），故保留暗底暗字，`placeholder_focused_opacity` 亦不照抄（T16）。 |
 
 ---
 
 ## 三、维护者待裁定
 
 > 2026-09-22 复检：**T1 已随正典修正解除**（「纯黑」不再是语言级规则）；**T8 已消除**（按角色拆名）。
-> 2026-09-22 M1 收官复检：新增 T12~T16 均为「机制已对、数值待权威值或实测」的类型，
-> 不阻塞路线；其中 **T13（危险底与正文对比度仅 3.2:1）与 T15（亮色轨道对比度 2.7）是仅有的
-> 两条真缺口**，都需要一次真机眼看再定稿。
+> 2026-09-22 M1 收官复检：新增 T12~T16 均为「机制已对、数值待权威值或实测」的类型，不阻塞路线。
+> 2026-09-22 **一手源取证复检**（Windows 侧取到 OS UWP 字典与 WinUI 2.x 源码字典，见
+> `UWP_PRIMARY_SOURCES.md`）：**T4/T5/T11/T12/T13/T14 六项结案**（两项改判为有意偏离 D8/D9、
+> 两项因令牌删除而消失、T5 按权威值落地），**T16 拆出「白纸行为」这一前置裁定**，
+> **新增 T17/T18/T19**（按压下沉无一手依据、ProgressRing 时长与角度、选区高亮 35%）。
+> 仍属真缺口的只有 **T13 遗留（危险底对比度 3.2:1）与 T15（亮色轨道 2.7）**，各需一次真机确认。
 
 1. **T2**：`theme.toml` 缺失时的回退强调色，是否就用 `#E57812`？（现 `Accent::DEFAULT_HEX` 与 Chorus `Theme::default()` 一致。）
 2. **T9**：焦点描边改用 accent 派生档后，是否需要一次真机视觉确认再定稿？
-3. **T11**：亮色 `list_hover_tint` 的取值（借自 WinUI 3 邻近令牌），需一次实测确认。
-4. **T13 / T15**：SwipeControl 危险项的文字可读性、亮色 ProgressBar 轨道与指示条的分辨度 ——
+3. **T13 / T15**：SwipeControl 危险项的文字可读性、亮色 ProgressBar 轨道与指示条的分辨度 ——
    两条都需要一次真机确认；`colors.rs` 与 `status.rs` 的自检已把下界钉住，改值时会立刻有测试反馈。
+4. **T16 前置**：是否接受 UWP 的「聚焦文本框变纯白底」？接受则占位笔刷照抄「黑 40%」，
+   不接受则把本库的暗底暗字与 0.7 档正式登记为有意偏离（D10 已先行记录）。
+5. **T18**：ProgressRing 二选一 —— 沿用现存 2.0s/900°（已丢弃快照的遗产），
+   还是改按 UWP OS 一手值 3.47s / −110°→585° / 6 点 stagger 0.167s。
+   后者不只是调参，还要把「单弧旋转」改成「6 点」结构，属 M6 范畴。
+6. **T17**：M6-1 的按压反馈是走 UWP 的**缩小+倾斜**，还是保留本库计划的「Y 下沉」？
+   前者有语义依据、无时长；后者有观感预期、无任何依据 —— 无论选哪个都要登记。

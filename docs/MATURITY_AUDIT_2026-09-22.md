@@ -95,9 +95,11 @@
 
 按 `ROADMAP.md` M1 收官（令牌纪律），并把「没有 Linux 会话也能验证」这件事做实：
 
-1. **令牌层补齐**：`MetroIndication` 增浅叠族（15% / 25%）与前景强度档（0.9 / 0.8 / 0.7 /
-   0.6 / 0.5 / 0.35），`MetroColors` 增 `text_selection_tint` / `accent_low_tint` / `track_subtle`，
-   `StatusColors` 增 `error_fill` / `danger_fill`，`Color` 增 `most_readable_on`（自动前景）。
+1. **令牌层补齐**：`MetroIndication` 增前景强度档，`MetroColors` 增 `text_selection_tint` /
+   `track_subtle`，`StatusColors` 增 `error_fill` / `danger_fill`，`Color` 增 `most_readable_on`（自动前景）。
+   ⚠ **当日稍晚的「一手源取证轮」推翻了本批的三处取值与两个令牌**（浅叠族 15%/25% 的百分比、
+   `list_hover_tint` 与 `accent_low_tint` 的存在本身、Base* 档位的 90%/35%），详见
+   `docs/UWP_PRIMARY_SOURCES.md` §Ⅱ 与 `CANON_VS_TEMPORARY.md` §三。
 2. **迁移**：控件生产段的 32 处魔法 alpha 与 6 处内联颜色字面量全部换成令牌；
    无权威来源的取值不猜也不丢 —— 令牌化后在 `CANON_VS_TEMPORARY.md` 登记（T12~T16）。
 3. **静态守住**：`kanesumi-controls/tests/token_discipline.rs` 扫描生产段，禁止颜色构造器与

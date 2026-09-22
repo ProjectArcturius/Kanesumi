@@ -54,45 +54,46 @@ M6 是 A/B/C 的收尾（动画词汇补齐 + 优化可见化）。M7 是独立�
 | M1-3 | **静态检查**：测试扫描 `kanesumi-controls/src/*.rs` 生产段，禁止 `Color::from_hex/rgb/new/from_rgba` 与裸 `with_alpha(<数字>)` | ✅ 2026-09-22（`tests/token_discipline.rs`，含反向自检） |
 | M1-4 | **对比度自检扩展**：新增令牌纳入 WCAG 断言（正文 ≥4.5 / 次级 ≥3.0） | ✅ 2026-09-22（tint 合成后判、实心件 ≥3.0、指示条 vs 轨道） |
 
-#### M1-1 分类学（2026-09-22 定）
+#### M1-1 分类学（2026-09-22 定；当日经一手源复核后修订）
 
-**一句话：中性底色不是"一个 hover 值"，而是按角色分族。** UWP 的 `HighlightListLow`
-本来就是**按控件取值**的 —— AppBarButton 是白 10%（`CONTROL_SPEC` §65），ListView 行是
-≈白 30%（§215）。这两处曾被当成文档自相矛盾，查证后确认**两者都成立**（不同控件），
-因此令牌必须分角色，不能归一。
+**一句话：中性底色不是"一个 hover 值"，而是按角色分族。** 初版依据是
+「AppBarButton 白 10%（§65）vs ListView 行 ≈白 30%（§215）」这两条看似矛盾的规格。
+**当日晚些时候在 Windows 上取到一手主题字典后，该前提被推翻**：UWP 里两者用的是
+**同一个笔刷** `HighlightListLow`（= `SystemListLowColor` = 10%），30% 出自一个
+**从未被任何样式引用**的 Win8 遗留键。故「按控件分族」在**列表行**这一项上不再成立 ——
+分族仍然必要（不同的**强度档**确实存在），但判据从「按控件」改为「按强度档 + 是否自带底色」。
 
-| 族 | 令牌 | 暗色 | 亮色 | 来源 |
+| 族 | 令牌 | 暗色 | 亮色 | 一手源（`themeresources.xaml` 行号 / WinUI 字典） |
 |---|---|---|---|---|
-| 中性交互 | `MetroIndication::hover_tint` | 白 10% | 黑 5% | `CONTROL_SPEC` §65 |
-| 中性交互 | `MetroIndication::press_tint` | 白 22% | 黑 10% | `CONTROL_SPEC` §65 |
-| 中性交互 | `MetroIndication::subtle_tint` | 白 5.9% | 黑 3.5% | WinUI 3 `SubtleFillColorSecondary`（极轻容器底 / 分组底） |
-| 中性交互 | `MetroIndication::subtle_hover_tint` | 白 15% | 黑 15% | UWP 2.x `SubtleFillColorSecondary`：§471 标题栏返回键、§790、§864、§936 |
-| 中性交互 | `MetroIndication::subtle_press_tint` | 白 25% | 黑 25% | UWP 2.x `SubtleFillColorTertiary`：§791、§864 |
-| 列表 | `MetroIndication::list_hover_tint` | 白 30% | 黑 9.4% | §215；亮色取 WinUI 3 `ControlAltFillColorQuarternary`（待实测） |
-| 列表 | `MetroColors::selection_tint` | accent 60% | 同 | `CONTROL_SPEC` §215 Kanesumi 修正（UWP 75% → 60%） |
-| 文本 | `MetroColors::text_selection_tint` | accent 35% | 同 | §34 `TextControlSelectionHighlightColor`（叠在字形之下，故弱于行选中） |
-| 强调低透 | `MetroColors::accent_low_tint` | accent 24% | 同 | §237 `HighlightListAccentLow` / §247 `ListAccentLow`（值待实测，T14） |
+| 中性交互（悬停） | `MetroIndication::hover_tint` | 白 **9.8%** | 黑 **9.8%** | `SystemListLowColor` `#19FFFFFF`/`#19000000`（L228/L4144），用于 AppBarButton / ListViewItem / ComboBoxItem / TreeViewItem |
+| 中性交互（按下） | `MetroIndication::press_tint` | 白 **20%** | 黑 **20%** | `SystemListMediumColor` `#33…`（L229/L4145） |
+| 中性交互（弱按压） | `MetroIndication::press_subtle_tint` | 白 9.8% | 黑 9.8% | = ListLow；「弱按压」是 Kanesumi 角色选择 |
+| 极轻容器底 | `MetroIndication::subtle_tint` | 白 **5.9%** | 黑 **3.5%** | WinUI 2.x `SubtleFillColorSecondary`（TabView 关闭键悬停等，`TabView_themeresources.xaml` L52） |
+| 行 / 项选中 | `MetroColors::selection_tint` | accent **0.6** | accent **0.4** | `SystemControlHighlightListAccentLowBrush`（L304/L4220）—— ListViewItem 与 ComboBoxItem 共用 |
+| 文本选区 | `MetroColors::text_selection_tint` | accent 35% | 同 | ⚠ 一手源是 accent **100%**（L864→L282）；35% 属有意偏离候选（T19） |
 | 语义 | `MetroColors::focus_stroke` / `StatusColors` | — | — | 见 `REFERENCE.md` §9.2 |
 
-**浅叠与极轻同源不同代**：`subtle_tint`（5.9%）取自 WinUI 3 的
-`SubtleFillColorSecondary`，而 §471/§790/§864/§936 的 15%/25% 取自 UWP 2.x 的同名令牌
-（WinUI 3 已把 Secondary/Tertiary 下调到 5.9%/3.9%）。这是**两代取值**，不是文档自相矛盾；
-处置同 §215：**按角色分族**（极轻容器底 vs 交互浅叠），两者都保留（见 §Ⅴ-6）。
+> **已删除的令牌**（初版有、复核后没了）：
+> `list_hover_tint`（与 `hover_tint` 同值同义）、`accent_low_tint`（24% 无出处；其两个用途分别
+> 归入 `selection_tint` 与「无边框的 AccentLow 衬底」）、`subtle_hover_tint`(15%) 与
+> `subtle_press_tint`(25%)（笔刷名对、百分比错：真值 5.9% / 3.9%，且按下的 Tertiary 比悬停的
+> Secondary **更淡**）。取证路径见 `docs/UWP_PRIMARY_SOURCES.md`。
 
-**不透明度乘数不算色调**（`0.9/0.8/0.7/0.6/0.5/0.35` 等）：它们表达"次要 / 禁用 / 水印"的
+**不透明度乘数不算色调**（`0.8/0.7/0.6/0.5/0.4/0.38` 等）：它们表达"次要 / 禁用 / 水印"的
 **透明度**，不是叠加色。处置：具名为 `MetroIndication` 的前景强度档
-（`base_medium_high` 0.9 / `secondary_opacity` 0.8 / `placeholder_focused_opacity` 0.7 /
-`base_medium` 0.6 / `inactive_opacity` 0.5 / `base_medium_low` 0.35 / `disabled_opacity` 0.38），
+（`base_medium_high` **0.8** / `secondary_opacity` 0.8 / `placeholder_focused_opacity` 0.7 /
+`base_medium` 0.6 / `inactive_opacity` 0.5 / `base_medium_low` **0.4** / `disabled_opacity` 0.38），
 **不得**与 tint 混为一谈；档位与方案无关（叠加色已翻转），已有回归测试固定。
+前两档的取值也按一手源更正过：Base* 族是**等距 20 点**（`FF`/`CC`/`99`/`66`/`33`）。
 
 **验收**：M1-3 的静态检查通过 + 全量测试绿 + `CANON_VS_TEMPORARY` 临时项减少。
 
 - 静态检查：`cargo test -p kanesumi-controls --test token_discipline` 绿（附反向自检：
   在样例上验证检查器抓得到构造器与裸 alpha，并断言扫描文件数 ≥40，防「空集合静默通过」）。
-- 全量测试：本机（Windows）710 个单元测试 + 2 个静态检查 + 2 个 doctest 全绿（合计 714）；
+- 全量测试：本机（Windows）712 个单元测试 + 2 个静态检查 + 2 个 doctest 全绿（合计 716）；
   `cargo clippy --workspace --all-targets` 告警数与基线逐条一致（无新增）。
-- 临时项：**总数上升**（T12~T16），但这是把原先**连名字都没有**的无源取值（0.8/0.5/0.7/
-  0.24/60% 轨道/两个错误红）第一次登记下来 —— 登记数上升、未登记的无源值归零，才是这条的真进展。
+- 临时项：M1 收官时共登记 T1~T16（把原先**连名字都没有**的无源取值第一次登记下来）；
+  同日一手源复核后 **T4/T5/T11/T12/T13/T14 结案**、新增 T17~T19，见 `CANON_VS_TEMPORARY.md` §三。
 
 **已记账（M0，2026-09-22 完成）**：溢出契约（默认省略号 + `label/paragraph` + 框矮于一行不静默消失）、
 容器裁剪 6 处、可达 panic 5 处、`shm_open`/IME 边界/`guard()` 鲁棒性、`Accent` 色阶、深浅双态令牌、
@@ -168,12 +169,23 @@ M6 是 A/B/C 的收尾（动画词汇补齐 + 优化可见化）。M7 是独立�
 
 ### M6 · 动画词汇补齐 + 优化可见化
 
+> **2026-09-22 一手源复核（见 `docs/UWP_PRIMARY_SOURCES.md` §Ⅲ.5）对本段的三点影响**：
+> 1. **M6-1 的「100ms Y 下沉」无一手依据** —— UWP 桌面语义是**缩小+倾斜**（写 `Projection`/`RenderTransform`），
+>    时长与幅度 OS 预置、XAML 读不到；本文旧值属推断（登记 `CANON_VS_TEMPORARY` T17）。
+>    故 M6-1 落地时必须先裁定「照 UWP 的缩小+倾斜」还是「保留 Kanesumi 的下沉」。
+> 2. **M6-3 的归属要改**：`ControlFastAnimationDuration`（0.167s）属 **WinUI**，不属 UWP ——
+>    UWP SDK 两版 XAML 与 `Windows.UI.Xaml.dll` 全 0 命中。数值正确、注释已更正（`presets.rs`）。
+> 3. **M6-2 的 stagger 仍无一手支撑**：`EntranceThemeTransition` 在 UWP 里只有无参标签；
+>    可借的同类权威是 CalendarView 页面过渡（离场 0.233s / 入场 0.733s / 延迟 0.233s，
+>    曲线 `0.1,0.9,0.2,1`）。另：Expander / ScrollBar / 对话框淡入淡出的时长与一手值一致 ✅。
+
 | 批次 | 内容 | 来源 |
 |---|---|---|
-| M6-1 | `PointerDown/UpThemeAnimation`：按钮 100ms Y 下沉（现 17 个交互控件硬切换） | `REFERENCE.md` §9.4 |
-| M6-2 | stagger 入场（`EntranceThemeTransition` 语义） | `ANIMATION_SPEC.md` 处置表 |
-| M6-3 | `ControlFastAnimationDuration = 0.167s` 对齐（权威值已取到，见 `REFERENCE.md` §9.4） | 同上 |
+| M6-1 | `PointerDown/UpThemeAnimation`（**先裁定语义**：UWP 缩小+倾斜 vs Kanesumi Y 下沉），现 17 个交互控件硬切换 | `UWP_PRIMARY_SOURCES.md` §Ⅲ.5 |
+| M6-2 | stagger 入场（`EntranceThemeTransition` 语义） | `ANIMATION_SPEC.md` 处置表 + CalendarView 旁证 |
+| M6-3 | `ControlFastAnimationDuration = 0.167s` 对齐（**winUI 值**，非 UWP；`ControlSlowAnimationDuration` 一手源里不存在） | `UWP_PRIMARY_SOURCES.md` §Ⅲ.5 |
 | M6-4 | 帧统计浮层 + 过度绘制可视化（对标 `EnableFrameRateCounter` / `IsOverdrawHeatMapEnabled`） | `REFERENCE.md` §Ⅲ.1 |
+| M6-5 | **（新）ProgressBar / ProgressRing 不确定模式二选一**：ProgressBar 现有 2.0s 与 WinUI 2.8.6 一致、与 UWP OS 3.917s 冲突；ProgressRing 现有 2.0s/900° 与 UWP OS 3.47s/−110°→585°/6 点 stagger 冲突（登记 T18） | `UWP_PRIMARY_SOURCES.md` §Ⅲ.5 |
 
 ### M7 · 长线（P2）
 
@@ -203,9 +215,13 @@ M6 是 A/B/C 的收尾（动画词汇补齐 + 优化可见化）。M7 是独立�
 | 3 | T3：WinUI 分层 ↔ 本项目分层的映射 | **不做映射** | WinUI 的 Base/Secondary/Tertiary 表达「基底 / 替代色阶」而非层级高度（暗色里 Secondary 比 Base **更暗**），与本项目 `background < surface < surface_variant` 的单调递增不同构。强行映射等于引入另一套心智模型；缺的令牌另行按名取 WinUI 值 |
 | 4 | T8：两个 `press_tint` 收敛 | 按角色收敛：`MetroIndication::press_tint`（22%，控件按压）与 `press_subtle_tint`（10%，大面积 / 次要按压）；**删除** `MetroColors::press_tint` | 与 hover 族同构 —— 同名不同义才是漂移源，分角色命名后两个值都成立 |
 | 5 | `47e480f`（已推送的大杂烩提交） | **不拆分、不改写历史** | 规则禁止 force-push；且该提交触及的文件已被后续主题重构覆盖，拆分的回滚收益低于改写已发布历史的代价。其价值转为反例，已写入 `AGENTS.md` |
-| 6 | `SubtleFillColorSecondary` 究竟是白 5.9% 还是白 15% | **两代取值并存、按角色分族**：`subtle_tint` 5.9%（WinUI 3，极轻容器底 / 分组底）、`subtle_hover_tint` 15% / `subtle_press_tint` 25%（UWP 2.x，交互浅叠） | `CONTROL_SPEC` §471/§790/§864/§936 明标 15% / 25% 且注明 `SubtleFillColorSecondary/Tertiary`；WinUI 3 已把这两档下调为 5.9% / 3.9%。同名不同代，与 §215 同款处置（M1-1 分类学）：分角色命名后两个值都成立，谁也不必改谁 |
-| 7 | `ControlFastAnimationDuration` 是否立即对齐 0.167s | **不动，留给 M6-3** | 权威值已取到（`REFERENCE.md` §9.4），但批量替换会同时改变 17 个交互控件的观感；须与 M6-1（PointerDown/Up 100ms 下沉）同批落地，避免两次视觉变更叠加、无从归因 |
+| 6 | `SubtleFillColorSecondary` 究竟是白 5.9% 还是白 15% | **~~两代取值并存、按角色分族~~ → 一手源推翻：不是「两代并存」，而是「笔刷名对、百分比错」**。真值 Secondary **5.9%/3.5%**、Tertiary **3.9%/2.4%**（WinUI 2.x 字典）；两个浅叠令牌已删除 | 当日取到 WinUI 2.x `Common_themeresources_any.xaml` 后作废：`0FFFFFFF` = 5.9%，`CONTROL_SPEC` 的 15%/25% 无出处（疑把 alpha 字节当百分比翻倍）。**同一条规格里的 5.9% 与 15% 不可能都对** —— 这正是「不能停在推断」的例子 |
+| 7 | `ControlFastAnimationDuration` 是否立即对齐 0.167s | **不动，留给 M6-3** | 权威值已取到，但批量替换会同时改变 17 个交互控件的观感；须与 M6-1 同批落地，避免两次视觉变更叠加、无从归因。**且归属须改**：该族是 WinUI 而非 UWP（见 §Ⅴ-11） |
 | 8 | M1-2 迁移中遇到的「无权威来源取值」怎么办 | **令牌化但登记为临时**（不猜、不丢） | 那些值（0.24 / 0.8 / 0.5 / 0.7 / 60% 轨道 / 两个错误红）原先连名字都没有，谈不上「登记」；现在先给名字与角色，再在 `CANON_VS_TEMPORARY.md` 登记（T12~T16）。**不借迁移之机顺手改视觉** —— 无实测就改值，等于把「临时」换成「另一个临时」 |
+| 9 | **一手源取证轮**：本机 Windows 上取到权威字典后，是否立即按权威值改视觉？ | **改，但每处都要有 `文件:行号`，并在提交信息里写明「旧值从哪来、为什么错」** | 十处旧值被证明**无出处**（22% 按下、30% 行悬停、24% 强调低透、90% BaseMediumHigh、35% BaseMediumLow、输入框边框 ×90%、弹窗收起 0.26s、两方案同值的暂停不透明度…）。这些不是「调优分歧」，而是「抄错了」——留着等于把错误固化成规格。取证路径与新值见 `UWP_PRIMARY_SOURCES.md`，逐条对照见其 §Ⅱ |
+| 10 | 一手源与 `CONTROL_SPEC` 冲突时，改哪边？ | **两边都改**：`CONTROL_SPEC` 就地更正并标注 `文件:行号`，代码同步改；冲突结论进 `CANON_VS_TEMPORARY` | 规格是实现的依据，若规格留着错值，下一轮实现一定会抄回去 —— 「临时方案被当成设计」的同款风险，只是对象换成「错误数值」 |
+| 11 | `Control*AnimationDuration` 的归属 | **改注释为「WinUI」，并把 M6-3 的表述同步改掉** | 四份 XAML（UWP 两版 SDK + WinUI 2.8.6）与 `Windows.UI.Xaml.dll` 对这四个键名全 0 命中，只在 WinUI 的 `resources.pri` 里；数值 0.167 正确但**不可在 UWP 风格 XAML 里引用**。原注释「对齐 UWP」会误导下一个人去 UWP 里找不存在的键 |
+| 12 | ProgressBar / ProgressRing 的「UWP OS 值」与「WinUI 2 值」冲突时取谁 | **先按控件代际归属，再一次性裁定；未裁定前保持现状并登记** | ProgressBar 现用 2.0s 与 WinUI 2.8.6 完全吻合（`0.4,0,0.6,1`），而 UWP OS 是 3.917s 五圆点；ProgressRing 现用 2.0s/900° 两者都不符（源自已丢弃快照）。**同一控件不能两个来源各取一半** —— 故列入 M6-5，不在此轮擅改 |
 
 ## §Ⅵ 跨仓联动（Ether 侧，不属本路线但会互相等待）
 

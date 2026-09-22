@@ -41,6 +41,22 @@
 > **使用顺序（用户铁律）**：先判类 → 有源先读源 → 无源读 `generic.xaml` + Gallery 观察 → 仍不确定就实测。
 > 猜过的都返工过（参 `PORT_ROADMAP.md` §Ⅶ）。
 
+### §Ⅱ.1 `SystemControl*` 与 WinUI 令牌字典的实际位置（2026-09-22 补齐）
+
+上表第 4 行「闭源平台」曾被认为「只能真机观察」，**其实 SDK 自带整套主题字典**；
+WinUI 2.x 的令牌字典也不在 NuGet 的 XAML 里。完整清单、行号与取数命令见
+**`docs/UWP_PRIMARY_SOURCES.md`**，此处只留索引：
+
+| 想要的东西 | 去哪取 |
+|---|---|
+| `SystemControl*Brush` / `System*Color` / 控件状态→笔刷映射 | `C:\Program Files (x86)\Windows Kits\10\DesignTime\CommonConfiguration\Neutral\UAP\<ver>\Generic\themeresources.xaml`（暗色 L4-1961 / 亮色 L3920-5878） |
+| 控件模板的 VisualState 与 Storyboard（时长、缓动、KeySpline） | 同目录 `generic.xaml`（2.6 MB） |
+| `SubtleFillColor*` / `TextFillColor*` / `ControlFillColor*`（WinUI 2.x 一代） | GitHub `microsoft-ui-xaml` 的 `dev/CommonStyles/Common_themeresources_any.xaml`（raw `winui2/main/…`；本机 NuGet 只含模板，不含色值） |
+| 某键**是否**属于 UWP 运行时 | 扫 `C:\Windows\System32\Windows.UI.Xaml.dll` 的 UTF-16 字符串（本次据此证伪 `Control*AnimationDuration` 属 UWP） |
+
+> ⚠ 一个反复踩的坑：**`ControlFastAnimationDuration` 一族（250/167/168/83ms）是 WinUI 专有**，
+> UWP 运行时里不存在，UWP 风格 XAML 引用它会解析失败。参见 §9.4 的更正。
+
 ---
 
 ## §Ⅲ 保险机制对照表（第 1 条：让开发者不必预防溢出）
@@ -228,6 +244,13 @@ ControlFasterAnimationDuration      = 00:00:00.083   (0.083s)
 ControlFastOutSlowInKeySpline       = 0,0,0,1
 ```
 
-`ANIMATION_SPEC.md` 与 `kanesumi-anim/src/presets.rs` 注释里「180ms vs 0.167s」「对齐 UWP
-`ControlFastAnimationDuration`」的分歧到此为止：**权威值是 0.167s，缓动为 cubic-bezier(0,0,0,1)**。
+`ANIMATION_SPEC.md` 与 `kanesumi-anim/src/presets.rs` 注释里「180ms vs 0.167s」的分歧到此为止：
+**权威值是 0.167s，缓动为 cubic-bezier(0,0,0,1)**。
+
+> **2026-09-22 归属更正**：这四个键列出自 `dev/CommonStyles/Common_themeresources_any.xaml`（WinUI 侧），
+> 但本仓此前把它们当成 **UWP** 资源引用。实测：UWP SDK 的 `themeresources.xaml` / `generic.xaml`
+> （26100 与 22621 两版）与 `C:\Windows\System32\Windows.UI.Xaml.dll`（UTF-16 全量扫描）
+> 对这四个键名 **全部 0 命中**；它们在 WinUI 2.8.6 的 `resources.pri` 里各出现 12 次。
+> 结论：**值可用、归属是 WinUI**；UWP 风格 XAML 引用这些键会解析失败。
+> `ControlSlowAnimationDuration` **不存在**（0 命中），前文旧表的「Slow」一行作废。
 
