@@ -185,6 +185,47 @@ mod tests {
         assert!(light.subtle_hover_tint.r < 0.5, "亮底叠黑");
     }
 
+    /// tint 是**半透明叠加**，其上的正文必须合成后再判对比度：
+    /// 令牌自检的常见漏洞就是拿未合成的 RGB 判，于是「浅底叠白」也判成合格。
+    #[test]
+    fn text_on_interaction_tints_meets_contrast() {
+        use crate::color::over;
+        use crate::colors::MetroColors;
+
+        for scheme in [ColorScheme::Dark, ColorScheme::Light] {
+            for accent in [
+                Accent::default(),
+                Accent::parse("00897B"),
+                Accent::parse("0078D7"),
+            ] {
+                let i = MetroIndication::for_scheme(scheme, accent);
+                let colors = MetroColors::for_scheme(scheme, accent);
+                let ctx = format!("{scheme:?}");
+                for (name, tint) in [
+                    ("hover_tint", i.hover_tint),
+                    ("press_tint", i.press_tint),
+                    ("press_subtle_tint", i.press_subtle_tint),
+                    ("subtle_tint", i.subtle_tint),
+                    ("list_hover_tint", i.list_hover_tint),
+                    ("subtle_hover_tint", i.subtle_hover_tint),
+                    ("subtle_press_tint", i.subtle_press_tint),
+                ] {
+                    for (carrier, surface) in [
+                        ("surface", colors.surface),
+                        ("surface_variant", colors.surface_variant),
+                    ] {
+                        let effective = over(tint, surface);
+                        let ratio = colors.on_surface.contrast_ratio(effective);
+                        assert!(
+                            ratio >= 4.5,
+                            "{ctx}/{name} 叠在 {carrier} 上时正文对比度仅 {ratio}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// 前景强度档是**不透明度乘数**，与方案无关：叠加色已经翻转，
     /// 强度再按方案变会让同一控件在两种方案下浓淡不一。
     #[test]

@@ -131,6 +131,21 @@ impl Color {
     }
 }
 
+/// source-over 合成：`src` 覆盖在 `dst` 之上（仅测试用）。
+///
+/// **半透明令牌的对比度必须先合成再判** —— 直接拿未合成的 RGB 会得到假结论
+/// （白 3% 会被当成纯白，于是「浅底叠白」也判成合格）。令牌自检统一走这里。
+#[cfg(test)]
+pub(crate) fn over(src: Color, dst: Color) -> Color {
+    let a = src.a;
+    Color::new(
+        src.r * a + dst.r * (1.0 - a),
+        src.g * a + dst.g * (1.0 - a),
+        src.b * a + dst.b * (1.0 - a),
+        1.0,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

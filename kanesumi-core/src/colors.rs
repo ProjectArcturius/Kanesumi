@@ -189,6 +189,67 @@ mod tests {
         }
     }
 
+    /// 强调色低透族是**叠在承载面之上的半透明色**：其上的正文必须合成后再判对比度。
+    /// 三条令牌都要在「surface / surface_variant」两种承载面上都合格 ——
+    /// 选区叠在表面、ComboBox 聚焦衬底叠在表面、下拉选中项叠在面板底上。
+    #[test]
+    fn text_on_accent_low_tints_meets_contrast() {
+        use crate::color::over;
+
+        for scheme in [ColorScheme::Dark, ColorScheme::Light] {
+            for accent in [
+                Accent::default(),
+                Accent::parse("00897B"),
+                Accent::parse("0078D7"),
+            ] {
+                let c = MetroColors::for_scheme(scheme, accent);
+                for (name, tint) in [
+                    ("text_selection_tint", c.text_selection_tint),
+                    ("accent_low_tint", c.accent_low_tint),
+                ] {
+                    for (carrier, surface) in [
+                        ("surface", c.surface),
+                        ("surface_variant", c.surface_variant),
+                    ] {
+                        let effective = over(tint, surface);
+                        let ratio = c.on_surface.contrast_ratio(effective);
+                        assert!(
+                            ratio >= 4.5,
+                            "{scheme:?}/{name} 叠在 {carrier} 上时正文对比度仅 {ratio}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// 指示条必须能从轨道上认出（非文本元素阈值 3.0，WCAG 1.4.11）。
+    ///
+    /// ⚠ 亮色方案当前只有 2.7~2.8 —— 亮色轨道取自 `surface_variant`（本身就是浅灰）再 60% 叠白，
+    /// 与强调色橙的对比度天然不足。这是**登记在案的缺口**（`CANON_VS_TEMPORARY.md` T15），
+    /// 故此处钉的是「不得比现状更差」的下界：真值调好后应把下界提到 3.0 并删除本注释。
+    #[test]
+    fn progress_indicator_stands_out_from_track() {
+        use crate::accent::Accent;
+        use crate::color::over;
+
+        for scheme in [ColorScheme::Dark, ColorScheme::Light] {
+            let c = MetroColors::for_scheme(scheme, Accent::default());
+            let track = over(c.track_subtle, c.surface);
+            let floor = if scheme.is_dark() { 3.0 } else { 2.5 };
+            for (name, indicator) in [
+                ("primary", c.primary),
+                ("error_fill", crate::status::StatusColors::for_scheme(scheme).error_fill),
+            ] {
+                let ratio = indicator.contrast_ratio(track);
+                assert!(
+                    ratio >= floor,
+                    "{scheme:?}/{name} 与轨道对比度仅 {ratio}，低于下界 {floor}"
+                );
+            }
+        }
+    }
+
     /// 关键回归：换 accent 必须改变全部强调相关令牌 ——
     /// 这是「Chorus 改 accent、应用仍旧橙色」那个 bug 的守卫。
     #[test]

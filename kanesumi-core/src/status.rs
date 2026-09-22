@@ -136,18 +136,8 @@ mod tests {
     #[test]
     fn severity_backgrounds_meet_text_contrast() {
         use crate::accent::Accent;
+        use crate::color::over;
         use crate::colors::MetroColors;
-
-        // source-over：src 覆盖在 dst 之上。
-        fn over(src: Color, dst: Color) -> Color {
-            let a = src.a;
-            Color::new(
-                src.r * a + dst.r * (1.0 - a),
-                src.g * a + dst.g * (1.0 - a),
-                src.b * a + dst.b * (1.0 - a),
-                1.0,
-            )
-        }
 
         for scheme in [ColorScheme::Dark, ColorScheme::Light] {
             let status = StatusColors::for_scheme(scheme);
