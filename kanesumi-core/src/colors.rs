@@ -36,8 +36,6 @@ pub struct MetroColors {
     /// 次级正文 / 图标。
     pub on_surface_variant: Color,
 
-    /// 按下 tint（叠加在表面上表达按压）。
-    pub press_tint: Color,
     /// 列表选中行底：强调色 60%。来源 `CONTROL_SPEC` §215 的 Kanesumi 修正
     /// （UWP 为 75%，Ether 深色桌面调低一档至 0.60）。
     pub selection_tint: Color,
@@ -64,7 +62,6 @@ impl MetroColors {
             on_background: Color::from_hex(0xF0_F0_F0),
             on_surface: Color::from_hex(0xF0_F0_F0),
             on_surface_variant: Color::from_hex(0x9A_A0_A6),
-            press_tint: Color::from_hex(0xFF_FF_FF_1A), // 白 10%
             selection_tint: accent.base.with_alpha(0.60),
             focus_stroke: accent.focus_for(ColorScheme::Dark),
         }
@@ -84,7 +81,6 @@ impl MetroColors {
             on_background: Color::from_hex(0x1A_1A_1A),
             on_surface: Color::from_hex(0x1A_1A_1A),
             on_surface_variant: Color::from_hex(0x5A_5F_66),
-            press_tint: Color::from_rgba(0x00_00_00_1A), // 黑 10%（半透明黑必须 from_rgba，参 V19 阈值坑）
             selection_tint: accent.base.with_alpha(0.60),
             focus_stroke: accent.focus_for(ColorScheme::Light),
         }
@@ -124,10 +120,11 @@ mod tests {
     }
 
     #[test]
-    fn press_tint_is_translucent() {
+    fn selection_tint_is_translucent_accent() {
         for scheme in [ColorScheme::Dark, ColorScheme::Light] {
             let c = MetroColors::for_scheme(scheme, Accent::default());
-            assert!(c.press_tint.a < 1.0 && c.press_tint.a > 0.0);
+            assert!(c.selection_tint.a < 1.0 && c.selection_tint.a > 0.0);
+            assert_eq!(c.selection_tint.r, c.primary.r, "选中底取自强调色");
         }
     }
 

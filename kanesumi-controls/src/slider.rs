@@ -271,7 +271,7 @@ impl MetroSlider {
         let thumb = self.thumb_rect(rect);
         let thumb_color = if self.state == ControlState::Pressed {
             // SliderThumbBackgroundPressed = accentDark1；Kanesumi 用 press_tint 向暗侧压。
-            colors.primary.lerp(colors.press_tint, 0.5).with_alpha(alpha)
+            colors.primary.lerp(theme.indication.press_subtle_tint, 0.5).with_alpha(alpha)
         } else {
             colors.primary.with_alpha(alpha)
         };

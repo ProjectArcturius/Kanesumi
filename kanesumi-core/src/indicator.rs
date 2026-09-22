@@ -12,6 +12,13 @@ pub struct MetroIndication {
     pub hover_tint: Color,
     /// 按下 tint（叠加在表面上）。
     pub press_tint: Color,
+    /// **次要按压**底色：大面积按压或次要控件的按压反馈（滑块拇指、TopBar 芯片）。
+    ///
+    /// 与 [`press_tint`](Self::press_tint)（22%）不是同一个角色 —— 与 hover 族同构：
+    /// 强按压用于按钮类，弱按压用于大面积/次要控件。两者此前分别叫
+    /// `MetroColors::press_tint`（10%）与 `MetroIndication::press_tint`（22%），同名不同义，
+    /// 已按角色改名收敛（参 `ROADMAP.md` M1-1 分类学）。
+    pub press_subtle_tint: Color,
     /// 极轻的中性底色（分组底 / 次级容器 / 弱分隔）。来源：WinUI 3
     /// `SubtleFillColorSecondary`（暗 `#0FFFFFFF` = 白 5.9%，亮 `#09000000` = 黑 3.5%）。
     pub subtle_tint: Color,
@@ -34,6 +41,7 @@ impl MetroIndication {
             ColorScheme::Dark => Self {
                 hover_tint: Color::from_hex(0xFF_FF_FF_1A), // 白 10%
                 press_tint: Color::from_hex(0xFF_FF_FF_38), // 白 22%
+                press_subtle_tint: Color::from_hex(0xFF_FF_FF_1A), // 白 10%
                 subtle_tint: Color::from_hex(0xFF_FF_FF_0F), // 白 5.9%
                 list_hover_tint: Color::from_hex(0xFF_FF_FF_4D), // 白 30%
                 disabled_opacity: 0.38,
@@ -44,6 +52,7 @@ impl MetroIndication {
                 // 会静默变成不透明黑 —— 参 V19 阈值坑）。
                 hover_tint: Color::from_rgba(0x00_00_00_0D), // 黑 5%
                 press_tint: Color::from_rgba(0x00_00_00_1A), // 黑 10%
+                press_subtle_tint: Color::from_rgba(0x00_00_00_0D), // 黑 5%
                 subtle_tint: Color::from_rgba(0x00_00_00_09), // 黑 3.5%
                 list_hover_tint: Color::from_rgba(0x00_00_00_18), // 黑 9.4%（待实测）
                 // ⚠ 亮色禁用不透明度沿用暗色 0.38，**未实测**（登记于 CANON_VS_TEMPORARY）。
