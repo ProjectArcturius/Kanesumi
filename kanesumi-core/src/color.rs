@@ -69,6 +69,31 @@ impl Color {
     pub const BLACK: Color = Color::new(0.0, 0.0, 0.0, 1.0);
     pub const WHITE: Color = Color::new(1.0, 1.0, 1.0, 1.0);
 
+    /// WCAG 2.x 相对亮度（sRGB 线性化后按人眼灵敏度加权）。
+    ///
+    /// 用于「基色上该用黑字还是白字」的自动判定，以及令牌对比度自检 ——
+    /// 手写死白/死黑正是「浅色主题下强调色上文字读不出」的根因。
+    pub fn relative_luminance(self) -> f32 {
+        fn linear(v: f32) -> f32 {
+            let v = v.clamp(0.0, 1.0);
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        0.2126 * linear(self.r) + 0.7152 * linear(self.g) + 0.0722 * linear(self.b)
+    }
+
+    /// WCAG 对比度（1.0 ~ 21.0）。用于断言「文字与其背景不得同色」。
+    ///
+    /// 阈值参考：正文 ≥ 4.5，大字 / 图标 / 描边 ≥ 3.0。
+    pub fn contrast_ratio(self, other: Color) -> f32 {
+        let (a, b) = (self.relative_luminance(), other.relative_luminance());
+        let (hi, lo) = if a >= b { (a, b) } else { (b, a) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
     /// HSV → RGB（ColorPicker Spectrum 等）。h/s/v ∈ [0,1]。
     pub fn hsv(h: f32, s: f32, v: f32) -> Color {
         let h = (h.fract() + 1.0) % 1.0;
@@ -134,5 +159,21 @@ mod tests {
         let rgba_white = Color::from_rgba(0xFFFF_FFFF);
         assert_eq!(rgba_white.a, 1.0);
         assert_eq!(rgba_white.r, 1.0);
+    }
+
+    #[test]
+    fn contrast_ratio_matches_wcag_known_values() {
+        // WCAG 极值：黑白对比 = 21:1；同色 = 1:1。
+        assert!((Color::WHITE.contrast_ratio(Color::BLACK) - 21.0).abs() < 0.01);
+        assert!((Color::BLACK.contrast_ratio(Color::WHITE) - 21.0).abs() < 0.01, "对比度对称");
+        assert!((Color::WHITE.contrast_ratio(Color::WHITE) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn relative_luminance_follows_eye_sensitivity() {
+        let g = Color::rgb(0.0, 1.0, 0.0).relative_luminance();
+        let r = Color::rgb(1.0, 0.0, 0.0).relative_luminance();
+        let b = Color::rgb(0.0, 0.0, 1.0).relative_luminance();
+        assert!(g > r && r > b, "人眼灵敏度 G > R > B，实际 g={g} r={r} b={b}");
     }
 }
