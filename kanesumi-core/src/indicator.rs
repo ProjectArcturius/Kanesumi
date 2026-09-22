@@ -56,7 +56,7 @@ pub struct MetroIndication {
     pub base_medium: f32,
     /// BaseMediumLow（白 35%）：中灰实心（CheckBox UncheckedPressed，`CONTROL_SPEC` §1216）。
     pub base_medium_low: f32,
-    /// 次级前景（0.8）：有色底上的次级行 / 次级字形。
+    /// 次级前景（0.8）：有色底上的次级行 / 次级字形 / 次级描边。
     ///
     /// 取值属 Kanesumi（UWP 无 0.8 档，最接近的 `BaseMediumHigh` 是 0.9），
     /// 登记于 `docs/CANON_VS_TEMPORARY.md`，待一次真机实测后定稿。

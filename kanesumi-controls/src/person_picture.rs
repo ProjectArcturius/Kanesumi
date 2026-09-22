@@ -225,6 +225,23 @@ impl MetroPersonPicture {
         ))
     }
 
+    /// Badge 配色（底，描边）。参 `CONTROL_SPEC` §16：
+    /// fill 为**不透明**的暗底（规格写 `#1A1A1A`，即暗色背景令牌），描边 `divider` 2px 且
+    /// **opacity 0.8**。
+    ///
+    /// 旧实现把 0.8 写在了**底色**上、描边反而不透明 —— 规格里的 0.8 是描边强度，
+    /// 底色半透明会让头像圆的颜色透出、徽标边界发虚。此处按规格对调，并把底色换成令牌，
+    /// 使浅色方案不再沿用暗色的 `#1A1A1A`。
+    fn badge_colors(theme: &MetroTheme) -> (Color, Color) {
+        (
+            theme.colors.background,
+            theme
+                .colors
+                .divider
+                .with_alpha(theme.indication.secondary_opacity),
+        )
+    }
+
     /// Badge 文本：>99 → "99+"。
     pub fn badge_text(&self) -> Option<String> {
         if self.badge_number <= 0 {
@@ -273,10 +290,9 @@ impl MetroPersonPicture {
             && let Some(badge) = Self::badge_rect(rect)
         {
             let badge_size = badge.size.width;
-            // 底圆（fill #1A1A1A）+ 2px 描边（divider）。
-            let fill = Color::from_hex(0x1A_1A_1A).with_alpha(0.8);
+            let (fill, stroke) = Self::badge_colors(theme);
             scene.fill_rounded_rect(fill, badge, CornerRadius::Capsule);
-            scene.stroke_rounded_rect(theme.colors.divider, badge, 2.0, CornerRadius::Capsule);
+            scene.stroke_rounded_rect(stroke, badge, 2.0, CornerRadius::Capsule);
             let style = TextStyle::new(
                 (badge_size * 0.6).max(1.0),
                 badge_size * 0.6 * 1.4,
@@ -335,6 +351,22 @@ mod tests {
     #[test]
     fn initials_empty_for_blank() {
         assert_eq!(initials_from_display_name("   "), "");
+    }
+
+    /// 徽标配色按规格：底 = 背景令牌且**不透明**，0.8 落在**描边**上。
+    #[test]
+    fn badge_colors_follow_composition_spec() {
+        for scheme in [
+            kanesumi_core::ColorScheme::Dark,
+            kanesumi_core::ColorScheme::Light,
+        ] {
+            let theme = MetroTheme::for_scheme(scheme, kanesumi_core::Accent::default());
+            let (fill, stroke) = MetroPersonPicture::badge_colors(&theme);
+            assert_eq!(fill, theme.colors.background, "{scheme:?} 底色取背景令牌");
+            assert_eq!(fill.a, 1.0, "{scheme:?} 底色必须不透明（规格的 #1A1A1A 无 alpha）");
+            assert_eq!(stroke.a, 0.8, "{scheme:?} 0.8 是描边强度");
+            assert_eq!(stroke.r, theme.colors.divider.r, "{scheme:?} 描边取 divider");
+        }
     }
 
     #[test]
