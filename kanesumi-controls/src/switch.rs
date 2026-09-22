@@ -47,11 +47,16 @@ impl SwitchShape {
             SwitchShape::Square => (10.0, 20.0),
         }
     }
-    /// Knob 距轨道边缘留白（上下 / 左右对称）。
-    /// Capsule = (20−10)/2 = 5；Square = 0（贴满高度）。
+    /// Knob 距轨道**左右**边缘的留白（决定行程；垂直方向另有居中计算，与此无关）。
+    ///
+    /// Capsule = **3** —— 一手源：OS UWP `generic.xaml` 的 ToggleSwitch 模板把 knob 位移写死为
+    /// `KnobTranslateTransform To="24"`（L13069-13072），而轨道宽 40、knob 宽 10，
+    /// 故左右各留白 (40 − 24 − 10)/2 = **3**，行程 = 40 − 2×3 − 10 = **24**。
+    /// 旧值 5（行程 20）源自把「垂直居中的 5px」误当成左右留白，行程因此短了 4px。
+    /// Square = 0（贴满宽度，Win8 瘦长 knob 观感）。
     fn knob_margin(self) -> f32 {
         match self {
-            SwitchShape::Capsule => 5.0,
+            SwitchShape::Capsule => 3.0,
             SwitchShape::Square => 0.0,
         }
     }
@@ -73,10 +78,27 @@ impl SwitchShape {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct DragState {
     start_pointer_x: f32,
+    /// 按下瞬间的动画 progress（拖动映射用 —— 可能是动画中途，不能用 0/1）。
     start_progress: f32,
-    /// 是否已越过 3px 阈值（越过后按拖动处理）。
+    /// 按下瞬间的**语义**状态（释放决策用 —— 位移要与 0/1 端点比较，而非动画中位）。
+    start_checked: bool,
+    /// 是否已越过 3px 阈值（越过后 knob 跟手）。
     moved: bool,
 }
+
+/// **点动意图**上限：释放时若位移（占行程比例）小于此值，按「点动」处理而非就近吸附。
+///
+/// 来源：sec-a（Android 扇区）`MetroSwitch.kt` L118-125 的两档释放决策，2026-09-22 回流。
+/// 它解决两个真实场景：
+/// 1. 按下后**微抖并拖回起点**再松手 —— 用户本意是点击。旧实现按「knob 过半」判定，
+///    会得到「点了但没翻过去」（原地不动）；现在判定为点动 → 翻转。
+/// 2. 与**行程成比例**而不是写死像素 —— 40×20 胶囊（行程 20）、40×20 直角（行程 30）
+///    以及将来任何尺寸都得到同一手感，换尺寸不必重调阈值。
+///
+/// 注意：这与 UWP ToggleSwitch「拖出去再拖回来 = 取消」**不同** —— 本库选择「释放在起点附近
+/// 视为点击」，理由是桌面鼠标下「点了没反应」比「多翻了一次」更难受。属有意偏离，
+/// 登记于 `docs/CANON_VS_TEMPORARY.md`。
+pub const TAP_INTENT_MAX_DISPLACEMENT: f32 = 0.15;
 
 /// MetroSwitch —— 开关。
 #[derive(Debug, Clone, PartialEq)]
@@ -214,6 +236,7 @@ impl MetroSwitch {
         self.drag = Some(DragState {
             start_pointer_x: pos.x,
             start_progress: self.progress(),
+            start_checked: self.checked,
             moved: false,
         });
     }
@@ -234,7 +257,9 @@ impl MetroSwitch {
         }
     }
 
-    /// 指针释放 —— 拖动过则按 knob 过半判 on/off；未拖动视为点动 toggle。
+    /// 指针释放 —— 两档决策（参 [`TAP_INTENT_MAX_DISPLACEMENT`]）：
+    /// - 位移小于 15% 行程（含未越过 3px 阈值、以及拖出去又拖回起点）→ 当**点动**，翻转状态；
+    /// - 否则按 knob 当前位置**就近吸附**（≥ 0.5 = on）。
     /// 返回 true 表示 `checked` 变化。
     pub fn release(&mut self) -> bool {
         let Some(drag) = self.drag.take() else {
@@ -242,11 +267,15 @@ impl MetroSwitch {
         };
         self.state = ControlState::Normal;
         let old = self.checked;
-        if drag.moved {
-            self.checked = self.progress() >= 0.5;
+        // 位移以**语义端点**为基准（0/1），不以动画中位为基准 —— 否则「动画未走完时按下」
+        // 会把位移算小、误判成点动。
+        let semantic_start = if drag.start_checked { 1.0 } else { 0.0 };
+        let displacement = (self.progress() - semantic_start).abs();
+        self.checked = if !drag.moved || displacement < TAP_INTENT_MAX_DISPLACEMENT {
+            !self.checked
         } else {
-            self.checked = !self.checked;
-        }
+            self.progress() >= 0.5
+        };
         self.knob.set_target(if self.checked { 1.0 } else { 0.0 });
         self.checked != old
     }
@@ -334,9 +363,13 @@ impl MetroSwitch {
 
         let (fill, stroke) = match (self.checked, is_pressed) {
             (true, false) => {
-                // ON：accent 实心
+                // ON：accent 实心；悬停取**强调色派生档**而不是就地手算 lerp ——
+                // `primary_hover` 是 `Accent::hover_for(scheme)` 的派生结果（单一真源）。
+                // ⚠ `CONTROL_SPEC` §3 写「On Hovered = 强调色 lerp 白 15%」，
+                // 本库派生档是 25%（`Accent::LIGHT_MIX[0]`）—— 取派生档，
+                // 免得每换一次 accent 都要重算一遍手写比例。
                 let base = if is_hovered {
-                    colors.primary.lerp(Color::WHITE, 0.15)
+                    colors.primary_hover
                 } else {
                     colors.primary
                 };
@@ -394,13 +427,15 @@ mod tests {
     #[test]
     fn capsule_dimensions_match_uwp_v1_spec() {
         // 数据源：microsoft-ui-xaml winui2/main ToggleSwitch_themeresources_v1.xaml
-        // Track 40×20；Knob 10×10 Ellipse；margin=(20−10)/2=5；travel=40−10−10=20
+        // Track 40×20；Knob 10×10；
+        // 左右留白由 OS 模板写死的行程反推：`KnobTranslateTransform To="24"`
+        // （SDK 26100 `generic.xaml` L13069-13072）→ margin=(40−24−10)/2=3、travel=24。
         let s = MetroSwitch::new();
         assert_eq!(s.shape, SwitchShape::Capsule);
         assert_eq!(s.shape.track_size(), (40.0, 20.0));
         assert_eq!(s.shape.knob_size(), (10.0, 10.0));
-        assert_eq!(s.shape.knob_margin(), 5.0);
-        assert!((s.travel() - 20.0).abs() < 0.001);
+        assert_eq!(s.shape.knob_margin(), 3.0);
+        assert!((s.travel() - 24.0).abs() < 0.001, "行程 = UWP 写死的 24");
     }
 
     #[test]
@@ -518,6 +553,61 @@ mod tests {
         let changed = s.release();
         assert!(changed);
         assert!(s.checked, "微小位移视为点动，翻转");
+    }
+
+    /// **回流自 sec-a 的两档释放决策**（`MetroSwitch.kt` L118-125，2026-09-22）：
+    /// 越过拖动阈值后又拖回起点附近再松手 —— 用户本意是点击，必须翻转。
+    /// 旧实现按「knob 过半」判定 → 原地不动，表现为「点了没反应」。
+    #[test]
+    fn drag_away_and_back_counts_as_tap() {
+        let mut s = MetroSwitch::new(); // off
+        let theme = MetroTheme::ether_dark();
+        let rect = Rect::new(0.0, 0.0, 200.0, 60.0);
+        let track = s.track_rect(rect, &theme);
+        let x0 = track.origin.x + 5.0;
+        s.press(rect, &theme, Point::new(x0, track.origin.y + 10.0));
+        // 先拖出 8px（越阈值 → moved=true，knob 跟手到 ~0.4）
+        s.drag_to(Point::new(x0 + 8.0, track.origin.y + 10.0));
+        assert!(s.drag.unwrap().moved, "越 3px 后应进入跟手");
+        assert!(s.progress() > 0.0, "拖动期间 knob 跟手");
+        // 再拖回起点（位移≈0 < 15% 行程）
+        s.drag_to(Point::new(x0, track.origin.y + 10.0));
+        let changed = s.release();
+        assert!(changed, "拖出去又拖回 = 点动意图，应翻转");
+        assert!(s.checked, "点动 → on");
+    }
+
+    /// 反向：真拖动（位移 ≥ 15% 行程）仍按就近吸附 —— 门槛不能宽到把拖拽吃掉。
+    #[test]
+    fn real_drag_still_snaps_by_position() {
+        let mut s = MetroSwitch::new(); // off
+        let theme = MetroTheme::ether_dark();
+        let rect = Rect::new(0.0, 0.0, 200.0, 60.0);
+        let track = s.track_rect(rect, &theme);
+        let x0 = track.origin.x + 5.0;
+        // 拖到 30% 行程就松手：位移够大（> 15%）但未过半 → 吸附回 off，不翻转
+        s.press(rect, &theme, Point::new(x0, track.origin.y + 10.0));
+        s.drag_to(Point::new(x0 + 6.0, track.origin.y + 10.0));
+        assert!(
+            s.progress() >= TAP_INTENT_MAX_DISPLACEMENT,
+            "本例位移应超过点动上限，实际 {}",
+            s.progress()
+        );
+        let changed = s.release();
+        assert!(!changed, "未过半的真拖动应吸回原位");
+        assert!(!s.checked);
+    }
+
+    /// 点动上限与行程成比例：直角形态行程 30 > 胶囊 20，同一比例的位移结论必须一致。
+    #[test]
+    fn tap_intent_tier_scales_with_travel() {
+        let capsule = MetroSwitch::new();
+        let square = MetroSwitch::new().with_shape(SwitchShape::Square);
+        assert!(square.travel() > capsule.travel(), "直角行程更长（knob 更窄）");
+        assert_eq!(TAP_INTENT_MAX_DISPLACEMENT, 0.15);
+        // 同一比例下的绝对位移不同 → 阈值必须按行程换算，不能写死像素
+        assert!((capsule.travel() * TAP_INTENT_MAX_DISPLACEMENT - 3.6).abs() < 0.01);
+        assert!((square.travel() * TAP_INTENT_MAX_DISPLACEMENT - 4.5).abs() < 0.01);
     }
 
     #[test]
