@@ -36,21 +36,25 @@ pub struct MetroColors {
     /// 次级正文 / 图标。
     pub on_surface_variant: Color,
 
-    /// 列表选中行底：强调色 60%。来源 `CONTROL_SPEC` §215 的 Kanesumi 修正
-    /// （UWP 为 75%，Ether 深色桌面调低一档至 0.60）。
+    /// 列表选中行底 / 下拉项选中底：强调色 **60%（暗）/ 40%（亮）**。
+    ///
+    /// 来源（一手，2026-09-22 实测）：OS UWP `themeresources.xaml` 的
+    /// `SystemControlHighlightListAccentLowBrush` = `SystemAccentColor` + `Opacity="0.6"`（暗，L304）
+    /// / `Opacity="0.4"`（亮，L4220）；使用它的状态见 `ListViewItemBackgroundSelected`（L1785）
+    /// 与 `ComboBoxItemBackgroundSelected`（L648）。
+    ///
+    /// ⚠ 旧记录称「UWP 为 75%，Kanesumi 调低至 60%」—— 一手源里没有 75%，60% 恰是 UWP 暗色原值；
+    /// 亮色必须降到 40%（同一笔刷的亮色档），此前两方案同值属漏抄。
     pub selection_tint: Color,
     /// 文本选区高亮：强调色 35%。来源 `CONTROL_SPEC` §34（`TextControlSelectionHighlightColor`
     /// → 强调色 **35%**，preedit 虚线下划线 60% 同节）。
     ///
-    /// 与 [`selection_tint`](Self::selection_tint)（行选中 60%）**分角色**：选区是叠在正文
+    /// ⚠ 一手源显示该笔刷本体是 `SystemControlHighlightAccentBrush`（accent **不透明**，L282），
+    /// 35% 应是模板侧再叠加的结果，待 `generic.xaml` 模板核对（登记于 `CANON_VS_TEMPORARY` T18）。
+    ///
+    /// 与 [`selection_tint`](Self::selection_tint)（行选中 60/40%）**分角色**：选区是叠在正文
     /// 字形之下的临时高亮，行选中是整行底色 —— 前者更淡才不压字形。
     pub text_selection_tint: Color,
-    /// 强调色低透底（24%）：ComboBox 触发器聚焦衬底 / 下拉项选中
-    /// （`CONTROL_SPEC` §237 `HighlightListAccentLow`、§247 `ListAccentLow`）。
-    ///
-    /// 规格只写「强调色低透」未给数值，0.24 属 Kanesumi 取值（登记于
-    /// `docs/CANON_VS_TEMPORARY.md`，待实测定稿）。
-    pub accent_low_tint: Color,
     /// 弱化轨道底：`surface_variant` 的 60% 强度（ProgressBar 轨道，`CONTROL_SPEC` §4）。
     ///
     /// Slider 轨道用**不透明** `surface_variant`（§1451）；ProgressBar 更低一档，
@@ -83,7 +87,6 @@ impl MetroColors {
             on_surface_variant: Color::from_hex(0x9A_A0_A6),
             selection_tint: accent.base.with_alpha(0.60),
             text_selection_tint: accent.base.with_alpha(0.35),
-            accent_low_tint: accent.base.with_alpha(0.24),
             track_subtle: surface_variant.with_alpha(0.60),
             focus_stroke: accent.focus_for(ColorScheme::Dark),
         }
@@ -104,9 +107,8 @@ impl MetroColors {
             on_background: Color::from_hex(0x1A_1A_1A),
             on_surface: Color::from_hex(0x1A_1A_1A),
             on_surface_variant: Color::from_hex(0x5A_5F_66),
-            selection_tint: accent.base.with_alpha(0.60),
+            selection_tint: accent.base.with_alpha(0.40),
             text_selection_tint: accent.base.with_alpha(0.35),
-            accent_low_tint: accent.base.with_alpha(0.24),
             track_subtle: surface_variant.with_alpha(0.60),
             focus_stroke: accent.focus_for(ColorScheme::Light),
         }
@@ -154,24 +156,23 @@ mod tests {
         }
     }
 
-    /// 强调色低透族（选区 35% / 强调低透 24%）同样必须跟着 accent 走，
-    /// 且**弱于**行选中底（60%）—— 顺序反了就等于选区压住字形。
+    /// 选中底 / 选区高亮的强度与来源由一手字典固定：
+    /// `SystemControlHighlightListAccentLowBrush` = accent **0.6（暗）/ 0.4（亮）**
+    /// （`themeresources.xaml` L304/L4220），选区高亮 35% 更淡（叠在字形之下）。
     #[test]
-    fn accent_low_tints_track_accent_and_stay_below_selection() {
-        for scheme in [ColorScheme::Dark, ColorScheme::Light] {
-            for accent in [Accent::default(), Accent::parse("00897B")] {
-                let c = MetroColors::for_scheme(scheme, accent);
+    fn accent_tints_track_accent_and_stay_below_selection() {
+        for accent in [Accent::default(), Accent::parse("00897B")] {
+            let dark = MetroColors::for_scheme(ColorScheme::Dark, accent);
+            let light = MetroColors::for_scheme(ColorScheme::Light, accent);
+            assert_eq!(dark.selection_tint.a, 0.60, "暗色 Selected = AccentLow 0.6");
+            assert_eq!(light.selection_tint.a, 0.40, "亮色 Selected = AccentLow 0.4");
+            for c in [dark, light] {
                 assert_eq!(c.text_selection_tint.a, 0.35);
-                assert_eq!(c.accent_low_tint.a, 0.24);
+                assert_eq!(c.selection_tint.r, c.primary.r, "选中底取自强调色");
                 assert_eq!(c.text_selection_tint.r, c.primary.r, "选区高亮取自强调色");
-                assert_eq!(c.accent_low_tint.r, c.primary.r, "低透底取自强调色");
                 assert!(
                     c.text_selection_tint.a < c.selection_tint.a,
-                    "选区高亮必须弱于行选中底"
-                );
-                assert!(
-                    c.accent_low_tint.a < c.text_selection_tint.a,
-                    "强调低透必须弱于选区高亮"
+                    "选区高亮必须弱于行选中底（否则叠在字形之下会压字）"
                 );
             }
         }
@@ -189,11 +190,11 @@ mod tests {
         }
     }
 
-    /// 强调色低透族是**叠在承载面之上的半透明色**：其上的正文必须合成后再判对比度。
-    /// 三条令牌都要在「surface / surface_variant」两种承载面上都合格 ——
-    /// 选区叠在表面、ComboBox 聚焦衬底叠在表面、下拉选中项叠在面板底上。
+    /// 强调色族是**叠在承载面之上的半透明色**：其上的正文必须合成后再判对比度。
+    /// 选区与选中底都要在「surface / surface_variant」两种承载面上合格 ——
+    /// 选区叠在表面、下拉选中项叠在面板底上。
     #[test]
-    fn text_on_accent_low_tints_meets_contrast() {
+    fn text_on_accent_tints_meets_contrast() {
         use crate::color::over;
 
         for scheme in [ColorScheme::Dark, ColorScheme::Light] {
@@ -205,7 +206,7 @@ mod tests {
                 let c = MetroColors::for_scheme(scheme, accent);
                 for (name, tint) in [
                     ("text_selection_tint", c.text_selection_tint),
-                    ("accent_low_tint", c.accent_low_tint),
+                    ("selection_tint", c.selection_tint),
                 ] {
                     for (carrier, surface) in [
                         ("surface", c.surface),
@@ -265,7 +266,7 @@ mod tests {
         assert_ne!(orange.focus_stroke, teal.focus_stroke);
         assert_ne!(orange.selection_tint, teal.selection_tint);
         assert_ne!(orange.text_selection_tint, teal.text_selection_tint);
-        assert_ne!(orange.accent_low_tint, teal.accent_low_tint);
+        assert_ne!(orange.text_selection_tint, teal.text_selection_tint);
     }
 
     /// 深浅对称：前景与背景的明暗方向必须互换，否则浅色主题必然「白字白底」。
