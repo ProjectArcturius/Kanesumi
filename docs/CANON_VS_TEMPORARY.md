@@ -27,6 +27,7 @@
 | T8 | `MetroColors::press_tint` 与 `MetroIndication::press_tint` | 白 10% 与白 22%，**两个不同的按下 tint 并存** | `colors.rs` / `indicator.rs` | 收敛为一个令牌 | 待裁定 | 待收敛（重复即漂移） |
 | T9 | 焦点描边取值 | 由 accent 派生（暗色 = Light2），**原值 `#FFA626` 借自合成器 Dock 聚焦指示线** | `kanesumi-core/src/accent.rs` `focus_for` | 由 accent 派生的正典机制 | 本表 §二·D2 | 机制已换；取值变化需一次视觉确认 |
 | T10 | xdg-shell 角色不吃损伤重绘 | 全量重绘 | `kanesumi-harness/src/platform.rs` | 与 CPU 路径同等的损伤重绘 | — | 未开工（审计 §Ⅳ） |
+| T11 | 亮色 `list_hover_tint` | 黑 9.4%（`ControlAltFillColorQuarternary` 亮值） | `kanesumi-core/src/indicator.rs` | UWP 亮色 ListView 行 PointerOver 的实际笔刷值 | UWP `SystemControlHighlightListLowBrush` 亮色字面值（Windows SDK `themeresources.xaml`，参 `CONTROL_SPEC.md` §11.1） | 待实测：暗色 30% 有 §215 明文；亮色是**从 WinUI 3 邻近令牌借的**，非直接对应 |
 
 > **已消除的临时项**（保留在此作为历史，避免再次被误认）：
 > - 「省略号未启用、超长文本硬裁切」——2026-09-22 已改默认 `Ellipsis` 并补 `label/paragraph`。
