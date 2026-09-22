@@ -277,7 +277,7 @@ impl MetroInfoBar {
         scene.fill_rect(bg, content);
         scene.stroke_rect(colors.divider, content, 1.0);
 
-        // 图标：方块 + 白色字形
+        // 图标：方块 + 字形
         if self.is_icon_visible {
             let icon_rect = Self::icon_rect(rect);
             scene.fill_rounded_rect(icon_color, icon_rect, kanesumi_core::CornerRadius::Slight);
@@ -286,10 +286,13 @@ impl MetroInfoBar {
                 .clone()
                 .unwrap_or_else(|| self.severity.icon_glyph().to_string());
             let style = TextStyle::new(11.0, 16.0, FontWeight::Bold);
+            // 字形颜色**按对比度取**，不写死白色：方块底是语义色，暗色下 critical 为
+            // `#FF99A4`、success 为 `#6CCB5F` —— 白字在其上只有 1.6~1.9:1，等于看不见。
+            // 取黑/白中对比度大者恒 ≥4.58:1（参 `Color::most_readable_on`）。
             scene.text(
                 glyph,
                 icon_rect,
-                Color::from_hex(0xFF_FF_FF),
+                Color::most_readable_on(icon_color),
                 style,
                 TextAlign::Center,
             );
@@ -345,7 +348,7 @@ impl MetroInfoBar {
             // 简化：两条水平/垂直不成立，改用两条对角细条（StrokeRect 不支持旋转）——
             // 用两个 Triangle 各拼成对角长条。
             // 方案：对角「乘」号用 4 个三角形（每臂 1 个）—— 视觉上足够。
-            let cross = Color::from_hex(0xE5_E5_E5);
+            let cross = colors.on_surface;
             // 左上臂
             scene.triangle(
                 Point::new(cx - r, cy - r + t),
@@ -525,6 +528,54 @@ mod tests {
             &mut scene,
         );
         assert!(scene.is_empty());
+    }
+
+    /// 图标方块上的字形必须**自动取色**：方块底是语义色，暗色 critical/success 都是浅色，
+    /// 写死白字在其上只有 1.6~1.9:1。此断言覆盖四种严重度 × 两种方案 × 两个 accent。
+    #[test]
+    fn icon_glyph_color_is_readable_on_every_severity_block() {
+        let Some(engine) = find_engine() else { return };
+        for scheme in [
+            kanesumi_core::ColorScheme::Dark,
+            kanesumi_core::ColorScheme::Light,
+        ] {
+            for accent in [
+                kanesumi_core::Accent::default(),
+                kanesumi_core::Accent::parse("00897B"),
+            ] {
+                let theme = MetroTheme::for_scheme(scheme, accent);
+                for severity in [
+                    InfoBarSeverity::Informational,
+                    InfoBarSeverity::Success,
+                    InfoBarSeverity::Warning,
+                    InfoBarSeverity::Error,
+                ] {
+                    let mut b = bar();
+                    b.severity = severity;
+                    let mut scene = Scene::default();
+                    b.render(
+                        &theme,
+                        &engine,
+                        Rect::new(0.0, 0.0, 600.0, 48.0),
+                        &mut scene,
+                    );
+                    let glyph = severity.icon_glyph();
+                    let (_, icon_color) = severity.colors(&theme);
+                    let drawn = scene.commands.iter().find_map(|c| match c {
+                        SceneCommand::Text { content, color, .. } if content == glyph => {
+                            Some(*color)
+                        }
+                        _ => None,
+                    });
+                    let drawn = drawn.unwrap_or_else(|| panic!("{scheme:?}/{severity:?} 未见图标字形"));
+                    let ratio = drawn.contrast_ratio(icon_color);
+                    assert!(
+                        ratio >= 4.5,
+                        "{scheme:?}/{severity:?} 图标字形对比度仅 {ratio}（底色 {icon_color:?}）"
+                    );
+                }
+            }
+        }
     }
 
     /// 语义色：三档互不相同；**换方案必须变**（旧实现写死深色值，浅色主题下纹丝不动）；
