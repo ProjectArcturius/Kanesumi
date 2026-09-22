@@ -1750,7 +1750,8 @@ impl GalleryApp {
                 row.origin.y += vrect.origin.y;
                 let selected = self.virtual_selected == Some(i);
                 if selected {
-                    scene.fill_rect(colors.primary.with_alpha(0.60), row);
+                    // 行选中底 = 令牌（与 MetroList 同款），不再重复书写 0.60。
+                    scene.fill_rect(colors.selection_tint, row);
                 }
                 scene.text(
                     format!("项目 {i} · 虚拟化条目"),
@@ -1784,7 +1785,12 @@ impl GalleryApp {
                 thumb.size.width,
                 thumb.size.height,
             );
-            scene.fill_rect(colors.on_surface_variant.with_alpha(0.6), thumb);
+            scene.fill_rect(
+                colors
+                    .on_surface_variant
+                    .with_alpha(self.theme.indication.base_medium),
+                thumb,
+            );
         }
         // 标签
         scene.text(
