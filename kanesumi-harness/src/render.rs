@@ -1,6 +1,7 @@
 // render.rs — wgpu Scene 光栅化（painter's algorithm）。参 HANDOVER §1 Scene 命令光栅化。
 //
-// 纯色无渐变（SD §II）：所有形状 CPU 侧三角化后走单一 color pipeline；
+// 纯色无渐变（`KANESUMI_DESIGN.md` §Ⅲ.1 铁律 6，L102；旧注释引用的「SD §II」是错误溯源）：
+// 所有形状 CPU 侧三角化后走单一 color pipeline；
 // 文本用 fontdue 光栅化字形 → R8 覆盖纹理 → textured quad。
 // 坐标约定：Scene 逻辑像素（原点左上，y 向下）；物理像素 = 逻辑 × scale。
 // 注：本模块仅 Linux（wgpu 表面需 Wayland wl_surface）。

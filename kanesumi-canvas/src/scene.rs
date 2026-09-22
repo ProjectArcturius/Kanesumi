@@ -18,7 +18,11 @@ pub enum TextAlign {
 /// 外壳（Linux Wayland+wgpu）按序光栅化：后画的命令叠在前者之上（painter's algorithm）。
 #[derive(Debug, Clone, PartialEq)]
 pub enum SceneCommand {
-    /// 纯色填充矩形。参 SD §II —— 纯色、无渐变。`corner_radius` 为圆角（0 = 直角）。
+    /// 纯色填充矩形。纯色、无渐变 —— 出处是 `KANESUMI_DESIGN.md` §Ⅲ.1 铁律 6
+    /// （「无 ripple、无渐变、无阴影」，L102）与 L77（「颜色一律纯色无渐变；状态色硬切换」）。
+    /// ⚠ 旧注释写「参 SD §II」是**错误溯源**：`compositor/docs/SD.md` 全文不含「渐变」二字
+    /// （§II 讲的是空间结构 Top Bar / Dock / Launchpad）。2026-09-22 复核时更正。
+    /// `corner_radius` 为圆角（0 = 直角）。
     FillRect {
         color: Color,
         rect: Rect,

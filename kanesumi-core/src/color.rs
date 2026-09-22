@@ -1,4 +1,5 @@
-/// SRGBA 颜色类型。参 PLAN.md §4-5 与 SD §II —— 纯色、无渐变。
+/// SRGBA 颜色类型。纯色、无渐变 —— 出处 `KANESUMI_DESIGN.md` §Ⅲ.1 铁律 6（L102）；
+/// 参 `PLAN.md` §4-5。⚠ 旧注释写「参 SD §II」属错误溯源（SD.md 不含「渐变」），2026-09-22 更正。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color {
     pub r: f32,

@@ -44,7 +44,7 @@
 | Pressed | **40% 白** | 不透明基色 | PointerDown（Y 下沉） |
 | Disabled | 同 Normal | 前景 40% | — |
 
-> Kanesumi 实现注：Ether 为深色空间桌面，底色用 `colors.surface` 不透明（而非半透明白叠层）；悬停/按压用 tint 叠加表达明暗。**tint 强度参考上方白%**：hover ≈ 0.10、press ≈ 0.22（见 §9 对 `MetroIndication` 的修正）。
+> Kanesumi 实现注：Ether 为深色空间桌面，底色用 `colors.surface` 不透明（而非半透明白叠层）；悬停/按压用 tint 叠加表达明暗。**tint 强度取 UWP 一手字典**：hover = `SystemListLowColor` **0.10**、press = `SystemListMediumColor` **0.20**（`themeresources.xaml` L228/L229 暗、L4144/L4145 亮；本文旧写 press 0.22 无出处，见 `UWP_PRIMARY_SOURCES.md` §Ⅱ）。
 
 ### Accent 按钮
 
@@ -319,17 +319,21 @@
 
 ## 10 · 动画参数汇总表（vs Kanesumi 预设）
 
+> 本表是 2026-08-10 的**迁移对照表**（「参考时长 → 预设改动」），「结论」列是当时的待办。
+> 2026-09-22 一手源复核后，其中两行已再次变动，已在行内标注；**当前权威值以
+> `kanesumi-anim/src/presets.rs` 的文档注释与 `docs/UWP_PRIMARY_SOURCES.md` §Ⅲ.5 为准。**
+
 | 用途 | 参考时长 | 缓动 | Kanesumi 预设 | 结论 |
 |---|---|---|---|---|
 | 标准过渡 | 0.25s | Cubic EaseOut | `METRO_STANDARD_DURATION` | ✅ 一致 |
-| 快速切换 | **0.167s** | FastOutSlowIn | `quick_switch` 0.18 | ⚠️ 对齐 0.167 |
-| Switch 滑动 | **0.15s** | Cubic EaseOut | `toggle_flip` 0.22 | ❌ 改 0.15 |
-| 面板入场 | 0.30s | Cubic EaseOut | `sheet_appear` 0.30 | ✅ |
-| 面板收起 | 0.26s | Quadratic EaseOut | `sheet_dismiss` 0.26 | ✅ |
-| 下拉遮罩入/出 | 0.383 / 0.216 | spline(0.1,0.9,0.2,1) | 新增 `overlay_open/close` | 需新增 |
-| Dialog 缩放 | 0.5s | spline(0.1,0.9,0.2,1) | 新增 `dialog_enter` | 需新增 |
-| Dialog 淡入/淡出 | 0.167 / 0.083 线性 | Linear | 新增时长常量 | 需新增 |
-| ProgressBar/Ring 不确定循环 | **2.0s** | ease-in-out | 新增 `progress_indeterminate` | 需新增 |
+| 快速切换 | **0.167s** | FastOutSlowIn | `quick_switch` 0.167 | ✅ 已对齐（注意：该键属 **WinUI**，非 UWP） |
+| Switch 滑动 | **0.15s** | Cubic EaseOut | `toggle_flip` 0.15 | ✅ 已改（UWP 模板里 knob 位移走无参 `RepositionThemeAnimation`，时长 OS 预置；0.15 取自 RepositionThemeAnimation 惯例） |
+| 面板入场 | 0.30s | Cubic EaseOut | `sheet_appear` 0.30 | ✅ 且与一手源逐字吻合（CommandBarFlyout 开 300ms） |
+| 面板收起 | ~~0.26s~~ → **0.15s** | ~~Quadratic~~ → `0.7,0 1,0.5` 族 | `sheet_dismiss` **0.15** | ⚠ 2026-09-22 更正：0.26 无出处；一手源 ClosingStoryboard = 150ms（`generic.xaml` L22110-22118） |
+| 下拉遮罩入/出 | 0.383 / 0.216 | spline(0.1,0.9,0.2,1) | `overlay_open/close` | ✅ 已实现（一手源逐字吻合，L10166-10177） |
+| Dialog 缩放 | 0.5s | spline(0.1,0.9,0.2,1) | `dialog_enter` | ✅ 已实现 |
+| Dialog 淡入/淡出 | 0.167 / 0.083 线性 | Linear | 已实现 | ✅ |
+| ProgressBar/Ring 不确定循环 | **2.0s** | ease-in-out | `DURATION_INDETERMINATE` 2.0 | ⚠ 与 WinUI 2.8.6 一致、与 UWP OS（3.917s / Ring 3.47s）冲突 → 待二选一（`ROADMAP.md` M6-5、T18） |
 | 颜色过渡 | 状态色多为瞬时或 ≤0.25s | — | `color_transition` 0.30 | ⚠️ 状态色勿套 0.30 |
 
 ### 已实施的预设修正（2026-08-10）
