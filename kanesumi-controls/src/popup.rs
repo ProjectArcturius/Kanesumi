@@ -33,32 +33,36 @@ pub const fn popup_gap() -> f32 {
 /// 子菜单（父项右侧展开）请用 [`place_submenu`]。
 #[must_use]
 pub fn place_popup(trigger: Rect, panel_size: Size, screen: Rect, gap: f32) -> PopupPlacement {
+    // 面板夹紧到屏幕（M5-3）：**不改签名**，只在内部收敛 —— 契约的「签名冻结」说的是
+    // 调用形状，不是允许把面板画到屏幕外。旧实现直接用 panel_size，超长菜单的 y 可为负。
+    let panel_h = panel_size.height.min(screen.size.height.max(0.0));
+    let panel_w = panel_size.width.min(screen.size.width.max(0.0));
     let below = screen.bottom() - trigger.bottom();
-    let panel_h = panel_size.height;
     let direction = if below >= panel_h + gap {
         PopupDirection::Down
     } else {
         PopupDirection::Up
     };
-    let x = match direction {
-        PopupDirection::Down => trigger.origin.x,
-        PopupDirection::Up => {
-            let w = panel_size.width.min(screen.size.width);
-            let left = trigger.origin.x;
-            if left + w > screen.right() {
-                (screen.right() - w).max(screen.origin.x)
-            } else {
-                left
-            }
+    let x = {
+        let left = trigger.origin.x;
+        if left + panel_w > screen.right() {
+            (screen.right() - panel_w).max(screen.origin.x)
+        } else {
+            left.max(screen.origin.x)
         }
     };
     let y = match direction {
         PopupDirection::Down => trigger.bottom() + gap,
         PopupDirection::Up => trigger.origin.y - panel_h - gap,
     };
+    // 纵向兜底：上方放不下时贴屏顶，绝不为负。
+    let y = y.clamp(
+        screen.origin.y,
+        (screen.bottom() - panel_h).max(screen.origin.y),
+    );
     PopupPlacement {
         direction,
-        rect: Rect::new(x, y, panel_size.width, panel_size.height),
+        rect: Rect::new(x, y, panel_w, panel_h),
     }
 }
 
@@ -438,5 +442,33 @@ mod tests {
             p.rect.origin.x + p.rect.size.width <= screen.right() + 0.01,
             "面板右缘不超出屏幕"
         );
+    }
+
+    /// M5-3 回归：**面板高于屏幕时不得画到屏幕外**（旧实现直接用 panel_size，
+    /// 超长菜单的 y 可为负）。签名不变，夹紧在内部完成。
+    #[test]
+    fn place_popup_clamps_panel_taller_than_screen() {
+        let trigger = Rect::new(40.0, 300.0, 120.0, 32.0);
+        let size = Size::new(240.0, 1200.0); // 远高于屏幕
+        let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let p = place_popup(trigger, size, screen, 4.0);
+        assert!(p.rect.origin.y >= screen.origin.y - 0.01, "y 不得为负");
+        assert!(
+            p.rect.bottom() <= screen.bottom() + 0.01,
+            "面板底不得越过屏幕底，实际 {}",
+            p.rect.bottom()
+        );
+        assert!(p.rect.size.height <= screen.size.height + 0.01);
+    }
+
+    /// M5-3：面板宽于屏幕时同样夹到屏内。
+    #[test]
+    fn place_popup_clamps_panel_wider_than_screen() {
+        let trigger = Rect::new(700.0, 100.0, 80.0, 32.0);
+        let size = Size::new(1200.0, 120.0);
+        let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let p = place_popup(trigger, size, screen, 4.0);
+        assert!(p.rect.origin.x >= screen.origin.x - 0.01);
+        assert!(p.rect.right() <= screen.right() + 0.01);
     }
 }
