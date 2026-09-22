@@ -120,3 +120,32 @@
 4. `arrange` 是否应强制 `Constraints::max`？是否需要 Min/Max 尺寸样式属性？
 5. 弹层是否必须走真 `xdg_popup`？（会改动被 `CONTEXT_MENU_SPEC.md` 冻结的 `place_popup` 签名）
 6. `FontWeight` 的意图：待接线，还是刻意留待可变字体？
+
+---
+
+## §Ⅵ 触发前提的更正：arc-deck 的 Rust 侧从未依赖 Kanesumi（2026-09-22 二轮侦察）
+
+**本审计的触发语是「在 `arc-deck`（UWP/WinUI 2 与 Rust 双实现）里感到 C# 那边更舒服」。**
+2026-09-22 跨仓侦察（`docs/research/2026-09-22_arcdeck.md`）证明这个前提**不成立**：
+
+- `arc-deck/kanesumi/crates/arc-deck-shell/Cargo.toml:9-12` 的依赖只有 `windows-sys`；
+  `arc-deck/Cargo.lock` 全文 0 次出现 `kanesumi`；无 `.gitmodules`、无 `[patch]`。
+  **`kanesumi/` 只是 Rust 变体的目录名**，不是本仓的检出。
+- arc-deck 自己的 `docs/ARCHITECTURE.md:25-27` 明写 Scene/App/TextEngine 是「刻意镜像上游」，
+  「将来」才接入；`:143-149` 把「接入 `kanesumi-canvas` 的 TextEngine」「接入 `kanesumi-controls`」
+  列为后续第 4/5 条 —— **接入尚未发生**。
+
+⇒ 那句「C# 更舒服」来自一个**自研骨架**，不是 Kanesumi。真实结论更接近
+**「能力在，欠的是接入与推进 —— 不是框架成熟度问题，是 Rust 侧的进度问题」**：
+
+| 观察（实测） | 含义 |
+|---|---|
+| 规模：C# 24 文件 / 3,260 行 / 6 屏；Rust 12 文件 / 2,735 行 / **1 屏**（注释密度 20% vs 14%，「注释撑行数」不成立） | Rust 花 78% 的代码做出 1/6 的屏幕 |
+| 成因排序 | ① **无布局层（手写坐标）**（Rust demo 45 行坐标算术 vs C# 全走 `Grid` Auto/Star，`ChatPage.xaml:224-229`）② 无控件库（1 屏 vs 6 屏）③ 文本量测/裁剪/滚动是缺口（`platform/mod.rs:295` 用「字符数 × 字号 × 0.9」对齐、`:290`/`:301` 渲染却用真字体 —— **两套宽度模型互不相容**） |
+| 交互基础设施 | C# 侧全仓仅 2 处 Focus/KeyDown、`.xaml` 里 VisualStateManager/Storyboard **0 命中**；Rust 侧 `apply_clip()` 空实现、整窗失效重绘、`Key::Tab` 无人消费、`Modifiers` 恒 default |
+| `LayoutLeaf::measure` 全仓只有 **2 个实现**（其一 `render` 是空实现） | 引擎只管槽位矩形，**控件仍各自算几何** —— 这正是 M2（布局接管）要解决的，故 M2 的优先级被这次侦察**证实**而非削弱 |
+
+**对上面 §Ⅲ 后续路线的影响**：P0-1「布局引擎落地」的依据从「猜测的成熟度不足」改为
+「实测的手写坐标缺口」，其余结论不变。另修正两处此前误判：
+**Kanesumi 没有 Markdown 渲染器**（arc-deck 的 `Controls/Markdown.cs` 354 行在这项上领先）；
+`FocusRing`（246 行）是**孤儿**（`focus_move` 零实现者覆写）⇒ M3-1 工作量由「小」修正为「中」。

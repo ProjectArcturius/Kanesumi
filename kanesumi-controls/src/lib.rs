@@ -1,8 +1,11 @@
 // Kanesumi（矩隅）· 标准控件库
 //
-// 对应 Kanesumi-sec-a 的 `:kanesumi-controls`。Phase 3 首套控件已完成（参 CONTROL_SPEC）：
-// MetroText / MetroButton / MetroIconButton / MetroSwitch / MetroProgressBar / MetroProgressRing /
-// MetroTabRow / MetroList / MetroSelectorFlyout / MetroDropdownMenu / MetroDialog / MetroSurface。
+// 对应 Kanesumi-sec-a 的 `:kanesumi-controls`。**控件清单以下方 `pub use` 为准** ——
+// 此处曾列过一份 12 项的「Phase 3 已完成 / 计划」名单，其中 4 项（MetroListRow /
+// MetroProgressIndicator / MetroDivider / MetroBottomSheet）**从未实现**，另几项名字也
+// 与真实控件不符（MetroListRow vs `MetroList`、MetroProgressIndicator vs `MetroProgressBar`/`Ring`）。
+// 2026-09-22 跨扇区侦察发现「同文件里的 ControlKind 枚举声明了它们却无实现、无 pub use」
+// 后一并删除：**声明了却没用上，比没实现更危险**（文档与代码双处失准，读的人会以为有）。
 // 状态驱动渲染：控件持有状态，`render(theme, engine, rect, scene)` 把当前状态解析为 Scene 命令。
 
 pub mod animated_icon;
@@ -127,38 +130,3 @@ pub use tree_view::{MetroTreeView, TreeAction, TreeRow, TreeViewNode};
 pub use two_pane_view::{
     MetroTwoPaneView, TwoPaneMode, TwoPanePriority, TwoPaneTallConfig, TwoPaneWideConfig,
 };
-
-/// Phase 3 后续控件（对照 Kanesumi-sec-a + WinUI-Gallery）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ControlKind {
-    MetroSurface,
-    MetroButton,
-    MetroIconButton,
-    MetroListRow,
-    MetroSwitch,
-    MetroProgressIndicator,
-    MetroTabRow,
-    MetroDialog,
-    MetroDropdownMenu,
-    MetroSelectorFlyout,
-    MetroDivider,
-    MetroBottomSheet,
-}
-
-impl ControlKind {
-    /// 已实现 + 计划控件。
-    pub const ALL: [ControlKind; 12] = [
-        ControlKind::MetroSurface,
-        ControlKind::MetroButton,
-        ControlKind::MetroIconButton,
-        ControlKind::MetroListRow,
-        ControlKind::MetroSwitch,
-        ControlKind::MetroProgressIndicator,
-        ControlKind::MetroTabRow,
-        ControlKind::MetroDialog,
-        ControlKind::MetroDropdownMenu,
-        ControlKind::MetroSelectorFlyout,
-        ControlKind::MetroDivider,
-        ControlKind::MetroBottomSheet,
-    ];
-}

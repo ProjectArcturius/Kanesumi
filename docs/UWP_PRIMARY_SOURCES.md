@@ -20,7 +20,7 @@
 | B | **WinUI 2.8.6 模板** | `%USERPROFILE%\.nuget\packages\microsoft.ui.xaml\2.8.6\lib\uap10.0\Microsoft.UI.Xaml\Themes\Generic.xaml`（4683 行） | 控件模板与状态引用 | ⚠ **不含任何 `<Color x:Key=`** —— 令牌字典编在 `tools\AppX\x64\Release\Microsoft.UI.Xaml.2.8.appx → resources.pri`（XBF 二进制）里，直接读不到 |
 | C | **WinUI 2.x 令牌字典（源码）** | GitHub `microsoft/microsoft-ui-xaml` → `dev/CommonStyles/Common_themeresources_any.xaml`（58 KB） | `TextFillColor*` / `SubtleFillColor*` / `ControlFillColor*` / `SolidBackgroundFillColor*` / `SystemFillColor*` / 时长字符串 | **网络可用时最省事的一手源**（MIT）。raw 路径见 §Ⅳ |
 | C2 | WinUI 2.x 各控件字典 | 同仓 `dev/<Control>/<Control>_themeresources.xaml` | TabView / NumberBox / InfoBar / Expander / RatingControl 等 | 例如 TabView 关闭键的笔刷就在这里 |
-| D | WinUI 3 令牌字典 | 同仓 `main` 分支 `dev/CommonStyles/Common_themeresources_any.xaml` | 现代令牌（本库 `StatusColors` 已按其取值） | 已在 `REFERENCE.md` §9.2 使用 |
+| D | WinUI 3 令牌字典 | 同仓 `main` 分支 **`controls/dev/CommonStyles/Common_themeresources_any.xaml`**（⚠ 路径已于 2026-09-22 更正：旧写的 `dev/CommonStyles/…` 在 main 上 404；`winui2/main/dev/…` 仍有效） | 现代令牌（本库 `StatusColors` 按其取值；T3 的亮色中性色已按其取到） | 已与发布版 `Microsoft.WindowsAppSDK.WinUI/1.8.250906003` 的 `Themes/generic.xaml` 交叉验证：**249 个 Color 键逐字节一致，差异 0** | 
 | E | 运行时二进制 | `C:\Windows\System32\Windows.UI.Xaml.dll` | 反查「某键是否存在于 UWP 运行时」 | 本次用它**证伪** `Control*AnimationDuration` 属于 UWP（UTF-16 全量扫描 0 命中） |
 
 **取数纪律（本次实际执行）**：每条值都要 `文件:行号` + 照抄原行；`{StaticResource X}`/`{ThemeResource X}`

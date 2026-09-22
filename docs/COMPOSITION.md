@@ -46,6 +46,12 @@
    `buffer_scale=1`，buffer 尺寸为 `logical × scale`，viewport destination 为逻辑尺寸。
 10. **缓存包含环境**：边界、主题、字体、locale、方向、UI scale 或 text scale 变化都使
     布局/绘制缓存失效。
+11. **控件不内嵌产品策略**：控件只暴露「能否交互」的输入（如 `enabled` / `can_send` / 回调），
+    **不得**把「什么时候算可用」写进控件内部。反例（2026-09-22 跨扇区侦察实测）：
+    sec-a 的 `MetroChatInputBar` 把发送键门控硬编码为 `enabled && text.isNotBlank()`
+    （`MetroChatInputBar.kt:73`），而它的真实下游在任务运行时会把这个按钮换成「中止」
+    （`Sakichan/.../ChatScreen.kt:102`）——于是**输入框为空时中止按钮点不动**，
+    用户此刻唯一想做的事恰好做不了。门控是产品策略，属调用方；控件负责的是「禁用态怎么画」。
 
 ## 验收矩阵
 

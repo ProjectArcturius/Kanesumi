@@ -1,0 +1,7 @@
+﻿`kanesumi-anim` (lib test)  2
+`kanesumi-controls` (lib test)  36
+`kanesumi-controls` (lib)  2
+`kanesumi-core` (lib test)  1
+`kanesumi-core` (lib)  1
+`kanesumi-gallery` (lib test)  1
+`kanesumi-gallery` (lib)  1

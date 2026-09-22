@@ -172,3 +172,41 @@ Light2 = V×1.56、Light3 = V×1.925 —— 越界后 V 饱和到 1，同时**�
 4. **C 组的 `Sakichan` / `kanesumi-studio`** 快读（各 15 分钟），补齐"输入框/抽屉从哪来"与"有没有设计预览工具"。
 5. **D1 + D2**：monorepo Windows check + 验证脚本落档。
 6. 余下按 A4 → A7 → A5 → A9 → A6 推进（A6 成本最高，且当前非阻塞）。
+
+---
+
+## §H 本轮执行计划（2026-09-22，最后一次 Windows 窗口）
+
+**目标**：把 §G 的 1~5 项做完并落档，然后整理工作区、**全部推送**（含 Ether 父仓的子模块指针）。
+
+| 序 | 项 | 做法 | 状态 |
+|---|---|---|---|
+| 1 | **B3 `arc-deck` 双实现对照** | 派调研：逐屏对照 C#/XAML 与 Rust 两侧写法，把「C# 那边更舒服」量化为证据清单 + 映射到 M1~M7 | ✅ `docs/research/2026-09-22_arcdeck.md`（663 行）。**结论：前提被推翻** —— arc-deck 的 Rust 侧从未依赖 Kanesumi（`Cargo.toml` 只有 `windows-sys`、lock 0 次命中），那句不适来自自研骨架。成因排序：无布局层 > 无控件库 > 文本/裁剪/滚动缺口；已回写审计 §Ⅵ |
+| 2 | **A1 WinUI 3 令牌字典 + A3 字号梯度** | 派调研：联网取 `microsoft-ui-xaml` main 分支令牌字典，解 T3；顺带取 UWP 字号阶梯对照 `typography.rs` | ✅ `docs/research/2026-09-22_winui3_tokens.md`（672 行）。路径更正为 `main/controls/dev/…`；与发布版 WinAppSDK 1.8 交叉验证（249 键零差异）。**T3 部分结案**（`#1A1A1A` 已是 `TextFillColorPrimary`；3 个候选更正待真机批），**新增 T21 字号阶梯** |
+| 3 | **A2 尺寸常量全量 dump** | 派调研：从 OS 主题字典把 `x:Double`/`Thickness`/`CornerRadius` 全量抽表，并标出 `CONTROL_SPEC` 里「未在快照」的条目 | ✅ `docs/research/2026-09-22_uwp_constants.md`（3766 行 / 361 KB）：数值资源 **857 处 / 351 唯一键**、写死几何 Setter 346 + 元素属性 458。**纠偏**：`VisualState.Setters` 无 `Property=` 属性（旧取数会漏 203 条）；`ControlCornerRadius`/`OverlayCornerRadius` 在 OS 字典 0 次（出处应为 WinUI 2，已改注） |
+| 4 | **C 组兄弟仓快读** | 派调研：`Sakichan`（sec-a 输入框/抽屉的实战来源）、`kanesumi-studio`、`Ncrust`、`temp-dsh-refs` | ✅ `docs/research/2026-09-22_siblings.md`（559 行）。**推翻两条既有结论**（见下）＋ 发现 `ControlKind` 4 个幽灵控件；`kanesumi-studio` 是宣传片渲染器（非设计工具）；`temp-dsh-refs` 无合成器/UI 仓 |
+| 5 | **D2 一键验证脚本** | 写 `scripts/verify.ps1` + `scripts/verify.sh`：全量测试 + clippy 与基线逐条比对 | ✅ 脚本 + `scripts/clippy-baseline.txt`（7 个目标）。**踩到三个真坑并已修**：clippy 命中缓存时不重复输出告警（需 `cargo clean -p` 逐个 crate 强制重编；逗号形式 cargo 不接受）、摘要行的 `(lib test)` 段不能漏（否则一条都匹配不到）、PS 5.1 按 GBK 读无 BOM 脚本会把中文串撕裂 ⇒ **`.ps1` 字符串一律 ASCII** |
+| 6 | 归并四份报告 → `docs/research/`，更新本清单状态 | ✅ 本次已完成（4 份落到 `docs/research/2026-09-22_{arcdeck,winui3_tokens,uwp_constants,siblings}.md`） | ✅ |
+| 7 | 整理工作区（清临时文件、全量测试 + clippy 基线） | ✅ `scripts/verify.ps1` 全绿（721 项 + 7 目标基线一致），临时目录已清 | ✅ |
+| 8 | 推送：`kanesumi` 30+ 提交 → Ether 父仓子模块指针 | ✅ 见提交尾部 | ✅ |
+
+**本轮由侦察带出的两处既有结论更正（已回写）**：
+
+1. **`docs/SECA_SYNC_2026-09-22.md` §Ⅲ**：① 「发送键门控是可直接翻译的策略」**反了** —— 它在
+   唯一下游 Sakichan 造成功能死路（输入框为空时「中止」按钮点不动），已改判为**反向教训**，
+   并写成契约 `docs/COMPOSITION.md` §11「控件不内嵌产品策略」；② 「`MetroTextField` 是死代码」
+   限定为「sec-a 仓内」，下游实有 3 个调用点 / 2 种形态，**加强了** `filled()` 变体的必要性。
+2. **`kanesumi-controls/src/lib.rs`**：删掉 `ControlKind` 枚举（**全仓无人使用**，且其中
+   `MetroListRow`/`MetroProgressIndicator`/`MetroDivider`/`MetroBottomSheet` **从未实现**），
+   头部注释改为「控件清单以 `pub use` 为准」—— 声明了却没用上，比没实现更危险。
+
+**本轮不做、留作维护者裁定**（都不是「研究」，而是视觉/架构决策，且部分会改变观感）：
+
+| 议题 | 为什么不做 | 见 |
+|---|---|---|
+| **T20** accent 档位改用 OS 的 V 缩放模型 | 会改变**所有** hover/pressed/focus/on-accent 派生色；且 `accent.rs` 与 Chorus `derive_accent()` 有「同源算法、两处同步」约定，改一处即失配 | `CANON_VS_TEMPORARY` T20 / 本文件 §B4 |
+| **U1** 开关 52×28 触屏变体 | 加法，但要有人认领观感；现值有一手源（UWP v1） | `SECA_SYNC_2026-09-22` §Ⅱ |
+| **U2/U3** 开关时长、OFF 态滑块语义 | 与 U1 同批做最省事 | 同上 |
+| **`ShellLayout` split → overlay**（连带 `app_bar` 存废） | 阻塞 M2 的契约级裁定，会牵动 settings/librarian 现有用法 | 同上 §Ⅳ |
+| **`MetroTextBox::filled()` 变体** | 加法、低风险，但属新增外观 | 同上 §Ⅲ |
+| **框架级 press 反馈**（reconciler 注入） | M1/M3 级机制，会与现有每控件按压代码并存/冲突 | 同上 §Ⅵ |
