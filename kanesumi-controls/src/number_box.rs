@@ -384,12 +384,8 @@ impl MetroNumberBox {
         let (stroke, stroke_w) = if self.focused {
             (colors.focus_stroke.with_alpha(alpha), 2.0)
         } else if self.state == ControlState::Hovered {
-            (
-                colors
-                    .on_surface_variant
-                    .with_alpha(theme.indication.base_medium_high * alpha),
-                1.0,
-            )
+            // 悬停边框 = BaseMedium 实色（一手源 themeresources L855 → L298 → L212），同 TextBox。
+            (colors.on_surface_variant.with_alpha(alpha), 1.0)
         } else {
             (colors.divider.with_alpha(alpha), 1.0)
         };

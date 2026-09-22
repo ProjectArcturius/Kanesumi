@@ -417,12 +417,11 @@ impl MetroTextBox {
         let (stroke, stroke_w) = if self.focused {
             (colors.focus_stroke.with_alpha(alpha), 2.0)
         } else if self.state == ControlState::Hovered {
-            (
-                colors
-                    .on_surface_variant
-                    .with_alpha(theme.indication.base_medium_high * alpha),
-                1.0,
-            )
+            // 悬停边框 = UWP `TextControlBorderBrushPointerOver`
+            // → `SystemControlHighlightBaseMediumBrush` → `SystemBaseMediumColor`
+            // （themeresources L855 → L298 → L212）= 60% 基色、**不透明**。
+            // 本库 `on_surface_variant` 即该档的实色对应物；旧实现再乘 0.9 无依据。
+            (colors.on_surface_variant.with_alpha(alpha), 1.0)
         } else {
             (colors.divider.with_alpha(alpha), 1.0)
         };
@@ -628,20 +627,18 @@ mod tests {
         let mut tb = MetroTextBox::new();
         tb.focus();
         tb.update(0.1); // 闪烁相位 < 0.5 → 可见
+        let theme = theme();
         let mut scene = Scene::default();
-        tb.render(
-            &theme(),
-            &engine(),
-            Rect::new(0.0, 0.0, 200.0, 32.0),
-            &mut scene,
-        );
-        // 光标 = 一个 2px 宽的 FillRect（色为 on_surface 0.9）
+        tb.render(&theme, &engine(), Rect::new(0.0, 0.0, 200.0, 32.0), &mut scene);
+        // 光标 = 一个 2px 宽的 FillRect（色为 on_surface × base_medium_high）。
+        // 判据取自令牌本身，不再写「> 0.8」这类魔法阈值 —— 令牌改档位时测试会跟着走。
+        let caret_alpha = theme.indication.base_medium_high;
         let carets = scene
             .commands
             .iter()
             .filter_map(|c| match c {
                 SceneCommand::FillRect { rect, color, .. } => {
-                    if rect.size.width == TEXTBOX_CARET_W && color.a > 0.8 {
+                    if rect.size.width == TEXTBOX_CARET_W && (color.a - caret_alpha).abs() < 1e-6 {
                         Some(())
                     } else {
                         None
