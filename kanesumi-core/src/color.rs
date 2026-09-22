@@ -94,6 +94,23 @@ impl Color {
         (hi + 0.05) / (lo + 0.05)
     }
 
+    /// 给定底色上**可读**的前景：比较黑 / 白各自的对比度，取大者。
+    ///
+    /// **为什么必须有这个机制**：把前景写死成白（或黑），在另一半色域上必然读不出 ——
+    /// 同一处代码要在暗色 `#FF99A4`（WinUI `SystemFillColorCritical`）与亮色 `#C42B1C`
+    /// 两种语义块上都成立，写死任何一个都在另一态翻车（InfoBar 图标方块即此例：
+    /// 白字画在暗色的 `#6CCB5F` 成功绿上只有 1.9:1）。
+    ///
+    /// 取大者保证**恒 ≥ 4.58:1**：两种判据的可行区间互补，覆盖全部色域
+    /// （与 `Accent::on_accent` 同源判据，参 `CANON_VS_TEMPORARY.md` D1）。
+    pub fn most_readable_on(bg: Color) -> Color {
+        if Color::BLACK.contrast_ratio(bg) >= Color::WHITE.contrast_ratio(bg) {
+            Color::BLACK
+        } else {
+            Color::WHITE
+        }
+    }
+
     /// HSV → RGB（ColorPicker Spectrum 等）。h/s/v ∈ [0,1]。
     pub fn hsv(h: f32, s: f32, v: f32) -> Color {
         let h = (h.fract() + 1.0) % 1.0;
@@ -175,5 +192,39 @@ mod tests {
         let r = Color::rgb(1.0, 0.0, 0.0).relative_luminance();
         let b = Color::rgb(0.0, 0.0, 1.0).relative_luminance();
         assert!(g > r && r > b, "人眼灵敏度 G > R > B，实际 g={g} r={r} b={b}");
+    }
+
+    /// 自动前景必须覆盖全色域且**恒**达正文阈值 —— 手写死白/死黑正是
+    /// 「浅色语义块上字形读不出」的根因。数学下界是 √21 ≈ 4.58:1。
+    #[test]
+    fn most_readable_on_always_meets_text_contrast_across_gamut() {
+        let mut checked = 0;
+        for r in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+            for g in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+                for b in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+                    let bg = Color::rgb(r, g, b);
+                    let fg = Color::most_readable_on(bg);
+                    let ratio = fg.contrast_ratio(bg);
+                    assert!(
+                        ratio >= 4.58,
+                        "底色 #{r}/{g}/{b} 的自动前景对比度仅 {ratio}，低于 4.58"
+                    );
+                    assert!(fg == Color::BLACK || fg == Color::WHITE, "只能取黑或白");
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 125);
+    }
+
+    #[test]
+    fn most_readable_on_picks_by_contrast_not_by_threshold() {
+        // 深底给白、浅底给黑。
+        assert_eq!(Color::most_readable_on(Color::BLACK), Color::WHITE);
+        assert_eq!(Color::most_readable_on(Color::WHITE), Color::BLACK);
+        // 中等亮度（WinUI 暗色 critical 粉红 #FF99A4）上必须给黑字 ——
+        // 这正是「写死白字」翻车的那种底色。
+        let winui_critical_dark = Color::from_hex(0xFF_99_A4);
+        assert_eq!(Color::most_readable_on(winui_critical_dark), Color::BLACK);
     }
 }

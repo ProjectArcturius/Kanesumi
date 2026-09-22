@@ -85,13 +85,11 @@ impl Accent {
             // 而是**直接比较黑 / 白各自的 WCAG 对比度、取大者**：
             // 固定阈值在中等亮度 accent 上会不达标 —— 例如青绿 #00897B 的亮度 0.19 < 0.5
             // 会判给白字，而白字在其上仅 4.36:1（低于正文阈值 4.5）。
-            // 取大者则恒有 max(黑, 白) ≥ 4.5（两种判据的可行区间互补，覆盖全部亮度）。
-            // 这是对 Chorus 的**有意偏离**，理由登记于 docs/CANON_VS_TEMPORARY.md，Chorus 侧应对齐。
-            on_accent: if Color::BLACK.contrast_ratio(base) >= Color::WHITE.contrast_ratio(base) {
-                Color::BLACK
-            } else {
-                Color::WHITE
-            },
+            // 取大者则恒有 max(黑, 白) ≥ 4.58（两种判据的可行区间互补，覆盖全部亮度）。
+            // 该判据已抽成 `Color::most_readable_on`，语义色块上的字形共用同一机制，
+            // 避免第二处「写死白字」重演。这是对 Chorus 的**有意偏离**，
+            // 理由登记于 docs/CANON_VS_TEMPORARY.md，Chorus 侧应对齐。
+            on_accent: Color::most_readable_on(base),
         }
     }
 
