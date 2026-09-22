@@ -314,7 +314,14 @@ impl MetroTextBox {
                     x1 - x0,
                     content.size.height,
                 );
-                scene.fill_rect(colors.primary.with_alpha(0.35 * alpha), sel_rect);
+                // 选区高亮 = 强调色 35%（CONTROL_SPEC §34`TextControlSelectionHighlightColor`）。
+                // alpha 取令牌自身的 a 再乘禁用系数，避免 0.35 在两处重复书写后漂移。
+                scene.fill_rect(
+                    colors
+                        .text_selection_tint
+                        .with_alpha(colors.text_selection_tint.a * alpha),
+                    sel_rect,
+                );
             }
         }
 
@@ -345,7 +352,13 @@ impl MetroTextBox {
         } else if !self.placeholder.is_empty() {
             // 占位文本：Focused 时用 TextControlPlaceholderForegroundFocused（略暗）
             let ph = colors.on_surface_variant.with_alpha(
-                colors.on_surface_variant.a * alpha * if self.focused { 0.7 } else { 1.0 },
+                colors.on_surface_variant.a
+                    * alpha
+                    * if self.focused {
+                        theme.indication.placeholder_focused_opacity
+                    } else {
+                        1.0
+                    },
             );
             let ph_rect = Rect::new(
                 content.origin.x,
@@ -369,7 +382,12 @@ impl MetroTextBox {
             let max_x = body_rect.right() - b - 2.0;
             let cx = cx.min(max_x).max(body_rect.origin.x + b);
             let caret_rect = Rect::new(cx, content.origin.y, TEXTBOX_CARET_W, content.size.height);
-            scene.fill_rect(colors.on_surface.with_alpha(0.9), caret_rect);
+            scene.fill_rect(
+                colors
+                    .on_surface
+                    .with_alpha(theme.indication.base_medium_high),
+                caret_rect,
+            );
         }
 
         // 删除按钮（show_delete + 有内容）：UWP ×（E894）→ Kanesumi 自绘 ×（Triangle 两段）
@@ -378,7 +396,9 @@ impl MetroTextBox {
             let c = btn.center();
             let r = btn.size.height.min(8.0) / 2.0;
             // ×：两条线用细矩形近似（简化：半透明 × 字形用三角形组合）
-            let col = colors.on_surface_variant.with_alpha(0.8);
+            let col = colors
+                .on_surface_variant
+                .with_alpha(theme.indication.secondary_opacity);
             let t = 1.5;
             // 用 4 个小三角形拼 × 太碎；改用一个居中 × 文本字形（U+2715），
             // 思源黑体包含乘法叉号。参 V7 不假设 Segoe MDL2。
@@ -397,7 +417,12 @@ impl MetroTextBox {
         let (stroke, stroke_w) = if self.focused {
             (colors.focus_stroke.with_alpha(alpha), 2.0)
         } else if self.state == ControlState::Hovered {
-            (colors.on_surface_variant.with_alpha(0.9 * alpha), 1.0)
+            (
+                colors
+                    .on_surface_variant
+                    .with_alpha(theme.indication.base_medium_high * alpha),
+                1.0,
+            )
         } else {
             (colors.divider.with_alpha(alpha), 1.0)
         };
@@ -465,7 +490,9 @@ impl MetroTextBox {
         let underline_y = y + engine.ascent(size) + 2.0;
         const DASH: f32 = 4.0;
         const GAP: f32 = 3.0;
-        let col = colors.on_surface.with_alpha(colors.on_surface.a * 0.6);
+        let col = colors
+            .on_surface
+            .with_alpha(colors.on_surface.a * theme.indication.base_medium);
         let mut dx = x;
         while dx < x + width {
             let seg = DASH.min(x + width - dx);

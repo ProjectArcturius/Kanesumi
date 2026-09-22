@@ -160,7 +160,10 @@ impl MetroCandidateWindow {
             let label_fg = if highlighted {
                 colors.on_primary
             } else {
-                colors.on_surface.with_alpha(0.5)
+                // 序号是**辅助信息**（候选词才是内容），未选中时压到非激活档。
+                colors
+                    .on_surface
+                    .with_alpha(theme.indication.inactive_opacity)
             };
 
             // 块内内容 = 「序号 + 词」整体居中于块宽。

@@ -337,7 +337,10 @@ impl MetroTeachingTip {
         {
             if self.action_hovered {
                 scene.fill_rounded_rect(
-                    colors.on_surface.with_alpha(0.10 * a),
+                    theme
+                        .indication
+                        .press_subtle_tint
+                        .with_alpha(theme.indication.press_subtle_tint.a * a),
                     ar,
                     theme.tokens.corner_radius,
                 );
@@ -361,7 +364,10 @@ impl MetroTeachingTip {
         if let Some(c) = self.close_rect() {
             if self.close_hovered {
                 scene.fill_rounded_rect(
-                    colors.on_surface.with_alpha(0.10 * a),
+                    theme
+                        .indication
+                        .press_subtle_tint
+                        .with_alpha(theme.indication.press_subtle_tint.a * a),
                     c,
                     theme.tokens.corner_radius,
                 );

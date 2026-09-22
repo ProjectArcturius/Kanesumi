@@ -280,8 +280,9 @@ impl MetroTabView {
                 && (selected || hovered)
             {
                 if close_hovered {
+                    // 关闭键悬停 = 浅叠 15%（CONTROL_SPEC §864 白 15% / 按压 25%）。
                     scene.fill_rounded_rect(
-                        colors.on_surface.with_alpha(0.15),
+                        theme.indication.subtle_hover_tint,
                         c,
                         theme.tokens.corner_radius,
                     );

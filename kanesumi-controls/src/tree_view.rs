@@ -260,9 +260,9 @@ impl MetroTreeView {
             let selected = self.selected.as_deref() == Some(row.path.as_slice());
             let hovered = self.hovered.as_deref() == Some(row.path.as_slice());
 
-            // 底：Selected / hover 白 15%
+            // 底：Selected / hover 白 15%（CONTROL_SPEC §936 SubtleFillColorSecondary）
             if selected || hovered {
-                scene.fill_rect(colors.on_surface.with_alpha(0.15), r);
+                scene.fill_rect(theme.indication.subtle_hover_tint, r);
             }
 
             // chevron

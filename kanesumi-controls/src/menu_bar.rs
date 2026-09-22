@@ -345,17 +345,18 @@ impl MetroMenuBar {
 
         scene.push_clip(rect);
         for (i, hrect) in geoms.iter().copied().enumerate() {
-            // 背景高亮：Selected（flyout 开）≡ Pressed 亮度；PointerOver 更淡。
-            // 用 on_surface 的低 alpha（Fluent SubtleFill 语义映射到 Kanesumi 纯色）。
-            let bg_alpha = if self.open_index == Some(i) || self.pressed_header == Some(i) {
-                Some(0.10)
+            // 背景高亮：Selected（flyout 开）≡ Pressed 亮度；PointerOver 更淡
+            // （参 CONTROL_SPEC §5 规律 5：悬停用中性）。两者都是**中性浅叠**，
+            // 故直接取令牌，不再在此写 alpha 数字。
+            let bg = if self.open_index == Some(i) || self.pressed_header == Some(i) {
+                Some(theme.indication.press_subtle_tint)
             } else if self.hovered_header == Some(i) {
-                Some(0.06)
+                Some(theme.indication.subtle_tint)
             } else {
                 None
             };
-            if let Some(a) = bg_alpha {
-                scene.fill_rect(colors.on_surface.with_alpha(a), hrect);
+            if let Some(bg) = bg {
+                scene.fill_rect(bg, hrect);
             }
 
             // Label —— 竖直居中，靠左（padding 10）。可用宽取自 header 矩形（非量测宽），

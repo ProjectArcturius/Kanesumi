@@ -384,7 +384,12 @@ impl MetroNumberBox {
         let (stroke, stroke_w) = if self.focused {
             (colors.focus_stroke.with_alpha(alpha), 2.0)
         } else if self.state == ControlState::Hovered {
-            (colors.on_surface_variant.with_alpha(0.9 * alpha), 1.0)
+            (
+                colors
+                    .on_surface_variant
+                    .with_alpha(theme.indication.base_medium_high * alpha),
+                1.0,
+            )
         } else {
             (colors.divider.with_alpha(alpha), 1.0)
         };
@@ -408,7 +413,9 @@ impl MetroNumberBox {
         // chevron 三角（V7 自绘）：16px 等腰三角
         let c = btn.center();
         let s = 6.0;
-        let color = colors.on_surface_variant.with_alpha(0.9);
+        let color = colors
+            .on_surface_variant
+            .with_alpha(theme.indication.base_medium_high);
         if up {
             scene.triangle(
                 Point::new(c.x - s, c.y + s * 0.5),

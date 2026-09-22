@@ -1,7 +1,10 @@
 use kanesumi_anim::{DURATION_INDETERMINATE, EasingMode, MetroAnim, UwpEasing};
 use kanesumi_canvas::Scene;
 use kanesumi_canvas::text::TextEngine;
-use kanesumi_core::{Color, CornerRadius, MetroTheme, Point, Rect};
+use kanesumi_core::{CornerRadius, MetroTheme, Point, Rect};
+
+/// Paused 态指示条不透明度（`CONTROL_SPEC` §4「Paused：条色换灰 + Opacity→0.6」）。
+const PAUSED_OPACITY: f32 = 0.6;
 
 /// 进度指示模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,12 +31,9 @@ pub struct MetroProgressBar {
     slide: MetroAnim,
     /// Paused 淡入进度 [0,1]：0=正常，1=paused（alpha 降到 0.6）。V17。
     paused_fade: MetroAnim,
-    /// Error 换色进度 [0,1]：0=正常，1=error（色 lerp 到 ERROR_COLOR）。V17。
+    /// Error 换色进度 [0,1]：0=正常，1=error（色 lerp 到 `StatusColors::error_fill`）。V17。
     error_blend: MetroAnim,
 }
-
-/// 错误色 —— Windows 系统错误红（无主题 token，常量）。
-pub const ERROR_COLOR: Color = Color::from_hex(0xE8_11_23);
 
 impl Default for MetroProgressBar {
     fn default() -> Self {
@@ -106,23 +106,19 @@ impl MetroProgressBar {
             height,
         );
 
-        // 轨道（细底）
-        scene.fill_rounded_rect(
-            colors.surface_variant.with_alpha(0.6),
-            bar_rect,
-            CornerRadius::Capsule,
-        );
+        // 轨道（细底）：surface_variant 的 60% 强度，比 Slider 轨道（不透明）更低一档。
+        scene.fill_rounded_rect(colors.track_subtle, bar_rect, CornerRadius::Capsule);
 
         // 指示条裁剪到轨道内（box 语义，参 scene.rs PushClip）—— 不确定模式指示条
         // 从轨道外滑入，必须裁剪到轨道边界，禁止溢出到控件外。
         scene.push_clip(bar_rect);
 
-        // V17: Paused/Error 过渡色 —— error_blend 从 primary lerp 到 ERROR_COLOR；
-        // paused_fade 把 alpha 从 1.0 拉到 0.6（差 0.4）。
+        // V17: Paused/Error 过渡色 —— error_blend 从 primary lerp 到语义错误色；
+        // paused_fade 把 alpha 从 1.0 拉到 `PAUSED_OPACITY`（CONTROL_SPEC §4）。
         let error_t = self.error_blend.value();
         let paused_t = self.paused_fade.value() as f32;
-        let indicator_color = colors.primary.lerp(ERROR_COLOR, error_t);
-        let indicator_alpha = 1.0 - 0.4 * paused_t;
+        let indicator_color = colors.primary.lerp(theme.status.error_fill, error_t);
+        let indicator_alpha = 1.0 - (1.0 - PAUSED_OPACITY) * paused_t;
         let color = indicator_color.with_alpha(indicator_color.a * indicator_alpha);
 
         match self.mode {
@@ -424,7 +420,7 @@ mod tests {
 
     #[test]
     fn error_blend_transitions_to_error_color() {
-        // V17: 设 error=true → 0.25s 后色 lerp 到 ERROR_COLOR
+        // V17: 设 error=true → 0.25s 后色 lerp 到语义错误色（StatusColors::error_fill）
         let Some(engine) = find_engine() else { return };
         let theme = MetroTheme::ether_dark();
         let mut bar = MetroProgressBar::new();
@@ -438,8 +434,8 @@ mod tests {
         }
         let mut scene = Scene::default();
         bar.render(&theme, &engine, Rect::new(0.0, 0.0, 200.0, 4.0), &mut scene);
-        // V18：指示条须与轨道区分。轨道 = surface_variant（灰 r≈0.18），
-        // 指示条 = primary→ERROR_COLOR 之间（r≥0.9）。旧过滤 `width > 50`
+        // V18：指示条须与轨道区分。轨道 = track_subtle（surface_variant 60%，r≈0.18），
+        // 指示条 = primary→error_fill 之间（r≥0.9）。旧过滤 `width > 50`
         // 会先匹配轨道（宽 200）→ 拿到灰底 r 而非红指示条 r。
         let ind_r = scene.commands.iter().find_map(|c| match c {
             SceneCommand::FillRect { color, .. } if color.r > 0.5 => Some(color.r),
@@ -447,7 +443,11 @@ mod tests {
         });
         assert!(ind_r.is_some(), "应有指示条");
         let r = ind_r.unwrap();
-        assert!(r > 0.85, "error 后 R 通道接近 ERROR_COLOR.r=0.91，实际 {r}");
+        let expected = theme.status.error_fill.r;
+        assert!(
+            r > 0.85,
+            "error 后 R 通道接近 error_fill.r={expected}，实际 {r}"
+        );
     }
 
     #[test]

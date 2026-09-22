@@ -239,10 +239,10 @@ impl MetroSwipeControl {
                     SWIPE_ITEM_W,
                     rect.size.height,
                 );
-                let bg = item_bg(item.action, colors.primary, colors.surface_variant);
+                let bg = item_bg(item.action, theme);
                 scene.fill_rect(bg, r);
                 if self.hovered == Some((true, i)) {
-                    scene.fill_rect(colors.on_surface.with_alpha(0.15), r);
+                    scene.fill_rect(theme.indication.subtle_hover_tint, r);
                 }
                 scene.text(
                     item.label.clone(),
@@ -266,10 +266,10 @@ impl MetroSwipeControl {
                     SWIPE_ITEM_W,
                     rect.size.height,
                 );
-                let bg = item_bg(item.action, colors.primary, colors.surface_variant);
+                let bg = item_bg(item.action, theme);
                 scene.fill_rect(bg, r);
                 if self.hovered == Some((false, i)) {
-                    scene.fill_rect(colors.on_surface.with_alpha(0.15), r);
+                    scene.fill_rect(theme.indication.subtle_hover_tint, r);
                 }
                 scene.text(
                     item.label.clone(),
@@ -288,16 +288,13 @@ impl MetroSwipeControl {
     }
 }
 
-/// 操作项底色。
-fn item_bg(
-    action: SwipeItemAction,
-    primary: kanesumi_core::Color,
-    surface_variant: kanesumi_core::Color,
-) -> kanesumi_core::Color {
+/// 操作项底色。参 `CONTROL_SPEC` §32 —— 规格未给色值，故一律取主题令牌：
+/// 默认项 = 次级表面；强调项 = 强调色；危险项 = 语义危险底（`StatusColors::danger_fill`）。
+fn item_bg(action: SwipeItemAction, theme: &MetroTheme) -> kanesumi_core::Color {
     match action {
-        SwipeItemAction::Default => surface_variant,
-        SwipeItemAction::Accent => primary,
-        SwipeItemAction::Danger => kanesumi_core::Color::from_hex(0xE5_53_4A),
+        SwipeItemAction::Default => theme.colors.surface_variant,
+        SwipeItemAction::Accent => theme.colors.primary,
+        SwipeItemAction::Danger => theme.status.danger_fill,
     }
 }
 

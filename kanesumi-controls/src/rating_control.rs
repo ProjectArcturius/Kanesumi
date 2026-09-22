@@ -121,9 +121,11 @@ impl MetroRatingControl {
         let shown = self.hover_value.unwrap_or(self.value);
         for k in 1..=self.max_rating {
             let sr = self.star_rect(rect, k);
-            // 空星底
+            // 空星底。只读态压到非激活档（CONTROL_SPEC §819「Disabled：低透」）。
             let outline_color = if self.is_read_only {
-                colors.on_surface_variant.with_alpha(0.5)
+                colors
+                    .on_surface_variant
+                    .with_alpha(theme.indication.inactive_opacity)
             } else {
                 colors.on_surface_variant
             };
@@ -138,7 +140,9 @@ impl MetroRatingControl {
             let fill_frac = (shown - (k as f64 - 1.0)).clamp(0.0, 1.0);
             if fill_frac > 0.0 {
                 let filled_color = if self.is_read_only {
-                    colors.on_surface_variant.with_alpha(0.5)
+                    colors
+                        .on_surface_variant
+                        .with_alpha(theme.indication.inactive_opacity)
                 } else {
                     colors.primary
                 };

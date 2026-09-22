@@ -159,10 +159,12 @@ impl MetroTitleBar {
 
         // Back
         if let Some(b) = self.back_rect(rect) {
+            // 底：Hover 白 15% / Pressed 白 25%（CONTROL_SPEC §790/§791
+            // SubtleFillColorSecondary / Tertiary）。
             let bg = if self.back_pressed {
-                colors.on_surface.with_alpha(0.25)
+                theme.indication.subtle_press_tint
             } else if self.back_hovered {
-                colors.on_surface.with_alpha(0.15)
+                theme.indication.subtle_hover_tint
             } else {
                 kanesumi_core::Color::TRANSPARENT
             };

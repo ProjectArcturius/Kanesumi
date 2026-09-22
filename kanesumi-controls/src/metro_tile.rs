@@ -155,7 +155,7 @@ impl MetroTile {
             scene.text(
                 text.clone(),
                 Rect::new(text_x, y, content_w, caption.line_height),
-                Color::WHITE.with_alpha(0.8),
+                Color::WHITE.with_alpha(theme.indication.secondary_opacity),
                 caption,
                 TextAlign::Left,
             );
@@ -192,7 +192,7 @@ impl MetroTile {
             scene.text(
                 line.clone(),
                 Rect::new(text_x, y, content_w, caption.line_height),
-                Color::WHITE.with_alpha(0.8),
+                Color::WHITE.with_alpha(theme.indication.secondary_opacity),
                 caption,
                 TextAlign::Left,
             );

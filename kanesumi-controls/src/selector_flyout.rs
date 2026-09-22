@@ -104,8 +104,9 @@ impl MetroSelectorFlyout {
     ) {
         // 触发器
         let colors = &theme.colors;
+        // 聚焦衬底 = 强调色低透（CONTROL_SPEC §237 HighlightListAccentLow）。
         let bg = if self.focused {
-            colors.primary.with_alpha(0.24)
+            colors.accent_low_tint
         } else {
             colors.surface
         };
@@ -164,7 +165,8 @@ impl MetroSelectorFlyout {
             );
             let selected = self.selected == Some(i);
             if selected {
-                scene.fill_rect(colors.primary.with_alpha(0.24), item_rect);
+                // 项选中 = 强调色低透（CONTROL_SPEC §247 ListAccentLow）。
+                scene.fill_rect(colors.accent_low_tint, item_rect);
             } else if self.hovered == Some(i) {
                 scene.fill_rect(theme.indication.hover_tint, item_rect);
             }

@@ -9,7 +9,7 @@
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::typography::TextStyle;
-use kanesumi_core::{Color, CornerRadius, FontWeight, MetroTheme, Point, Rect};
+use kanesumi_core::{Accent, Color, CornerRadius, FontWeight, MetroTheme, Point, Rect};
 
 /// 滑轨拇指边长（ColorPickerSliderInnerThumb = 10）。
 pub const COLOR_THUMB: f32 = 10.0;
@@ -85,7 +85,10 @@ pub struct MetroColorPicker {
 impl Default for MetroColorPicker {
     fn default() -> Self {
         Self {
-            color: Color::from_hex(0xE5_78_12),
+            // 初始取值 = 强调色默认基色（`Accent::DEFAULT_HEX`）。
+            // 不在此再写一遍 `#E57812`：那是第三处重复的强调色字面量，
+            // 换默认强调色时必被漏改（正是 T2 登记的那类漂移）。
+            color: Accent::default().base,
             show_spectrum: true,
             slider_area_h: 28.0,
             hovered_channel: None,
@@ -294,7 +297,13 @@ impl MetroColorPicker {
                     track.size.width * frac,
                     track.size.height,
                 );
-                scene.fill_rounded_rect(colors.on_surface.with_alpha(0.6), fill, TRACK_CORNER);
+                scene.fill_rounded_rect(
+                    colors
+                        .on_surface
+                        .with_alpha(theme.indication.base_medium),
+                    fill,
+                    TRACK_CORNER,
+                );
             }
             // 拇指
             let thumb_x = track.origin.x + track.size.width * frac - COLOR_THUMB / 2.0;

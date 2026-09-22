@@ -203,7 +203,8 @@ impl MetroExpander {
         // 交互 tint
         match self.state {
             ControlState::Hovered => scene.fill_rect(theme.indication.subtle_tint, header),
-            ControlState::Pressed => scene.fill_rect(colors.on_surface.with_alpha(0.10), header),
+            // 按压比悬停更实一档（10% = press_subtle_tint，参 ROADMAP M1-1 分类学）。
+            ControlState::Pressed => scene.fill_rect(theme.indication.press_subtle_tint, header),
             _ => {}
         }
         // 边框（4 边）

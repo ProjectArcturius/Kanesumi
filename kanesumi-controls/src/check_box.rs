@@ -135,7 +135,9 @@ impl MetroCheckBox {
         } else if pressed {
             // UncheckedPressed = BaseMediumLow（中灰实心），无描边
             (
-                colors.on_surface_variant.with_alpha(0.35 * alpha),
+                colors
+                    .on_surface_variant
+                    .with_alpha(theme.indication.base_medium_low * alpha),
                 Color::TRANSPARENT,
             )
         } else {
