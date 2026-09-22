@@ -1,7 +1,11 @@
+use crate::accent::{Accent, ColorScheme};
 use crate::color::Color;
 
 /// 交互指示 —— 悬停 / 按下 / 禁用 / 焦点四态。
-/// Metro 的即时反馈以 tint 与描边表达，不做模糊/投影等重特效。
+/// Metro 的即时反馈以 tint 与描边表达，不做模糊 / 投影等重特效。
+///
+/// tint 方向必须随方案翻转：暗底叠白、亮底叠黑。旧实现把「白 10%」写死，
+/// 在亮色主题下等于**在浅背景上再叠白** —— 悬停完全不可见。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MetroIndication {
     /// 悬停 tint（叠加在表面上）。
@@ -10,22 +14,36 @@ pub struct MetroIndication {
     pub press_tint: Color,
     /// 禁用态不透明度。UWP 惯例 0.38。
     pub disabled_opacity: f32,
-    /// 焦点描边。
+    /// 焦点描边（由 accent 派生）。
     pub focus_stroke: Color,
 }
 
 impl MetroIndication {
-    /// Ether 深色空间桌面默认。
-    ///
-    /// tint 强度对齐 UWP Metro 按钮悬停/按压白%（参 CONTROL_SPEC §1）：
-    /// PointerOver ≈ 白 10%，Pressed ≈ 白 22%。
-    pub const fn ether() -> Self {
-        Self {
-            hover_tint: Color::from_hex(0xFF_FF_FF_1A), // rgba(255,255,255,0.10)
-            press_tint: Color::from_hex(0xFF_FF_FF_38), // rgba(255,255,255,0.22)
-            disabled_opacity: 0.38,
-            focus_stroke: Color::from_hex(0xFF_A6_26),
+    /// 按方案派生。tint 强度沿用 UWP Metro 白%（参 CONTROL_SPEC §1）：
+    /// PointerOver ≈ 10%，Pressed ≈ 22%。
+    pub fn for_scheme(scheme: ColorScheme, accent: Accent) -> Self {
+        match scheme {
+            ColorScheme::Dark => Self {
+                hover_tint: Color::from_hex(0xFF_FF_FF_1A), // 白 10%
+                press_tint: Color::from_hex(0xFF_FF_FF_38), // 白 22%
+                disabled_opacity: 0.38,
+                focus_stroke: accent.focus_for(ColorScheme::Dark),
+            },
+            ColorScheme::Light => Self {
+                // 亮底叠黑。半透明黑必须 `from_rgba`（`from_hex` 对 ≤0x00FFFFFF 走 RGB 分支，
+                // 会静默变成不透明黑 —— 参 V19 阈值坑）。
+                hover_tint: Color::from_rgba(0x00_00_00_0D), // 黑 5%
+                press_tint: Color::from_rgba(0x00_00_00_1A), // 黑 10%
+                // ⚠ 亮色禁用不透明度沿用暗色 0.38，**未实测**（登记于 CANON_VS_TEMPORARY）。
+                disabled_opacity: 0.38,
+                focus_stroke: accent.focus_for(ColorScheme::Light),
+            },
         }
+    }
+
+    /// 兼容别名：旧调用点（`MetroIndication::ether()`）= 暗色 + 默认 accent。
+    pub fn ether() -> Self {
+        Self::for_scheme(ColorScheme::Dark, Accent::default())
     }
 }
 
@@ -42,5 +60,22 @@ mod tests {
     #[test]
     fn disabled_opacity_uwp_convention() {
         assert_eq!(MetroIndication::ether().disabled_opacity, 0.38);
+    }
+
+    /// 关键回归：亮色方案下 tint 必须叠黑而不是叠白，否则悬停在浅底上不可见。
+    #[test]
+    fn light_scheme_tints_darken_instead_of_lighten() {
+        let dark = MetroIndication::for_scheme(ColorScheme::Dark, Accent::default());
+        let light = MetroIndication::for_scheme(ColorScheme::Light, Accent::default());
+        assert!(dark.hover_tint.r > 0.5, "暗底悬停叠白");
+        assert!(light.hover_tint.r < 0.5, "亮底悬停叠黑");
+        assert_eq!(light.hover_tint.a, 13.0 / 255.0, "半透明黑不得退化成不透明（V19）");
+    }
+
+    #[test]
+    fn focus_stroke_follows_accent() {
+        let orange = MetroIndication::for_scheme(ColorScheme::Dark, Accent::default());
+        let teal = MetroIndication::for_scheme(ColorScheme::Dark, Accent::parse("00897B"));
+        assert_ne!(orange.focus_stroke, teal.focus_stroke);
     }
 }
