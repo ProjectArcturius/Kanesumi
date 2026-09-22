@@ -63,9 +63,10 @@ pub struct MetroColors {
 impl MetroColors {
     /// 暗色方案。
     ///
-    /// ⚠ **登记在案的临时值**：`background = #1A1A1A` 是「浅色主题尚未完成」时期的取值，
-    /// 正典 `KANESUMI_DESIGN.md` §Ⅲ.3 要求 OLED 纯黑 `#000000`。两者的差异见
-    /// `docs/CANON_VS_TEMPORARY.md`；在维护者裁定前**不得**把它当成正典。
+    /// ⚠ 取值口径：`background = #1A1A1A` 是**暗色方案内的一个选择**，不是正典级规定 ——
+    /// 原「OLED 纯黑」表述已由 `KANESUMI_DESIGN.md` §Ⅲ.3 修正为「深浅两套并列方案、
+    /// 取值属实现决策」，故该项在 `docs/CANON_VS_TEMPORARY.md` 的登记（T1）已解除；
+    /// 若日后仍想改纯黑，那属视觉调优，不再是「与正典冲突」。
     pub fn dark(accent: Accent) -> Self {
         let surface_variant = Color::from_hex(0x2E_2E_2E);
         Self {
