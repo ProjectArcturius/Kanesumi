@@ -24,36 +24,38 @@ pub struct MetroPasswordBox {
 
 impl Default for MetroPasswordBox {
     fn default() -> Self {
-        Self {
-            boxed: MetroTextBox::new(),
-        }
+        Self::masked(MetroTextBox::new())
     }
 }
 
 impl MetroPasswordBox {
+    /// 所有构造路径都经此注入掩码。
+    ///
+    /// 2026-09-30 更正：旧实现只有 `with_text` / `focus` 注入掩码，`new` / `with_placeholder` /
+    /// `with_header` 构造后若由宿主程序化写入文本（`field_mut().set_text`），**未聚焦前以明文绘制**
+    /// （E3 批 C 迁移时发现）。密码框在任何状态下都不得显示明文。
+    fn masked(mut boxed: MetroTextBox) -> Self {
+        boxed.field.set_mask(Some(PASSWORD_MASK_CHAR));
+        Self { boxed }
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
 
     /// 带占位文本构造（如「请输入密码」）。
     pub fn with_placeholder(text: impl Into<String>) -> Self {
-        Self {
-            boxed: MetroTextBox::with_placeholder(text),
-        }
+        Self::masked(MetroTextBox::with_placeholder(text))
     }
 
     /// 带标题构造。
     pub fn with_header(text: impl Into<String>) -> Self {
-        Self {
-            boxed: MetroTextBox::with_header(text),
-        }
+        Self::masked(MetroTextBox::with_header(text))
     }
 
     /// 设置初始明文（光标置尾，掩码显示）。
     pub fn with_text(text: impl Into<String>) -> Self {
-        let mut boxed = MetroTextBox::from_text(text);
-        boxed.field.set_mask(Some(PASSWORD_MASK_CHAR));
-        Self { boxed }
+        Self::masked(MetroTextBox::from_text(text))
     }
 
     /// 明文。
@@ -337,6 +339,21 @@ mod tests {
 
     fn font_available() -> bool {
         find_font().is_some()
+    }
+
+    #[test]
+    fn programmatic_text_is_masked_before_first_focus() {
+        for mut pb in [
+            MetroPasswordBox::new(),
+            MetroPasswordBox::with_placeholder("密码"),
+            MetroPasswordBox::with_header("密码"),
+        ] {
+            pb.field_mut().set_text("hunter2");
+            assert!(
+                !pb.field().display_text().contains("hunter2"),
+                "未聚焦的密码框不得显示明文"
+            );
+        }
     }
 
     #[test]
