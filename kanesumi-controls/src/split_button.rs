@@ -46,6 +46,12 @@ pub struct MetroSplitButton {
     pub primary_pressed: bool,
     pub secondary_hovered: bool,
     pub secondary_pressed: bool,
+    /// 元素树下当前展开的菜单弹层（`MenuFlyout` 节点）；旧路径不用。
+    tree_popup: Option<kanesumi_element::WidgetId>,
+    /// 元素树指针下命中的区（Primary / Secondary / None）。
+    tree_hover: SplitButtonPart,
+    /// 元素树按下时记录的区（Click 无坐标，据此在 PointerUp 分派）。
+    tree_press: SplitButtonPart,
 }
 
 impl MetroSplitButton {
@@ -57,6 +63,9 @@ impl MetroSplitButton {
             primary_pressed: false,
             secondary_hovered: false,
             secondary_pressed: false,
+            tree_popup: None,
+            tree_hover: SplitButtonPart::None,
+            tree_press: SplitButtonPart::None,
         }
     }
 
@@ -265,6 +274,264 @@ impl MetroSplitButton {
         if self.menu.anim.is_visible() {
             self.menu.render(theme, engine, screen, scene);
         }
+    }
+}
+
+// ── 元素树接入（弹层类，参 docs/ELEMENT_MIGRATION.md §8；模板同 drop_down_button.rs）──
+//
+// 旧路径里下拉画在按钮自己的 Scene 里（需宿主传整屏 `screen`）。元素树里菜单是覆盖层上的
+// 独立节点 `MenuFlyout`：本控件只做「两个命中区的分派」与「展开中外观」，放置 / 命中 /
+// 键盘 / 关闭 / 焦点交还都交给框架与 MenuFlyout。Primary 区发主动作，Secondary 区开菜单。
+// PointerUp 用坐标判区（`Click` 无坐标）：`PointerDown` 记区，`PointerUp` 按记录分派。
+
+/// 元素树动作：Primary（主命令）区被激活。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SplitButtonInvoked;
+
+impl kanesumi_element::Widget for MetroSplitButton {
+    fn measure(
+        &mut self,
+        ctx: &mut kanesumi_element::MeasureCtx,
+        _available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        MetroSplitButton::measure(self, ctx.engine(), ctx.theme().typography.body)
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        let saved = (
+            self.primary_hovered,
+            self.primary_pressed,
+            self.secondary_hovered,
+            self.secondary_pressed,
+        );
+        let hovered = ctx.state().hovered;
+        // 展开期间 chevron 区保持按下外观（对齐旧 FlyoutOpen 语义）。
+        self.primary_pressed = self.tree_press == SplitButtonPart::Primary;
+        self.secondary_pressed =
+            self.tree_press == SplitButtonPart::Secondary || self.tree_popup.is_some();
+        self.primary_hovered =
+            hovered && self.tree_hover == SplitButtonPart::Primary && !self.primary_pressed;
+        self.secondary_hovered =
+            hovered && self.tree_hover == SplitButtonPart::Secondary && !self.secondary_pressed;
+        let theme = *ctx.theme();
+        self.render(&theme, ctx.engine(), ctx.rect(), ctx.surface(), scene);
+        (
+            self.primary_hovered,
+            self.primary_pressed,
+            self.secondary_hovered,
+            self.secondary_pressed,
+        ) = saved;
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, Key, PointerButton};
+        match event {
+            Event::PointerMove { pos } => {
+                let part = self.hit(ctx.rect(), *pos);
+                if part != self.tree_hover {
+                    self.tree_hover = part;
+                    ctx.invalidate_paint();
+                }
+            }
+            Event::PointerLeave => {
+                self.tree_hover = SplitButtonPart::None;
+                ctx.invalidate_paint();
+            }
+            Event::PointerDown {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                let part = self.hit(ctx.rect(), *pos);
+                if part != SplitButtonPart::None {
+                    self.tree_press = part;
+                    ctx.invalidate_paint();
+                    ctx.set_handled();
+                }
+            }
+            Event::PointerUp {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                let pressed = self.tree_press;
+                self.tree_press = SplitButtonPart::None;
+                if pressed != SplitButtonPart::None && self.hit(ctx.rect(), *pos) == pressed {
+                    match pressed {
+                        SplitButtonPart::Primary => ctx.emit(SplitButtonInvoked),
+                        SplitButtonPart::Secondary => {
+                            // 已展开再点 = 收起；否则打开。与旧 `toggle_flyout` 语义一致。
+                            if let Some(p) = self.tree_popup.take() {
+                                ctx.close_popup(p);
+                            } else {
+                                let items = self.menu.items.clone();
+                                self.tree_popup =
+                                    Some(crate::menu_flyout::MenuFlyout::open(ctx, items, false));
+                            }
+                        }
+                        SplitButtonPart::None => {}
+                    }
+                }
+                ctx.invalidate_paint();
+                ctx.set_handled();
+            }
+            Event::KeyDown {
+                key: Key::Enter | Key::Char(' '),
+                ..
+            } => {
+                ctx.emit(SplitButtonInvoked);
+                ctx.set_handled();
+            }
+            Event::KeyDown { key: Key::Down, .. } => {
+                // Down / Alt+Down 打开菜单（键盘打开预选首项）。
+                if self.tree_popup.is_none() {
+                    let items = self.menu.items.clone();
+                    self.tree_popup =
+                        Some(crate::menu_flyout::MenuFlyout::open(ctx, items, true));
+                    ctx.invalidate_paint();
+                }
+                ctx.set_handled();
+            }
+            Event::PopupClosed { popup } if self.tree_popup == Some(*popup) => {
+                self.tree_popup = None;
+                ctx.invalidate_paint();
+            }
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Button,
+            name: self.label.clone(),
+            value: None,
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use crate::menu_flyout::MenuInvoked;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, Key, LayoutProps, WidgetId};
+
+    fn harness() -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(500.0, 400.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroSplitButton::new(
+                "保存",
+                vec![MenuItem::new("另存为…"), MenuItem::new("导出…")],
+            ),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                margin: Insets::new(10.0, 10.0, 0.0, 0.0),
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    fn part_center(h: &TestHarness, id: WidgetId, part: SplitButtonPart) -> Point {
+        let r = h.rect(id);
+        match part {
+            SplitButtonPart::Primary => h
+                .tree
+                .get::<MetroSplitButton>(id)
+                .unwrap()
+                .primary_rect(r)
+                .center(),
+            SplitButtonPart::Secondary => h
+                .tree
+                .get::<MetroSplitButton>(id)
+                .unwrap()
+                .secondary_rect(r)
+                .center(),
+            SplitButtonPart::None => r.center(),
+        }
+    }
+
+    #[test]
+    fn primary_click_emits_action_without_menu() {
+        let (mut h, id) = harness();
+        h.click_at(part_center(&h, id, SplitButtonPart::Primary));
+        assert_eq!(h.take::<SplitButtonInvoked>().len(), 1);
+        assert!(h.tree.popups().next().is_none(), "主命令不应开菜单");
+        assert!(
+            h.tree.get::<MetroSplitButton>(id).unwrap().tree_popup.is_none()
+        );
+    }
+
+    #[test]
+    fn secondary_click_opens_below_and_selection_reports_owner() {
+        let (mut h, id) = harness();
+        h.click_at(part_center(&h, id, SplitButtonPart::Secondary));
+        let p = h.tree.popups().next().expect("chevron 区开菜单");
+        assert!(h.rect(p).origin.y >= h.rect(id).bottom(), "菜单落在按钮下方");
+        let pr = h.rect(p);
+        h.click_at(Point::new(pr.origin.x + 20.0, pr.origin.y + 16.0));
+        let acts = h.take::<MenuInvoked>();
+        assert_eq!(acts.len(), 1);
+        assert_eq!(acts[0].1.owner, id);
+        assert_eq!(acts[0].1.label, "另存为…");
+        assert!(
+            h.tree.get::<MetroSplitButton>(id).unwrap().tree_popup.is_none(),
+            "选中后复位"
+        );
+    }
+
+    #[test]
+    fn down_opens_with_focus_inside_and_escape_returns_focus() {
+        let (mut h, id) = harness();
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+        h.key(Key::Down);
+        let p = h.tree.popups().next().expect("Down 键开菜单");
+        assert_eq!(h.tree.focused(), Some(p), "键盘打开焦点入菜单");
+        h.key(Key::Escape);
+        assert_eq!(h.tree.focused(), Some(id), "Esc 关闭后焦点回按钮");
+        assert!(
+            h.tree.get::<MetroSplitButton>(id).unwrap().tree_popup.is_none()
+        );
+    }
+
+    #[test]
+    fn outside_click_dismisses_and_resets() {
+        let (mut h, id) = harness();
+        h.click_at(part_center(&h, id, SplitButtonPart::Secondary));
+        assert!(h.tree.popups().next().is_some());
+        h.click_at(Point::new(480.0, 390.0));
+        assert!(h.tree.popups().next().is_none());
+        assert!(
+            h.tree.get::<MetroSplitButton>(id).unwrap().tree_popup.is_none(),
+            "点外部关闭后复位"
+        );
+    }
+
+    #[test]
+    fn enter_activates_primary_action() {
+        let (mut h, _id) = harness();
+        h.tab();
+        h.key(Key::Enter);
+        assert_eq!(h.take::<SplitButtonInvoked>().len(), 1);
+        assert!(h.tree.popups().next().is_none());
+    }
+
+    #[test]
+    fn passes_insurance_checks_while_open() {
+        let (mut h, id) = harness();
+        h.click_at(part_center(&h, id, SplitButtonPart::Secondary));
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
     }
 }
 
