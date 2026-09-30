@@ -12,6 +12,7 @@ kanesumi-canvas = { path = "../kanesumi-canvas" }
 kanesumi-anim = { path = "../kanesumi-anim" }
 kanesumi-structure = { path = "../kanesumi-structure" }
 kanesumi-controls = { path = "../kanesumi-controls" }
+kanesumi-element = { path = "../kanesumi-element" }
 # 全局应用菜单独立 crate（dbusmenu 服务 + Wayland 绑定 + Registrar），此处重导出。
 kanesumi-appmenu = { path = "../kanesumi-appmenu" }
 fontdue = "0.9"

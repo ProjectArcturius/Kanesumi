@@ -64,12 +64,12 @@ pub mod two_pane_view;
 pub use animated_icon::{IconDirection, MetroAnimatedIcon};
 pub use auto_suggest_box::{AutoSuggestAction, MetroAutoSuggestBox};
 pub use breadcrumb_bar::{BreadcrumbClick, MetroBreadcrumbBar};
-pub use button::{ButtonKind, MetroButton};
+pub use button::{ButtonClicked, ButtonKind, MetroButton};
  pub use candidate_window::{
     MetroCandidateWindow, CANDIDATES_PER_PAGE, CANDIDATE_HL_PAD, CANDIDATE_ITEM_GAP, CANDIDATE_MAX_W,
     CANDIDATE_PAD_X, CANDIDATE_PAD_Y, CANDIDATE_ROW_H,
 };
-pub use check_box::{CheckState, MetroCheckBox};
+pub use check_box::{CheckState, CheckToggled, MetroCheckBox};
 pub use color_picker::{ALL_CHANNELS, ColorChannel, MetroColorPicker};
 pub use command_bar_flyout::{
     COMMANDBAR_BORDER, COMMANDBAR_BUTTON_SIZE, COMMANDBAR_ICON_SIZE, TEXT_COMMANDS, CommandBarAction,
@@ -115,7 +115,7 @@ pub use scroll_view::{
 pub use selector_flyout::MetroSelectorFlyout;
 pub use slider::{MetroSlider, SLIDER_HEADER_MARGIN, SLIDER_MIN_H, SLIDER_MIN_W, SLIDER_THUMB, SLIDER_TRACK_H, SLIDER_TRACK_MARGIN};
 pub use split_button::{MetroSplitButton, SplitButtonClick, SplitButtonPart};
-pub use state::{ButtonState, ControlState};
+pub use state::{ButtonState, ControlState, control_state};
 pub use surface::MetroSurface;
 pub use swipe_control::{MetroSwipeControl, SwipeAction, SwipeItem, SwipeItemAction, SwipeMode};
 pub use switch::MetroSwitch;
@@ -123,7 +123,7 @@ pub use tab_row::{MetroTab, MetroTabRow};
 pub use tab_view::{MetroTabView, TabHover, TabViewAction};
 pub use teaching_tip::{MetroTeachingTip, TeachingTipClick, TeachingTipPlacement, TeachingTipSide};
 pub use text::MetroText;
-pub use text_box::MetroTextBox;
+pub use text_box::{MetroTextBox, TextChanged, TextSubmitted};
 pub use text_field::{TextInputKey, TextField};
 pub use title_bar::{MetroTitleBar, TitleBarClick};
 pub use tree_view::{MetroTreeView, TreeAction, TreeRow, TreeViewNode};

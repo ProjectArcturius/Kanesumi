@@ -1230,6 +1230,7 @@ dependencies = [
  "kanesumi-canvas",
  "kanesumi-controls",
  "kanesumi-core",
+ "kanesumi-element",
  "kanesumi-structure",
  "libc",
  "log",

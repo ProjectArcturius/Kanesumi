@@ -5,8 +5,8 @@ use kanesumi_core::{MetroTheme, Rect, Size};
 use crate::appmenu::{AppMenuHandle, MenuTree};
 use crate::role::EtherRole;
 
-/// IME 上下文 / 内容提示 —— 定义于控件库（依赖方向 core ← controls ← harness）。
-pub use kanesumi_controls::{ImeContentHint, ImeContext};
+/// IME 上下文 / 内容提示 —— 定义于元素树（依赖方向 core ← element ← controls ← harness）。
+pub use kanesumi_element::{ImeContentHint, ImeContext};
 
 /// 浮层表面（layer-shell）层别。App 层枚举，外壳映射到 wlr-layer-shell。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,55 +116,10 @@ impl AppConfig {
     }
 }
 
-/// 指针按钮。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PointerButton {
-    Left,
-    Right,
-    Middle,
-}
-
-/// 逻辑键 —— 键盘事件（wl_keyboard 经 xkbcommon 语义化）的跨平台契约。
-/// 可打印字符（含 shift 符号 / 小键盘）→ `Char`；控制键 → 具名变体；未分类 → `Unknown`（原始 keysym 透传）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Key {
-    /// 可打印字符（utf8 语义，如 `'+'`、`'%'`、`'7'`）。
-    Char(char),
-    Enter,
-    Backspace,
-    Escape,
-    Tab,
-    Left,
-    Right,
-    Up,
-    Down,
-    Home,
-    End,
-    Delete,
-    /// 未分类 keysym（原始值透传，App 可自行处理）。
-    Unknown(u32),
-}
-
-/// 修饰键状态 —— 纯数据、跨平台。事件附带事件发生瞬间的修饰键组合。
-/// 由外壳（Wayland `update_modifiers`）维护并注入每个事件；App 据此实现
-/// Ctrl+C/V、Shift+范围选等组合（参 `key_to_text_input` 契约：修饰键由宿主组合）。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Modifiers {
-    pub ctrl: bool,
-    pub alt: bool,
-    pub shift: bool,
-    /// Super / Win / Meta 键。
-    pub super_key: bool,
-}
-
-impl Modifiers {
-    pub const NONE: Modifiers = Modifiers {
-        ctrl: false,
-        alt: false,
-        shift: false,
-        super_key: false,
-    };
-}
+/// 指针按钮 / 逻辑键 / 修饰键 —— 定义于元素树（`kanesumi-element`），此处重导出，
+/// 保证外壳、旧 App 与元素树只有**一套**键定义（参 docs/ELEMENT_TREE.md §Ⅵ）。
+/// 可打印字符（含 shift 符号 / 小键盘）→ `Key::Char`；控制键 → 具名变体；未分类 → `Unknown`。
+pub use kanesumi_element::{Key, Modifiers, PointerButton};
 
 /// 输入事件 —— 纯数据、跨平台。`x/y` 为表面本地逻辑坐标（指针进入表面后有效）。
 /// 非 Copy（IME 变体含 `String`）；App 消费时按值 move。

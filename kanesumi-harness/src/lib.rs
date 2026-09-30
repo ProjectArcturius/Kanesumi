@@ -9,6 +9,7 @@ pub mod appmenu;
 pub mod context_menu;
 pub mod role;
 pub mod system_theme;
+pub mod tree_host;
 
 #[cfg(target_os = "linux")]
 pub mod cpu_raster;
@@ -34,6 +35,10 @@ pub use appmenu::{AppMenuHandle, MenuItem, MenuTree, MenuUpdate, ToggleType};
 #[cfg(target_os = "linux")]
 pub use appmenu::install;
 pub use role::{EtherRole, RoleParseError, SurfaceKind};
+pub use tree_host::{TreeApp, TreeHost};
+
+// 元素树（参 docs/ELEMENT_TREE.md）。重导出，元素树应用只需依赖 harness。
+pub use kanesumi_element as element;
 
 // Scene 属 kanesumi-canvas（渲染命令层）。此处重导出供应用使用。
 pub use kanesumi_canvas::{Scene, SceneCommand, TextAlign};
