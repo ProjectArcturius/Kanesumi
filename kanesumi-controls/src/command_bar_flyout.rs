@@ -13,7 +13,7 @@ use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::{MetroTheme, Point, Rect};
 
-use crate::popup::{PopupAnim, PopupState};
+use crate::popup::{PopupAnim, PopupState, popup_gap};
 
 /// 命令按钮尺寸（40×40）。
 pub const COMMANDBAR_BUTTON_SIZE: f32 = 40.0;
@@ -225,6 +225,283 @@ impl MetroCommandBarFlyout {
                 TextAlign::Center,
             );
         }
+    }
+}
+
+// ── 元素树接入（弹层类面板，参 docs/ELEMENT_MIGRATION.md §8；模板同 menu_flyout.rs）──
+//
+// 旧路径里命令条是自持浮层：调用方 `open(anchor, screen)` 先算好 `panel_rect`，再自行渲染与命中，
+// 宿主还得把整屏 `screen` 传进来。元素树里它是覆盖层上的「面板 Widget」：`measure` 报面板尺寸、
+// `arrange` 记下自身矩形、`paint` 画面板；命令点击发 `CommandInvoked(idx)` 后 `close_popup` 自身。
+// 由其它控件经 `open_below`（锚下缘）/ `open_at`（点锚定）打开。旧 `open(&mut self, …)` API 保留不动。
+
+/// 元素树动作：命令条上第 `idx` 个命令被点击（对应 `commands[idx]`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandInvoked(pub usize);
+
+impl MetroCommandBarFlyout {
+    /// 命中命令按钮索引（面板边框之内）。面板外或越过按钮序列末尾返回 None。
+    fn command_index_at(&self, pos: Point) -> Option<usize> {
+        if !self.panel_rect.contains(pos) {
+            return None;
+        }
+        let local_x = pos.x - self.panel_rect.origin.x - COMMANDBAR_BORDER;
+        if local_x < 0.0 {
+            return None;
+        }
+        let idx = (local_x / COMMANDBAR_BUTTON_SIZE).floor() as usize;
+        (idx < self.commands.len()).then_some(idx)
+    }
+
+    /// 由其它控件调用：锚在本控件下缘打开命令条（`keyboard` = 打开后把焦点移入面板）。
+    pub fn open_below(
+        ctx: &mut kanesumi_element::EventCtx,
+        commands: Vec<CommandButton>,
+        keyboard: bool,
+    ) -> kanesumi_element::WidgetId {
+        Self::open_with(ctx, commands, None, keyboard)
+    }
+
+    /// 由其它控件调用：在表面坐标 `at`（面板左上角）打开命令条 —— 调用方按选区自行定位。
+    pub fn open_at(
+        ctx: &mut kanesumi_element::EventCtx,
+        commands: Vec<CommandButton>,
+        at: Point,
+        keyboard: bool,
+    ) -> kanesumi_element::WidgetId {
+        Self::open_with(ctx, commands, Some(at), keyboard)
+    }
+
+    fn open_with(
+        ctx: &mut kanesumi_element::EventCtx,
+        commands: Vec<CommandButton>,
+        at: Option<Point>,
+        keyboard: bool,
+    ) -> kanesumi_element::WidgetId {
+        let owner = ctx.id();
+        let mut bar = Self::new(commands);
+        bar.anim.open();
+        let id = ctx.open_popup(
+            bar,
+            kanesumi_element::PopupSpec {
+                anchor: Some(owner),
+                at,
+                gap: popup_gap(),
+                ..kanesumi_element::PopupSpec::default()
+            },
+        );
+        ctx.focus_widget(id, keyboard);
+        id
+    }
+}
+
+impl kanesumi_element::Widget for MetroCommandBarFlyout {
+    fn measure(
+        &mut self,
+        _ctx: &mut kanesumi_element::MeasureCtx,
+        _available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        self.panel_size()
+    }
+
+    fn arrange(&mut self, _ctx: &mut kanesumi_element::ArrangeCtx, rect: Rect) {
+        self.panel_rect = rect;
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        let theme = *ctx.theme();
+        self.render(&theme, ctx.engine(), scene);
+        if matches!(self.state(), PopupState::Opening | PopupState::Closing) {
+            ctx.request_anim_frame();
+        }
+    }
+
+    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, dt: f64) {
+        self.anim.update(dt);
+        ctx.invalidate_paint();
+        if matches!(self.state(), PopupState::Opening | PopupState::Closing) {
+            ctx.request_anim_frame();
+        }
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, PointerButton};
+        match event {
+            Event::PointerMove { pos } => {
+                let before = self.hovered;
+                self.hover(*pos);
+                if self.hovered != before {
+                    ctx.invalidate_paint();
+                }
+            }
+            Event::PointerLeave if self.hovered.is_some() => {
+                self.hovered = None;
+                ctx.invalidate_paint();
+            }
+            Event::PointerUp {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                // 命令点击：发动作并关闭自身（关闭后 owner 收 PopupClosed、焦点交还）。
+                if let Some(idx) = self.command_index_at(*pos) {
+                    ctx.emit(CommandInvoked(idx));
+                    ctx.close_popup(ctx.id());
+                }
+                ctx.set_handled();
+            }
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    /// 面板以悬停高亮表示当前命令，不画框架焦点框。
+    fn focus_visual(&self) -> bool {
+        false
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Group,
+            name: String::from("命令条"),
+            value: None,
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_core::Size;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{
+        Align, Event, EventCtx, Insets, Key, LayoutProps, MeasureCtx, PaintCtx, Widget, WidgetId,
+    };
+
+    /// 最小打开者：点击 / Enter 时打开命令条。`at` 为 Some 走点锚定，否则锚下缘。
+    struct Opener {
+        at: Option<Point>,
+    }
+
+    impl Widget for Opener {
+        fn measure(&mut self, _: &mut MeasureCtx, _: Size) -> Size {
+            Size::new(120.0, 32.0)
+        }
+        fn paint(&mut self, _: &mut PaintCtx, _: &mut Scene) {}
+        fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
+            let open = |ctx: &mut EventCtx, keyboard: bool, at: Option<Point>| {
+                let cmds = CommandButton::text_command_bar();
+                match at {
+                    Some(p) => {
+                        MetroCommandBarFlyout::open_at(ctx, cmds, p, keyboard);
+                    }
+                    None => {
+                        MetroCommandBarFlyout::open_below(ctx, cmds, keyboard);
+                    }
+                }
+            };
+            match event {
+                Event::Click => open(ctx, false, self.at),
+                Event::KeyDown {
+                    key: Key::Enter, ..
+                } => {
+                    open(ctx, true, self.at);
+                    ctx.set_handled();
+                }
+                _ => {}
+            }
+        }
+        fn focusable(&self) -> bool {
+            true
+        }
+    }
+
+    fn harness(at: Option<Point>) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(600.0, 400.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            Opener { at },
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                margin: Insets::new(20.0, 20.0, 0.0, 0.0),
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    fn only_popup(h: &TestHarness) -> WidgetId {
+        let mut it = h.tree.popups();
+        let p = it.next().expect("命令条应已打开");
+        assert!(it.next().is_none(), "同一时刻只应有一个弹层");
+        p
+    }
+
+    fn first_button_center(panel: Rect) -> Point {
+        Point::new(
+            panel.origin.x + COMMANDBAR_BORDER + COMMANDBAR_BUTTON_SIZE / 2.0,
+            panel.origin.y + COMMANDBAR_BORDER + COMMANDBAR_BUTTON_SIZE / 2.0,
+        )
+    }
+
+    #[test]
+    fn click_opens_below_and_command_click_emits_and_closes() {
+        let (mut h, owner) = harness(None);
+        h.click(owner);
+        let p = only_popup(&h);
+        assert!(h.rect(p).origin.y >= h.rect(owner).bottom(), "命令条在锚点下方");
+        h.click_at(first_button_center(h.rect(p)));
+        assert_eq!(h.take::<CommandInvoked>(), vec![(p, CommandInvoked(0))]);
+        assert!(h.tree.popups().next().is_none(), "点命令后关闭");
+    }
+
+    #[test]
+    fn open_at_places_panel_top_left_at_point() {
+        let at = Point::new(300.0, 120.0);
+        let (mut h, owner) = harness(Some(at));
+        h.click(owner);
+        let p = only_popup(&h);
+        let r = h.rect(p);
+        assert!((r.origin.x - at.x).abs() < 0.5 && (r.origin.y - at.y).abs() < 0.5, "点锚定 {r:?}");
+    }
+
+    #[test]
+    fn keyboard_open_focus_inside_escape_returns_focus() {
+        let (mut h, owner) = harness(None);
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(owner));
+        h.key(Key::Enter);
+        let p = only_popup(&h);
+        assert_eq!(h.tree.focused(), Some(p), "键盘打开焦点入面板");
+        h.key(Key::Escape);
+        assert_eq!(h.tree.focused(), Some(owner), "Esc 关闭后焦点回打开者");
+        assert!(h.tree.popups().next().is_none());
+    }
+
+    #[test]
+    fn outside_click_dismisses() {
+        let (mut h, owner) = harness(None);
+        h.click(owner);
+        assert!(h.tree.popups().next().is_some());
+        h.click_at(Point::new(580.0, 390.0));
+        assert!(h.tree.popups().next().is_none(), "点外部关闭");
+    }
+
+    #[test]
+    fn passes_insurance_checks_while_open() {
+        let (mut h, owner) = harness(None);
+        h.click(owner);
+        let p = only_popup(&h);
+        h.assert_contained();
+        h.assert_no_hit_outside(owner);
+        h.assert_paint_within(owner, Insets::ZERO);
+        h.assert_paint_within(p, Insets::ZERO);
     }
 }
 
