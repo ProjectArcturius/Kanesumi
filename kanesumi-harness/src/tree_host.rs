@@ -36,6 +36,12 @@ pub trait TreeApp {
     /// 每帧 tick：非控件状态（时钟、后台任务结果）在这里写回树。
     fn tick(&mut self, _tree: &mut Tree, _dt: f64) {}
 
+    /// 应用级快捷键（XAML `KeyboardAccelerator`）：**没有任何控件处理**的按键才会到这里
+    /// （无焦点时的数字键、Ctrl+Q 等）。返回 true = 已消费。
+    fn on_key(&mut self, _tree: &mut Tree, _key: Key, _modifiers: Modifiers) -> bool {
+        false
+    }
+
     /// 初始主题（默认 Ether 深色）。之后外壳推送的系统主题由 `TreeHost` 直接交给树。
     fn theme(&self) -> MetroTheme {
         MetroTheme::ether_dark()
@@ -221,7 +227,9 @@ impl<A: TreeApp> App for TreeHost<A> {
                 t.scroll(self.pointer, x, y, modifiers);
             }
             InputEvent::KeyPressed { key, modifiers } => {
-                t.key_down(key, modifiers);
+                if !t.key_down(key, modifiers) {
+                    self.app.on_key(&mut self.tree, key, modifiers);
+                }
             }
             InputEvent::PointerLeft => t.pointer_leave(),
             InputEvent::Preedit { text, cursor_byte } => {
@@ -298,6 +306,7 @@ mod tests {
         button: Option<WidgetId>,
         clicks: u32,
         last_text: String,
+        accelerators: u32,
     }
 
     impl TreeApp for Demo {
@@ -312,6 +321,13 @@ mod tests {
             };
             self.button = Some(tree.insert_with(col, MetroButton::new("确定"), start));
             tree.insert_with(col, MetroTextBox::with_placeholder("输入"), start);
+        }
+        fn on_key(&mut self, _tree: &mut Tree, key: Key, _m: Modifiers) -> bool {
+            if key == Key::Char('q') {
+                self.accelerators += 1;
+                return true;
+            }
+            false
         }
         fn on_action(&mut self, _tree: &mut Tree, _from: WidgetId, action: Action) {
             if action.is::<ButtonClicked>() {
@@ -328,6 +344,7 @@ mod tests {
             button: None,
             clicks: 0,
             last_text: String::new(),
+            accelerators: 0,
         });
         (host, test_engine())
     }
@@ -378,6 +395,24 @@ mod tests {
         });
         h.handle_input(InputEvent::Commit { text: "无线".into() });
         assert_eq!(h.app().last_text, "w无线");
+    }
+
+    #[test]
+    fn unhandled_keys_reach_app_accelerators_but_focused_text_box_wins() {
+        let (mut h, e) = host();
+        frame(&mut h, &e);
+        let q = InputEvent::KeyPressed {
+            key: Key::Char('q'),
+            modifiers: Modifiers::NONE,
+        };
+        h.handle_input(q.clone()); // 无焦点 → 应用级快捷键
+        assert_eq!(h.app().accelerators, 1);
+        h.focus_move(false); // 按钮
+        h.focus_move(false); // 输入框
+        frame(&mut h, &e);
+        h.handle_input(q);
+        assert_eq!(h.app().accelerators, 1, "输入框消费了 q，不再触发快捷键");
+        assert_eq!(h.app().last_text, "q");
     }
 
     #[test]
