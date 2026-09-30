@@ -9,6 +9,7 @@
 
 pub mod event;
 pub mod id;
+pub mod ime;
 pub mod props;
 pub mod testing;
 pub mod tree;
@@ -18,8 +19,9 @@ pub mod widgets;
 
 pub use event::{Event, Key, Modifiers, PointerButton};
 pub use id::WidgetId;
+pub use ime::{ImeContentHint, ImeContext};
 pub use props::{Align, Insets, LayoutProps};
-pub use tree::{Action, FrameOutput, ImeRequest, PopupDismissed, PopupSpec, Tree};
+pub use tree::{Action, EditCtx, FrameOutput, PopupDismissed, PopupSpec, Tree};
 pub use visual_state::VisualState;
 pub use widget::{
     AccessInfo, AccessRole, ArrangeCtx, ControlStates, EventCtx, MeasureCtx, PaintCtx, UpdateCtx,

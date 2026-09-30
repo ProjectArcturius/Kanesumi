@@ -12,6 +12,7 @@ use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
 use crate::event::Event;
 use crate::id::WidgetId;
+use crate::ime::ImeContext;
 use crate::props::{Insets, LayoutProps};
 use crate::tree::{PopupSpec, Tree};
 
@@ -106,8 +107,9 @@ pub trait Widget: Any {
         Insets::ZERO
     }
 
-    /// 聚焦时的 IME 请求。`Some` → 外壳开 text-input。
-    fn ime(&self, _rect: Rect) -> Option<crate::tree::ImeRequest> {
+    /// 聚焦时的 IME 上下文（周边文本 + 光标矩形）。`Some` → 外壳开 text-input。
+    /// 框架在每帧绘制后对焦点控件调用一次并缓存（此时布局与排版都是本帧的）。
+    fn ime(&self, _rect: Rect, _theme: &MetroTheme, _engine: &TextEngine) -> Option<ImeContext> {
         None
     }
 

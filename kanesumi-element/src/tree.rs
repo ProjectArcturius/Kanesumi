@@ -12,6 +12,7 @@ use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
 use crate::event::{Event, Key, Modifiers, PointerButton};
 use crate::id::WidgetId;
+use crate::ime::ImeContext;
 use crate::props::{Align, LayoutProps};
 use crate::widget::{
     ArrangeCtx, ControlStates, EventCtx, MeasureCtx, PaintCtx, UpdateCtx, Widget,
@@ -46,16 +47,6 @@ impl Default for PopupSpec {
             light_dismiss: true,
         }
     }
-}
-
-/// IME 请求（焦点控件 → 外壳）。harness 侧映射为 `ImeContext`。
-#[derive(Debug, Clone, PartialEq)]
-pub struct ImeRequest {
-    /// 光标矩形（表面逻辑坐标），候选窗据此定位。
-    pub cursor_rect: Rect,
-    pub surrounding: String,
-    pub cursor_byte: usize,
-    pub anchor_byte: usize,
 }
 
 /// 一帧产物。
@@ -156,6 +147,8 @@ pub struct Tree {
     damage: Option<Rect>,
     full_repaint: bool,
     dirty: bool,
+    /// 焦点控件本帧的 IME 上下文（`frame` 末尾计算，外壳查询时直接返回）。
+    ime: Option<ImeContext>,
 }
 
 impl Tree {
@@ -180,6 +173,7 @@ impl Tree {
             damage: None,
             full_repaint: true,
             dirty: true,
+            ime: None,
         };
         tree.root = tree.alloc(Box::new(ZStack), None, LayoutProps::default());
         tree.overlay = tree.alloc(Box::new(OverlayRoot), None, LayoutProps::default());
@@ -596,6 +590,12 @@ impl Tree {
         for r in [self.root, self.overlay] {
             self.compose(r, &mut scene);
         }
+
+        // 5. 焦点控件的 IME 上下文（用本帧布局与排版）。
+        self.ime = self.focus.and_then(|f| {
+            let n = self.node(f)?;
+            n.widget.as_ref()?.ime(n.rect, &self.theme, engine)
+        });
 
         let damage = if self.full_repaint {
             None
@@ -1167,11 +1167,9 @@ impl Tree {
         }
     }
 
-    /// 焦点控件的 IME 请求。
-    pub fn ime_request(&self) -> Option<ImeRequest> {
-        let f = self.focus?;
-        let n = self.node(f)?;
-        n.widget.as_ref()?.ime(n.rect)
+    /// 焦点控件的 IME 上下文（上一帧计算）。`None` = 无文本输入焦点。
+    pub fn ime_context(&self) -> Option<&ImeContext> {
+        self.ime.as_ref()
     }
 
     // ── 覆盖层 ──────────────────────────────────────────────────────────────
