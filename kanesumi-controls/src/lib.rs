@@ -83,10 +83,10 @@ pub use dialog::{DialogButton, DialogButtons, DialogDefaultButton, DialogState, 
 pub use drop_down_button::MetroDropDownButton;
 pub use dropdown_menu::{MenuItem, MenuPath, MenuInteractionSignature, MetroDropdownMenu, SubmenuState};
 pub use expander::{ExpandDirection, MetroExpander};
-pub use icon_button::MetroIconButton;
+pub use icon_button::{IconButtonClicked, MetroIconButton};
 pub use ime::{ImeContentHint, ImeContext};
 pub use info_badge::{InfoBadgeKind, MetroInfoBadge};
-pub use info_bar::{InfoBarClick, InfoBarSeverity, MetroInfoBar};
+pub use info_bar::{InfoBarClosed, InfoBarClick, InfoBarSeverity, MetroInfoBar};
 pub use list::MetroList;
 pub use menu_bar::{MenuBarItem, MetroMenuBar};
 pub use metro_tile::{MetroTile, TileLive, TileSize};
@@ -104,8 +104,8 @@ pub use popup::{
     render_overlay,
 };
 pub use progress::{MetroProgressBar, MetroProgressRing, ProgressMode};
-pub use radio_buttons::MetroRadioButtons;
-pub use rating_control::MetroRatingControl;
+pub use radio_buttons::{MetroRadioButtons, RadioSelectionChanged};
+pub use rating_control::{MetroRatingControl, RatingValueChanged};
 pub use repeater::{MetroRepeater, RepeaterLayout, RepeaterOrientation};
 pub use retained::RetainedScene;
 pub use scroll_view::{
@@ -113,12 +113,12 @@ pub use scroll_view::{
     ScrollMode,
 };
 pub use selector_flyout::MetroSelectorFlyout;
-pub use slider::{MetroSlider, SLIDER_HEADER_MARGIN, SLIDER_MIN_H, SLIDER_MIN_W, SLIDER_THUMB, SLIDER_TRACK_H, SLIDER_TRACK_MARGIN};
+pub use slider::{MetroSlider, SliderValueChanged, SLIDER_HEADER_MARGIN, SLIDER_MIN_H, SLIDER_MIN_W, SLIDER_THUMB, SLIDER_TRACK_H, SLIDER_TRACK_MARGIN};
 pub use split_button::{MetroSplitButton, SplitButtonClick, SplitButtonPart};
 pub use state::{ButtonState, ControlState, control_state};
 pub use surface::MetroSurface;
 pub use swipe_control::{MetroSwipeControl, SwipeAction, SwipeItem, SwipeItemAction, SwipeMode};
-pub use switch::MetroSwitch;
+pub use switch::{MetroSwitch, SwitchToggled};
 pub use tab_row::{MetroTab, MetroTabRow};
 pub use tab_view::{MetroTabView, TabHover, TabViewAction};
 pub use teaching_tip::{MetroTeachingTip, TeachingTipClick, TeachingTipPlacement, TeachingTipSide};
