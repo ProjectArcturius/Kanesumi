@@ -928,13 +928,7 @@ impl Tree {
         }
     }
 
-    pub fn pointer_down(
-        &mut self,
-        pos: Point,
-        button: PointerButton,
-        modifiers: Modifiers,
-        double: bool,
-    ) {
+    pub fn pointer_down(&mut self, pos: Point, button: PointerButton, modifiers: Modifiers) {
         // 覆盖层有弹层时：点在所有弹层之外 → LightDismiss（模态则只吞不关）。
         if let Some(&(top, spec)) = self.popups.last() {
             let inside = self.hit_rec(self.overlay, pos, None).is_some();
@@ -971,11 +965,17 @@ impl Tree {
                 pos,
                 button,
                 modifiers,
-                double,
             },
         );
         if button == PointerButton::Right {
             self.deliver(target, &Event::ContextRequested { pos });
+        }
+    }
+
+    /// 双击：外壳在第二次按下之后调用。投给按下时的命中目标（捕获者）或当前命中。
+    pub fn pointer_double(&mut self, pos: Point, button: PointerButton) {
+        if let Some(t) = self.captured.or_else(|| self.hit(pos)) {
+            self.deliver(t, &Event::DoubleTapped { pos, button });
         }
     }
 
@@ -1202,6 +1202,20 @@ impl Tree {
     fn dismiss_popup(&mut self, id: WidgetId) {
         self.push_action(id, Box::new(PopupDismissed));
         self.close_popup(id);
+    }
+
+    /// 关闭全部可轻触关闭的弹层（表面失去键盘焦点时，避免「失焦残留」，
+    /// 参 CONTEXT_MENU_SPEC §Ⅵ）。模态弹层保留。
+    pub fn dismiss_popups(&mut self) {
+        let doomed: Vec<WidgetId> = self
+            .popups
+            .iter()
+            .filter(|(_, s)| s.light_dismiss && !s.modal)
+            .map(|(p, _)| *p)
+            .collect();
+        for p in doomed.into_iter().rev() {
+            self.dismiss_popup(p);
+        }
     }
 
     pub fn popups(&self) -> impl Iterator<Item = WidgetId> + '_ {

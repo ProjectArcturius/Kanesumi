@@ -60,9 +60,10 @@ pub enum Event {
         pos: Point,
         button: PointerButton,
         modifiers: Modifiers,
-        /// 同按钮、短间隔的第二次按下（外壳判定）。单击语义照常投递。
-        double: bool,
     },
+    /// 双击（XAML `DoubleTapped`）：外壳判定同按钮、短间隔的第二次按下后，在该次
+    /// `PointerDown` **之后**追加投递（单击语义不丢）。投给命中目标并冒泡。
+    DoubleTapped { pos: Point, button: PointerButton },
     PointerUp {
         pos: Point,
         button: PointerButton,

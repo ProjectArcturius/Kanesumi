@@ -108,7 +108,7 @@ impl TestHarness {
 
     pub fn press_at(&mut self, pos: Point, button: PointerButton) {
         self.tree.pointer_move(pos);
-        self.tree.pointer_down(pos, button, Modifiers::NONE, false);
+        self.tree.pointer_down(pos, button, Modifiers::NONE);
     }
 
     pub fn release_at(&mut self, pos: Point, button: PointerButton) {
