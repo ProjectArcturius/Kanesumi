@@ -144,6 +144,8 @@ pub struct Tree {
     popups: Vec<(WidgetId, PopupSpec)>,
     actions: Vec<(WidgetId, Action)>,
     anim: Vec<WidgetId>,
+    /// 定时器：(节点, 剩余秒)。到期把节点放进动画 tick（调用其 `update`）。
+    timers: Vec<(WidgetId, f64)>,
     damage: Option<Rect>,
     full_repaint: bool,
     dirty: bool,
@@ -173,6 +175,7 @@ impl Tree {
             popups: Vec::new(),
             actions: Vec::new(),
             anim: Vec::new(),
+            timers: Vec::new(),
             damage: None,
             full_repaint: true,
             dirty: true,
@@ -285,6 +288,7 @@ impl Tree {
             }
             self.hover_chain.retain(|h| h != cur);
             self.anim.retain(|a| a != cur);
+            self.timers.retain(|(t, _)| t != cur);
             self.popups.retain(|(p, _)| p != cur);
             let slot = cur.slot();
             self.nodes[slot] = None;
@@ -505,6 +509,41 @@ impl Tree {
             self.anim.push(id);
         }
         self.dirty = true;
+    }
+
+    /// 请求 `secs` 秒后调用该节点的 `update`（光标闪烁、延时提示这类低频唤醒）。
+    /// 同一节点只保留最早的一个。与 `request_anim_frame` 不同：等待期间不占帧。
+    pub(crate) fn request_timer(&mut self, id: WidgetId, secs: f64) {
+        let secs = secs.max(0.0);
+        match self.timers.iter_mut().find(|(t, _)| *t == id) {
+            Some((_, left)) => *left = left.min(secs),
+            None => self.timers.push((id, secs)),
+        }
+    }
+
+    /// 推进定时器（外壳每次循环调用，含空闲兜底唤醒）。到期者转入动画 tick 并置脏。
+    pub fn tick_timers(&mut self, dt: f64) {
+        if self.timers.is_empty() {
+            return;
+        }
+        let mut due = Vec::new();
+        self.timers.retain_mut(|(id, left)| {
+            *left -= dt;
+            if *left <= 0.0 {
+                due.push(*id);
+                false
+            } else {
+                true
+            }
+        });
+        for id in due {
+            self.request_anim(id);
+        }
+    }
+
+    /// 最近一个定时器还剩多久（外壳可据此安排唤醒；无定时器为 None）。
+    pub fn next_timer(&self) -> Option<f64> {
+        self.timers.iter().map(|(_, l)| *l).reduce(f64::min)
     }
 
     pub(crate) fn push_action(&mut self, from: WidgetId, action: Action) {

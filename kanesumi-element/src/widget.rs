@@ -216,6 +216,10 @@ impl PaintCtx<'_> {
     pub fn request_anim_frame(&mut self) {
         self.tree.request_anim(self.id);
     }
+    /// `secs` 秒后调用本节点 `update`（等待期间不占帧）。
+    pub fn request_timer(&mut self, secs: f64) {
+        self.tree.request_timer(self.id, secs);
+    }
 }
 
 pub struct EventCtx<'a> {
@@ -261,6 +265,10 @@ impl EventCtx<'_> {
     pub fn request_anim_frame(&mut self) {
         self.tree.request_anim(self.id);
     }
+    /// `secs` 秒后调用本节点 `update`（等待期间不占帧）。
+    pub fn request_timer(&mut self, secs: f64) {
+        self.tree.request_timer(self.id, secs);
+    }
     /// 程序化聚焦自身（`keyboard` = 是否显示焦点视觉）。
     pub fn request_focus(&mut self, keyboard: bool) {
         self.tree.focus(self.id, keyboard);
@@ -291,5 +299,9 @@ impl UpdateCtx<'_> {
     }
     pub fn request_anim_frame(&mut self) {
         self.tree.request_anim(self.id);
+    }
+    /// `secs` 秒后再调用本节点 `update`（等待期间不占帧）。
+    pub fn request_timer(&mut self, secs: f64) {
+        self.tree.request_timer(self.id, secs);
     }
 }

@@ -74,6 +74,7 @@ impl TestHarness {
 
     /// 出一帧（dt = 1/60s）。
     pub fn frame(&mut self) -> &FrameOutput {
+        self.tree.tick_timers(1.0 / 60.0);
         self.last = self.tree.frame(&self.engine, self.size, 1.0 / 60.0);
         &self.last
     }
@@ -88,6 +89,14 @@ impl TestHarness {
             self.frame();
         }
         panic!("动画 10 秒内未到稳态");
+    }
+
+    /// 模拟空闲流逝 `secs` 秒（外壳空闲兜底唤醒的等价物）：推进定时器，有到期者再出一帧。
+    pub fn idle(&mut self, secs: f64) {
+        self.tree.tick_timers(secs);
+        if self.tree.needs_frame() {
+            self.last = self.tree.frame(&self.engine, self.size, secs);
+        }
     }
 
     pub fn resize(&mut self, width: f32, height: f32) {

@@ -145,6 +145,8 @@ impl<A: TreeApp> App for TreeHost<A> {
 
     fn update(&mut self, dt: f64) {
         self.pending_dt += dt;
+        // 定时器在 update 里推进：外壳空闲时也有兜底唤醒（~100ms），到期者置脏出帧。
+        self.tree.tick_timers(dt);
         self.app.tick(&mut self.tree, dt);
         self.drain_actions();
     }
