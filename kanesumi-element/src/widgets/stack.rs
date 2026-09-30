@@ -71,7 +71,10 @@ impl Stack {
         self.size(f32::INFINITY, self.cross(available))
     }
 
-    fn visible_children(ids: Vec<WidgetId>, props: impl Fn(WidgetId) -> LayoutProps) -> Vec<(WidgetId, LayoutProps)> {
+    fn visible_children(
+        ids: Vec<WidgetId>,
+        props: impl Fn(WidgetId) -> LayoutProps,
+    ) -> Vec<(WidgetId, LayoutProps)> {
         ids.into_iter()
             .map(|c| (c, props(c)))
             .filter(|(_, p)| p.visible)
@@ -136,18 +139,42 @@ impl Widget for Stack {
     }
 }
 
-/// 主轴分配（语义同 kanesumi-canvas `layout::distribute_main`）。
+/// 主轴分配。
+///
+/// `grow > 0` 的子节点是 **Star**（XAML `*`）：**不按自身内容尺寸**，而是按权重瓜分
+/// 「可用 − 非 Star 子节点的内容尺寸」；Star 份额下限为其 `min_main`。
+/// 2026-10-01 更正：旧实现是「内容尺寸 + 剩余份额」（kanesumi-canvas `distribute_main` 语义），
+/// 等分场景（计算器键盘）会因标签宽度不同而列宽参差 —— 与 XAML Star 不符。
+/// 空间不足以放下非 Star 子节点时，Star 为 0，其余按 shrink 压缩（与旧逻辑同）。
 fn distribute(props: &[LayoutProps], desired: &[f32], available: f32) -> Vec<f32> {
-    let mut sizes: Vec<f32> = desired.iter().map(|v| v.max(0.0)).collect();
+    let grow_total: f32 = props.iter().map(|p| p.grow.max(0.0)).sum();
+    let fixed_total: f32 = desired
+        .iter()
+        .zip(props)
+        .filter(|(_, p)| p.grow <= 0.0)
+        .map(|(d, _)| d.max(0.0))
+        .sum();
+    if grow_total > 0.0 && fixed_total <= available {
+        let extra = available - fixed_total;
+        return desired
+            .iter()
+            .zip(props)
+            .map(|(d, p)| {
+                if p.grow > 0.0 {
+                    (extra * p.grow / grow_total).max(p.min_main.max(0.0))
+                } else {
+                    d.max(0.0)
+                }
+            })
+            .collect();
+    }
+    let mut sizes: Vec<f32> = desired
+        .iter()
+        .zip(props)
+        .map(|(d, p)| if p.grow > 0.0 { 0.0 } else { d.max(0.0) })
+        .collect();
     let total: f32 = sizes.iter().sum();
-    if total < available {
-        let grow_total: f32 = props.iter().map(|p| p.grow.max(0.0)).sum();
-        if grow_total > 0.0 {
-            let extra = available - total;
-            for (size, p) in sizes.iter_mut().zip(props) {
-                *size += extra * p.grow.max(0.0) / grow_total;
-            }
-        }
+    if total <= available {
         return sizes;
     }
     let mut deficit = total - available;

@@ -253,7 +253,9 @@ impl EventCtx<'_> {
         self.id
     }
     pub fn rect(&self) -> Rect {
-        self.tree.rect(self.id).unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0))
+        self.tree
+            .rect(self.id)
+            .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0))
     }
     pub fn state(&self) -> ControlStates {
         self.tree.states(self.id)
@@ -264,6 +266,10 @@ impl EventCtx<'_> {
     /// 表面矩形（弹层放置 / 子菜单翻转用）。
     pub fn surface(&self) -> Rect {
         self.tree.surface()
+    }
+    /// 最近一次指针位置。`Event::Click` 不带坐标 —— 多区域控件（分体按钮、面包屑）据此判区。
+    pub fn pointer(&self) -> Option<Point> {
+        self.tree.pointer()
     }
     /// 聚焦任意节点（打开弹层后把焦点移进去）。不可聚焦 → false。
     pub fn focus_widget(&mut self, id: WidgetId, keyboard: bool) -> bool {

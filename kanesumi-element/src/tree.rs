@@ -14,9 +14,7 @@ use crate::event::{Event, Key, Modifiers, PointerButton};
 use crate::id::WidgetId;
 use crate::ime::ImeContext;
 use crate::props::{Align, LayoutProps};
-use crate::widget::{
-    ArrangeCtx, ControlStates, EventCtx, MeasureCtx, PaintCtx, UpdateCtx, Widget,
-};
+use crate::widget::{ArrangeCtx, ControlStates, EventCtx, MeasureCtx, PaintCtx, UpdateCtx, Widget};
 
 /// 控件发给 App 的动作（控件自定义类型，App downcast）。
 pub type Action = Box<dyn Any>;
@@ -34,6 +32,9 @@ pub enum PopupSide {
     Top,
     Left,
     Right,
+    /// 表面居中（对话框）。锚点仍用于关闭通知与焦点交还 —— `EventCtx::open_popup` 总会把锚点设为
+    /// 打开者，故「居中」要显式声明，不能靠「无锚点」（E3 批 F 对话框迁移时发现）。
+    Center,
 }
 
 /// 弹层规格。参 ELEMENT_TREE §Ⅴ.2。
@@ -56,6 +57,8 @@ pub struct PopupSpec {
     pub modal: bool,
     /// 点外部 / Esc 关闭（LightDismiss）。模态弹层忽略「点外部」。
     pub light_dismiss: bool,
+    /// 在弹层之下、内容之上铺一层遮罩（主题 `overlay_color`）：对话框 / 需要压暗背景的面板。
+    pub scrim: bool,
 }
 
 impl Default for PopupSpec {
@@ -68,6 +71,7 @@ impl Default for PopupSpec {
             gap: 0.0,
             modal: false,
             light_dismiss: true,
+            scrim: false,
         }
     }
 }
@@ -177,6 +181,8 @@ pub struct Tree {
     damage: Option<Rect>,
     full_repaint: bool,
     dirty: bool,
+    /// 最近一次指针位置（`Click` 等不带坐标的事件里，控件经 `EventCtx::pointer` 取用）。
+    pointer: Option<Point>,
     /// 焦点控件本帧的 IME 上下文（`frame` 末尾计算，外壳查询时直接返回）。
     ime: Option<ImeContext>,
     /// 上一帧的排版引擎（`TextEngine` clone 为零拷贝）。事件处理里的文本命中
@@ -210,6 +216,7 @@ impl Tree {
             dirty: true,
             ime: None,
             engine: None,
+            pointer: None,
         };
         tree.root = tree.alloc(Box::new(ZStack), None, LayoutProps::default());
         tree.overlay = tree.alloc(Box::new(OverlayRoot), None, LayoutProps::default());
@@ -684,9 +691,15 @@ impl Tree {
 
         // 4. 拼接。
         let mut scene = Scene::default();
-        for r in [self.root, self.overlay] {
-            self.compose(r, &mut scene);
+        self.compose(self.root, &mut scene);
+        // 遮罩：任一打开的弹层要求时，在覆盖层之前整面压暗（弹层自身画在遮罩之上）。
+        if self.popups.iter().any(|(_, s)| s.scrim) {
+            scene.fill_rect(
+                self.theme.overlay_color,
+                Rect::new(0.0, 0.0, size.width, size.height),
+            );
         }
+        self.compose(self.overlay, &mut scene);
 
         // 5. 焦点控件的 IME 上下文（用本帧布局与排版）。
         self.ime = self.focus.and_then(|f| {
@@ -694,11 +707,7 @@ impl Tree {
             n.widget.as_ref()?.ime(n.rect, &self.theme, engine)
         });
 
-        let damage = if self.full_repaint {
-            None
-        } else {
-            self.damage
-        };
+        let damage = if self.full_repaint { None } else { self.damage };
         self.full_repaint = false;
         self.damage = None;
         self.dirty = false;
@@ -792,7 +801,9 @@ impl Tree {
         }
         n.rect = rect;
         n.flags.needs_arrange = false;
-        let Some(mut wdg) = n.widget.take() else { return };
+        let Some(mut wdg) = n.widget.take() else {
+            return;
+        };
         let mut ctx = ArrangeCtx {
             tree: self,
             id,
@@ -1013,11 +1024,19 @@ impl Tree {
         self.hover_chain = chain;
     }
 
+    /// 最近一次指针位置（首次指针事件前为 None）。
+    pub fn pointer(&self) -> Option<Point> {
+        self.pointer
+    }
+
     pub fn pointer_move(&mut self, pos: Point) {
+        self.pointer = Some(pos);
         self.update_hover(Some(pos));
         // 按下期间，「按下」外观跟随指针是否仍在交互目标上（UWP Button 移出即恢复）。
         if let Some(p) = self.press_target {
-            let inside = self.hit(pos).is_some_and(|h| self.is_ancestor_or_self(p, h));
+            let inside = self
+                .hit(pos)
+                .is_some_and(|h| self.is_ancestor_or_self(p, h));
             self.set_state(p, |s| s.pressed = inside);
         }
         if let Some(t) = self.captured.or_else(|| self.hit(pos)) {
@@ -1026,6 +1045,7 @@ impl Tree {
     }
 
     pub fn pointer_down(&mut self, pos: Point, button: PointerButton, modifiers: Modifiers) {
+        self.pointer = Some(pos);
         // 覆盖层有弹层时：点在所有弹层之外 → LightDismiss（模态则只吞不关）。
         if let Some(&(top, spec)) = self.popups.last() {
             let inside = self.hit_rec(self.overlay, pos, None).is_some();
@@ -1077,6 +1097,7 @@ impl Tree {
     }
 
     pub fn pointer_up(&mut self, pos: Point, button: PointerButton, modifiers: Modifiers) {
+        self.pointer = Some(pos);
         if let Some(t) = self.captured.take().or_else(|| self.hit(pos)) {
             self.deliver(
                 t,
@@ -1091,7 +1112,9 @@ impl Tree {
             && let Some(p) = self.press_target.take()
         {
             self.set_state(p, |s| s.pressed = false);
-            let inside = self.hit(pos).is_some_and(|h| self.is_ancestor_or_self(p, h));
+            let inside = self
+                .hit(pos)
+                .is_some_and(|h| self.is_ancestor_or_self(p, h));
             if inside && self.contains(p) {
                 self.deliver(p, &Event::Click);
             }
@@ -1319,6 +1342,9 @@ impl Tree {
 
     /// 打开弹层：挂到覆盖层根。返回弹层节点 id。
     pub fn open_popup(&mut self, widget: impl Widget, spec: PopupSpec) -> WidgetId {
+        if spec.scrim {
+            self.full_repaint = true;
+        }
         let id = self.insert(self.overlay, widget);
         self.popups.push((id, spec));
         id
@@ -1331,6 +1357,9 @@ impl Tree {
             return;
         };
         let spec = self.popups[pos].1;
+        if spec.scrim {
+            self.full_repaint = true;
+        }
         let focus_inside = self.focus.is_some_and(|f| self.is_ancestor_or_self(id, f));
         let keyboard = self.focus_keyboard;
         self.remove(id);
@@ -1378,8 +1407,20 @@ impl Tree {
         let (x, y) = match (spec.at, anchor) {
             // 右键菜单：点锚定（CONTEXT_MENU_SPEC §Ⅲ，同 `place_context_menu`）。
             (Some(p), _) => (
-                if p.x + w > bounds.right() { p.x - w } else { p.x },
-                if p.y + h > bounds.bottom() { p.y - h } else { p.y },
+                if p.x + w > bounds.right() {
+                    p.x - w
+                } else {
+                    p.x
+                },
+                if p.y + h > bounds.bottom() {
+                    p.y - h
+                } else {
+                    p.y
+                },
+            ),
+            (None, Some(_)) | (None, None) if spec.side == PopupSide::Center => (
+                bounds.origin.x + (bounds.size.width - w) / 2.0,
+                bounds.origin.y + (bounds.size.height - h) / 2.0,
             ),
             (None, Some(a)) => place_on_side(a, w, h, spec, bounds),
             (None, None) => (
@@ -1451,6 +1492,7 @@ fn place_on_side(a: Rect, w: f32, h: f32, spec: PopupSpec, bounds: Rect) -> (f32
             };
             (along(a.origin.x, a.size.width, w), y)
         }
+        PopupSide::Center => (a.origin.x, a.origin.y), // 调用方已拦截，保底
         PopupSide::Left | PopupSide::Right => {
             let right = a.right() + g;
             let left = a.origin.x - g - w;

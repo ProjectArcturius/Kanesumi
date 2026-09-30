@@ -102,8 +102,12 @@ fn column_stacks_children_and_grow_takes_remaining_space() {
 fn child_larger_than_slot_is_clamped_into_slot() {
     // 保险机制 §Ⅳ.3-1：固定 500 宽的子放进 100 宽的父，结果夹进父槽位，不越界。
     let mut h = TestHarness::new(300.0, 300.0);
-    let parent = h.tree.insert_with(h.root(), Border::new(), fixed(100.0, 100.0));
-    let child = h.tree.insert_with(parent, TestButton::new(10.0, 10.0), fixed(500.0, 20.0));
+    let parent = h
+        .tree
+        .insert_with(h.root(), Border::new(), fixed(100.0, 100.0));
+    let child = h
+        .tree
+        .insert_with(parent, TestButton::new(10.0, 10.0), fixed(500.0, 20.0));
     h.frame();
     assert_eq!(h.rect(child).size.width, 100.0);
     h.assert_contained();
@@ -150,8 +154,12 @@ fn measure_is_cached_until_invalidated() {
 fn hidden_node_takes_no_space_and_is_not_hit() {
     let mut h = TestHarness::new(200.0, 200.0);
     let col = h.tree.insert(h.root(), Stack::column());
-    let a = h.tree.insert_with(col, TestButton::new(50.0, 40.0), fixed(50.0, 40.0));
-    let b = h.tree.insert_with(col, TestButton::new(50.0, 40.0), fixed(50.0, 40.0));
+    let a = h
+        .tree
+        .insert_with(col, TestButton::new(50.0, 40.0), fixed(50.0, 40.0));
+    let b = h
+        .tree
+        .insert_with(col, TestButton::new(50.0, 40.0), fixed(50.0, 40.0));
     h.frame();
     let a_center = h.center(a);
     h.tree.update_props(a, |p| p.visible = false);
@@ -165,7 +173,9 @@ fn hidden_node_takes_no_space_and_is_not_hit() {
 #[test]
 fn click_on_child_label_is_delivered_to_interactive_ancestor() {
     let mut h = TestHarness::new(200.0, 200.0);
-    let btn = h.tree.insert_with(h.root(), TestButton::new(100.0, 40.0), fixed(100.0, 40.0));
+    let btn = h
+        .tree
+        .insert_with(h.root(), TestButton::new(100.0, 40.0), fixed(100.0, 40.0));
     let label = h.tree.insert(btn, Label::new("OK"));
     h.frame();
     assert_eq!(h.tree.hit(h.center(label)), Some(label));
@@ -177,7 +187,9 @@ fn click_on_child_label_is_delivered_to_interactive_ancestor() {
 #[test]
 fn press_then_release_outside_does_not_click() {
     let mut h = TestHarness::new(200.0, 200.0);
-    let btn = h.tree.insert_with(h.root(), TestButton::new(100.0, 40.0), fixed(100.0, 40.0));
+    let btn = h
+        .tree
+        .insert_with(h.root(), TestButton::new(100.0, 40.0), fixed(100.0, 40.0));
     h.frame();
     h.press_at(h.center(btn), PointerButton::Left);
     assert!(h.tree.states_of(btn).pressed);
@@ -193,7 +205,8 @@ fn empty_stack_area_passes_hits_through() {
     // COMPOSITION 契约 12：无背景容器的空白处不命中。
     let mut h = TestHarness::new(200.0, 200.0);
     let col = h.tree.insert(h.root(), Stack::column());
-    h.tree.insert_with(col, TestButton::new(50.0, 40.0), fixed(50.0, 40.0));
+    h.tree
+        .insert_with(col, TestButton::new(50.0, 40.0), fixed(50.0, 40.0));
     h.frame();
     assert_eq!(h.tree.hit(Point::new(150.0, 150.0)), None);
 }
@@ -201,7 +214,9 @@ fn empty_stack_area_passes_hits_through() {
 #[test]
 fn right_click_records_context_target() {
     let mut h = TestHarness::new(200.0, 200.0);
-    let btn = h.tree.insert_with(h.root(), TestButton::new(100.0, 40.0), fixed(100.0, 40.0));
+    let btn = h
+        .tree
+        .insert_with(h.root(), TestButton::new(100.0, 40.0), fixed(100.0, 40.0));
     h.frame();
     h.right_click(btn);
     assert_eq!(h.tree.context_target(), Some(btn));
@@ -211,14 +226,22 @@ fn right_click_records_context_target() {
 #[test]
 fn hover_repaints_only_the_hovered_control() {
     let mut h = TestHarness::new(400.0, 400.0);
-    let bg = h.tree.insert(h.root(), Border::new().background(Color::rgb(0.1, 0.1, 0.1)));
-    let btn = h.tree.insert_with(bg, TestButton::new(100.0, 40.0), fixed(100.0, 40.0));
+    let bg = h.tree.insert(
+        h.root(),
+        Border::new().background(Color::rgb(0.1, 0.1, 0.1)),
+    );
+    let btn = h
+        .tree
+        .insert_with(bg, TestButton::new(100.0, 40.0), fixed(100.0, 40.0));
     let first = h.frame().damage;
     assert_eq!(first, None, "首帧全量重绘");
     h.move_to(h.center(btn));
     let out = h.frame().clone();
     let d = out.damage.expect("悬停应产出局部损伤而非全量");
-    assert!(d.size.width <= 104.0 + 0.01 && d.size.height <= 44.0 + 0.01, "损伤 {d:?} 应只覆盖按钮（含焦点视觉外扩）");
+    assert!(
+        d.size.width <= 104.0 + 0.01 && d.size.height <= 44.0 + 0.01,
+        "损伤 {d:?} 应只覆盖按钮（含焦点视觉外扩）"
+    );
     assert!(out.animating, "hover 过渡在动画中");
     h.settle();
     assert!(!h.tree.needs_frame(), "稳态后不再请求帧");
@@ -260,7 +283,9 @@ fn enter_on_focused_control_activates_it() {
 #[test]
 fn focus_visual_only_for_keyboard_focus() {
     let mut h = TestHarness::new(200.0, 200.0);
-    let btn = h.tree.insert_with(h.root(), TestButton::new(50.0, 20.0), fixed(50.0, 20.0));
+    let btn = h
+        .tree
+        .insert_with(h.root(), TestButton::new(50.0, 20.0), fixed(50.0, 20.0));
     h.frame();
     let strokes = |h: &TestHarness| {
         h.last
@@ -302,8 +327,11 @@ fn panel() -> Border {
 #[test]
 fn popup_is_placed_below_anchor_and_clamped_into_surface() {
     let mut h = TestHarness::new(300.0, 200.0);
-    let btn = h.tree.insert_with(h.root(), TestButton::new(80.0, 30.0), fixed(80.0, 30.0));
-    h.tree.update_props(btn, |p| p.margin = Insets::new(250.0, 20.0, 0.0, 0.0));
+    let btn = h
+        .tree
+        .insert_with(h.root(), TestButton::new(80.0, 30.0), fixed(80.0, 30.0));
+    h.tree
+        .update_props(btn, |p| p.margin = Insets::new(250.0, 20.0, 0.0, 0.0));
     h.frame();
     let pop = h.tree.open_popup(
         panel(),
@@ -313,7 +341,9 @@ fn popup_is_placed_below_anchor_and_clamped_into_surface() {
             ..PopupSpec::default()
         },
     );
-    let inner = h.tree.insert_with(pop, TestButton::new(120.0, 60.0), fixed(120.0, 60.0));
+    let inner = h
+        .tree
+        .insert_with(pop, TestButton::new(120.0, 60.0), fixed(120.0, 60.0));
     h.frame();
     let r = h.rect(pop);
     assert_eq!(r.origin.y, h.rect(btn).bottom() + 4.0);
@@ -324,15 +354,24 @@ fn popup_is_placed_below_anchor_and_clamped_into_surface() {
 #[test]
 fn click_outside_light_dismisses_and_is_swallowed() {
     let mut h = TestHarness::new(300.0, 300.0);
-    let under = h.tree.insert_with(h.root(), TestButton::new(300.0, 300.0), fixed(300.0, 300.0));
+    let under = h
+        .tree
+        .insert_with(h.root(), TestButton::new(300.0, 300.0), fixed(300.0, 300.0));
     h.frame();
     let pop = h.tree.open_popup(panel(), PopupSpec::default());
-    h.tree.insert_with(pop, TestButton::new(50.0, 50.0), fixed(50.0, 50.0));
+    h.tree
+        .insert_with(pop, TestButton::new(50.0, 50.0), fixed(50.0, 50.0));
     h.frame();
     h.click_at(Point::new(5.0, 5.0));
     let acts = h.take_actions();
-    assert!(acts.iter().any(|(id, a)| *id == pop && a.is::<PopupDismissed>()));
-    assert!(!acts.iter().any(|(id, a)| *id == under && a.is::<Clicked>()), "关闭弹层的那次点击被吞掉");
+    assert!(
+        acts.iter()
+            .any(|(id, a)| *id == pop && a.is::<PopupDismissed>())
+    );
+    assert!(
+        !acts.iter().any(|(id, a)| *id == under && a.is::<Clicked>()),
+        "关闭弹层的那次点击被吞掉"
+    );
     assert!(!h.tree.contains(pop));
 }
 
@@ -357,7 +396,10 @@ fn modal_popup_swallows_outside_click_and_traps_focus() {
     for _ in 0..4 {
         h.tab();
         let f = h.tree.focused().unwrap();
-        assert!(f == a || f == b, "焦点不得逃出模态弹层（得到 {f:?}，外部 {outside:?}）");
+        assert!(
+            f == a || f == b,
+            "焦点不得逃出模态弹层（得到 {f:?}，外部 {outside:?}）"
+        );
     }
 }
 
@@ -383,7 +425,10 @@ fn builtin_widgets_pass_the_insurance_assertions() {
             .padding(Insets::all(8.0)),
         fixed(200.0, 60.0),
     );
-    let label = h.tree.insert(border, Label::new("一段很长很长很长很长很长很长很长的中文标签，必须省略而不是溢出"));
+    let label = h.tree.insert(
+        border,
+        Label::new("一段很长很长很长很长很长很长很长的中文标签，必须省略而不是溢出"),
+    );
     h.frame();
     h.assert_contained();
     h.assert_no_hit_outside(border);
@@ -403,7 +448,10 @@ fn paint_assertion_catches_overflowing_widget() {
         }
         fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
             let r = ctx.rect();
-            scene.fill_rect(Color::rgb(1.0, 0.0, 0.0), Rect::new(r.origin.x, r.origin.y, 100.0, 100.0));
+            scene.fill_rect(
+                Color::rgb(1.0, 0.0, 0.0),
+                Rect::new(r.origin.x, r.origin.y, 100.0, 100.0),
+            );
         }
     }
     let mut h = TestHarness::new(200.0, 200.0);
@@ -438,7 +486,12 @@ impl Widget for Spinner {
 fn hidden_animation_is_parked_and_resumes_when_shown() {
     let mut h = TestHarness::new(200.0, 200.0);
     let ticks = Rc::new(Cell::new(0));
-    let s = h.tree.insert(h.root(), Spinner { ticks: ticks.clone() });
+    let s = h.tree.insert(
+        h.root(),
+        Spinner {
+            ticks: ticks.clone(),
+        },
+    );
     h.frame();
     h.frame();
     assert!(h.tree.needs_frame());
@@ -490,7 +543,13 @@ impl Widget for Anchor {
 fn closing_popup_notifies_anchor_and_returns_focus() {
     let mut h = TestHarness::new(300.0, 300.0);
     let closed = Rc::new(Cell::new(0));
-    let a = h.tree.insert_with(h.root(), Anchor { closed: closed.clone() }, fixed(80.0, 30.0));
+    let a = h.tree.insert_with(
+        h.root(),
+        Anchor {
+            closed: closed.clone(),
+        },
+        fixed(80.0, 30.0),
+    );
     h.frame();
     h.click(a);
     let pop = h.tree.popups().next().expect("点击应打开弹层");
@@ -507,19 +566,22 @@ fn closing_popup_notifies_anchor_and_returns_focus() {
     assert_eq!(closed.get(), 2);
 }
 
-
 // ── 弹层方位放置与跨节点编辑 ──────────────────────────────────────────────────
 
 fn anchor_at(h: &mut TestHarness, x: f32, y: f32) -> kanesumi_element::WidgetId {
-    let a = h.tree.insert_with(h.root(), TestButton::new(40.0, 20.0), fixed(40.0, 20.0));
-    h.tree.update_props(a, |p| p.margin = Insets::new(x, y, 0.0, 0.0));
+    let a = h
+        .tree
+        .insert_with(h.root(), TestButton::new(40.0, 20.0), fixed(40.0, 20.0));
+    h.tree
+        .update_props(a, |p| p.margin = Insets::new(x, y, 0.0, 0.0));
     h.frame();
     a
 }
 
 fn open(h: &mut TestHarness, spec: PopupSpec) -> kanesumi_element::WidgetId {
     let p = h.tree.open_popup(panel(), spec);
-    h.tree.insert_with(p, TestButton::new(100.0, 50.0), fixed(100.0, 50.0));
+    h.tree
+        .insert_with(p, TestButton::new(100.0, 50.0), fixed(100.0, 50.0));
     h.frame();
     p
 }
@@ -530,11 +592,29 @@ fn popup_side_and_alignment() {
     let mut h = TestHarness::new(400.0, 300.0);
     let a = anchor_at(&mut h, 150.0, 120.0); // 锚点 (150,120) 40×20
     // 上方居中：x = 150 + (40-100)/2 = 120，y = 120 - 4 - 50 = 66
-    let p = open(&mut h, PopupSpec { anchor: Some(a), side: PopupSide::Top, align: Align::Center, gap: 4.0, ..PopupSpec::default() });
+    let p = open(
+        &mut h,
+        PopupSpec {
+            anchor: Some(a),
+            side: PopupSide::Top,
+            align: Align::Center,
+            gap: 4.0,
+            ..PopupSpec::default()
+        },
+    );
     assert_eq!(h.rect(p), Rect::new(120.0, 66.0, 100.0, 50.0));
     h.tree.close_popup(p);
     // 右侧、下缘对齐：x = 190 + 4，y = 120 + 20 - 50 = 90
-    let p = open(&mut h, PopupSpec { anchor: Some(a), side: PopupSide::Right, align: Align::End, gap: 4.0, ..PopupSpec::default() });
+    let p = open(
+        &mut h,
+        PopupSpec {
+            anchor: Some(a),
+            side: PopupSide::Right,
+            align: Align::End,
+            gap: 4.0,
+            ..PopupSpec::default()
+        },
+    );
     assert_eq!(h.rect(p), Rect::new(194.0, 90.0, 100.0, 50.0));
 }
 
@@ -544,11 +624,25 @@ fn popup_flips_to_opposite_side_when_it_does_not_fit() {
     let mut h = TestHarness::new(400.0, 300.0);
     let a = anchor_at(&mut h, 350.0, 10.0); // 贴右上角
     // 首选右侧放不下 → 翻左：x = 350 - 100 = 250
-    let p = open(&mut h, PopupSpec { anchor: Some(a), side: PopupSide::Right, ..PopupSpec::default() });
+    let p = open(
+        &mut h,
+        PopupSpec {
+            anchor: Some(a),
+            side: PopupSide::Right,
+            ..PopupSpec::default()
+        },
+    );
     assert_eq!(h.rect(p).origin.x, 250.0);
     h.tree.close_popup(p);
     // 首选上方放不下 → 翻下：y = 30
-    let p = open(&mut h, PopupSpec { anchor: Some(a), side: PopupSide::Top, ..PopupSpec::default() });
+    let p = open(
+        &mut h,
+        PopupSpec {
+            anchor: Some(a),
+            side: PopupSide::Top,
+            ..PopupSpec::default()
+        },
+    );
     assert_eq!(h.rect(p).origin.y, 30.0);
 }
 
@@ -580,11 +674,115 @@ impl Widget for Typer {
 fn event_ctx_can_edit_another_widget_while_focus_stays() {
     let mut h = TestHarness::new(300.0, 200.0);
     let label = h.tree.insert(h.root(), Label::new("旧"));
-    let typer = h.tree.insert(h.root(), Typer { target: Some(label) });
+    let typer = h.tree.insert(
+        h.root(),
+        Typer {
+            target: Some(label),
+        },
+    );
     h.frame();
     h.tab();
     assert_eq!(h.tree.focused(), Some(typer));
     h.type_text("新");
     assert_eq!(h.tree.get::<Label>(label).unwrap().text, "新");
     assert_eq!(h.tree.focused(), Some(typer), "焦点留在输入方");
+}
+
+// ── Star 等分、指针位置、模态遮罩 ──────────────────────────────────────────────
+
+#[test]
+fn star_children_share_space_equally_regardless_of_content() {
+    // 内容宽 10 / 50 / 30 的三个 Star 子节点在 300 宽的行里必须等宽（XAML `*`）。
+    let mut h = TestHarness::new(300.0, 100.0);
+    let row = h.tree.insert(h.root(), Stack::row());
+    let star = LayoutProps {
+        grow: 1.0,
+        ..LayoutProps::default()
+    };
+    let ids: Vec<_> = [10.0, 50.0, 30.0]
+        .iter()
+        .map(|w| h.tree.insert_with(row, TestButton::new(*w, 20.0), star))
+        .collect();
+    h.frame();
+    for id in &ids {
+        assert_eq!(h.rect(*id).size.width, 100.0);
+    }
+}
+
+#[test]
+fn star_weight_and_fixed_siblings() {
+    // 固定 60 + Star×1 + Star×2 分 300：剩 240 → 80 / 160。
+    let mut h = TestHarness::new(300.0, 100.0);
+    let row = h.tree.insert(h.root(), Stack::row());
+    let a = h.tree.insert(row, TestButton::new(60.0, 20.0));
+    let b = h.tree.insert_with(
+        row,
+        TestButton::new(5.0, 20.0),
+        LayoutProps {
+            grow: 1.0,
+            ..LayoutProps::default()
+        },
+    );
+    let c = h.tree.insert_with(
+        row,
+        TestButton::new(5.0, 20.0),
+        LayoutProps {
+            grow: 2.0,
+            ..LayoutProps::default()
+        },
+    );
+    h.frame();
+    assert_eq!(h.rect(a).size.width, 60.0);
+    assert_eq!(h.rect(b).size.width, 80.0);
+    assert_eq!(h.rect(c).size.width, 160.0);
+}
+
+#[test]
+fn pointer_position_is_tracked() {
+    let mut h = TestHarness::new(200.0, 200.0);
+    h.frame();
+    assert_eq!(h.tree.pointer(), None);
+    h.move_to(Point::new(12.0, 34.0));
+    assert_eq!(h.tree.pointer(), Some(Point::new(12.0, 34.0)));
+}
+
+#[test]
+fn modal_scrim_is_drawn_between_content_and_popup() {
+    let mut h = TestHarness::new(300.0, 200.0);
+    h.tree.insert(
+        h.root(),
+        Border::new().background(Color::rgb(0.1, 0.1, 0.1)),
+    );
+    h.frame();
+    let p = h.tree.open_popup(
+        panel(),
+        PopupSpec {
+            modal: true,
+            scrim: true,
+            ..PopupSpec::default()
+        },
+    );
+    h.tree
+        .insert_with(p, TestButton::new(50.0, 50.0), fixed(50.0, 50.0));
+    let out = h.frame().clone();
+    assert_eq!(out.damage, None, "遮罩出现整面重画");
+    let scrim = h.tree.theme().overlay_color;
+    let cmds = &out.scene.commands;
+    let i = cmds
+        .iter()
+        .position(|c| matches!(c, SceneCommand::FillRect { color, rect, .. } if *color == scrim && rect.size.width == 300.0))
+        .expect("应画出整面遮罩");
+    let panel_i = cmds
+        .iter()
+        .rposition(|c| matches!(c, SceneCommand::FillRect { color, .. } if *color == Color::rgb(0.3, 0.3, 0.3)))
+        .unwrap();
+    assert!(panel_i > i, "弹层面板画在遮罩之上");
+    h.tree.close_popup(p);
+    let out = h.frame().clone();
+    assert!(
+        !out.scene
+            .commands
+            .iter()
+            .any(|c| matches!(c, SceneCommand::FillRect { color, .. } if *color == scrim))
+    );
 }
