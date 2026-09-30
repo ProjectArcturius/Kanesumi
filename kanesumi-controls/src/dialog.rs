@@ -1,7 +1,10 @@
 use kanesumi_anim::{EasingMode, MetroAnim, UwpEasing};
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::{MetroTheme, Rect, TextStyle};
+use kanesumi_core::{MetroTheme, Point, Rect, Size, TextStyle};
+use kanesumi_element::{
+    Event, EventCtx, Key, MeasureCtx, PaintCtx, PointerButton, PopupSpec, Widget, WidgetId,
+};
 
 use crate::button::MetroButton;
 use crate::state::ControlState;
@@ -205,7 +208,12 @@ impl MetroDialog {
         if !self.is_visible() {
             return None;
         }
-        let box_rect = self.box_rect(screen);
+        self.hit_button_in(self.box_rect(screen), p)
+    }
+
+    /// 命中测试（给定盒体矩形）——元素树里盒体矩形由框架 arrange 决定，故与 `screen`
+    /// 版本分开；旧 `hit_button` 转发到此。
+    fn hit_button_in(&self, box_rect: Rect, p: kanesumi_core::Point) -> Option<DialogButton> {
         let pad = 24.0;
         let button_w = 130.0_f32.min(202.0);
         let button_y = box_rect.origin.y + box_rect.size.height - 24.0 - 32.0;
@@ -238,15 +246,24 @@ impl MetroDialog {
         if !self.is_visible() {
             return;
         }
-        let colors = &theme.colors;
-
         // 遮罩
         let scrim = theme
             .overlay_color
             .with_alpha(theme.overlay_color.a * self.overlay_alpha());
         scene.fill_rect(scrim, screen);
+        self.render_box(theme, engine, self.box_rect(screen), scene);
+    }
 
-        let box_rect = self.box_rect(screen);
+    /// 画盒体（标题 / 内容 / 按钮区）——不含遮罩。元素树面板 Widget 复用（盒体矩形由框架给出）。
+    fn render_box(
+        &self,
+        theme: &MetroTheme,
+        engine: &TextEngine,
+        box_rect: Rect,
+        scene: &mut Scene,
+    ) {
+        let colors = &theme.colors;
+
         // 盒体（chrome）
         scene.fill_rounded_rect(colors.surface, box_rect, theme.tokens.corner_radius);
         scene.stroke_rounded_rect(colors.divider, box_rect, 1.0, theme.tokens.corner_radius);
@@ -334,6 +351,241 @@ impl MetroDialog {
             btn.render(theme, engine, btn_rect, scene);
             x -= 2.0; // 按钮间距
         }
+    }
+}
+
+// ── 元素树接入（弹层类控件，参 docs/ELEMENT_MIGRATION.md §8）────────────────────
+//
+// 模态弹层：`PopupSpec { modal: true, light_dismiss: false }` —— 点外部不关闭（吞掉点击）、
+// Tab 被限制在弹层内（焦点陷阱）。盒体自身即弹层节点（`MetroDialog` 实现 `Widget`），
+// 遮罩不再由本控件画（覆盖层目前没有全屏遮罩机制，详见本批报告）。
+//
+// `EventCtx::open_popup` 在 `anchor` 缺省时会强制锚到本节点，取不到 `anchor: None` 的
+// 「表面居中」分支；`show_modal` 改用 `at` 把盒体左上角摆到中心减半径处实现居中。
+
+/// 元素树动作：对话框按钮被激活（点击 / Esc = Close / Enter = Primary）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DialogResult(pub DialogButton);
+
+/// 盒体固有高（旧 `box_rect` 的 240，受表面高夹紧）。
+const DIALOG_BOX_H: f32 = 240.0;
+
+impl MetroDialog {
+    /// 元素树：模态打开（表面居中、焦点陷阱、点外部不关闭）。返回弹层 id。
+    pub fn show_modal(&mut self, ctx: &mut EventCtx) -> WidgetId {
+        let size = Size::new(
+            self.width.clamp(self.min_width, self.max_width),
+            DIALOG_BOX_H,
+        );
+        let surface = ctx.surface();
+        let at = Point::new(
+            surface.origin.x + (surface.size.width - size.width) / 2.0,
+            surface.origin.y + (surface.size.height - size.height) / 2.0,
+        );
+        let id = ctx.open_popup(
+            self.clone(),
+            PopupSpec {
+                at: Some(at),
+                modal: true,
+                light_dismiss: false,
+                ..PopupSpec::default()
+            },
+        );
+        ctx.focus_widget(id, true);
+        id
+    }
+}
+
+impl Widget for MetroDialog {
+    fn measure(&mut self, _ctx: &mut MeasureCtx, _available: Size) -> Size {
+        Size::new(
+            self.width.clamp(self.min_width, self.max_width),
+            DIALOG_BOX_H,
+        )
+    }
+
+    fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
+        let theme = *ctx.theme();
+        self.render_box(&theme, ctx.engine(), ctx.rect(), scene);
+    }
+
+    fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
+        match event {
+            Event::PointerUp {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                if let Some(b) = self.hit_button_in(ctx.rect(), *pos) {
+                    ctx.emit(DialogResult(b));
+                    ctx.close_popup(ctx.id());
+                }
+                ctx.set_handled();
+            }
+            Event::KeyDown { key, .. } => match key {
+                // Esc = Close（模态弹层 light_dismiss=false，框架不会代劳）。
+                Key::Escape => {
+                    ctx.emit(DialogResult(DialogButton::Close));
+                    ctx.close_popup(ctx.id());
+                    ctx.set_handled();
+                }
+                // Enter = Primary（未配置 Primary 时无动作）。
+                Key::Enter => {
+                    if self.buttons.primary.is_some() {
+                        ctx.emit(DialogResult(DialogButton::Primary));
+                        ctx.close_popup(ctx.id());
+                    }
+                    ctx.set_handled();
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    /// 模态盒体不画框架焦点框（整框描边无意义；按钮动作由 Enter/Esc 承担）。
+    fn focus_visual(&self) -> bool {
+        false
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Group,
+            name: self.title.clone(),
+            value: Some(self.content.clone()),
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, LayoutProps};
+
+    /// 触发器：点击模态打开对话框。
+    struct Opener {
+        dlg: MetroDialog,
+    }
+
+    impl Widget for Opener {
+        fn measure(&mut self, _: &mut MeasureCtx, _: Size) -> Size {
+            Size::new(80.0, 32.0)
+        }
+        fn paint(&mut self, _: &mut PaintCtx, _: &mut Scene) {}
+        fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
+            if let Event::Click = event {
+                self.dlg.show_modal(ctx);
+                ctx.set_handled();
+            }
+        }
+        fn focusable(&self) -> bool {
+            true
+        }
+    }
+
+    fn harness() -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(600.0, 500.0);
+        let mut dlg = MetroDialog::new("保存工作？", "是否保存对当前文件的更改？");
+        dlg.buttons.primary = Some("保存".into());
+        dlg.buttons.secondary = Some("不保存".into());
+        dlg.buttons.close = Some("取消".into());
+        dlg.buttons.default_button = DialogDefaultButton::Primary;
+        let opener = h.tree.insert_with(
+            h.root(),
+            Opener { dlg },
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                margin: Insets::new(20.0, 20.0, 0.0, 0.0),
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, opener)
+    }
+
+    fn open(h: &mut TestHarness, opener: WidgetId) -> WidgetId {
+        h.click(opener);
+        h.tree.popups().next().expect("对话框应打开")
+    }
+
+    #[test]
+    fn modal_centers_and_traps_focus() {
+        let (mut h, opener) = harness();
+        let d = open(&mut h, opener);
+        let r = h.rect(d);
+        assert!(
+            (r.origin.x + r.size.width / 2.0 - h.size.width / 2.0).abs() < 1.5,
+            "水平居中 {r:?}"
+        );
+        assert!(
+            (r.origin.y + r.size.height / 2.0 - h.size.height / 2.0).abs() < 1.5,
+            "垂直居中 {r:?}"
+        );
+        assert_eq!(h.tree.focused(), Some(d), "打开即聚焦弹层");
+        h.tab();
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(d), "Tab 不得逃出对话框");
+    }
+
+    #[test]
+    fn click_close_button_reports_result() {
+        let (mut h, opener) = harness();
+        let d = open(&mut h, opener);
+        let r = h.rect(d);
+        let bw = 130.0_f32.min(202.0);
+        let by = r.origin.y + r.size.height - 24.0 - 32.0 + 16.0;
+        let cx = r.origin.x + r.size.width - 24.0 - bw / 2.0; // Close 最右
+        h.click_at(Point::new(cx, by));
+        assert_eq!(
+            h.take::<DialogResult>(),
+            vec![(d, DialogResult(DialogButton::Close))]
+        );
+        assert!(h.tree.popups().next().is_none());
+    }
+
+    #[test]
+    fn enter_is_primary_and_escape_is_close() {
+        let (mut h, opener) = harness();
+        let d = open(&mut h, opener);
+        h.key(Key::Enter);
+        assert_eq!(
+            h.take::<DialogResult>(),
+            vec![(d, DialogResult(DialogButton::Primary))]
+        );
+        assert!(h.tree.popups().next().is_none());
+
+        let (mut h, opener) = harness();
+        let d = open(&mut h, opener);
+        h.key(Key::Escape);
+        assert_eq!(
+            h.take::<DialogResult>(),
+            vec![(d, DialogResult(DialogButton::Close))]
+        );
+        assert!(h.tree.popups().next().is_none());
+    }
+
+    #[test]
+    fn outside_click_does_not_close_modal() {
+        let (mut h, opener) = harness();
+        let _d = open(&mut h, opener);
+        h.click_at(Point::new(10.0, 10.0));
+        assert!(h.tree.popups().next().is_some(), "模态点外部不关闭");
+        assert!(h.take::<DialogResult>().is_empty());
+    }
+
+    #[test]
+    fn passes_insurance_checks_while_open() {
+        let (mut h, opener) = harness();
+        let d = open(&mut h, opener);
+        h.assert_contained();
+        h.assert_paint_within(d, Insets::ZERO);
     }
 }
 
