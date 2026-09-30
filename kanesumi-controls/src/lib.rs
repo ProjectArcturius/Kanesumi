@@ -70,7 +70,7 @@ pub use button::{ButtonClicked, ButtonKind, MetroButton};
     CANDIDATE_PAD_X, CANDIDATE_PAD_Y, CANDIDATE_ROW_H,
 };
 pub use check_box::{CheckState, CheckToggled, MetroCheckBox};
-pub use color_picker::{ALL_CHANNELS, ColorChannel, MetroColorPicker};
+pub use color_picker::{ALL_CHANNELS, COLOR_BELOW_SPECTRUM_H, COLOR_HEX_ROW_H, ColorChanged, ColorChannel, MetroColorPicker};
 pub use command_bar_flyout::{
     COMMANDBAR_BORDER, COMMANDBAR_BUTTON_SIZE, COMMANDBAR_ICON_SIZE, TEXT_COMMANDS, CommandBarAction,
     CommandButton, MetroCommandBarFlyout,
@@ -117,9 +117,9 @@ pub use slider::{MetroSlider, SliderValueChanged, SLIDER_HEADER_MARGIN, SLIDER_M
 pub use split_button::{MetroSplitButton, SplitButtonClick, SplitButtonPart};
 pub use state::{ButtonState, ControlState, control_state};
 pub use surface::MetroSurface;
-pub use swipe_control::{MetroSwipeControl, SwipeAction, SwipeItem, SwipeItemAction, SwipeMode};
+pub use swipe_control::{MetroSwipeControl, SwipeAction, SwipeInvoked, SwipeItem, SwipeItemAction, SwipeMode};
 pub use switch::{MetroSwitch, SwitchToggled};
-pub use tab_row::{MetroTab, MetroTabRow};
+pub use tab_row::{MetroTab, MetroTabRow, TabSelectionChanged};
 pub use tab_view::{MetroTabView, TabHover, TabViewAction};
 pub use teaching_tip::{MetroTeachingTip, TeachingTipClick, TeachingTipPlacement, TeachingTipSide};
 pub use text::MetroText;
