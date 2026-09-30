@@ -1152,7 +1152,6 @@ dependencies = [
  "kanesumi-controls",
  "kanesumi-core",
  "kanesumi-harness",
- "kanesumi-structure",
 ]
 
 [[package]]
