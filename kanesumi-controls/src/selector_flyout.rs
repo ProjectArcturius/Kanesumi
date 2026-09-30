@@ -1,7 +1,14 @@
+use std::cell::Cell;
+use std::rc::Rc;
+
 use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::{MetroTheme, Point, Rect, TextStyle};
+use kanesumi_core::{MetroTheme, Point, Rect, Size, TextStyle};
+use kanesumi_element::{
+    Event, EventCtx, Key, MeasureCtx, PaintCtx, PointerButton, PopupSpec, UpdateCtx, Widget,
+    WidgetId,
+};
 
 use crate::popup::{PopupAnim, PopupState, render_overlay};
 
@@ -23,6 +30,10 @@ pub struct MetroSelectorFlyout {
     pub panel_rect: Rect,
     /// 面板最大高。
     pub max_dropdown_height: f32,
+    /// 元素树下打开的选项面板（`SelectorPanel` 节点）；旧路径不用。
+    tree_popup: Option<WidgetId>,
+    /// 与面板共享的「本次选中项」：面板点选时写入，触发器在 `PopupClosed` 里读取并回写。
+    tree_pick: Rc<Cell<Option<usize>>>,
 }
 
 impl Default for MetroSelectorFlyout {
@@ -36,6 +47,8 @@ impl Default for MetroSelectorFlyout {
             anim: PopupAnim::new(),
             panel_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             max_dropdown_height: 504.0,
+            tree_popup: None,
+            tree_pick: Rc::new(Cell::new(None)),
         }
     }
 }
@@ -152,21 +165,30 @@ impl MetroSelectorFlyout {
             return;
         }
         render_overlay(theme, &self.anim, screen, scene);
-        crate::popup::render_panel_base(theme, self.panel_rect, self.anim.panel_progress(), scene);
+        self.render_panel(theme, scene, 0.0);
+    }
 
-        let mut y = self.panel_rect.origin.y;
+    /// 画选项面板（底座 + 项，裁到面板矩形）——不含遮罩。`scroll` = 内容上移量：
+    /// 旧路径传 0；元素树面板超出 `max_dropdown_height` 时用内部滚动把余下项移进视口。
+    fn render_panel(&self, theme: &MetroTheme, scene: &mut Scene, scroll: f32) {
+        crate::popup::render_panel_base(theme, self.panel_rect, self.anim.panel_progress(), scene);
+        self.paint_items(theme, scene, scroll);
+    }
+
+    /// 画面板项。布局与旧实现一致：项高 32，选中 = `selection_tint`，悬停 = `hover_tint`。
+    fn paint_items(&self, theme: &MetroTheme, scene: &mut Scene, scroll: f32) {
+        let colors = &theme.colors;
+        let style = TextStyle::new(14.0, 20.0, kanesumi_core::FontWeight::Normal);
+        let viewport_top = self.panel_rect.origin.y;
+        let viewport_bottom = viewport_top + self.panel_height();
         // 容器语义 = 裁到面板矩形（审计 P0-2）：末项可能只露出半行，不裁会画到面板之外。
         scene.push_clip(self.panel_rect);
         for (i, item) in self.items.iter().enumerate() {
-            if y - self.panel_rect.origin.y >= self.panel_height() {
-                break;
+            let y = viewport_top + i as f32 * 32.0 - scroll;
+            if y + 32.0 <= viewport_top || y >= viewport_bottom {
+                continue; // 完全滚出视口
             }
-            let item_rect = Rect::new(
-                self.panel_rect.origin.x,
-                y,
-                self.panel_rect.size.width,
-                32.0,
-            );
+            let item_rect = Rect::new(self.panel_rect.origin.x, y, self.panel_rect.size.width, 32.0);
             let selected = self.selected == Some(i);
             if selected {
                 // 项选中 = 强调色 AccentLow（暗 0.6 / 亮 0.4）。
@@ -189,9 +211,396 @@ impl MetroSelectorFlyout {
                 style.line_height,
             );
             scene.label(item.clone(), text_rect, fg, style, TextAlign::Left);
-            y += 32.0;
         }
         scene.pop_clip();
+    }
+}
+
+// ── 元素树接入（弹层类控件，参 docs/ELEMENT_MIGRATION.md §8）────────────────────
+//
+// 触发器只负责「打开」与「展开中外观」；选项面板是覆盖层上的独立节点 `SelectorPanel`，
+// 放置 / 点外部关闭 / Esc / 焦点交还全部由框架承担。面板与触发器不互相持有实例：
+// 面板点选写入共享格子 `tree_pick`，触发器在 `PopupClosed` 里读取、回写 `selected`
+// 并发 `SelectorSelectionChanged`（任何原因的关闭都会到达该事件，据此复位 `tree_popup`）。
+
+/// 元素树动作：选择项变更。载荷 = 新的选中项索引。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectorSelectionChanged(pub usize);
+
+/// 选项面板（覆盖层节点）。底座与项绘制复用 `MetroSelectorFlyout`；面板高超出
+/// `max_dropdown_height` 时内部滚动（框架现无把 `MetroScrollView` 挂进弹层子树的 API，
+/// 详见本批报告）。
+struct SelectorPanel {
+    list: MetroSelectorFlyout,
+    /// 面板 → 触发器回写选中项（`PopupClosed` 时读取）。
+    pick: Rc<Cell<Option<usize>>>,
+    /// 内部滚动偏移（内容坐标系）。
+    scroll: f32,
+}
+
+impl SelectorPanel {
+    fn new(
+        items: Vec<String>,
+        selected: Option<usize>,
+        pick: Rc<Cell<Option<usize>>>,
+        width: f32,
+        max_height: f32,
+    ) -> Self {
+        let mut list = MetroSelectorFlyout::new(items);
+        list.selected = selected;
+        list.max_dropdown_height = max_height;
+        list.panel_rect = Rect::new(0.0, 0.0, width, list.panel_height());
+        list.anim.open();
+        Self {
+            list,
+            pick,
+            scroll: 0.0,
+        }
+    }
+
+    /// 内容坐标系下的项命中（不受视口高度裁剪限制 —— `panel_height` 只约束可见区）。
+    fn item_at(&self, pos: Point) -> Option<usize> {
+        let r = self.list.panel_rect;
+        if pos.x < r.origin.x || pos.x >= r.origin.x + r.size.width {
+            return None;
+        }
+        let content_y = pos.y - r.origin.y + self.scroll;
+        if content_y < 0.0 || content_y >= self.list.items.len() as f32 * 32.0 {
+            return None;
+        }
+        Some((content_y / 32.0) as usize)
+    }
+
+    /// 内容总高与视口高之差（无溢出为 0）。
+    fn max_scroll(&self) -> f32 {
+        (self.list.items.len() as f32 * 32.0 - self.list.panel_height()).max(0.0)
+    }
+
+    /// Up/Down 移动悬停项，并把新项滚进视口。
+    fn step(&mut self, delta: isize, ctx: &mut EventCtx) {
+        let n = self.list.items.len();
+        if n == 0 {
+            return;
+        }
+        let next = match self.list.hovered {
+            Some(i) => (i as isize + delta).rem_euclid(n as isize) as usize,
+            None if delta > 0 => 0,
+            None => n - 1,
+        };
+        self.list.hovered = Some(next);
+        let h = self.list.panel_height();
+        let top = next as f32 * 32.0;
+        if top < self.scroll {
+            self.scroll = top;
+        } else if top + 32.0 > self.scroll + h {
+            self.scroll = top + 32.0 - h;
+        }
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll());
+        ctx.invalidate_paint();
+    }
+
+    /// 选中第 `index` 项：写入共享格子并关闭自身（触发器在 `PopupClosed` 里回写）。
+    fn select(&mut self, ctx: &mut EventCtx, index: usize) {
+        self.pick.set(Some(index));
+        ctx.close_popup(ctx.id());
+    }
+}
+
+impl Widget for SelectorPanel {
+    fn measure(&mut self, _ctx: &mut MeasureCtx, _available: Size) -> Size {
+        Size::new(self.list.panel_rect.size.width, self.list.panel_height())
+    }
+
+    fn arrange(&mut self, _ctx: &mut kanesumi_element::ArrangeCtx, rect: Rect) {
+        self.list.panel_rect = rect;
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll());
+    }
+
+    fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
+        let theme = *ctx.theme();
+        self.list.render_panel(&theme, scene, self.scroll);
+        if matches!(self.list.state(), PopupState::Opening | PopupState::Closing) {
+            ctx.request_anim_frame();
+        }
+    }
+
+    fn update(&mut self, ctx: &mut UpdateCtx, dt: f64) {
+        self.list.update(dt);
+        ctx.invalidate_paint();
+        if matches!(self.list.state(), PopupState::Opening | PopupState::Closing) {
+            ctx.request_anim_frame();
+        }
+    }
+
+    fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
+        match event {
+            Event::PointerMove { pos } => {
+                let hovered = self.item_at(*pos);
+                if hovered != self.list.hovered {
+                    self.list.hovered = hovered;
+                    ctx.invalidate_paint();
+                }
+            }
+            Event::PointerUp {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                if let Some(i) = self.item_at(*pos) {
+                    self.select(ctx, i);
+                }
+                ctx.set_handled();
+            }
+            Event::Scroll { dy, .. } => {
+                let before = self.scroll;
+                self.scroll = (self.scroll + *dy).clamp(0.0, self.max_scroll());
+                if self.scroll != before {
+                    ctx.invalidate_paint();
+                    ctx.set_handled();
+                }
+            }
+            Event::KeyDown { key, .. } => {
+                match key {
+                    Key::Down => self.step(1, ctx),
+                    Key::Up => self.step(-1, ctx),
+                    Key::Enter | Key::Char(' ') => {
+                        if let Some(i) = self.list.hovered {
+                            self.select(ctx, i);
+                        }
+                    }
+                    // Tab / Esc 留给框架（焦点遍历 / 弹层关闭）。
+                    _ => return,
+                }
+                ctx.set_handled();
+            }
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    /// 面板以悬停 / 选中高亮表示当前项，不要框架焦点框。
+    fn focus_visual(&self) -> bool {
+        false
+    }
+
+    fn hit_test(&self, rect: Rect, pos: Point) -> bool {
+        rect.contains(pos)
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::List,
+            name: "选项".to_string(),
+            value: None,
+            checked: None,
+        })
+    }
+}
+
+impl MetroSelectorFlyout {
+    /// 打开选项面板（锚在本触发器下缘）。`keyboard` 为真时焦点进面板。
+    fn open_panel(&mut self, ctx: &mut EventCtx, keyboard: bool) -> WidgetId {
+        let width = ctx.rect().size.width;
+        let panel = SelectorPanel::new(
+            self.items.clone(),
+            self.selected,
+            self.tree_pick.clone(),
+            width,
+            self.max_dropdown_height,
+        );
+        let id = ctx.open_popup(
+            panel,
+            PopupSpec {
+                gap: crate::popup::popup_gap(),
+                ..PopupSpec::default()
+            },
+        );
+        ctx.focus_widget(id, keyboard);
+        id
+    }
+}
+
+impl Widget for MetroSelectorFlyout {
+    /// 固有尺寸：显示文本（选中项或占位）+ 左 12 + 箭头区 30，高 32。
+    fn measure(&mut self, ctx: &mut MeasureCtx, _available: Size) -> Size {
+        let style = TextStyle::new(14.0, 20.0, kanesumi_core::FontWeight::Normal);
+        let display = self
+            .selected
+            .and_then(|i| self.items.get(i))
+            .cloned()
+            .unwrap_or_else(|| self.placeholder.clone());
+        let w = ctx.engine().measure(&display, style.size) + 12.0 + 30.0;
+        Size::new(w.max(120.0), 32.0)
+    }
+
+    fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
+        let saved = self.focused;
+        self.focused = ctx.state().focused;
+        let theme = *ctx.theme();
+        self.render(&theme, ctx.engine(), ctx.rect(), ctx.surface(), scene);
+        self.focused = saved;
+    }
+
+    fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
+        let keyboard = match event {
+            Event::Click => false,
+            Event::KeyDown {
+                key: Key::Enter | Key::Char(' '),
+                ..
+            } => true,
+            // 含 Alt+Down（ComboBox 惯例）；面板已开时该键在下面收起。
+            Event::KeyDown { key: Key::Down, .. } => true,
+            Event::PopupClosed { popup } => {
+                if self.tree_popup == Some(*popup) {
+                    self.tree_popup = None;
+                    if let Some(i) = self.tree_pick.replace(None) {
+                        self.selected = Some(i);
+                        ctx.emit(SelectorSelectionChanged(i));
+                    }
+                    ctx.invalidate_paint();
+                }
+                return;
+            }
+            _ => return,
+        };
+        match self.tree_popup.take() {
+            Some(p) => ctx.close_popup(p),
+            None => {
+                let p = self.open_panel(ctx, keyboard);
+                self.tree_popup = Some(p);
+            }
+        }
+        ctx.invalidate_paint();
+        ctx.set_handled();
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Other,
+            name: self.placeholder.clone(),
+            value: self.selected.and_then(|i| self.items.get(i)).cloned(),
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, LayoutProps};
+
+    fn harness() -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(400.0, 400.0);
+        let mut sel = MetroSelectorFlyout::new(vec![
+            "Alpha".into(),
+            "Bravo".into(),
+            "Charlie".into(),
+        ]);
+        sel.placeholder = "选择…".into();
+        let id = h.tree.insert_with(
+            h.root(),
+            sel,
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                margin: Insets::new(10.0, 10.0, 0.0, 0.0),
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    #[test]
+    fn click_opens_panel_below_and_item_selects() {
+        let (mut h, id) = harness();
+        h.click(id);
+        let p = h.tree.popups().next().expect("点击打开选项面板");
+        let pr = h.rect(p);
+        assert!(pr.origin.y >= h.rect(id).bottom(), "面板在触发器下方 {pr:?}");
+        assert!(
+            h.tree
+                .get::<MetroSelectorFlyout>(id)
+                .unwrap()
+                .tree_popup
+                .is_some()
+        );
+        // 点第二项
+        h.click_at(Point::new(pr.origin.x + 20.0, pr.origin.y + 32.0 + 16.0));
+        assert_eq!(
+            h.take::<SelectorSelectionChanged>(),
+            vec![(id, SelectorSelectionChanged(1))]
+        );
+        let sel = h.tree.get::<MetroSelectorFlyout>(id).unwrap();
+        assert_eq!(sel.selected, Some(1), "触发器回写选中");
+        assert!(sel.tree_popup.is_none(), "面板关闭后复位");
+        assert!(h.tree.popups().next().is_none());
+    }
+
+    #[test]
+    fn keyboard_opens_selects_and_returns_focus() {
+        let (mut h, id) = harness();
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+        h.key(Key::Enter);
+        let p = h.tree.popups().next().expect("Enter 打开");
+        assert_eq!(h.tree.focused(), Some(p), "键盘打开焦点进面板");
+        h.key(Key::Down); // 首项
+        h.key(Key::Down); // 次项
+        h.key(Key::Enter);
+        assert_eq!(
+            h.take::<SelectorSelectionChanged>(),
+            vec![(id, SelectorSelectionChanged(1))]
+        );
+        assert_eq!(h.tree.focused(), Some(id), "关闭后焦点回触发器");
+    }
+
+    #[test]
+    fn escape_dismisses_without_selection_change() {
+        let (mut h, id) = harness();
+        h.click(id);
+        assert!(h.tree.popups().next().is_some());
+        h.key(Key::Escape);
+        assert!(h.tree.popups().next().is_none());
+        assert!(h.take::<SelectorSelectionChanged>().is_empty());
+        let sel = h.tree.get::<MetroSelectorFlyout>(id).unwrap();
+        assert_eq!(sel.selected, None);
+        assert!(sel.tree_popup.is_none());
+    }
+
+    #[test]
+    fn outside_click_dismisses() {
+        let (mut h, id) = harness();
+        h.click(id);
+        h.click_at(Point::new(380.0, 380.0));
+        assert!(h.tree.popups().next().is_none());
+        assert!(h.take::<SelectorSelectionChanged>().is_empty());
+        assert!(
+            h.tree
+                .get::<MetroSelectorFlyout>(id)
+                .unwrap()
+                .tree_popup
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn passes_insurance_checks_while_open() {
+        let (mut h, id) = harness();
+        h.click(id);
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+        let p = h.tree.popups().next().unwrap();
+        h.assert_paint_within(p, Insets::ZERO);
     }
 }
 
