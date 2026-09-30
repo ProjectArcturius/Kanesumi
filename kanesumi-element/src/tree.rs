@@ -25,6 +25,17 @@ pub type Action = Box<dyn Any>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PopupDismissed;
 
+/// 弹层相对锚点的方位（XAML `FlyoutPlacementMode` 的主方位）。放不下时翻到对侧。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PopupSide {
+    /// 锚点下方（默认；下方放不下而上方放得下则上翻 —— ComboBoxHelper 判据）。
+    #[default]
+    Bottom,
+    Top,
+    Left,
+    Right,
+}
+
 /// 弹层规格。参 ELEMENT_TREE §Ⅴ.2。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PopupSpec {
@@ -34,6 +45,11 @@ pub struct PopupSpec {
     /// 点锚定（右键菜单）：面板左上角落在该点，右侧放不下翻左、下方放不下翻上。
     /// 设置后优先于 `anchor` 的下缘放置（`anchor` 仍用于关闭通知与焦点交还）。
     pub at: Option<Point>,
+    /// 相对锚点的方位（仅 `anchor` 生效且未设 `at` 时使用）。
+    pub side: PopupSide,
+    /// 沿锚点边的对齐：`Start`（默认，左 / 上缘对齐）/ `Center` / `End`；`Stretch` 视同 `Start`。
+    /// 例：命令条在选区上方居中 = `side: Top, align: Center`。
+    pub align: crate::props::Align,
     /// 与锚点的间距。
     pub gap: f32,
     /// 模态：点外部不关闭、吞掉点击；Tab 限制在弹层内（焦点陷阱）。
@@ -47,6 +63,8 @@ impl Default for PopupSpec {
         Self {
             anchor: None,
             at: None,
+            side: PopupSide::Bottom,
+            align: crate::props::Align::Start,
             gap: 0.0,
             modal: false,
             light_dismiss: true,
@@ -1363,17 +1381,7 @@ impl Tree {
                 if p.x + w > bounds.right() { p.x - w } else { p.x },
                 if p.y + h > bounds.bottom() { p.y - h } else { p.y },
             ),
-            (None, Some(a)) => {
-                let below = a.bottom() + spec.gap;
-                let above = a.origin.y - spec.gap - h;
-                // 下方放不下且上方放得下 → 上翻（ComboBoxHelper 判据）。
-                let y = if below + h > bounds.bottom() && above >= bounds.origin.y {
-                    above
-                } else {
-                    below
-                };
-                (a.origin.x, y)
-            }
+            (None, Some(a)) => place_on_side(a, w, h, spec, bounds),
             (None, None) => (
                 bounds.origin.x + (bounds.size.width - w) / 2.0,
                 bounds.origin.y + (bounds.size.height - h) / 2.0,
@@ -1416,6 +1424,46 @@ impl Tree {
             .and_then(|n| n.widget.as_ref())
             .map(|w| w.type_name())
             .unwrap_or("<none>")
+    }
+}
+
+/// 锚点方位放置：首选方位放不下而对侧放得下则翻转；沿边按 `align` 对齐。
+/// 夹进表面由调用方统一做。
+fn place_on_side(a: Rect, w: f32, h: f32, spec: PopupSpec, bounds: Rect) -> (f32, f32) {
+    use crate::props::Align;
+    let along = |start: f32, anchor_len: f32, len: f32| match spec.align {
+        Align::Center => start + (anchor_len - len) / 2.0,
+        Align::End => start + anchor_len - len,
+        Align::Start | Align::Stretch => start,
+    };
+    let g = spec.gap;
+    match spec.side {
+        PopupSide::Bottom | PopupSide::Top => {
+            let below = a.bottom() + g;
+            let above = a.origin.y - g - h;
+            let fits_below = below + h <= bounds.bottom();
+            let fits_above = above >= bounds.origin.y;
+            let y = match spec.side {
+                PopupSide::Bottom if !fits_below && fits_above => above,
+                PopupSide::Bottom => below,
+                _ if !fits_above && fits_below => below,
+                _ => above,
+            };
+            (along(a.origin.x, a.size.width, w), y)
+        }
+        PopupSide::Left | PopupSide::Right => {
+            let right = a.right() + g;
+            let left = a.origin.x - g - w;
+            let fits_right = right + w <= bounds.right();
+            let fits_left = left >= bounds.origin.x;
+            let x = match spec.side {
+                PopupSide::Right if !fits_right && fits_left => left,
+                PopupSide::Right => right,
+                _ if !fits_left && fits_right => right,
+                _ => left,
+            };
+            (x, along(a.origin.y, a.size.height, h))
+        }
     }
 }
 

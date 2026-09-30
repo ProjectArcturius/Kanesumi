@@ -311,6 +311,15 @@ impl EventCtx<'_> {
     pub fn close_popup(&mut self, popup: WidgetId) {
         self.tree.close_popup(popup);
     }
+    /// 修改**另一个**节点（典型：输入框在键入时更新它打开的建议弹层）。语义同 `Tree::edit`。
+    /// 目标是自身（回调期间已被取出）或不存在 / 类型不符时返回 None。
+    pub fn edit<T: Widget, R>(
+        &mut self,
+        id: WidgetId,
+        f: impl FnOnce(&mut T, &mut crate::tree::EditCtx) -> R,
+    ) -> Option<R> {
+        self.tree.edit(id, f)
+    }
 }
 
 pub struct UpdateCtx<'a> {

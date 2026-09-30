@@ -506,3 +506,85 @@ fn closing_popup_notifies_anchor_and_returns_focus() {
     h.tree.close_popup(pop2);
     assert_eq!(closed.get(), 2);
 }
+
+
+// ── 弹层方位放置与跨节点编辑 ──────────────────────────────────────────────────
+
+fn anchor_at(h: &mut TestHarness, x: f32, y: f32) -> kanesumi_element::WidgetId {
+    let a = h.tree.insert_with(h.root(), TestButton::new(40.0, 20.0), fixed(40.0, 20.0));
+    h.tree.update_props(a, |p| p.margin = Insets::new(x, y, 0.0, 0.0));
+    h.frame();
+    a
+}
+
+fn open(h: &mut TestHarness, spec: PopupSpec) -> kanesumi_element::WidgetId {
+    let p = h.tree.open_popup(panel(), spec);
+    h.tree.insert_with(p, TestButton::new(100.0, 50.0), fixed(100.0, 50.0));
+    h.frame();
+    p
+}
+
+#[test]
+fn popup_side_and_alignment() {
+    use kanesumi_element::PopupSide;
+    let mut h = TestHarness::new(400.0, 300.0);
+    let a = anchor_at(&mut h, 150.0, 120.0); // 锚点 (150,120) 40×20
+    // 上方居中：x = 150 + (40-100)/2 = 120，y = 120 - 4 - 50 = 66
+    let p = open(&mut h, PopupSpec { anchor: Some(a), side: PopupSide::Top, align: Align::Center, gap: 4.0, ..PopupSpec::default() });
+    assert_eq!(h.rect(p), Rect::new(120.0, 66.0, 100.0, 50.0));
+    h.tree.close_popup(p);
+    // 右侧、下缘对齐：x = 190 + 4，y = 120 + 20 - 50 = 90
+    let p = open(&mut h, PopupSpec { anchor: Some(a), side: PopupSide::Right, align: Align::End, gap: 4.0, ..PopupSpec::default() });
+    assert_eq!(h.rect(p), Rect::new(194.0, 90.0, 100.0, 50.0));
+}
+
+#[test]
+fn popup_flips_to_opposite_side_when_it_does_not_fit() {
+    use kanesumi_element::PopupSide;
+    let mut h = TestHarness::new(400.0, 300.0);
+    let a = anchor_at(&mut h, 350.0, 10.0); // 贴右上角
+    // 首选右侧放不下 → 翻左：x = 350 - 100 = 250
+    let p = open(&mut h, PopupSpec { anchor: Some(a), side: PopupSide::Right, ..PopupSpec::default() });
+    assert_eq!(h.rect(p).origin.x, 250.0);
+    h.tree.close_popup(p);
+    // 首选上方放不下 → 翻下：y = 30
+    let p = open(&mut h, PopupSpec { anchor: Some(a), side: PopupSide::Top, ..PopupSpec::default() });
+    assert_eq!(h.rect(p).origin.y, 30.0);
+}
+
+/// 键入时更新另一个节点（建议弹层）的输入框模拟。
+struct Typer {
+    target: Option<kanesumi_element::WidgetId>,
+}
+
+impl Widget for Typer {
+    fn measure(&mut self, _: &mut MeasureCtx, _: Size) -> Size {
+        Size::new(100.0, 30.0)
+    }
+    fn paint(&mut self, _: &mut PaintCtx, _: &mut Scene) {}
+    fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
+        if let (Event::Commit { text }, Some(t)) = (event, self.target) {
+            ctx.edit::<Label, _>(t, |l, e| {
+                l.text = text.clone();
+                e.invalidate_paint();
+            });
+            ctx.set_handled();
+        }
+    }
+    fn focusable(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn event_ctx_can_edit_another_widget_while_focus_stays() {
+    let mut h = TestHarness::new(300.0, 200.0);
+    let label = h.tree.insert(h.root(), Label::new("旧"));
+    let typer = h.tree.insert(h.root(), Typer { target: Some(label) });
+    h.frame();
+    h.tab();
+    assert_eq!(h.tree.focused(), Some(typer));
+    h.type_text("新");
+    assert_eq!(h.tree.get::<Label>(label).unwrap().text, "新");
+    assert_eq!(h.tree.focused(), Some(typer), "焦点留在输入方");
+}
