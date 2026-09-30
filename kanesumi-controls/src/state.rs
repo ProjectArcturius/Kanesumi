@@ -12,3 +12,19 @@ pub enum ControlState {
 
 /// 兼容别名（旧名 ButtonState，Phase 3 统一为 ControlState）。
 pub type ButtonState = ControlState;
+
+/// 元素树的框架状态 → 控件既有的单值 `ControlState`（参 docs/ELEMENT_TREE.md §Ⅶ）。
+///
+/// 优先级：禁用 > 按下 > 悬停 > 常态。**不映射 `Focused`**：元素树下键盘焦点视觉由框架统一
+/// 绘制（`Widget::focus_visual`），控件再画一遍就会出现双层焦点框。
+pub fn control_state(s: kanesumi_element::ControlStates) -> ControlState {
+    if s.disabled {
+        ControlState::Disabled
+    } else if s.pressed {
+        ControlState::Pressed
+    } else if s.hovered {
+        ControlState::Hovered
+    } else {
+        ControlState::Normal
+    }
+}

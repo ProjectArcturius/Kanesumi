@@ -106,6 +106,119 @@ impl MetroButton {
     }
 }
 
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E2：参照控件）────────────────────────
+//
+// 迁移模板：旧 API（`measure(engine, style)` / `render(theme, engine, rect, scene)`）原样保留给
+// 未迁移的 App；`Widget` 实现只做三件事 —— 量测转发、按框架状态绘制、把指针 / 键盘激活
+// 翻译成动作。命中、焦点、hover / pressed 维护全部交给框架。
+
+/// 元素树动作：按钮被激活（点击 / Enter / Space）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ButtonClicked;
+
+impl kanesumi_element::Widget for MetroButton {
+    fn measure(&mut self, ctx: &mut kanesumi_element::MeasureCtx, _available: Size) -> Size {
+        MetroButton::measure(self, ctx.engine(), ctx.theme().typography.body)
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        let saved = self.state;
+        self.state = crate::state::control_state(ctx.state());
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+        self.state = saved;
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, Key};
+        match event {
+            Event::Click
+            | Event::KeyDown {
+                key: Key::Enter | Key::Char(' '),
+                ..
+            } => {
+                ctx.emit(ButtonClicked);
+                ctx.set_handled();
+            }
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Button,
+            name: self.label.clone(),
+            value: None,
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Key, LayoutProps};
+
+    fn harness() -> (TestHarness, kanesumi_element::WidgetId) {
+        let mut h = TestHarness::new(320.0, 200.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroButton::new("确定"),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    #[test]
+    fn click_and_keyboard_activate() {
+        let (mut h, id) = harness();
+        h.click(id);
+        h.tab();
+        h.key(Key::Enter);
+        h.key(Key::Char(' '));
+        assert_eq!(h.take::<ButtonClicked>().len(), 3);
+    }
+
+    #[test]
+    fn sizes_to_content_and_passes_insurance_checks() {
+        let (mut h, id) = harness();
+        let r = h.rect(id);
+        assert!(r.size.width > 16.0 && r.size.height > 11.0, "{r:?}");
+        h.move_to(h.center(id));
+        h.frame();
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, kanesumi_element::Insets::ZERO);
+    }
+
+    #[test]
+    fn hover_uses_framework_state() {
+        let (mut h, id) = harness();
+        let normal = h.tree.painted(id).to_vec();
+        h.move_to(h.center(id));
+        h.frame();
+        assert_ne!(h.tree.painted(id), normal.as_slice(), "悬停后应重画出 hover tint");
+    }
+
+    #[test]
+    fn disabled_button_ignores_activation() {
+        let (mut h, id) = harness();
+        h.tree.set_enabled(id, false);
+        h.frame();
+        h.click(id);
+        assert!(h.take::<ButtonClicked>().is_empty());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -563,6 +563,335 @@ impl MetroTextBox {
     }
 }
 
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E2：参照控件 —— 焦点 + 编辑 + IME）───────
+//
+// 焦点由框架管（FocusIn/FocusOut 驱动 `focus()`/`blur()`），IME 上下文由框架在帧末经
+// `Widget::ime` 取走交给外壳；控件只负责编辑语义。布局尺寸与已输入文本无关（按占位 /
+// 标题定宽），键入不触发重排，只重画自身。
+
+/// 元素树动作：文本内容被用户修改（键入 / 删除 / IME 提交 / 清除键）。携带新全文。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextChanged(pub String);
+
+/// 元素树动作：在输入框内按下 Enter。携带当前全文。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextSubmitted(pub String);
+
+/// 元素树 `Key` → 编辑核心 `TextInputKey`（与 harness `key_to_text_input` 同表；
+/// 控件层不能依赖 harness，故在此另持一份）。
+fn edit_key(key: kanesumi_element::Key) -> Option<TextInputKey> {
+    use kanesumi_element::Key;
+    Some(match key {
+        Key::Char(c) => TextInputKey::Char(c),
+        Key::Enter => TextInputKey::Enter,
+        Key::Backspace => TextInputKey::Backspace,
+        Key::Delete => TextInputKey::Delete,
+        Key::Left => TextInputKey::Left,
+        Key::Right => TextInputKey::Right,
+        Key::Up => TextInputKey::Up,
+        Key::Down => TextInputKey::Down,
+        Key::Home => TextInputKey::Home,
+        Key::End => TextInputKey::End,
+        Key::Escape => TextInputKey::Escape,
+        Key::Tab => TextInputKey::Tab,
+        Key::Unknown(_) => return None,
+    })
+}
+
+impl MetroTextBox {
+    fn emit_changed(&mut self, ctx: &mut kanesumi_element::EventCtx) {
+        self.reset_blink();
+        ctx.emit(TextChanged(self.field.text()));
+        ctx.invalidate_paint();
+    }
+}
+
+impl kanesumi_element::Widget for MetroTextBox {
+    /// 宽 = max(MinWidth 64, 占位 / 标题宽 + Padding 16 + 删除键 34)；
+    /// 高 = 标题行 + max(MinHeight 32, 行高 + 上下 Padding 11 + 边框 2)。
+    fn measure(
+        &mut self,
+        ctx: &mut kanesumi_element::MeasureCtx,
+        _available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        let style = ctx.theme().typography.body;
+        let engine = ctx.engine();
+        let content_w = engine
+            .measure(&self.placeholder, style.size)
+            .max(engine.measure(&self.header, style.size));
+        let width = (content_w + 16.0 + TEXTBOX_DELETE_BUTTON_W).max(64.0);
+        let header_h = if self.header.is_empty() {
+            0.0
+        } else {
+            style.line_height + 4.0
+        };
+        let body_h = (style.line_height + 11.0 + 2.0).max(Self::min_height());
+        kanesumi_core::Size::new(width, header_h + body_h)
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        let s = ctx.state();
+        self.state = if s.disabled {
+            ControlState::Disabled
+        } else if s.focused {
+            ControlState::Focused
+        } else {
+            crate::state::control_state(s)
+        };
+        // UWP ButtonStates：有内容且聚焦时显示删除键。
+        self.show_delete = s.focused && !self.field.is_empty();
+        let rect = ctx.rect();
+        let theme = *ctx.theme();
+        self.render(&theme, ctx.engine(), rect, scene);
+    }
+
+    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, dt: f64) {
+        if !self.focused {
+            return;
+        }
+        let before = self.caret_visible();
+        MetroTextBox::update(self, dt);
+        if self.caret_visible() != before {
+            ctx.invalidate_paint();
+        }
+        // TODO(E4)：换成框架定时器（半周期唤醒一次），不必逐帧续命。
+        ctx.request_anim_frame();
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, Key, PointerButton};
+        match event {
+            Event::FocusIn { .. } => {
+                self.focus();
+                ctx.invalidate_paint();
+                ctx.request_anim_frame();
+            }
+            Event::FocusOut => {
+                self.field.clear_preedit();
+                self.blur();
+                ctx.invalidate_paint();
+            }
+            Event::PointerDown {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                let rect = ctx.rect();
+                let theme = *ctx.theme();
+                let body = self.body_rect(&theme, rect);
+                if self.show_delete && self.delete_button_rect(&theme, body).contains(*pos) {
+                    self.field.set_text("");
+                    self.scroll = 0.0;
+                    self.emit_changed(ctx);
+                } else if let Some(engine) = ctx.engine().cloned() {
+                    self.place_caret_at(&theme, &engine, body, *pos);
+                    self.reset_blink();
+                    ctx.invalidate_paint();
+                }
+                ctx.set_handled();
+            }
+            Event::KeyDown { key, modifiers } => {
+                // Tab 留给框架做焦点遍历；Esc 留给弹层关闭。
+                if matches!(key, Key::Tab | Key::Escape) {
+                    return;
+                }
+                if *key == Key::Enter {
+                    ctx.emit(TextSubmitted(self.field.text()));
+                    ctx.set_handled();
+                    return;
+                }
+                if modifiers.ctrl {
+                    match key {
+                        Key::Char('a' | 'A') => self.field.select_all(),
+                        Key::Char('z' | 'Z') => {
+                            if self.field.undo() {
+                                self.emit_changed(ctx);
+                            }
+                        }
+                        _ => return,
+                    }
+                    self.reset_blink();
+                    ctx.invalidate_paint();
+                    ctx.set_handled();
+                    return;
+                }
+                let before = self.field.text();
+                if modifiers.shift {
+                    match key {
+                        Key::Left => self.field.move_left(true),
+                        Key::Right => self.field.move_right(true),
+                        Key::Home => self.field.move_home(true),
+                        Key::End => self.field.move_end(true),
+                        _ => {
+                            if let Some(k) = edit_key(*key) {
+                                self.handle_key(k);
+                            }
+                        }
+                    }
+                } else if let Some(k) = edit_key(*key) {
+                    self.handle_key(k);
+                } else {
+                    return;
+                }
+                if self.field.text() != before {
+                    self.emit_changed(ctx);
+                } else {
+                    self.reset_blink();
+                    ctx.invalidate_paint();
+                }
+                ctx.set_handled();
+            }
+            Event::Preedit { text, cursor_byte } => {
+                self.field.set_preedit(text, *cursor_byte);
+                self.reset_blink();
+                ctx.invalidate_paint();
+                ctx.set_handled();
+            }
+            Event::Commit { text } => {
+                if self.field.commit_ime(text) {
+                    self.emit_changed(ctx);
+                }
+                ctx.set_handled();
+            }
+            Event::DeleteSurrounding {
+                before_bytes,
+                after_bytes,
+            } => {
+                if self.field.delete_surrounding(*before_bytes, *after_bytes) {
+                    self.emit_changed(ctx);
+                }
+                ctx.set_handled();
+            }
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    /// 输入框自绘聚焦边框（2px，CONTROL_SPEC §34），不要框架再叠一层焦点视觉。
+    fn focus_visual(&self) -> bool {
+        false
+    }
+
+    fn ime(
+        &self,
+        rect: Rect,
+        theme: &MetroTheme,
+        engine: &TextEngine,
+    ) -> Option<kanesumi_element::ImeContext> {
+        self.focused
+            .then(|| self.ime_context(theme, engine, self.body_rect(theme, rect)))
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::TextInput,
+            name: if self.header.is_empty() {
+                self.placeholder.clone()
+            } else {
+                self.header.clone()
+            },
+            value: Some(self.field.text()),
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, Key, LayoutProps, Modifiers, WidgetId};
+
+    fn harness() -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(400.0, 200.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroTextBox::with_placeholder("搜索设置"),
+            LayoutProps {
+                width: Some(240.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    fn text(h: &TestHarness, id: WidgetId) -> String {
+        h.tree.get::<MetroTextBox>(id).unwrap().field.text()
+    }
+
+    #[test]
+    fn tab_focus_then_typing_and_ime_commit_edit_text() {
+        let (mut h, id) = harness();
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+        h.key(Key::Char('a'));
+        h.key(Key::Char('b'));
+        h.type_text("中文");
+        h.key(Key::Backspace);
+        assert_eq!(text(&h, id), "ab中");
+        let changes = h.take::<TextChanged>();
+        assert_eq!(changes.last().unwrap().1, TextChanged("ab中".into()));
+    }
+
+    #[test]
+    fn enter_submits_and_tab_moves_focus_away() {
+        let (mut h, id) = harness();
+        let other = h.tree.insert(h.root(), crate::button::MetroButton::new("下一个"));
+        h.frame();
+        h.tab();
+        h.type_text("wifi");
+        h.key(Key::Enter);
+        assert_eq!(h.take::<TextSubmitted>(), vec![(id, TextSubmitted("wifi".into()))]);
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(other), "Tab 不被输入框吞掉");
+        assert!(!h.tree.get::<MetroTextBox>(id).unwrap().focused);
+    }
+
+    #[test]
+    fn ime_context_exists_only_while_focused() {
+        let (mut h, id) = harness();
+        assert!(h.tree.ime_context().is_none());
+        h.click(id);
+        let ctx = h.tree.ime_context().expect("聚焦后应有 IME 上下文");
+        assert!(h.rect(id).contains(ctx.caret_rect.center()), "光标矩形在控件内");
+        h.tree.remove(id);
+        h.frame();
+        assert!(h.tree.ime_context().is_none());
+    }
+
+    #[test]
+    fn ctrl_a_then_typing_replaces_selection() {
+        let (mut h, id) = harness();
+        h.tab();
+        h.type_text("旧内容");
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::NONE
+        };
+        h.key_with(Key::Char('a'), ctrl);
+        h.type_text("新");
+        assert_eq!(text(&h, id), "新");
+    }
+
+    #[test]
+    fn typing_does_not_relayout_and_passes_insurance_checks() {
+        let (mut h, id) = harness();
+        let before = h.rect(id);
+        h.tab();
+        h.type_text("一段很长很长很长很长很长很长很长很长很长很长很长很长的输入内容");
+        assert_eq!(h.rect(id), before, "键入不改变布局");
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

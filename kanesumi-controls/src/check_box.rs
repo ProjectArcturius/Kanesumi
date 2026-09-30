@@ -192,6 +192,122 @@ impl MetroCheckBox {
     }
 }
 
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E2；模板同 button.rs）──────────────────
+
+/// 元素树动作：勾选状态被用户切换（点击 / Space）。携带切换后的新状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckToggled(pub CheckState);
+
+impl kanesumi_element::Widget for MetroCheckBox {
+    /// 固有尺寸：勾选框 20 + 间距 8 + 标签；不小于 MinWidth 120 × MinHeight 32（CONTROL_SPEC §36）。
+    fn measure(
+        &mut self,
+        ctx: &mut kanesumi_element::MeasureCtx,
+        _available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        let style = ctx.theme().typography.body;
+        let label_w = if self.label.is_empty() {
+            0.0
+        } else {
+            CHECKBOX_BOX_GAP + ctx.engine().measure(&self.label, style.size)
+        };
+        kanesumi_core::Size::new(
+            (CHECKBOX_SIZE + label_w).max(CHECKBOX_MIN_WIDTH),
+            style.line_height.max(CHECKBOX_MIN_HEIGHT),
+        )
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        let saved = self.interact;
+        self.interact = crate::state::control_state(ctx.state());
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+        self.interact = saved;
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, Key};
+        if matches!(
+            event,
+            Event::Click
+                | Event::KeyDown {
+                    key: Key::Char(' '),
+                    ..
+                }
+        ) {
+            let s = self.toggle();
+            ctx.emit(CheckToggled(s));
+            ctx.invalidate_paint();
+            ctx.set_handled();
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::CheckBox,
+            name: self.label.clone(),
+            value: None,
+            checked: match self.state {
+                CheckState::Checked => Some(true),
+                CheckState::Unchecked => Some(false),
+                CheckState::Indeterminate => None,
+            },
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, Key, LayoutProps, WidgetId};
+
+    fn harness(cb: MetroCheckBox) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(400.0, 200.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            cb,
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    #[test]
+    fn click_toggles_and_reports_new_state() {
+        let (mut h, id) = harness(MetroCheckBox::new("启用蓝牙"));
+        h.click(id);
+        assert_eq!(h.take::<CheckToggled>(), vec![(id, CheckToggled(CheckState::Checked))]);
+        assert_eq!(h.tree.get::<MetroCheckBox>(id).unwrap().state, CheckState::Checked);
+        h.tab();
+        h.key(Key::Char(' '));
+        assert_eq!(h.take::<CheckToggled>(), vec![(id, CheckToggled(CheckState::Unchecked))]);
+    }
+
+    #[test]
+    fn respects_min_size_and_passes_insurance_checks() {
+        let (h, id) = harness(MetroCheckBox::new("短"));
+        let r = h.rect(id);
+        assert!(r.size.width >= CHECKBOX_MIN_WIDTH && r.size.height >= CHECKBOX_MIN_HEIGHT);
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn long_label_grows_width() {
+        let (h, id) = harness(MetroCheckBox::new("一个相当长的复选框标签，用来确认宽度随内容增长"));
+        assert!(h.rect(id).size.width > CHECKBOX_MIN_WIDTH);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
