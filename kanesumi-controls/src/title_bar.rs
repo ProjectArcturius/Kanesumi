@@ -202,6 +202,203 @@ impl MetroTitleBar {
     }
 }
 
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3）─────────────────────────────────
+//
+// 应用标题栏：Back 按钮是唯一可交互部件。盘点：旧 `TitleBarClick` 只有 `Back` 一种。
+// 指针按 `PointerDown` 置按压、`PointerUp` 调旧 `handle_click` 判定并发动作；悬停走旧 `hover`。
+// `title_rect` 的 `.max(48.0)` 在极窄 rect 会越出右缘，按 §6 在 `paint` 里把自身绘制夹进 rect。
+
+/// 元素树动作：标题栏按钮被激活。携带旧的 `TitleBarClick` 身份。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TitleBarAction(pub TitleBarClick);
+
+impl kanesumi_element::Widget for MetroTitleBar {
+    /// 标题栏按宿主给宽铺满；无界轴退回 Compact 默认宽，避免 NaN / 0 宽。
+    fn measure(
+        &mut self,
+        _ctx: &mut kanesumi_element::MeasureCtx,
+        available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        let w = if available.width.is_finite() {
+            available.width
+        } else {
+            320.0
+        };
+        kanesumi_core::Size::new(w, self.height())
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        // §6 修正：极窄 rect 下 `title_rect` 的 MinWidth 48 会越出右缘；成对把自身绘制夹进 rect。
+        scene.push_clip(ctx.rect());
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+        scene.pop_clip();
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, Key, PointerButton};
+        match event {
+            Event::PointerMove { pos } => {
+                self.hover(ctx.rect(), *pos);
+                ctx.invalidate_paint();
+            }
+            Event::PointerLeave => {
+                let changed = self.back_hovered;
+                self.back_hovered = false;
+                if changed {
+                    ctx.invalidate_paint();
+                }
+            }
+            Event::PointerDown {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                let on_back = self.hit(ctx.rect(), *pos) == TitleBarClick::Back;
+                if on_back {
+                    self.back_pressed = true;
+                    ctx.invalidate_paint();
+                    ctx.set_handled();
+                }
+            }
+            Event::PointerUp {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                let click = self.handle_click(ctx.rect(), *pos);
+                if click != TitleBarClick::None {
+                    ctx.emit(TitleBarAction(click));
+                }
+                ctx.invalidate_paint();
+                ctx.set_handled();
+            }
+            Event::KeyDown {
+                key: Key::Enter | Key::Char(' '),
+                ..
+            } if self.back_enabled => {
+                ctx.emit(TitleBarAction(TitleBarClick::Back));
+                ctx.set_handled();
+            }
+            _ => {}
+        }
+    }
+
+    /// 只有存在 Back 按钮时才占 Tab 位。
+    fn focusable(&self) -> bool {
+        self.back_enabled
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Other,
+            name: if self.title.is_empty() {
+                String::from("标题栏")
+            } else {
+                self.title.clone()
+            },
+            value: None,
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, Key, LayoutProps, WidgetId};
+
+    fn harness(back: bool, props: LayoutProps) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(640.0, 200.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroTitleBar {
+                title: "Ether 设置".into(),
+                back_enabled: back,
+                ..MetroTitleBar::default()
+            },
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..props
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    #[test]
+    fn click_back_emits_action() {
+        let (mut h, id) = harness(true, LayoutProps::default());
+        let back = {
+            let b = h.tree.get::<MetroTitleBar>(id).unwrap();
+            b.back_rect(h.rect(id)).unwrap().center()
+        };
+        h.click_at(back);
+        assert_eq!(
+            h.take::<TitleBarAction>(),
+            vec![(id, TitleBarAction(TitleBarClick::Back))]
+        );
+    }
+
+    #[test]
+    fn click_title_area_emits_nothing() {
+        let (mut h, id) = harness(true, LayoutProps::default());
+        let r = h.rect(id);
+        h.click_at(Point::new(r.right() - 20.0, r.center().y));
+        assert!(h.take::<TitleBarAction>().is_empty());
+    }
+
+    #[test]
+    fn keyboard_activates_back_when_enabled() {
+        let (mut h, id) = harness(true, LayoutProps::default());
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+        h.key(Key::Enter);
+        assert_eq!(
+            h.take::<TitleBarAction>(),
+            vec![(id, TitleBarAction(TitleBarClick::Back))]
+        );
+    }
+
+    #[test]
+    fn without_back_is_not_focusable() {
+        let (mut h, id) = harness(false, LayoutProps::default());
+        h.tab();
+        assert_ne!(h.tree.focused(), Some(id));
+    }
+
+    #[test]
+    fn passes_insurance_checks_including_squeezed() {
+        let (mut h, id) = harness(true, LayoutProps::default());
+        h.move_to(h.center(id));
+        h.frame();
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+
+        // 极窄 rect：`title_rect` 的 MinWidth 48 会越出右缘，必须裁在 rect 内。
+        let narrow = h.tree.insert_with(
+            h.root(),
+            MetroTitleBar {
+                title: "很长很长的标题文本用于压窄测试".into(),
+                back_enabled: true,
+                ..MetroTitleBar::default()
+            },
+            LayoutProps {
+                width: Some(40.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        h.assert_contained();
+        h.assert_no_hit_outside(narrow);
+        h.assert_paint_within(narrow, Insets::ZERO);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
