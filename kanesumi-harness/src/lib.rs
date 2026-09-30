@@ -24,6 +24,9 @@ pub mod platform;
 pub mod render;
 
 #[cfg(target_os = "linux")]
+pub mod snapshot;
+
+#[cfg(target_os = "linux")]
 pub use cpu_raster::CpuRenderer;
 
 pub use app::{

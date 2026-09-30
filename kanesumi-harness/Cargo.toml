@@ -15,8 +15,9 @@ kanesumi-controls = { path = "../kanesumi-controls" }
 kanesumi-element = { path = "../kanesumi-element" }
 # 全局应用菜单独立 crate（dbusmenu 服务 + Wayland 绑定 + Registrar），此处重导出。
 kanesumi-appmenu = { path = "../kanesumi-appmenu" }
-fontdue = "0.9"
 log = "0.4"
+# 无窗口快照写 PNG（snapshot.rs）；与 kanesumi-canvas 同版本，不引入新依赖树。
+resvg = "0.44"
 env_logger = "0.11"
 
 # Wayland+wgpu 外壳仅 Linux（参 Ether-main PLAN.md §4.2 三层握手 / §4.4 测试阶梯）。

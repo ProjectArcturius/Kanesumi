@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use fontdue::{Font, FontSettings};
+use ab_glyph_rasterizer::{Rasterizer, point};
+use rustybuzz::ttf_parser;
 use rustybuzz::{Direction, Face, UnicodeBuffer};
 use unicode_bidi::ParagraphBidiInfo;
 use unicode_segmentation::UnicodeSegmentation;
@@ -177,28 +178,173 @@ impl std::error::Error for TextLoadError {}
 
 #[derive(Clone)]
 struct FontFace {
-    raster: Font,
     bytes: Arc<[u8]>,
     collection_index: u32,
+    units_per_em: f32,
+}
+
+/// 字形度量（像素）。语义与原 fontdue `Metrics` 一致，外壳按它摆放位图：
+/// 位图左上角 = (笔位 + `xmin`, 基线 − `ymin` − `height`)；`ymin` 为字形底相对基线（Y+ 向上）。
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct GlyphMetrics {
+    pub xmin: i32,
+    pub ymin: i32,
+    pub width: usize,
+    pub height: usize,
+    pub advance_width: f32,
 }
 
 impl FontFace {
+    /// 只校验、不预解析字形。
+    ///
+    /// 2026-09-30（KANESUMI_RUNTIME.md R1）：原先用 fontdue，加载时**预解析全部字形轮廓** ——
+    /// CJK 字体（16~19 MiB 文件）每进程常驻约 330 MiB、加载约 365 ms（Arch 实测 release）。
+    /// 现改为按需：塑形用 rustybuzz、光栅化用 ttf-parser 轮廓 + ab_glyph_rasterizer，
+    /// 字形只在第一次被画时解码（外壳另有位图缓存），常驻内存 ≈ 字体文件本身。
     fn from_bytes(bytes: Arc<[u8]>, collection_index: u32) -> Result<Self, TextLoadError> {
-        let settings = FontSettings {
-            collection_index,
-            ..FontSettings::default()
-        };
-        let raster = Font::from_bytes(bytes.clone(), settings).map_err(TextLoadError::Parse)?;
+        let face = ttf_parser::Face::parse(&bytes, collection_index)
+            .map_err(|_| TextLoadError::Parse("字体无法解析"))?;
+        let units_per_em = f32::from(face.units_per_em().max(1));
         Face::from_slice(&bytes, collection_index).ok_or(TextLoadError::Parse("字体面无法塑形"))?;
         Ok(Self {
-            raster,
             bytes,
             collection_index,
+            units_per_em,
         })
     }
 
     fn shaper(&self) -> Face<'_> {
         Face::from_slice(&self.bytes, self.collection_index).expect("字体已在加载时验证")
+    }
+
+    /// 解析表目录（只读头部，微秒级）。每次调用重建，免去自引用结构。
+    fn parser(&self) -> ttf_parser::Face<'_> {
+        ttf_parser::Face::parse(&self.bytes, self.collection_index).expect("字体已在加载时验证")
+    }
+
+    fn has_glyph(&self, c: char) -> bool {
+        self.parser().glyph_index(c).is_some()
+    }
+
+    /// (ascent, descent)，像素；descent 为负。
+    fn line_metrics(&self, size: f32) -> (f32, f32) {
+        let face = self.parser();
+        let scale = size / self.units_per_em;
+        (
+            f32::from(face.ascender()) * scale,
+            f32::from(face.descender()) * scale,
+        )
+    }
+
+    fn metrics_for(
+        &self,
+        face: &ttf_parser::Face<'_>,
+        gid: ttf_parser::GlyphId,
+        size: f32,
+    ) -> GlyphMetrics {
+        let scale = size / self.units_per_em;
+        let advance_width = face
+            .glyph_hor_advance(gid)
+            .map_or(0.0, |a| f32::from(a) * scale);
+        let Some(bb) = face.glyph_bounding_box(gid) else {
+            return GlyphMetrics {
+                advance_width,
+                ..GlyphMetrics::default()
+            };
+        };
+        let x0 = (f32::from(bb.x_min) * scale).floor();
+        let y0 = (f32::from(bb.y_min) * scale).floor();
+        let x1 = (f32::from(bb.x_max) * scale).ceil();
+        let y1 = (f32::from(bb.y_max) * scale).ceil();
+        GlyphMetrics {
+            xmin: x0 as i32,
+            ymin: y0 as i32,
+            width: (x1 - x0).max(0.0) as usize,
+            height: (y1 - y0).max(0.0) as usize,
+            advance_width,
+        }
+    }
+
+    fn metrics(&self, c: char, size: f32) -> GlyphMetrics {
+        let face = self.parser();
+        let gid = face.glyph_index(c).unwrap_or(ttf_parser::GlyphId(0));
+        self.metrics_for(&face, gid, size)
+    }
+
+    /// 光栅化一个字形为 8 位覆盖率位图（行主序，宽 × 高 = metrics.width × height）。
+    fn rasterize(&self, glyph_id: u16, size: f32) -> (GlyphMetrics, Vec<u8>) {
+        let face = self.parser();
+        let gid = ttf_parser::GlyphId(glyph_id);
+        let m = self.metrics_for(&face, gid, size);
+        if m.width == 0 || m.height == 0 {
+            return (m, Vec::new());
+        }
+        let mut sink = OutlineSink {
+            raster: Rasterizer::new(m.width, m.height),
+            scale: size / self.units_per_em,
+            origin_x: m.xmin as f32,
+            // 位图顶边（像素，Y+ 向上）= ymin + height。
+            top: (m.ymin + m.height as i32) as f32,
+            start: point(0.0, 0.0),
+            last: point(0.0, 0.0),
+        };
+        if face.outline_glyph(gid, &mut sink).is_none() {
+            return (m, vec![0; m.width * m.height]);
+        }
+        let mut out = vec![0u8; m.width * m.height];
+        sink.raster.for_each_pixel(|i, a| {
+            out[i] = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+        });
+        (m, out)
+    }
+}
+
+/// ttf-parser 轮廓 → 覆盖率光栅器。字体单位（Y+ 向上）→ 位图像素（Y+ 向下）。
+struct OutlineSink {
+    raster: Rasterizer,
+    scale: f32,
+    origin_x: f32,
+    top: f32,
+    start: ab_glyph_rasterizer::Point,
+    last: ab_glyph_rasterizer::Point,
+}
+
+impl OutlineSink {
+    fn map(&self, x: f32, y: f32) -> ab_glyph_rasterizer::Point {
+        point(x * self.scale - self.origin_x, self.top - y * self.scale)
+    }
+}
+
+impl ttf_parser::OutlineBuilder for OutlineSink {
+    fn move_to(&mut self, x: f32, y: f32) {
+        let p = self.map(x, y);
+        self.start = p;
+        self.last = p;
+    }
+
+    fn line_to(&mut self, x: f32, y: f32) {
+        let p = self.map(x, y);
+        self.raster.draw_line(self.last, p);
+        self.last = p;
+    }
+
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        let (c, p) = (self.map(x1, y1), self.map(x, y));
+        self.raster.draw_quad(self.last, c, p);
+        self.last = p;
+    }
+
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        let (c1, c2, p) = (self.map(x1, y1), self.map(x2, y2), self.map(x, y));
+        self.raster.draw_cubic(self.last, c1, c2, p);
+        self.last = p;
+    }
+
+    fn close(&mut self) {
+        if self.last != self.start {
+            self.raster.draw_line(self.last, self.start);
+        }
+        self.last = self.start;
     }
 }
 
@@ -323,7 +469,7 @@ impl TextEngine {
             .iter()
             .position(|font| {
                 grapheme.chars().all(|c| {
-                    is_default_ignorable(c) || c.is_whitespace() || font.raster.has_glyph(c)
+                    is_default_ignorable(c) || c.is_whitespace() || font.has_glyph(c)
                 })
             })
             .unwrap_or(0)
@@ -510,26 +656,20 @@ impl TextEngine {
     }
 
     pub fn line_height(&self, size: f32) -> f32 {
-        self.fonts[0]
-            .raster
-            .horizontal_line_metrics(size)
-            .map(|m| m.ascent - m.descent)
-            .unwrap_or(size * 1.2)
+        let (a, d) = self.fonts[0].line_metrics(size);
+        if a > 0.0 { a - d } else { size * 1.2 }
     }
 
     pub fn ascent(&self, size: f32) -> f32 {
-        self.fonts[0]
-            .raster
-            .horizontal_line_metrics(size)
-            .map(|m| m.ascent)
-            .unwrap_or(size * 0.8)
+        let (a, _) = self.fonts[0].line_metrics(size);
+        if a > 0.0 { a } else { size * 0.8 }
     }
 
     /// 兼容单字符光标估算；真实段落绘制必须走 `shape_line`。
-    pub fn glyph_metrics(&self, c: char, size: f32) -> fontdue::Metrics {
+    pub fn glyph_metrics(&self, c: char, size: f32) -> GlyphMetrics {
         let mut buffer = [0; 4];
         let font = self.font_for_grapheme(c.encode_utf8(&mut buffer));
-        self.fonts[font].raster.metrics(c, size)
+        self.fonts[font].metrics(c, size)
     }
 
     pub fn rasterize_glyph(
@@ -537,12 +677,11 @@ impl TextEngine {
         font_id: u32,
         glyph_id: u16,
         size: f32,
-    ) -> (fontdue::Metrics, Vec<u8>) {
+    ) -> (GlyphMetrics, Vec<u8>) {
         self.fonts
             .get(font_id as usize)
             .unwrap_or(&self.fonts[0])
-            .raster
-            .rasterize_indexed(glyph_id, size)
+            .rasterize(glyph_id, size)
     }
 
     pub fn layout(&self, text: &str, size: f32, max_width: f32) -> Vec<Line> {

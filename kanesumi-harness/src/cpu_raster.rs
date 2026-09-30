@@ -125,7 +125,7 @@ pub struct CpuRenderer {
     /// 像素缓冲（RGBA，sRGB 编码 + 直通 alpha）。
     buf: Vec<u8>,
     /// 字形位图缓存：key = GlyphKey。静态文本每帧零重栅格化。
-    glyph_bitmaps: HashMap<GlyphKey, (fontdue::Metrics, Vec<u8>)>,
+    glyph_bitmaps: HashMap<GlyphKey, (kanesumi_canvas::text::GlyphMetrics, Vec<u8>)>,
     /// 图标缓存（FNV 内容去重）。`Arc<[u8]>` 共享字节，命中仅增引用计数——
     /// 旧 `(Vec<u8>,..).clone()` 每帧整张拷一遍，缓存形同虚设（参 egui texture atlas）。
     images: HashMap<u32, (Arc<[u8]>, u32, u32)>,

@@ -8,7 +8,9 @@ authors = ["Takahashi Rinta <mc1586182829@outlook.com>"]
 
 [dependencies]
 kanesumi-core = { path = "../kanesumi-core" }
-fontdue = "0.9"
+# 字形光栅化（覆盖率累加，零依赖；轮廓取自 rustybuzz 自带的 ttf-parser，按需解码）。
+# 取代 fontdue：后者加载时预解析全部字形，CJK 字体每进程常驻 ~330 MiB（KANESUMI_RUNTIME.md R1）。
+ab_glyph_rasterizer = "0.1"
 # SVG → RGBA 光栅化（图标管线，与 Ether monorepo 侧 ether-assets 同款管线，Kanesumi 自足）。
 resvg = "0.44"
 # UAX #14 断行 —— 为 CJK/混合文本提供正确的允许断行点集合（禁则规则）。参 V14。

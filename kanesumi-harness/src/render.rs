@@ -283,7 +283,7 @@ pub struct Renderer {
     images: HashMap<u32, GlyphEntry>,
     /// 字形位图 CPU 缓存（fontdue 光栅化结果）。key = `GlyphKey`。静态文本每帧复用，
     /// 避免重复光栅化（全链路最贵的 CPU 操作）。GPU 侧已有字形纹理缓存，此处补 CPU 侧。
-    glyph_bitmaps: HashMap<GlyphKey, (fontdue::Metrics, Vec<u8>)>,
+    glyph_bitmaps: HashMap<GlyphKey, (kanesumi_canvas::text::GlyphMetrics, Vec<u8>)>,
     /// 持久顶点缓冲（避免每帧 create_buffer 的 GPU 分配开销，§4.1 保留视觉树）。
     solid_buf: wgpu::Buffer,
     text_buf: wgpu::Buffer,
@@ -1333,7 +1333,7 @@ pub(crate) struct PlacedGlyph {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn layout_text_glyphs(
     engine: &TextEngine,
-    glyph_bitmaps: &mut HashMap<GlyphKey, (fontdue::Metrics, Vec<u8>)>,
+    glyph_bitmaps: &mut HashMap<GlyphKey, (kanesumi_canvas::text::GlyphMetrics, Vec<u8>)>,
     content: &str,
     rect: Rect,
     style: TextStyle,
