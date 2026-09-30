@@ -221,6 +221,279 @@ impl MetroTabRow {
     }
 }
 
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 radio_buttons.rs）──────────
+//
+// 旧 API（`select` / `update` / `tab_at` / `render`）原样保留给未迁移的 App。选择类语义：
+// `PointerUp` 用坐标 + 旧 `tab_at` 选页签，方向键切相邻页签。命中与焦点交给框架；管道滑行
+// 由 `update` 转发并在未稳态时续帧（参 switch.rs 的 `update` 写法）。
+
+/// 元素树动作：页签被用户切换（点击 / 方向键）。携带新的选中索引。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TabSelectionChanged(pub usize);
+
+impl kanesumi_element::Widget for MetroTabRow {
+    /// 固有尺寸：宽 = 全部页签标题宽之和；高 = Header 高（默认 48，参 CONTROL_SPEC §6）。
+    /// 宽随 `available.width` 收缩 —— 页签总宽可超宿主宽，窄 rect 下不得画出 rect（§6）。
+    fn measure(
+        &mut self,
+        ctx: &mut kanesumi_element::MeasureCtx,
+        available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        let w = self.total_width(ctx.engine());
+        let w = if available.width.is_finite() {
+            w.min(available.width.max(0.0))
+        } else {
+            w
+        };
+        kanesumi_core::Size::new(w, self.header_height)
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        // render 自己成对 PushClip/PopClip 到 rect，无需再加裁剪。
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+    }
+
+    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, dt: f64) {
+        MetroTabRow::update(self, dt);
+        if !self.select_anim.is_steady() {
+            ctx.invalidate_paint();
+            ctx.request_anim_frame();
+        }
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, Key, PointerButton};
+        match event {
+            Event::PointerMove { pos } => {
+                if let Some(engine) = ctx.engine() {
+                    self.hovered = self.tab_at(engine, ctx.rect(), *pos);
+                }
+                ctx.invalidate_paint();
+            }
+            Event::PointerLeave => {
+                self.hovered = None;
+                ctx.invalidate_paint();
+            }
+            Event::PointerUp {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                let before = self.selected;
+                // 先取出命中结果，结束对 ctx 的不可变借用，再发动作。
+                let hit = match ctx.engine() {
+                    Some(engine) => self.tab_at(engine, ctx.rect(), *pos),
+                    None => None,
+                };
+                if let Some(i) = hit {
+                    self.select(i);
+                    if self.selected != before {
+                        ctx.emit(TabSelectionChanged(self.selected));
+                        ctx.invalidate_paint();
+                        ctx.request_anim_frame();
+                    }
+                    ctx.set_handled();
+                }
+            }
+            Event::KeyDown { key, .. } => {
+                // 空表：无相邻页签可切，也不得越界。
+                if self.tabs.is_empty() {
+                    return;
+                }
+                let last = self.tabs.len() - 1;
+                let next = match key {
+                    Key::Left => self.selected.saturating_sub(1),
+                    Key::Right => (self.selected + 1).min(last),
+                    _ => return,
+                };
+                if next != self.selected {
+                    self.select(next);
+                    ctx.emit(TabSelectionChanged(self.selected));
+                    ctx.invalidate_paint();
+                    ctx.request_anim_frame();
+                }
+                ctx.set_handled();
+            }
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Group,
+            name: String::from("页签"),
+            value: self.tabs.get(self.selected).map(|t| t.label.clone()),
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, Key, LayoutProps, WidgetId};
+
+    fn harness(props: LayoutProps) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(400.0, 300.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroTabRow::new(vec![
+                MetroTab::new("邮件"),
+                MetroTab::new("日历"),
+                MetroTab::new("人脉"),
+            ]),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..props
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    /// 第 `i` 个页签的中心点（表面坐标）—— x 用累计标题宽推。
+    fn tab_center(h: &TestHarness, id: WidgetId, i: usize) -> Point {
+        let rect = h.rect(id);
+        let row = h.tree.get::<MetroTabRow>(id).unwrap();
+        let mut x = rect.origin.x;
+        for k in 0..i {
+            x += row.header_width(&h.engine, k);
+        }
+        x += row.header_width(&h.engine, i) / 2.0;
+        Point::new(x, rect.origin.y + rect.size.height / 2.0)
+    }
+
+    #[test]
+    fn click_selects_tab_and_reports() {
+        let (mut h, id) = harness(LayoutProps::default());
+        h.click_at(tab_center(&h, id, 2));
+        assert_eq!(
+            h.take::<TabSelectionChanged>(),
+            vec![(id, TabSelectionChanged(2))]
+        );
+        assert_eq!(h.tree.get::<MetroTabRow>(id).unwrap().selected, 2);
+        h.settle();
+    }
+
+    #[test]
+    fn click_same_tab_reports_nothing() {
+        let (mut h, id) = harness(LayoutProps::default());
+        h.click_at(tab_center(&h, id, 0));
+        assert!(h.take::<TabSelectionChanged>().is_empty(), "已选中不重复发动作");
+        assert_eq!(h.tree.get::<MetroTabRow>(id).unwrap().selected, 0);
+        h.settle();
+    }
+
+    #[test]
+    fn arrow_keys_move_selection_and_tab_focuses() {
+        let (mut h, id) = harness(LayoutProps::default());
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+        h.key(Key::Right);
+        assert_eq!(h.tree.get::<MetroTabRow>(id).unwrap().selected, 1);
+        h.key(Key::Right);
+        assert_eq!(h.tree.get::<MetroTabRow>(id).unwrap().selected, 2);
+        h.key(Key::Right); // 末页：不变、不发动作
+        assert_eq!(h.tree.get::<MetroTabRow>(id).unwrap().selected, 2);
+        h.key(Key::Left);
+        assert_eq!(h.tree.get::<MetroTabRow>(id).unwrap().selected, 1);
+        assert_eq!(
+            h.take::<TabSelectionChanged>(),
+            vec![
+                (id, TabSelectionChanged(1)),
+                (id, TabSelectionChanged(2)),
+                (id, TabSelectionChanged(1)),
+            ]
+        );
+        h.settle();
+    }
+
+    #[test]
+    fn indicator_settles_after_selection() {
+        let (mut h, id) = harness(LayoutProps::default());
+        h.tab();
+        h.key(Key::Right);
+        // 切换后动画未稳态，settle 应能跑到稳态（管道贴 current）。
+        assert!(h.tree.get::<MetroTabRow>(id).unwrap().selection_progress() < 1.0);
+        h.settle();
+        let p = h.tree.get::<MetroTabRow>(id).unwrap();
+        assert!((p.selection_progress() - 1.0).abs() < 0.01, "稳态停在 current");
+    }
+
+    #[test]
+    fn pointer_move_sets_and_leave_clears_hover() {
+        let (mut h, id) = harness(LayoutProps::default());
+        h.move_to(tab_center(&h, id, 1));
+        h.frame();
+        assert_eq!(h.tree.get::<MetroTabRow>(id).unwrap().hovered, Some(1));
+        h.tree.pointer_leave();
+        h.frame();
+        assert_eq!(h.tree.get::<MetroTabRow>(id).unwrap().hovered, None);
+    }
+
+    #[test]
+    fn sizes_and_passes_insurance_checks() {
+        let (h, id) = harness(LayoutProps::default());
+        assert!(h.rect(id).size.width > 0.0 && h.rect(id).size.height > 0.0);
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn squeezed_still_passes_insurance_checks() {
+        // 页签按内容定宽、总宽可超控件宽；挤到 40 时 render 必须裁到 rect（§6）。
+        let (h, id) = harness(LayoutProps {
+            width: Some(40.0),
+            ..LayoutProps::default()
+        });
+        assert_eq!(h.rect(id).size.width, 40.0);
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn empty_tab_row_is_safe() {
+        // P0-3 回归（树内路径）：空表 measure / 键盘 / 渲染都不得 panic。
+        let mut h = TestHarness::new(200.0, 100.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroTabRow::default(),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+        h.key(Key::Left);
+        h.key(Key::Right);
+        assert!(h.take::<TabSelectionChanged>().is_empty());
+        h.assert_contained();
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn disabled_ignores_input() {
+        let (mut h, id) = harness(LayoutProps::default());
+        h.tree.set_enabled(id, false);
+        h.frame();
+        h.click_at(tab_center(&h, id, 1));
+        assert!(h.take::<TabSelectionChanged>().is_empty());
+        assert_eq!(h.tree.get::<MetroTabRow>(id).unwrap().selected, 0);
+        h.settle();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
