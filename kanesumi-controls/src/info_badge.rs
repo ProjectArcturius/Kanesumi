@@ -183,6 +183,96 @@ impl MetroInfoBadge {
     }
 }
 
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 button.rs）────────────────
+//
+// 纯展示徽标：不可聚焦、不发动作。`measure` 转发控件自身的徽标尺寸（CONTROL_SPEC §14）：
+// 圆点 4×4，Value / Icon 态按 11px 行高加 Padding，全胶囊。命中保持默认整矩形。
+
+impl kanesumi_element::Widget for MetroInfoBadge {
+    fn measure(
+        &mut self,
+        ctx: &mut kanesumi_element::MeasureCtx,
+        _available: Size,
+    ) -> Size {
+        MetroInfoBadge::measure(self, ctx.engine())
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Other,
+            name: self.display_text().unwrap_or_default(),
+            value: None,
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, LayoutProps, WidgetId};
+
+    fn harness(badge: MetroInfoBadge) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(200.0, 120.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            badge,
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    #[test]
+    fn value_badge_sizes_to_content_and_passes_insurance_checks() {
+        let (h, id) = harness(MetroInfoBadge::value(7));
+        let r = h.rect(id);
+        assert!(r.size.width >= 4.0 && r.size.height >= 4.0, "{r:?}");
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn dot_badge_is_minimum_square_and_passes_insurance_checks() {
+        let (h, id) = harness(MetroInfoBadge::dot());
+        assert_eq!(h.rect(id).size.width, 4.0);
+        assert_eq!(h.rect(id).size.height, 4.0);
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    /// 压窄用例：数字徽标被强制 40px 宽（W>H，走横向胶囊分支）后三断言仍成立。
+    #[test]
+    fn squeezed_width_still_within() {
+        let mut h = TestHarness::new(200.0, 120.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroInfoBadge::value(150),
+            LayoutProps {
+                width: Some(40.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
