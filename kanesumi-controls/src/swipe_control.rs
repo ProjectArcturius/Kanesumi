@@ -315,8 +315,15 @@ fn item_bg(action: SwipeItemAction, theme: &MetroTheme) -> kanesumi_core::Color 
 const SWIPE_TAP_SLOP: f32 = 4.0;
 
 /// 元素树动作：滑动操作项被触发。携带该项的语义类型（`SwipeItemAction`）。
+/// 元素树动作：某个操作项被触发。携带**哪一侧、第几项**（同语义的多个项靠它区分）与该项语义。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SwipeInvoked(pub SwipeItemAction);
+pub struct SwipeInvoked {
+    /// `true` = 左侧项（向右滑露出），`false` = 右侧项。
+    pub left: bool,
+    /// 在对应列表（`left_items` / `right_items`）中的索引。
+    pub index: usize,
+    pub action: SwipeItemAction,
+}
 
 impl kanesumi_element::Widget for MetroSwipeControl {
     /// 固有尺寸：规格 §32 未给定量；宽随宿主铺满（无界轴退回 200），高取条目高 48。
@@ -385,12 +392,16 @@ impl kanesumi_element::Widget for MetroSwipeControl {
                             } else {
                                 self.right_items.get(i)
                             };
-                            item.map(|it| it.action)
+                            item.map(|it| SwipeInvoked {
+                                left: side_left,
+                                index: i,
+                                action: it.action,
+                            })
                         }
                         _ => None,
                     };
                     if let Some(a) = invoked {
-                        ctx.emit(SwipeInvoked(a));
+                        ctx.emit(a);
                     }
                     ctx.invalidate_paint();
                     ctx.set_handled();
@@ -412,13 +423,17 @@ impl kanesumi_element::Widget for MetroSwipeControl {
                         } else {
                             self.right_items.first()
                         }
-                        .map(|it| it.action)
+                        .map(|it| SwipeInvoked {
+                            left: side_left,
+                            index: 0,
+                            action: it.action,
+                        })
                     } else {
                         None
                     };
                     self.release();
                     if let Some(a) = triggered {
-                        ctx.emit(SwipeInvoked(a));
+                        ctx.emit(a);
                     }
                     ctx.invalidate_paint();
                     ctx.set_handled();
@@ -516,7 +531,7 @@ mod tree_tests {
         h.click_at(Point::new(r.origin.x + 32.0, r.center().y));
         assert_eq!(
             h.take::<SwipeInvoked>(),
-            vec![(id, SwipeInvoked(SwipeItemAction::Accent))]
+            vec![(id, SwipeInvoked { left: true, index: 0, action: SwipeItemAction::Accent })]
         );
         assert_eq!(h.tree.get::<MetroSwipeControl>(id).unwrap().offset, 0.0);
     }
@@ -529,7 +544,7 @@ mod tree_tests {
         h.click_at(Point::new(r.origin.x + 96.0, r.center().y));
         assert_eq!(
             h.take::<SwipeInvoked>(),
-            vec![(id, SwipeInvoked(SwipeItemAction::Danger))]
+            vec![(id, SwipeInvoked { left: true, index: 1, action: SwipeItemAction::Danger })]
         );
     }
 
@@ -558,7 +573,7 @@ mod tree_tests {
         h.frame();
         assert_eq!(
             h.take::<SwipeInvoked>(),
-            vec![(id, SwipeInvoked(SwipeItemAction::Accent))]
+            vec![(id, SwipeInvoked { left: true, index: 0, action: SwipeItemAction::Accent })]
         );
         assert_eq!(h.tree.get::<MetroSwipeControl>(id).unwrap().offset, 0.0);
     }
