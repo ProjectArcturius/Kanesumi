@@ -604,6 +604,15 @@ impl MetroTextBox {
         ctx.emit(TextChanged(self.field.text()));
         ctx.invalidate_paint();
     }
+
+    fn after_ime_edit(&mut self, ctx: &mut kanesumi_element::EventCtx, before: &str) {
+        if self.field.text() != before {
+            self.emit_changed(ctx);
+        } else {
+            ctx.invalidate_paint();
+        }
+        ctx.set_handled();
+    }
 }
 
 impl kanesumi_element::Widget for MetroTextBox {
@@ -747,20 +756,20 @@ impl kanesumi_element::Widget for MetroTextBox {
                 ctx.invalidate_paint();
                 ctx.set_handled();
             }
+            // IME 提交 / 周边删除：只在**文本**真的变化时发 TextChanged ——
+            // 空提交（输入法启用时常见）只清组合态，`commit_ime` 仍返回 true。
             Event::Commit { text } => {
-                if self.field.commit_ime(text) {
-                    self.emit_changed(ctx);
-                }
-                ctx.set_handled();
+                let before = self.field.text();
+                self.field.commit_ime(text);
+                self.after_ime_edit(ctx, &before);
             }
             Event::DeleteSurrounding {
                 before_bytes,
                 after_bytes,
             } => {
-                if self.field.delete_surrounding(*before_bytes, *after_bytes) {
-                    self.emit_changed(ctx);
-                }
-                ctx.set_handled();
+                let before = self.field.text();
+                self.field.delete_surrounding(*before_bytes, *after_bytes);
+                self.after_ime_edit(ctx, &before);
             }
             _ => {}
         }
@@ -863,6 +872,22 @@ mod tree_tests {
         h.tree.remove(id);
         h.frame();
         assert!(h.tree.ime_context().is_none());
+    }
+
+    #[test]
+    fn empty_ime_commit_keeps_selection_and_reports_no_change() {
+        let (mut h, id) = harness();
+        h.tab(); // Tab 聚焦 = 全选
+        h.take_actions();
+        h.tree.commit(String::new());
+        h.frame();
+        assert_eq!(text(&h, id), "");
+        assert!(h.take::<TextChanged>().is_empty());
+        h.type_text("x");
+        h.tree.commit(String::new());
+        h.frame();
+        assert_eq!(text(&h, id), "x");
+        assert_eq!(h.take::<TextChanged>().len(), 1, "只有真实输入发一次");
     }
 
     #[test]
