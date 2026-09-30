@@ -4,7 +4,7 @@
 # double-width, so some lines wrap), and the rule is "no NEW warnings". Comparing by hand is
 # easy to get wrong, so this script freezes the comparison: it extracts the per-target
 # "generated N warnings" summary and diffs it against scripts/clippy-baseline.txt.
-# scripts/verify.sh prints the same shape and shares the same baseline file.
+# scripts/verify.sh prints the same shape and shares this baseline file (both honour @<os> tags).
 #
 # !! THIS FILE MUST STAY PURE ASCII !!
 # Windows PowerShell 5.1 reads a BOM-less UTF-8 script as GBK; a CJK comment can then eat the
@@ -23,6 +23,9 @@ $ErrorActionPreference = 'Continue'
 Push-Location (Join-Path $PSScriptRoot '..')
 $failed = 0
 $baselinePath = 'scripts/clippy-baseline.txt'
+# Platform tag: lines tagged with another platform are ignored (see verify.sh for the rationale --
+# kanesumi-harness' Wayland+wgpu shell is cfg-gated out off-Linux, so the warning sets differ).
+$osTag = if ($env:OS -eq 'Windows_NT' -or $IsWindows) { 'windows' } elseif ($IsMacOS) { 'darwin' } elseif ($IsLinux) { 'linux' } else { 'unknown' }
 
 Write-Host '== 1/3 tests (cargo test --workspace) =='
 $testOut = cargo test --workspace 2>&1
@@ -72,6 +75,22 @@ function Get-ClippySummary {
         Sort-Object
 }
 
+function Get-BaselineForOs {
+    param([string]$Path, [string]$OsTag)
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($line in (Get-Content -LiteralPath $Path)) {
+        # Normalise first: the baseline may carry a UTF-8 BOM / CRLF from a PS 5.1 write.
+        $l = $line.TrimStart([char]0xFEFF).Trim()
+        if ($l -eq '' -or $l.StartsWith('#')) { continue }
+        if ($l -match '@([A-Za-z]+)\s*$') {
+            if ($Matches[1] -ne $OsTag) { continue }
+            $l = ($l -replace '@[A-Za-z]+\s*$', '').TrimEnd()
+        }
+        $out.Add($l)
+    }
+    return $out.ToArray()
+}
+
 $clippyOut = cargo clippy --workspace --all-targets 2>&1
 $currentLines = Get-ClippySummary -Output $clippyOut
 
@@ -88,9 +107,32 @@ if (-not $currentLines) {
 }
 
 if ($UpdateBaseline) {
-    Set-Content -Path $baselinePath -Value $currentLines -Encoding UTF8
-    Write-Host "baseline written to $baselinePath ($($currentLines.Count) targets):"
-    $currentLines | ForEach-Object { "  $_" }
+    # Carry over platform tags by TARGET (not by count, or a changed count would drop the tag);
+    # a target that never had a tag stays platform-neutral.
+    $wasTag = @{}
+    if (Test-Path $baselinePath) {
+        foreach ($line in (Get-Content -LiteralPath $baselinePath)) {
+            $l = $line.TrimStart([char]0xFEFF).Trim()
+            if ($l -eq '' -or $l.StartsWith('#')) { continue }
+            $tag = ''
+            if ($l -match '@([A-Za-z]+)\s*$') { $tag = '@' + $Matches[1]; $l = ($l -replace '@[A-Za-z]+\s*$', '').TrimEnd() }
+            $lbl = ($l -replace '\s+\d+$', '')
+            if ($tag -ne '') { $wasTag[$lbl] = $tag }
+        }
+    }
+    $write = New-Object System.Collections.Generic.List[string]
+    $write.Add('# clippy warning baseline: "<target>  <count>", optional "@<os>" suffix limits a line to one platform.')
+    $write.Add('# Tags are carried over by -UpdateBaseline (matched by target, not by count).')
+    foreach ($l in @($currentLines)) {
+        $lbl = ($l -replace '\s+\d+$', '')
+        if ($wasTag.ContainsKey($lbl)) { $write.Add($l + '  ' + $wasTag[$lbl]) } else { $write.Add($l) }
+    }
+    # Write WITHOUT a BOM: PS 5.1's "Set-Content -Encoding UTF8" adds one, which makes the
+    # byte-wise diff in verify.sh never match on its first line.
+    $full = Join-Path (Get-Location).Path $baselinePath
+    [System.IO.File]::WriteAllLines($full, $write.ToArray(), (New-Object System.Text.UTF8Encoding($false)))
+    Write-Host "baseline written to $baselinePath ($($write.Count) lines)"
+    $write | ForEach-Object { "  $_" }
     Pop-Location
     exit 0
 }
@@ -101,7 +143,7 @@ if (-not (Test-Path $baselinePath)) {
 } else {
     # NOTE: an empty baseline file makes Get-Content return $null, and Compare-Object then
     # throws (or, worse, is skipped) -- normalise both sides to arrays first.
-    $baseLines = @(Get-Content $baselinePath | Where-Object { $_.Trim() -ne '' })
+    $baseLines = @(Get-BaselineForOs -Path $baselinePath -OsTag $osTag)
     $currentArr = @($currentLines)
     $diff = @(Compare-Object -ReferenceObject $baseLines -DifferenceObject $currentArr)
     if ($diff.Count -gt 0) {

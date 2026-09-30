@@ -1,7 +1,11 @@
-﻿`kanesumi-anim` (lib test)  2
+# clippy 告警基线：每行「<目标>  <告警数>」，末尾的 @<平台> 表示只在该平台计入。
+# 平台标签由 scripts/verify.sh --update-baseline 沿用（按目标匹配，不看告警数）。
+`kanesumi-anim` (lib test)  2
 `kanesumi-controls` (lib test)  36
 `kanesumi-controls` (lib)  2
 `kanesumi-core` (lib test)  1
 `kanesumi-core` (lib)  1
 `kanesumi-gallery` (lib test)  1
 `kanesumi-gallery` (lib)  1
+`kanesumi-harness` (lib test)  30  @linux
+`kanesumi-harness` (lib)  27  @linux
