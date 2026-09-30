@@ -467,6 +467,208 @@ fn double_chevron(scene: &mut Scene, rect: Rect, color: kanesumi_core::Color, is
     }
 }
 
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3）─────────────────────────────────
+//
+// 数字分页器（NumberPanel 模式）：点页码 / Nav 翻页。Nav 本就计入旧 `measure`，故固有 rect
+// 下可达；压窄时仍可能外扩，按 §6 在 `paint` 里把自身绘制夹进 rect。
+
+/// 元素树动作：当前页被用户改变。携带新的选中页（0 基）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PagerPageChanged(pub usize);
+
+impl kanesumi_element::Widget for MetroPagerControl {
+    fn measure(
+        &mut self,
+        ctx: &mut kanesumi_element::MeasureCtx,
+        _available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        MetroPagerControl::measure(self, ctx.engine())
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        // §6 修正：压窄到固有宽以下时 Nav / 页码会画到 rect 外；成对把自身绘制夹进 rect。
+        scene.push_clip(ctx.rect());
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+        scene.pop_clip();
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, Key, PointerButton};
+        match event {
+            Event::PointerMove { pos } => {
+                if let Some(engine) = ctx.engine().cloned() {
+                    self.hover(&engine, ctx.rect(), *pos);
+                    ctx.invalidate_paint();
+                }
+            }
+            Event::PointerLeave => {
+                let changed = self.hovered.is_some();
+                self.hovered = None;
+                if changed {
+                    ctx.invalidate_paint();
+                }
+            }
+            Event::PointerUp {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                if let Some(engine) = ctx.engine().cloned() {
+                    let action = self.handle_click(&engine, ctx.rect(), *pos);
+                    if action != PagerAction::None {
+                        ctx.emit(PagerPageChanged(self.selected_index));
+                        ctx.invalidate_paint();
+                        ctx.set_handled();
+                    }
+                }
+            }
+            Event::KeyDown { key, .. } => match key {
+                Key::Left => {
+                    if self.selected_index > 0 {
+                        self.selected_index -= 1;
+                        ctx.emit(PagerPageChanged(self.selected_index));
+                        ctx.invalidate_paint();
+                    }
+                    ctx.set_handled();
+                }
+                Key::Right => {
+                    if self.number_of_pages > 0 && self.selected_index + 1 < self.number_of_pages {
+                        self.selected_index += 1;
+                        ctx.emit(PagerPageChanged(self.selected_index));
+                        ctx.invalidate_paint();
+                    }
+                    ctx.set_handled();
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Other,
+            name: String::from("分页器"),
+            value: Some(format!("{} / {}", self.selected_index + 1, self.number_of_pages)),
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, Key, LayoutProps, WidgetId};
+
+    fn harness(pages: usize, selected: usize, props: LayoutProps) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(600.0, 200.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroPagerControl {
+                number_of_pages: pages,
+                selected_index: selected,
+                ..MetroPagerControl::default()
+            },
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..props
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    fn geom_rects(h: &TestHarness, id: WidgetId) -> (Rect, Rect, Vec<(PagerItem, Rect)>) {
+        let p = h.tree.get::<MetroPagerControl>(id).unwrap();
+        p.geom(&h.engine, h.rect(id))
+    }
+
+    #[test]
+    fn click_page_selects_and_emits() {
+        let (mut h, id) = harness(20, 9, LayoutProps::default());
+        let (_, _, rects) = geom_rects(&h, id);
+        let center = rects[2].1.center(); // "9"
+        h.click_at(center);
+        assert_eq!(
+            h.take::<PagerPageChanged>(),
+            vec![(id, PagerPageChanged(8))]
+        );
+        assert_eq!(h.tree.get::<MetroPagerControl>(id).unwrap().selected_index, 8);
+    }
+
+    #[test]
+    fn nav_next_and_prev_emit() {
+        let (mut h, id) = harness(20, 5, LayoutProps::default());
+        let (nl, nr, _) = geom_rects(&h, id);
+        let prev = Point::new(nl.origin.x + NAV_SIZE + 5.0, 20.0);
+        let next = Point::new(nr.origin.x + 5.0, 20.0);
+        h.click_at(prev);
+        h.click_at(next);
+        assert_eq!(
+            h.take::<PagerPageChanged>(),
+            vec![(id, PagerPageChanged(4)), (id, PagerPageChanged(5))]
+        );
+    }
+
+    #[test]
+    fn arrow_keys_change_page() {
+        let (mut h, id) = harness(20, 0, LayoutProps::default());
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+        h.key(Key::Left); // 首页：无变化
+        assert!(h.take::<PagerPageChanged>().is_empty());
+        h.key(Key::Right);
+        assert_eq!(
+            h.take::<PagerPageChanged>(),
+            vec![(id, PagerPageChanged(1))]
+        );
+    }
+
+    #[test]
+    fn passes_insurance_checks_including_squeezed() {
+        let (mut h, id) = harness(20, 9, LayoutProps::default());
+        h.move_to(h.center(id));
+        h.frame();
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+
+        let narrow = h.tree.insert_with(
+            h.root(),
+            MetroPagerControl {
+                number_of_pages: 20,
+                selected_index: 9,
+                ..MetroPagerControl::default()
+            },
+            LayoutProps {
+                width: Some(40.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        h.assert_contained();
+        h.assert_no_hit_outside(narrow);
+        h.assert_paint_within(narrow, Insets::ZERO);
+    }
+
+    #[test]
+    fn disabled_pager_ignores_input() {
+        let (mut h, id) = harness(20, 9, LayoutProps::default());
+        h.tree.set_enabled(id, false);
+        h.frame();
+        h.click(id);
+        assert!(h.take::<PagerPageChanged>().is_empty());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
