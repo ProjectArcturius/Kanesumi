@@ -17,6 +17,7 @@ cargo fmt
 ### 路线与依据（先读这七份）
 
 - `docs/ROADMAP.md` — **框架路线图**：M1~M7 分阶段、每批验收、决策记录。「接下来做什么」的唯一真源。
+- `docs/ELEMENT_TREE.md` — **元素树设计**（2026-09-30）：框架持有的保留树，统一承担 M2/M3/M4 的实现；分期 E1~E6。
 - `docs/MATURITY_AUDIT_2026-09-22.md` — 成熟度审计：逐条缺口与 file:line 证据。
 - `docs/UWP_PRIMARY_SOURCES.md` — **一手源清单与取值对照**：Windows SDK 自带 OS 主题字典、
   WinUI 2.x 源码字典的路径与取数命令，以及被一手源推翻的旧值清单（**改任何数值前先读这份**）。
