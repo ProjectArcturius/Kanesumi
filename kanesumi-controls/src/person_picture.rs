@@ -387,7 +387,10 @@ mod tree_tests {
         assert_eq!(h.rect(id).size.width, 96.0);
         assert_eq!(h.rect(id).size.height, 96.0);
         assert_eq!(
-            h.tree.get::<MetroPersonPicture>(id).unwrap().paint_overflow(),
+            h.tree
+                .get::<MetroPersonPicture>(id)
+                .unwrap()
+                .paint_overflow(),
             OVERFLOW,
             "paint_overflow 必须与实际外溢方向一致"
         );

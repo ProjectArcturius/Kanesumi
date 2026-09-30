@@ -61,11 +61,7 @@ impl MetroSurface {
 // 期望尺寸的最大值，与 `kanesumi-element/src/widgets/border.rs` 同法。
 
 impl kanesumi_element::Widget for MetroSurface {
-    fn measure(
-        &mut self,
-        ctx: &mut kanesumi_element::MeasureCtx,
-        available: Size,
-    ) -> Size {
+    fn measure(&mut self, ctx: &mut kanesumi_element::MeasureCtx, available: Size) -> Size {
         let mut s = Size::ZERO;
         for c in ctx.children() {
             let d = ctx.measure_child(c, available);
@@ -134,7 +130,11 @@ mod tree_tests {
         )));
         let r = h.rect(id);
         assert!(r.size.width > 0.0 && r.size.height > 0.0, "应撑开：{r:?}");
-        assert_eq!(r.size, h.rect(child.unwrap()).size, "表面尺寸 = 子节点期望尺寸");
+        assert_eq!(
+            r.size,
+            h.rect(child.unwrap()).size,
+            "表面尺寸 = 子节点期望尺寸"
+        );
         h.assert_contained();
         h.assert_no_hit_outside(id);
         h.assert_paint_within(id, Insets::ZERO);

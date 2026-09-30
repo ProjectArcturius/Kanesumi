@@ -176,7 +176,10 @@ mod tree_tests {
         h.tree.update_props(id, |p| p.width = Some(60.0));
         h.frame();
         let narrow = h.rect(id).size.height;
-        assert!(narrow > wide, "压窄后应换行更高：wide={wide} narrow={narrow}");
+        assert!(
+            narrow > wide,
+            "压窄后应换行更高：wide={wide} narrow={narrow}"
+        );
     }
 }
 

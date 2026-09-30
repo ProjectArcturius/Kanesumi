@@ -189,11 +189,7 @@ impl MetroInfoBadge {
 // 圆点 4×4，Value / Icon 态按 11px 行高加 Padding，全胶囊。命中保持默认整矩形。
 
 impl kanesumi_element::Widget for MetroInfoBadge {
-    fn measure(
-        &mut self,
-        ctx: &mut kanesumi_element::MeasureCtx,
-        _available: Size,
-    ) -> Size {
+    fn measure(&mut self, ctx: &mut kanesumi_element::MeasureCtx, _available: Size) -> Size {
         MetroInfoBadge::measure(self, ctx.engine())
     }
 

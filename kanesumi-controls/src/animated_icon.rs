@@ -282,10 +282,7 @@ mod tree_tests {
         h.frame();
         assert!(h.last.animating, "换状态应开始动画");
         h.settle();
-        assert_eq!(
-            h.tree.get::<MetroAnimatedIcon>(id).unwrap().progress(),
-            1.0
-        );
+        assert_eq!(h.tree.get::<MetroAnimatedIcon>(id).unwrap().progress(), 1.0);
         assert!(!h.last.animating, "到稳态后不再续帧");
     }
 }
