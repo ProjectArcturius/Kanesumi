@@ -215,6 +215,206 @@ impl MetroRadioButtons {
     }
 }
 
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 button.rs）──────────────────
+//
+// 旧 API（`measure` / `handle_click` / `hover` / `render`）原样保留给未迁移的 App。
+// `Click` 事件不带坐标，故点击在 `PointerUp` 里用 pos 调旧 `handle_click`；`ctx.engine()`
+// 为 `None`（首帧之前）时忽略。方向键在选项间移动并选中。命中与焦点交给框架。
+
+/// 元素树动作：单选组选中项改变（点击 / 方向键）。携带新的选中索引。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RadioSelectionChanged(pub usize);
+
+impl kanesumi_element::Widget for MetroRadioButtons {
+    fn measure(
+        &mut self,
+        ctx: &mut kanesumi_element::MeasureCtx,
+        _available: Size,
+    ) -> Size {
+        MetroRadioButtons::measure(self, ctx.engine())
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, Key, PointerButton};
+        let rect = ctx.rect();
+        match event {
+            Event::PointerMove { pos } => {
+                if let Some(engine) = ctx.engine() {
+                    self.hover(engine, rect, *pos);
+                }
+                ctx.invalidate_paint();
+            }
+            Event::PointerLeave => {
+                self.hovered = None;
+                ctx.invalidate_paint();
+            }
+            Event::PointerUp {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                let before = self.selected_index;
+                // 先取出点击结果，结束对 ctx 的不可变借用，再发动作。
+                let clicked = match ctx.engine() {
+                    Some(engine) => self.handle_click(engine, rect, *pos),
+                    None => None,
+                };
+                if let Some(i) = clicked
+                    && self.selected_index != before
+                {
+                    ctx.emit(RadioSelectionChanged(i));
+                }
+                if clicked.is_some() {
+                    ctx.invalidate_paint();
+                }
+            }
+            Event::KeyDown { key, .. } => {
+                if self.items.is_empty() {
+                    return;
+                }
+                let next = match key {
+                    Key::Down => Some(match self.selected_index {
+                        Some(i) => (i + 1).min(self.items.len() - 1),
+                        None => 0,
+                    }),
+                    Key::Up => Some(match self.selected_index {
+                        Some(i) => i.saturating_sub(1),
+                        None => self.items.len() - 1,
+                    }),
+                    _ => None,
+                };
+                let Some(i) = next else { return };
+                if self.select(i) {
+                    ctx.emit(RadioSelectionChanged(i));
+                    ctx.invalidate_paint();
+                }
+                ctx.set_handled();
+            }
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Group,
+            name: self.header.clone(),
+            value: self
+                .selected_index
+                .and_then(|i| self.items.get(i).cloned()),
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, Key, LayoutProps, WidgetId};
+
+    fn harness() -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(400.0, 300.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroRadioButtons::new(vec!["低".into(), "中".into(), "高".into()]),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    fn item_center(h: &TestHarness, id: WidgetId, i: usize) -> Point {
+        let radio = h.tree.get::<MetroRadioButtons>(id).unwrap();
+        let (_, rects) = radio.layout(&h.engine, h.rect(id));
+        rects[i].center()
+    }
+
+    #[test]
+    fn click_selects_item_and_reports() {
+        let (mut h, id) = harness();
+        h.click_at(item_center(&h, id, 1));
+        assert_eq!(
+            h.take::<RadioSelectionChanged>(),
+            vec![(id, RadioSelectionChanged(1))]
+        );
+        assert_eq!(
+            h.tree.get::<MetroRadioButtons>(id).unwrap().selected_index,
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn arrow_keys_move_selection_and_tab_focuses() {
+        let (mut h, id) = harness();
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+        h.key(Key::Down);
+        assert_eq!(
+            h.tree.get::<MetroRadioButtons>(id).unwrap().selected_index,
+            Some(0)
+        );
+        h.key(Key::Down);
+        assert_eq!(
+            h.tree.get::<MetroRadioButtons>(id).unwrap().selected_index,
+            Some(1)
+        );
+        h.key(Key::Up);
+        assert_eq!(
+            h.tree.get::<MetroRadioButtons>(id).unwrap().selected_index,
+            Some(0)
+        );
+        assert_eq!(h.take::<RadioSelectionChanged>().len(), 3);
+    }
+
+    #[test]
+    fn pointer_move_sets_and_leave_clears_hover() {
+        let (mut h, id) = harness();
+        h.move_to(item_center(&h, id, 2));
+        h.frame();
+        assert_eq!(
+            h.tree.get::<MetroRadioButtons>(id).unwrap().hovered,
+            Some(2)
+        );
+        h.tree.pointer_leave();
+        h.frame();
+        assert_eq!(h.tree.get::<MetroRadioButtons>(id).unwrap().hovered, None);
+    }
+
+    #[test]
+    fn sizes_and_passes_insurance_checks() {
+        let (h, id) = harness();
+        assert!(h.rect(id).size.width > 0.0 && h.rect(id).size.height > 0.0);
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn disabled_ignores_input() {
+        let (mut h, id) = harness();
+        h.tree.set_enabled(id, false);
+        h.frame();
+        h.click_at(item_center(&h, id, 1));
+        assert!(h.take::<RadioSelectionChanged>().is_empty());
+        assert_eq!(
+            h.tree.get::<MetroRadioButtons>(id).unwrap().selected_index,
+            None
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
