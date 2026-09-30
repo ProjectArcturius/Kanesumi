@@ -73,6 +73,7 @@ pub use button::{ButtonClicked, ButtonKind, MetroButton};
 pub use check_box::{CheckState, CheckToggled, MetroCheckBox};
 pub use color_picker::{ALL_CHANNELS, COLOR_BELOW_SPECTRUM_H, COLOR_HEX_ROW_H, ColorChanged, ColorChannel, MetroColorPicker};
 pub use command_bar_flyout::{
+    CommandInvoked,
     COMMANDBAR_BORDER, COMMANDBAR_BUTTON_SIZE, COMMANDBAR_ICON_SIZE, TEXT_COMMANDS, CommandBarAction,
     CommandButton, MetroCommandBarFlyout,
 };
@@ -116,7 +117,7 @@ pub use scroll_view::{
 };
 pub use selector_flyout::MetroSelectorFlyout;
 pub use slider::{MetroSlider, SliderValueChanged, SLIDER_HEADER_MARGIN, SLIDER_MIN_H, SLIDER_MIN_W, SLIDER_THUMB, SLIDER_TRACK_H, SLIDER_TRACK_MARGIN};
-pub use split_button::{MetroSplitButton, SplitButtonClick, SplitButtonPart};
+pub use split_button::{MetroSplitButton, SplitButtonInvoked, SplitButtonClick, SplitButtonPart};
 pub use state::{ButtonState, ControlState, control_state};
 pub use surface::MetroSurface;
 pub use swipe_control::{MetroSwipeControl, SwipeAction, SwipeInvoked, SwipeItem, SwipeItemAction, SwipeMode};
