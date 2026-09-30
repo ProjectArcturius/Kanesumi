@@ -197,7 +197,7 @@ impl TestHarness {
             let (Some(r), Some(p)) = (self.tree.rect(id), self.tree.parent(id)) else {
                 continue;
             };
-            if !self.tree.is_visible(id) {
+            if !self.tree.is_visible(id) || self.tree.scrolls_children(p) {
                 continue;
             }
             let pr = self.rect(p);

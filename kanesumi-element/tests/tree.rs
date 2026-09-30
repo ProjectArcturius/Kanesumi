@@ -411,3 +411,47 @@ fn paint_assertion_catches_overflowing_widget() {
     h.frame();
     h.assert_paint_within(id, Insets::ZERO);
 }
+
+// ── 动画暂停 ──────────────────────────────────────────────────────────────────
+
+/// 永远在动画的控件（模拟不确定进度环）。
+struct Spinner {
+    ticks: Rc<Cell<u32>>,
+}
+
+impl Widget for Spinner {
+    fn measure(&mut self, _: &mut MeasureCtx, _: Size) -> Size {
+        Size::new(20.0, 20.0)
+    }
+    fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
+        ctx.request_anim_frame();
+        scene.fill_rect(Color::rgb(1.0, 1.0, 1.0), ctx.rect());
+    }
+    fn update(&mut self, ctx: &mut UpdateCtx, _dt: f64) {
+        self.ticks.set(self.ticks.get() + 1);
+        ctx.invalidate_paint();
+        ctx.request_anim_frame();
+    }
+}
+
+#[test]
+fn hidden_animation_is_parked_and_resumes_when_shown() {
+    let mut h = TestHarness::new(200.0, 200.0);
+    let ticks = Rc::new(Cell::new(0));
+    let s = h.tree.insert(h.root(), Spinner { ticks: ticks.clone() });
+    h.frame();
+    h.frame();
+    assert!(h.tree.needs_frame());
+    h.tree.update_props(s, |p| p.visible = false);
+    h.frame();
+    h.frame();
+    assert!(!h.tree.needs_frame(), "隐藏后不再请求帧");
+    let parked_at = ticks.get();
+    h.frame();
+    assert_eq!(ticks.get(), parked_at, "隐藏期间不 tick");
+    h.tree.update_props(s, |p| p.visible = true);
+    h.frame();
+    h.frame();
+    assert!(ticks.get() > parked_at, "重新可见后恢复");
+    assert!(h.tree.needs_frame());
+}

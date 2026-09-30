@@ -78,6 +78,8 @@ struct Node {
     last_available: Option<Size>,
     rect: Rect,
     paint: Vec<SceneCommand>,
+    /// `Widget::paint_after` 的命令缓存（子树之后输出）。
+    paint_after: Vec<SceneCommand>,
     /// 上次绘制覆盖范围（空 = 从未绘制 / 已清除）。
     painted_bounds: Option<Rect>,
     state: ControlStates,
@@ -100,6 +102,7 @@ impl Node {
             last_available: None,
             rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             paint: Vec::new(),
+            paint_after: Vec::new(),
             painted_bounds: None,
             state: ControlStates::default(),
         }
@@ -146,6 +149,8 @@ pub struct Tree {
     anim: Vec<WidgetId>,
     /// 定时器：(节点, 剩余秒)。到期把节点放进动画 tick（调用其 `update`）。
     timers: Vec<(WidgetId, f64)>,
+    /// 因不可见而暂停的动画节点：不 tick、不占帧；重新可见时恢复。
+    parked: Vec<WidgetId>,
     damage: Option<Rect>,
     full_repaint: bool,
     dirty: bool,
@@ -176,6 +181,7 @@ impl Tree {
             actions: Vec::new(),
             anim: Vec::new(),
             timers: Vec::new(),
+            parked: Vec::new(),
             damage: None,
             full_repaint: true,
             dirty: true,
@@ -289,6 +295,7 @@ impl Tree {
             self.hover_chain.retain(|h| h != cur);
             self.anim.retain(|a| a != cur);
             self.timers.retain(|(t, _)| t != cur);
+            self.parked.retain(|p| p != cur);
             self.popups.retain(|(p, _)| p != cur);
             let slot = cur.slot();
             self.nodes[slot] = None;
@@ -334,6 +341,19 @@ impl Tree {
         }
         if before.visible && !after.visible {
             self.flush_subtree_paint(id);
+        }
+        if !before.visible && after.visible {
+            // 重新可见：恢复该子树里被暂停的动画（不确定进度环等）。
+            let resume: Vec<WidgetId> = self
+                .parked
+                .iter()
+                .copied()
+                .filter(|p| self.is_ancestor_or_self(id, *p))
+                .collect();
+            self.parked.retain(|p| !resume.contains(p));
+            for r in resume {
+                self.request_anim(r);
+            }
         }
         self.invalidate_measure(id);
         if let Some(p) = self.parent(id) {
@@ -576,6 +596,7 @@ impl Tree {
             stack.extend(self.children(cur).iter().copied());
             if let Some(b) = self.node_mut(cur).and_then(|n| {
                 n.paint.clear();
+                n.paint_after.clear();
                 n.flags.needs_paint = true;
                 n.painted_bounds.take()
             }) {
@@ -602,6 +623,13 @@ impl Tree {
 
         // 1. 动画：只允许动视觉（UpdateCtx 不提供量测失效）。
         for id in std::mem::take(&mut self.anim) {
+            // 不可见节点的动画暂停：不 tick、不让外壳逐帧重画（隐藏的不确定进度环曾无限请求帧）。
+            if !self.effectively_visible(id) {
+                if self.contains(id) && !self.parked.contains(&id) {
+                    self.parked.push(id);
+                }
+                continue;
+            }
             let Some(mut w) = self.node_mut(id).and_then(|n| n.widget.take()) else {
                 continue;
             };
@@ -771,6 +799,8 @@ impl Tree {
                     state,
                 };
                 w.paint(&mut ctx, &mut scene);
+                let mut after = Scene::default();
+                w.paint_after(&mut ctx, &mut after);
                 // 焦点视觉画在节点外一圈，一并计入绘制范围。
                 let mut bounds = w.paint_overflow().inflate(rect);
                 if w.focusable() && w.focus_visual() {
@@ -784,6 +814,7 @@ impl Tree {
                 if let Some(n) = self.node_mut(id) {
                     n.widget = Some(w);
                     n.paint = scene.commands;
+                    n.paint_after = after.commands;
                     n.painted_bounds = Some(bounds);
                     n.flags.needs_paint = false;
                 }
@@ -812,6 +843,7 @@ impl Tree {
                 scene.pop_clip();
             }
         }
+        scene.commands.extend(n.paint_after.iter().cloned());
         // 键盘焦点视觉：框架统一绘制（直角描边），画在子树之上。
         if self.focus == Some(id)
             && self.focus_keyboard
@@ -840,6 +872,9 @@ impl Tree {
             let Some(p) = n.parent.and_then(|p| self.node(p)) else {
                 continue;
             };
+            if p.widget.as_ref().is_some_and(|w| w.scrolls_children()) {
+                continue;
+            }
             if n.props.visible && p.props.visible && !rect_within(r, p.rect) {
                 log::error!(
                     "kanesumi-element: 节点 {slot} 越出父矩形 {r:?} ⊄ {:?}",
@@ -1161,7 +1196,36 @@ impl Tree {
             });
             self.invalidate_paint(n);
             self.deliver(n, &Event::FocusIn { keyboard });
+            if keyboard {
+                self.bring_into_view(n);
+            }
         }
+    }
+
+    /// 请祖先滚动容器把 `id` 滚进视口（由近及远，嵌套滚动逐层处理）。
+    pub fn bring_into_view(&mut self, id: WidgetId) {
+        let Some(target) = self.rect(id) else { return };
+        for anc in self.ancestors_inclusive(id).into_iter().skip(1) {
+            let Some(mut w) = self.node_mut(anc).and_then(|n| n.widget.take()) else {
+                continue;
+            };
+            let mut ctx = EventCtx {
+                tree: self,
+                id: anc,
+                handled: false,
+            };
+            w.bring_into_view(&mut ctx, target);
+            if let Some(n) = self.node_mut(anc) {
+                n.widget = Some(w);
+            }
+        }
+    }
+
+    /// 某节点是否按滚动偏移排布子节点（`Widget::scrolls_children`）。
+    pub fn scrolls_children(&self, id: WidgetId) -> bool {
+        self.node(id)
+            .and_then(|n| n.widget.as_ref())
+            .is_some_and(|w| w.scrolls_children())
     }
 
     /// Tab 顺序：树先序中可聚焦的节点。顶层弹层为模态时限定在该弹层内（焦点陷阱）。

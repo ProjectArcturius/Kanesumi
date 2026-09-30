@@ -69,6 +69,10 @@ pub trait Widget: Any {
     /// 自绘（只画自己；子节点由框架随后按树序绘制）。
     fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene);
 
+    /// 子节点之后的自绘（叠在内容之上：滚动条、覆盖描边）。与 `paint` 同一次失效重画，
+    /// 画在子树裁剪之外、仍受祖先裁剪约束。
+    fn paint_after(&mut self, _ctx: &mut PaintCtx, _scene: &mut Scene) {}
+
     /// 路由事件。`ctx.set_handled()` 截停冒泡。
     fn event(&mut self, _ctx: &mut EventCtx, _event: &Event) {}
 
@@ -100,6 +104,18 @@ pub trait Widget: Any {
     /// 子树绘制与命中是否裁到自身矩形（容器裁剪，参 §Ⅳ.3）。
     fn clips_children(&self) -> bool {
         true
+    }
+
+    /// 子节点按滚动偏移排在自身矩形之外（ScrollViewer）。框架的「子矩形 ⊆ 父矩形」
+    /// 调试断言对这类节点的直接子节点豁免（可见性由裁剪保证）。
+    fn scrolls_children(&self) -> bool {
+        false
+    }
+
+    /// 键盘焦点落到后代 `target`（表面坐标）时调用：滚动容器应把它滚进视口并返回 true
+    /// （XAML `BringIntoView`）。默认不处理。
+    fn bring_into_view(&mut self, _ctx: &mut EventCtx, _target: Rect) -> bool {
+        false
     }
 
     /// 画出自身矩形的显式许可（徽标外溢、描边外扩）。框架据此扩展损伤；仍受祖先裁剪。
@@ -296,6 +312,11 @@ impl UpdateCtx<'_> {
     }
     pub fn invalidate_paint(&mut self) {
         self.tree.invalidate_paint(self.id);
+    }
+    /// 重排子节点位置 —— **只用于平移类动画**（平滑滚动）。不提供量测失效：
+    /// 动画不得改变任何节点的尺寸（参 ELEMENT_TREE §Ⅴ.1「动画只动视觉」）。
+    pub fn invalidate_arrange(&mut self) {
+        self.tree.invalidate_arrange(self.id);
     }
     pub fn request_anim_frame(&mut self) {
         self.tree.request_anim(self.id);
