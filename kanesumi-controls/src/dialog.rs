@@ -454,6 +454,7 @@ impl Widget for MetroDialog {
 #[cfg(test)]
 mod tree_tests {
     use super::*;
+    use kanesumi_core::Point;
     use kanesumi_element::testing::TestHarness;
     use kanesumi_element::{Align, Insets, LayoutProps};
 
@@ -582,7 +583,6 @@ mod tree_tests {
 mod tests {
     use super::*;
     use kanesumi_canvas::SceneCommand;
-    use kanesumi_core::Point;
 
     fn find_engine() -> Option<TextEngine> {
         if let Ok(p) = std::env::var("KANESUMI_TEST_FONT") {
