@@ -392,6 +392,7 @@ C:\Program Files (x86)\Windows Kits\10\DesignTime\CommonConfiguration\
 | `ListViewItem` 状态名 | `Normal` / `PointerOver` / `Pressed` / `Selected` / `PointerOverSelected` / `PressedSelected` 固定不变 —— **改名等于状态不再触发** | 模板实现 |
 | 系统标题栏配色 | **不在 XAML 资源系统里**，必须走 `ApplicationView.TitleBar` API | 实测 |
 | `ThemeDictionaries` | 必须为**每个存在的主题**给出同一组键；缺一个会在 XAML 解析期抛异常（表现为启动即崩、日志无消息） | 实测 |
+| 资源键不存在时的失败方式 | `{ThemeResource}` 引用**不存在的键不会报错**，只静默失效成另一副样子；WinUI 3 的键在 WinUI 2 里不存在，最容易踩。故新增资源引用后先跑一次资源审计、扫掉未定义键再提交 | 实测（Windows 扇区用 `ResourceAudit.ps1`）。本仓 M1「未知令牌必须报错」正是对标这一失败模式（参 `ROADMAP.md` M1） |
 
 ### 11.4 仍未在快照中的项
 
