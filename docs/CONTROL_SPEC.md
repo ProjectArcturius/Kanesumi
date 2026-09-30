@@ -387,6 +387,7 @@ C:\Program Files (x86)\Windows Kits\10\DesignTime\CommonConfiguration\
 | 项 | 值 / 结论 | 来源 |
 |---|---|---|
 | 圆角 | 由 `ControlCornerRadius`（4px）/ `OverlayCornerRadius`（8px）两个**全局资源**控制，覆盖为 0 即得直角，**无需重写控件模板** | 官方文档，已在工程中落地。⚠ **出处更正（2026-09-22 全量取数）**：这两个键在 **OS UWP 字典里 0 次出现**（`themeresources.xaml` 唯一的 CornerRadius 资源是 `HyperlinkFocusRectCornerRadius` = 4,4,4,4），它们是 **WinUI 2 资源字典**的键 —— 引用时须按 WinUI 2 标注 |
+| 直角的**资源版本**前提 | 光覆盖上面两个 CornerRadius 还不够：WinUI 2 的资源版本必须钉在 **`Version1`**（`XamlControlsResources ControlsResourcesVersion="Version1"`，Win10 / Groove 一代）。`Version2` 是 Win11 一代，自带圆角与中灰内容面板，与 Kanesumi 的直角深底冲突，且它那块内容面板改这两个 CornerRadius 改不动 | 实测（2026-09-26 ~ 27，Windows 扇区；参其 `docs/KANESUMI_XAML.md`「运行时主题」与 `AGENTS.md`「立项决策」） |
 | 列表行贴边 | `ListViewItem` 的**默认模板本身**带左右留白，只设 `Padding=0` 清不掉，**必须重写模板** | 实测 |
 | `ListViewItem` 状态名 | `Normal` / `PointerOver` / `Pressed` / `Selected` / `PointerOverSelected` / `PressedSelected` 固定不变 —— **改名等于状态不再触发** | 模板实现 |
 | 系统标题栏配色 | **不在 XAML 资源系统里**，必须走 `ApplicationView.TitleBar` API | 实测 |
