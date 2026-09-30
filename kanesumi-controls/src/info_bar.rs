@@ -379,6 +379,203 @@ impl MetroInfoBar {
     }
 }
 
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 button.rs）────────────────
+//
+// 横幅（含可选关闭键）。有关闭键即可聚焦；无动作键开放（旧 `handle_click` 区分 Close/Action，
+// 本次迁移只开放关闭语义，Action 仍由宿主自行处理）。关闭走 `PointerUp { pos }`：横幅没有
+// 单一交互子元素，`Click` 事件不带坐标，故按框内坐标命中关闭区再发动作（参 ELEMENT_MIGRATION.md
+// §3：命中细分区域时用带 pos 的指针事件）。hover 用旧 `hit` 判定 Close/Action 子区。
+
+/// 元素树动作：横幅关闭按钮被激活（点击）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InfoBarClosed;
+
+impl kanesumi_element::Widget for MetroInfoBar {
+    /// 关闭 → 不占空间（旧 `render` 也整体不画）。开着时宽取可用约束（无界轴按排版给固有宽），
+    /// 高按 `layout` 的内容高度，且不低于 MinHeight 48（CONTROL_SPEC §12）。
+    fn measure(
+        &mut self,
+        ctx: &mut kanesumi_element::MeasureCtx,
+        available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        if !self.open {
+            return kanesumi_core::Size::ZERO;
+        }
+        let engine = ctx.engine();
+        let width = if available.width.is_finite() {
+            available.width
+        } else {
+            // 无界轴（如 Stack 行内）：按文本排版宽给固有宽 —— ContentRoot Padding 左 16、
+            // Icon 30、横排 Title+12+Message+16+Action、Panel 右 16、Close 区 38+5+5。
+            let title_w = engine.measure(&self.title, Self::title_style().size);
+            let msg_w = engine.measure(&self.message, Self::body_style().size);
+            let act_w = self
+                .action_label
+                .as_ref()
+                .map(|a| engine.measure(a, Self::body_style().size))
+                .unwrap_or(0.0);
+            let icon_w = if self.is_icon_visible { 30.0 } else { 0.0 };
+            16.0 + icon_w + title_w + 12.0 + msg_w + 16.0 + act_w + 16.0 + 43.0
+        };
+        let (_, geom) = self.layout(engine, Rect::new(0.0, 0.0, width, 48.0));
+        kanesumi_core::Size::new(width, geom.height.max(48.0))
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, PointerButton};
+        match event {
+            Event::PointerMove { pos } => {
+                let Some(engine) = ctx.engine() else { return };
+                let click = self.hit(engine, ctx.rect(), *pos);
+                let close = click == InfoBarClick::Close;
+                let action = click == InfoBarClick::Action;
+                if close != self.close_hovered || action != self.action_hovered {
+                    self.close_hovered = close;
+                    self.action_hovered = action;
+                    ctx.invalidate_paint();
+                }
+            }
+            Event::PointerLeave if self.close_hovered || self.action_hovered => {
+                self.close_hovered = false;
+                self.action_hovered = false;
+                ctx.invalidate_paint();
+            }
+            Event::PointerUp {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } if self.closable && Self::close_rect(ctx.rect()).contains(*pos) => {
+                self.close();
+                ctx.emit(InfoBarClosed);
+                ctx.invalidate_measure();
+                ctx.invalidate_paint();
+                ctx.set_handled();
+            }
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        // 有关闭键才占 Tab 位（关闭后自身塌缩，不再可聚焦）。
+        self.closable && self.open
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Other,
+            name: if self.title.is_empty() {
+                self.message.clone()
+            } else {
+                self.title.clone()
+            },
+            value: None,
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, LayoutProps, WidgetId};
+
+    fn bar() -> MetroInfoBar {
+        MetroInfoBar::error("连接失败", "请检查网络后重试")
+    }
+
+    fn harness(bar: MetroInfoBar, props: LayoutProps) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(400.0, 200.0);
+        let id = h.tree.insert_with(h.root(), bar, props);
+        h.frame();
+        (h, id)
+    }
+
+    fn start() -> LayoutProps {
+        LayoutProps {
+            h_align: Align::Start,
+            v_align: Align::Start,
+            ..LayoutProps::default()
+        }
+    }
+
+    #[test]
+    fn passes_insurance_checks() {
+        let (h, id) = harness(bar(), start());
+        assert!(h.rect(id).size.height >= 48.0);
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    /// 压窄用例：强制 200px 宽触发纵排（CONTROL_SPEC §12 判据），三断言仍成立。
+    #[test]
+    fn squeezed_width_still_within() {
+        let (h, id) = harness(
+            bar(),
+            LayoutProps {
+                width: Some(200.0),
+                ..start()
+            },
+        );
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn close_click_emits_action_and_collapses() {
+        let (mut h, id) = harness(bar(), start());
+        let close = MetroInfoBar::close_rect(h.rect(id));
+        h.click_at(close.center());
+        assert_eq!(h.take::<InfoBarClosed>().len(), 1);
+        assert!(!h.tree.get::<MetroInfoBar>(id).unwrap().open);
+        assert_eq!(h.rect(id).size.height, 0.0, "关闭后量测归零");
+    }
+
+    #[test]
+    fn non_closable_bar_is_not_focusable() {
+        let (mut h, id) = harness(bar(), start());
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+
+        let mut b = bar();
+        b.closable = false;
+        let (mut h2, _) = harness(b, start());
+        h2.tab();
+        assert_eq!(h2.tree.focused(), None, "无关闭键不占 Tab 位");
+    }
+
+    #[test]
+    fn disabled_bar_ignores_close() {
+        let (mut h, id) = harness(bar(), start());
+        h.tree.set_enabled(id, false);
+        h.frame();
+        let close = MetroInfoBar::close_rect(h.rect(id));
+        h.click_at(close.center());
+        assert!(h.take::<InfoBarClosed>().is_empty());
+        assert!(h.tree.get::<MetroInfoBar>(id).unwrap().open);
+    }
+
+    #[test]
+    fn hover_over_close_repaints() {
+        let (mut h, id) = harness(bar(), start());
+        let normal = h.tree.painted(id).to_vec();
+        let close = MetroInfoBar::close_rect(h.rect(id));
+        h.move_to(close.center());
+        h.frame();
+        assert!(h.tree.get::<MetroInfoBar>(id).unwrap().close_hovered);
+        assert_ne!(h.tree.painted(id), normal.as_slice(), "悬停关闭键应重画");
+        h.move_to(h.rect(id).origin);
+        h.frame();
+        assert!(!h.tree.get::<MetroInfoBar>(id).unwrap().close_hovered);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
