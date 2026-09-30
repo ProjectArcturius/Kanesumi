@@ -17,6 +17,7 @@ cargo fmt
 ### 路线与依据（先读这七份）
 
 - `docs/ROADMAP.md` — **框架路线图**：M1~M7 分阶段、每批验收、决策记录。「接下来做什么」的唯一真源。
+- `docs/KANESUMI_RUNTIME.md` — **Runtime 三层**（R1 共享资源 / R2 第一方动态库 / R3 第三方 SDK）；R1 字形按需解码实测每进程 333→19 MiB。
 - `docs/ELEMENT_TREE.md` — **元素树设计**（2026-09-30）：框架持有的保留树，统一承担 M2/M3/M4 的实现；分期 E1~E6。
 - `docs/MATURITY_AUDIT_2026-09-22.md` — 成熟度审计：逐条缺口与 file:line 证据。
 - `docs/UWP_PRIMARY_SOURCES.md` — **一手源清单与取值对照**：Windows SDK 自带 OS 主题字典、
