@@ -225,16 +225,33 @@ impl TestHarness {
         }
     }
 
-    /// 控件自绘命令 ⊆ rect ⊕ 焦点视觉（2px）⊕ `extra`（控件声明的 `paint_overflow`）。
+    /// 控件自绘命令的**可见范围** ⊆ rect ⊕ 焦点视觉（2px）⊕ `extra`（控件声明的 `paint_overflow`）。
+    ///
+    /// 可见范围 = 命令矩形 ∩ 控件自己压入的裁剪（如输入框把滚动中的长文本裁到内容区）。
+    /// 完全被裁掉的命令不参与判定。
     pub fn assert_paint_within(&self, id: WidgetId, extra: crate::props::Insets) {
         let allowed = crate::props::Insets::all(2.0).inflate(extra.inflate(self.rect(id)));
+        let mut clips: Vec<Option<Rect>> = Vec::new();
         for cmd in self.tree.painted(id) {
             let r = match cmd {
+                SceneCommand::PushClip { rect } => {
+                    let top = clips.last().copied().flatten();
+                    let next = match (clips.is_empty(), top) {
+                        (true, _) => Some(*rect),
+                        (false, Some(t)) => t.intersect(*rect),
+                        (false, None) => None,
+                    };
+                    clips.push(next);
+                    continue;
+                }
+                SceneCommand::PopClip => {
+                    clips.pop();
+                    continue;
+                }
                 SceneCommand::FillRect { rect, .. }
                 | SceneCommand::StrokeRect { rect, .. }
                 | SceneCommand::Text { rect, .. }
-                | SceneCommand::Image { rect, .. }
-                | SceneCommand::PushClip { rect } => *rect,
+                | SceneCommand::Image { rect, .. } => *rect,
                 SceneCommand::Arc {
                     center,
                     radius,
@@ -251,7 +268,14 @@ impl TestHarness {
                     let y1 = p0.y.max(p1.y).max(p2.y);
                     Rect::new(x0, y0, x1 - x0, y1 - y0)
                 }
-                SceneCommand::PopClip => continue,
+            };
+            let r = match clips.last() {
+                None => r,
+                Some(None) => continue,
+                Some(Some(c)) => match c.intersect(r) {
+                    Some(v) => v,
+                    None => continue,
+                },
             };
             assert!(
                 within(r, allowed, 0.5),

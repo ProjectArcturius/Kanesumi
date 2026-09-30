@@ -237,6 +237,10 @@ impl EventCtx<'_> {
     pub fn theme(&self) -> &MetroTheme {
         self.tree.theme()
     }
+    /// 排版引擎（首帧之前为 None）。点击定位光标等文本命中用。
+    pub fn engine(&self) -> Option<&TextEngine> {
+        self.tree.engine()
+    }
     /// 截停冒泡。
     pub fn set_handled(&mut self) {
         self.handled = true;

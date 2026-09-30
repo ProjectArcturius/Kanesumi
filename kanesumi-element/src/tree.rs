@@ -149,6 +149,9 @@ pub struct Tree {
     dirty: bool,
     /// 焦点控件本帧的 IME 上下文（`frame` 末尾计算，外壳查询时直接返回）。
     ime: Option<ImeContext>,
+    /// 上一帧的排版引擎（`TextEngine` clone 为零拷贝）。事件处理里的文本命中
+    /// （点击定位光标）要用它 —— 外壳的输入回调不带引擎。
+    engine: Option<TextEngine>,
 }
 
 impl Tree {
@@ -174,6 +177,7 @@ impl Tree {
             full_repaint: true,
             dirty: true,
             ime: None,
+            engine: None,
         };
         tree.root = tree.alloc(Box::new(ZStack), None, LayoutProps::default());
         tree.overlay = tree.alloc(Box::new(OverlayRoot), None, LayoutProps::default());
@@ -546,6 +550,9 @@ impl Tree {
 
     /// 出一帧：动画 tick → 布局 → 绘制 → 拼接 + 损伤。
     pub fn frame(&mut self, engine: &TextEngine, size: Size, dt: f64) -> FrameOutput {
+        if self.engine.is_none() {
+            self.engine = Some(engine.clone());
+        }
         let size = size.normalized();
         if size != self.size {
             self.size = size;
@@ -1051,6 +1058,11 @@ impl Tree {
             Some(f) => self.deliver(f, &e),
             None => false,
         }
+    }
+
+    /// 上一帧的排版引擎（首帧之前为 None）。
+    pub fn engine(&self) -> Option<&TextEngine> {
+        self.engine.as_ref()
     }
 
     /// 右键按下时的命中元素（上下文菜单只能作用于它）。
