@@ -21,6 +21,10 @@ pub enum IconDirection {
 /// chevron 插值时长（0.1s，对齐 Expander chevron）。
 const ICON_MORPH: f64 = 0.1;
 
+/// 图标槽固有尺寸（16×16）。CONTROL_SPEC §31 未给尺寸；Kanesumi 实现与既有测试一律用
+/// 16px 图标槽（chevron 约 9.6px），故 `measure` 取此值。
+const ICON_SIZE: f32 = 16.0;
+
 /// MetroAnimatedIcon —— 状态动画 chevron。参 CONTROL_SPEC §31。
 #[derive(Debug, Clone)]
 pub struct MetroAnimatedIcon {
@@ -181,6 +185,109 @@ fn draw_morph(
         Point::new(lerp(a.2.x, b.2.x), lerp(a.2.y, b.2.y)),
     );
     scene.triangle(tri.0, tri.1, tri.2, color);
+}
+
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 button.rs）────────────────
+//
+// 纯展示状态动画图标：不可聚焦、不发动作。`update` 转发控件的 `MetroAnim` 推进；未稳态时
+// `invalidate_paint` + `request_anim_frame`（参 ELEMENT_MIGRATION.md §2 `update` 行）。`paint`
+// 也按 `is_animating` 续帧，使宿主经 `Tree::edit` 调 `set_state` 后动画能被踢起
+// （`EditCtx` 没有请求帧能力）。
+
+impl kanesumi_element::Widget for MetroAnimatedIcon {
+    fn measure(
+        &mut self,
+        _ctx: &mut kanesumi_element::MeasureCtx,
+        _available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        kanesumi_core::Size::new(ICON_SIZE, ICON_SIZE)
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        self.render(ctx.theme(), ctx.rect(), scene);
+        if self.is_animating() {
+            ctx.request_anim_frame();
+        }
+    }
+
+    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, dt: f64) {
+        MetroAnimatedIcon::update(self, dt);
+        if self.is_animating() {
+            ctx.invalidate_paint();
+            ctx.request_anim_frame();
+        }
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Other,
+            name: String::new(),
+            value: None,
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, LayoutProps, WidgetId};
+
+    fn harness(icon: MetroAnimatedIcon, props: LayoutProps) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(100.0, 100.0);
+        let id = h.tree.insert_with(h.root(), icon, props);
+        h.frame();
+        (h, id)
+    }
+
+    fn start() -> LayoutProps {
+        LayoutProps {
+            h_align: Align::Start,
+            v_align: Align::Start,
+            ..LayoutProps::default()
+        }
+    }
+
+    #[test]
+    fn default_size_and_passes_insurance_checks() {
+        let (h, id) = harness(MetroAnimatedIcon::new(), start());
+        assert_eq!(h.rect(id).size.width, ICON_SIZE);
+        assert_eq!(h.rect(id).size.height, ICON_SIZE);
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    /// 压窄用例：图标缩到 8px 宽后 chevron 仍夹在 rect 内，三断言成立。
+    #[test]
+    fn squeezed_width_still_within() {
+        let (h, id) = harness(
+            MetroAnimatedIcon::new(),
+            LayoutProps {
+                width: Some(8.0),
+                ..start()
+            },
+        );
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn state_change_animates_then_settles() {
+        let (mut h, id) = harness(MetroAnimatedIcon::new(), start());
+        h.tree
+            .edit(id, |i: &mut MetroAnimatedIcon, _| i.set_state(true));
+        h.frame();
+        assert!(h.last.animating, "换状态应开始动画");
+        h.settle();
+        assert_eq!(
+            h.tree.get::<MetroAnimatedIcon>(id).unwrap().progress(),
+            1.0
+        );
+        assert!(!h.last.animating, "到稳态后不再续帧");
+    }
 }
 
 #[cfg(test)]
