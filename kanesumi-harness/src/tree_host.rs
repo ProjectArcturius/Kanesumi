@@ -154,6 +154,7 @@ impl<A: TreeApp> App for TreeHost<A> {
     }
 
     fn focus_move(&mut self, backward: bool) -> bool {
+        log::debug!("focus_move backward={backward} focus_before={:?}", self.tree.focused());
         let modifiers = Modifiers {
             shift: backward,
             ..Modifiers::NONE
@@ -183,6 +184,10 @@ impl<A: TreeApp> App for TreeHost<A> {
     }
 
     fn handle_input(&mut self, event: InputEvent) {
+        // 输入轨迹（RUST_LOG=kanesumi_harness::tree_host=debug）：排查「谁动了焦点 / 谁改了文本」。
+        if !matches!(event, InputEvent::PointerMoved { .. }) {
+            log::debug!("input {event:?} focus_before={:?}", self.tree.focused());
+        }
         let t = &mut self.tree;
         match event {
             InputEvent::PointerMoved { x, y } => {
