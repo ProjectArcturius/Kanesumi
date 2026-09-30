@@ -64,7 +64,7 @@ pub mod two_pane_view;
 
 pub use animated_icon::{IconDirection, MetroAnimatedIcon};
 pub use auto_suggest_box::{AutoSuggestAction, MetroAutoSuggestBox};
-pub use breadcrumb_bar::{BreadcrumbClick, MetroBreadcrumbBar};
+pub use breadcrumb_bar::{BreadcrumbClick, BreadcrumbClicked, MetroBreadcrumbBar};
 pub use button::{ButtonClicked, ButtonKind, MetroButton};
  pub use candidate_window::{
     MetroCandidateWindow, CANDIDATES_PER_PAGE, CANDIDATE_HL_PAD, CANDIDATE_ITEM_GAP, CANDIDATE_MAX_W,
@@ -81,7 +81,9 @@ pub use context_menu::MetroContextMenu;
 pub use decl::{
     Decl, DeclAction, DeclChange, DeclHit, DeclPath, collect_hits, diff_decl, render_decl,
 };
-pub use dialog::{DialogButton, DialogButtons, DialogDefaultButton, DialogState, MetroDialog};
+pub use dialog::{
+    DialogButton, DialogButtons, DialogDefaultButton, DialogResult, DialogState, MetroDialog,
+};
 pub use drop_down_button::MetroDropDownButton;
 pub use dropdown_menu::{MenuItem, MenuPath, MenuInteractionSignature, MetroDropdownMenu, SubmenuState};
 pub use expander::{ExpandDirection, MetroExpander};
@@ -115,7 +117,7 @@ pub use scroll_view::{
     SCROLLBAR_MIN_THUMB, SCROLLBAR_THICKNESS, SCROLL_WHEEL_STEP, MetroScrollView, ScrollBarVisibility, ScrollOffsetChanged,
     ScrollMode,
 };
-pub use selector_flyout::MetroSelectorFlyout;
+pub use selector_flyout::{MetroSelectorFlyout, SelectorSelectionChanged};
 pub use slider::{MetroSlider, SliderValueChanged, SLIDER_HEADER_MARGIN, SLIDER_MIN_H, SLIDER_MIN_W, SLIDER_THUMB, SLIDER_TRACK_H, SLIDER_TRACK_MARGIN};
 pub use split_button::{MetroSplitButton, SplitButtonInvoked, SplitButtonClick, SplitButtonPart};
 pub use state::{ButtonState, ControlState, control_state};
@@ -124,7 +126,10 @@ pub use swipe_control::{MetroSwipeControl, SwipeAction, SwipeInvoked, SwipeItem,
 pub use switch::{MetroSwitch, SwitchToggled};
 pub use tab_row::{MetroTab, MetroTabRow, TabSelectionChanged};
 pub use tab_view::{MetroTabView, TabHover, TabViewAction};
-pub use teaching_tip::{MetroTeachingTip, TeachingTipClick, TeachingTipPlacement, TeachingTipSide};
+pub use teaching_tip::{
+    MetroTeachingTip, TeachingTipAction, TeachingTipClick, TeachingTipClosed, TeachingTipPlacement,
+    TeachingTipSide,
+};
 pub use text::MetroText;
 pub use text_box::{MetroTextBox, TextChanged, TextSubmitted};
 pub use text_field::{TextInputKey, TextField};

@@ -398,9 +398,13 @@ impl MetroBreadcrumbBar {
 // 「展开中」用私有字段 `tree_popup` 记；面板因任何原因关闭（选中 / 点外部 / Esc）都会
 // 收到 `Event::PopupClosed`，在那里复位，不自己猜关闭时机。
 
-/// 元素树动作：某级面包屑被激活。载荷 = 层级索引（溢出面板里的项也是原索引）。
+/// 元素树动作：某级面包屑被激活。`index` = 层级索引（溢出面板里的项也是原索引）；
+/// `owner` = 面包屑控件（溢出面板里点选时，动作来源 id 是会被销毁的面板，App 按 owner 分派）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BreadcrumbClicked(pub usize);
+pub struct BreadcrumbClicked {
+    pub owner: kanesumi_element::WidgetId,
+    pub index: usize,
+}
 
 impl MetroBreadcrumbBar {
     /// 元素树：打开被折叠层级的溢出面板（锚在 Ellipsis 下缘）。`keyboard` 为真时
@@ -413,7 +417,7 @@ impl MetroBreadcrumbBar {
         if indices.is_empty() {
             return None; // 无折叠项（未触发命中判定时的兜底）
         }
-        let panel = BreadcrumbOverflow::new(indices, labels, keyboard);
+        let panel = BreadcrumbOverflow::new(ctx.id(), indices, labels, keyboard);
         let at = self
             .ellipsis_rect(&engine, ctx.rect())
             .map(|er| Point::new(er.origin.x, er.bottom()));
@@ -477,7 +481,10 @@ impl Widget for MetroBreadcrumbBar {
                 };
                 match self.hit(&engine, ctx.rect(), pos) {
                     BreadcrumbClick::Index(i) => {
-                        ctx.emit(BreadcrumbClicked(i));
+                        ctx.emit(BreadcrumbClicked {
+                            owner: ctx.id(),
+                            index: i,
+                        });
                     }
                     BreadcrumbClick::Ellipsis => match self.tree_popup.take() {
                         Some(p) => ctx.close_popup(p),
@@ -529,6 +536,8 @@ impl Widget for MetroBreadcrumbBar {
 
 /// 溢出面板（覆盖层节点）：被折叠的层级即菜单项，选中时按原索引发动作。
 struct BreadcrumbOverflow {
+    /// 打开面板的面包屑控件。
+    owner: kanesumi_element::WidgetId,
     /// 菜单项 → `MetroBreadcrumbBar::items` 的原始索引（一一对应）。
     indices: Vec<usize>,
     menu: MetroDropdownMenu,
@@ -536,13 +545,22 @@ struct BreadcrumbOverflow {
 
 impl BreadcrumbOverflow {
     /// `preselect` = 键盘打开时预选首项（焦点入面板后可直接 Enter）。
-    fn new(indices: Vec<usize>, labels: Vec<String>, preselect: bool) -> Self {
+    fn new(
+        owner: kanesumi_element::WidgetId,
+        indices: Vec<usize>,
+        labels: Vec<String>,
+        preselect: bool,
+    ) -> Self {
         let mut menu = MetroDropdownMenu::new(labels.into_iter().map(MenuItem::new).collect());
         menu.anim.open();
         if preselect {
             menu.hovered = (!menu.items.is_empty()).then_some(0);
         }
-        Self { indices, menu }
+        Self {
+            owner,
+            indices,
+            menu,
+        }
     }
 
     /// 菜单项索引 → 被折叠层级的原索引。
@@ -566,7 +584,10 @@ impl BreadcrumbOverflow {
     /// 选中菜单第 `menu_index` 项：按原索引发动作并关闭自身。
     fn invoke(&mut self, ctx: &mut EventCtx, menu_index: usize) {
         if let Some(original) = self.original_index(menu_index) {
-            ctx.emit(BreadcrumbClicked(original));
+            ctx.emit(BreadcrumbClicked {
+                owner: self.owner,
+                index: original,
+            });
             ctx.close_popup(ctx.id());
         }
     }
@@ -702,18 +723,36 @@ mod tree_tests {
         h.click_at(level_center(&h, id, 0));
         assert_eq!(
             h.take::<BreadcrumbClicked>(),
-            vec![(id, BreadcrumbClicked(0))]
+            vec![(
+                id,
+                BreadcrumbClicked {
+                    owner: id,
+                    index: 0
+                }
+            )]
         );
         h.click_at(level_center(&h, id, 2));
         assert_eq!(
             h.take::<BreadcrumbClicked>(),
-            vec![(id, BreadcrumbClicked(2))]
+            vec![(
+                id,
+                BreadcrumbClicked {
+                    owner: id,
+                    index: 2
+                }
+            )]
         );
         // 末项（当前层级）仍是可点层级。
         h.click_at(level_center(&h, id, 3));
         assert_eq!(
             h.take::<BreadcrumbClicked>(),
-            vec![(id, BreadcrumbClicked(3))]
+            vec![(
+                id,
+                BreadcrumbClicked {
+                    owner: id,
+                    index: 3
+                }
+            )]
         );
     }
 
@@ -741,7 +780,13 @@ mod tree_tests {
         h.click_at(Point::new(pr.origin.x + 20.0, pr.origin.y + 32.0 + 16.0));
         assert_eq!(
             h.take::<BreadcrumbClicked>(),
-            vec![(p, BreadcrumbClicked(1))]
+            vec![(
+                p,
+                BreadcrumbClicked {
+                    owner: id,
+                    index: 1
+                }
+            )]
         );
         assert!(h.tree.popups().next().is_none(), "选中后面板关闭");
         assert!(
@@ -766,7 +811,13 @@ mod tree_tests {
         h.key(Key::Enter);
         assert_eq!(
             h.take::<BreadcrumbClicked>(),
-            vec![(p, BreadcrumbClicked(1))]
+            vec![(
+                p,
+                BreadcrumbClicked {
+                    owner: id,
+                    index: 1
+                }
+            )]
         );
         assert_eq!(h.tree.focused(), Some(id), "关闭后焦点回触发器");
         assert!(h.tree.popups().next().is_none());

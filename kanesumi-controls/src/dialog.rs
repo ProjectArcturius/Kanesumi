@@ -1,7 +1,7 @@
 use kanesumi_anim::{EasingMode, MetroAnim, UwpEasing};
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::{MetroTheme, Point, Rect, Size, TextStyle};
+use kanesumi_core::{MetroTheme, Rect, Size, TextStyle};
 use kanesumi_element::{
     Event, EventCtx, Key, MeasureCtx, PaintCtx, PointerButton, PopupSpec, Widget, WidgetId,
 };
@@ -356,12 +356,9 @@ impl MetroDialog {
 
 // ── 元素树接入（弹层类控件，参 docs/ELEMENT_MIGRATION.md §8）────────────────────
 //
-// 模态弹层：`PopupSpec { modal: true, light_dismiss: false }` —— 点外部不关闭（吞掉点击）、
-// Tab 被限制在弹层内（焦点陷阱）。盒体自身即弹层节点（`MetroDialog` 实现 `Widget`），
-// 遮罩不再由本控件画（覆盖层目前没有全屏遮罩机制，详见本批报告）。
-//
-// `EventCtx::open_popup` 在 `anchor` 缺省时会强制锚到本节点，取不到 `anchor: None` 的
-// 「表面居中」分支；`show_modal` 改用 `at` 把盒体左上角摆到中心减半径处实现居中。
+// 模态弹层：`PopupSpec { side: Center, modal: true, light_dismiss: false, scrim: true }` ——
+// 表面居中、点外部不关闭（吞掉点击）、Tab 被限制在弹层内（焦点陷阱）、框架在弹层之下
+// 铺主题遮罩（`overlay_color`）。盒体自身即弹层节点（`MetroDialog` 实现 `Widget`）。
 
 /// 元素树动作：对话框按钮被激活（点击 / Esc = Close / Enter = Primary）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -373,21 +370,13 @@ const DIALOG_BOX_H: f32 = 240.0;
 impl MetroDialog {
     /// 元素树：模态打开（表面居中、焦点陷阱、点外部不关闭）。返回弹层 id。
     pub fn show_modal(&mut self, ctx: &mut EventCtx) -> WidgetId {
-        let size = Size::new(
-            self.width.clamp(self.min_width, self.max_width),
-            DIALOG_BOX_H,
-        );
-        let surface = ctx.surface();
-        let at = Point::new(
-            surface.origin.x + (surface.size.width - size.width) / 2.0,
-            surface.origin.y + (surface.size.height - size.height) / 2.0,
-        );
         let id = ctx.open_popup(
             self.clone(),
             PopupSpec {
-                at: Some(at),
+                side: kanesumi_element::PopupSide::Center,
                 modal: true,
                 light_dismiss: false,
+                scrim: true,
                 ..PopupSpec::default()
             },
         );
@@ -593,6 +582,7 @@ mod tree_tests {
 mod tests {
     use super::*;
     use kanesumi_canvas::SceneCommand;
+    use kanesumi_core::Point;
 
     fn find_engine() -> Option<TextEngine> {
         if let Ok(p) = std::env::var("KANESUMI_TEST_FONT") {
