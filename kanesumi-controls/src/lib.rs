@@ -89,16 +89,16 @@ pub use info_badge::{InfoBadgeKind, MetroInfoBadge};
 pub use info_bar::{InfoBarClosed, InfoBarClick, InfoBarSeverity, MetroInfoBar};
 pub use list::MetroList;
 pub use menu_bar::{MenuBarItem, MetroMenuBar};
-pub use metro_tile::{MetroTile, TileLive, TileSize};
+pub use metro_tile::{MetroTile, TileClicked, TileLive, TileSize};
 pub use navigation_view::{
     MetroNavigationView, NavigationAction, NavigationPaneMode, NavigationViewItem,
 };
-pub use number_box::{MetroNumberBox, SpinButton, SpinPlacement};
-pub use pager_control::{MetroPagerControl, PagerAction, PagerHover, PagerItem};
+pub use number_box::{MetroNumberBox, NumberValueChanged, SpinButton, SpinPlacement};
+pub use pager_control::{MetroPagerControl, PagerPageChanged, PagerAction, PagerHover, PagerItem};
 pub use parallax_view::MetroParallaxView;
 pub use password_box::{MetroPasswordBox, PASSWORD_MASK_CHAR};
 pub use person_picture::{MetroPersonPicture, initials_from_display_name};
-pub use pips_pager::{MetroPipsPager, PipsAction, PipsOrientation};
+pub use pips_pager::{MetroPipsPager, PipsPageChanged, PipsAction, PipsOrientation};
 pub use popup::{
     POPUP_GAP, PopupAnim, PopupDirection, PopupPlacement, PopupState, place_popup, popup_gap,
     render_overlay,
@@ -125,7 +125,7 @@ pub use teaching_tip::{MetroTeachingTip, TeachingTipClick, TeachingTipPlacement,
 pub use text::MetroText;
 pub use text_box::{MetroTextBox, TextChanged, TextSubmitted};
 pub use text_field::{TextInputKey, TextField};
-pub use title_bar::{MetroTitleBar, TitleBarClick};
+pub use title_bar::{MetroTitleBar, TitleBarAction, TitleBarClick};
 pub use tree_view::{MetroTreeView, TreeAction, TreeRow, TreeViewNode};
 pub use two_pane_view::{
     MetroTwoPaneView, TwoPaneMode, TwoPanePriority, TwoPaneTallConfig, TwoPaneWideConfig,
