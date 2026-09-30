@@ -255,14 +255,17 @@ impl MetroTextBox {
         true
     }
 
-    /// 确保光标在可视范围内（水平滚动夹紧），并重置闪烁。
+    /// 确保光标在可视范围内（水平滚动夹紧）。
+    ///
+    /// **不重置闪烁**（2026-09-30 更正）：本函数在每次 `render` 里调用，旧实现在此
+    /// `reset_blink()` 等于「每画一帧光标就重新亮起」—— 逐帧重画的 App 里光标从不闪烁，
+    /// 元素树下光标熄灭的那次重画又把它点亮。闪烁重置只属于编辑（`handle_key` 等）。
     ///
     /// **此前是个空壳**（只 `reset_blink()`，`scroll` 无人写入）：单行输入一旦超过内容宽，
     /// 文本被省略号截断而 `scroll` 恒为 0 —— 用户**看不见自己正在打的字**
     /// （`COMPOSITION.md` 要求「绘制与实际显示一致」，`auto_suggest_box` 早有正解）。
     /// 现按「光标必须可见」推进滚动，并夹到 `[0, 文本宽 − 视口宽]`。
     fn ensure_caret_visible(&mut self, theme: &MetroTheme, engine: &TextEngine, body: Rect) {
-        self.reset_blink();
         let content = self.content_rect(theme, body);
         let view = content.size.width;
         let style = theme.typography.body;
@@ -663,8 +666,9 @@ impl kanesumi_element::Widget for MetroTextBox {
         if self.caret_visible() != before {
             ctx.invalidate_paint();
         }
-        // TODO(E4)：换成框架定时器（半周期唤醒一次），不必逐帧续命。
-        ctx.request_anim_frame();
+        // 下次翻转时再唤醒（等待期间不占帧；聚焦的输入框不再让外壳逐帧重画）。
+        let half = CARET_BLINK_HALF_PERIOD;
+        ctx.request_timer((half - self.blink_phase % half).max(0.01) as f64);
     }
 
     fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
@@ -888,6 +892,18 @@ mod tree_tests {
         h.frame();
         assert_eq!(text(&h, id), "x");
         assert_eq!(h.take::<TextChanged>().len(), 1, "只有真实输入发一次");
+    }
+
+    #[test]
+    fn caret_blinks_on_timer_without_continuous_frames() {
+        let (mut h, _id) = harness();
+        h.tab();
+        h.frame();
+        assert!(!h.tree.needs_frame(), "聚焦静止时不逐帧重画");
+        let lit = h.tree.painted(_id).to_vec();
+        h.idle(0.6); // 越过半周期 → 光标熄灭，重画一次
+        assert_ne!(h.tree.painted(_id), lit.as_slice());
+        assert!(h.tree.next_timer().is_some(), "下一次翻转已排定");
     }
 
     #[test]
