@@ -248,6 +248,142 @@ impl MetroTile {
     }
 }
 
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 button.rs）────────────────
+//
+// 磁贴是「可点击的应用入口」。盘点：旧 `MetroTile` 只有 `state` + `render`，无翻转 / 实时
+// 动画（`update` 无需实现）。迁移只把框架状态映射到 `state`、把点击 / Enter / Space
+// 翻译成 `TileClicked`；命中、聚焦、hover / pressed 维护交给框架。
+
+/// 元素树动作：磁贴被激活（点击 / Enter / Space）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TileClicked;
+
+/// 磁贴单元边长（与 gallery `TILE_CELL` 一致；TILES_DESIGN §3 三档尺寸按单元网格定义）。
+const TREE_TILE_CELL: f32 = 64.0;
+/// 磁贴单元间隔（与 gallery `TILE_GAP` 一致）。
+const TREE_TILE_GAP: f32 = 8.0;
+
+impl kanesumi_element::Widget for MetroTile {
+    /// 固有尺寸 = 尺寸档跨单元数 × 单元边长 + 单元间隔（Mini 64、Standard 136、Large 280）。
+    fn measure(
+        &mut self,
+        _ctx: &mut kanesumi_element::MeasureCtx,
+        _available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        let (cols, rows) = self.size.cells();
+        kanesumi_core::Size::new(
+            cols as f32 * TREE_TILE_CELL + cols.saturating_sub(1) as f32 * TREE_TILE_GAP,
+            rows as f32 * TREE_TILE_CELL + rows.saturating_sub(1) as f32 * TREE_TILE_GAP,
+        )
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        let saved = self.state;
+        self.state = crate::state::control_state(ctx.state());
+        // §6 修正：压窄到图标（40）+ 标题行高之下时，标题 / 内容行会画到 `rect` 外缘；
+        // 成对把自身绘制夹进 `rect`（旧行为：越界绘制 → 新行为：裁剪）。
+        scene.push_clip(ctx.rect());
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+        scene.pop_clip();
+        self.state = saved;
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, Key};
+        if matches!(
+            event,
+            Event::Click
+                | Event::KeyDown {
+                    key: Key::Enter | Key::Char(' '),
+                    ..
+                }
+        ) {
+            ctx.emit(TileClicked);
+            ctx.set_handled();
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Button,
+            name: self.label.clone(),
+            value: None,
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, Key, LayoutProps, WidgetId};
+
+    fn harness(size: TileSize, props: LayoutProps) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(400.0, 300.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroTile::new("邮件", size, Color::from_hex(0xFF_C8_42_3B)),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..props
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    #[test]
+    fn click_and_keyboard_activate() {
+        let (mut h, id) = harness(TileSize::Standard, LayoutProps::default());
+        h.click(id);
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+        h.key(Key::Enter);
+        h.key(Key::Char(' '));
+        assert_eq!(h.take::<TileClicked>().len(), 3);
+    }
+
+    #[test]
+    fn measure_follows_tile_tier() {
+        let (h, mini) = harness(TileSize::Mini, LayoutProps::default());
+        assert_eq!(h.rect(mini).size, kanesumi_core::Size::new(64.0, 64.0));
+        let (h2, large) = harness(TileSize::Large, LayoutProps::default());
+        assert_eq!(h2.rect(large).size, kanesumi_core::Size::new(280.0, 136.0));
+    }
+
+    #[test]
+    fn stays_within_when_squeezed() {
+        let (mut h, id) = harness(
+            TileSize::Standard,
+            LayoutProps {
+                width: Some(40.0),
+                height: Some(40.0),
+                ..LayoutProps::default()
+            },
+        );
+        h.move_to(h.center(id));
+        h.frame();
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn disabled_tile_ignores_activation() {
+        let (mut h, id) = harness(TileSize::Standard, LayoutProps::default());
+        h.tree.set_enabled(id, false);
+        h.frame();
+        h.click(id);
+        assert!(h.take::<TileClicked>().is_empty());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
