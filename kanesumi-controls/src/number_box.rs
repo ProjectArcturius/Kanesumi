@@ -279,7 +279,12 @@ impl MetroNumberBox {
     }
 
     /// 渲染。顺序：Header → 边框底 → 文本区（委托精简渲染）→ Spin 按钮。
+    ///
+    /// 2026-09-30 元素树迁移 §6 修正：压窄到 Spin 区（72）以下时，Down 按钮 / 分隔线
+    /// 绘制会落到 `rect` 左缘之外（旧行为：越界绘制，容器不裁剪）。此处成对把自身绘制
+    /// 夹进 `rect`（新行为：越界部分裁掉），与 COMPOSITION 容器裁剪契约一致。
     pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
+        scene.push_clip(rect);
         let colors = &theme.colors;
         let style = theme.typography.body;
         let disabled = self.state == ControlState::Disabled;
@@ -390,6 +395,7 @@ impl MetroNumberBox {
             (colors.divider.with_alpha(alpha), 1.0)
         };
         scene.stroke_rounded_rect(stroke, inner, stroke_w, theme.tokens.corner_radius);
+        scene.pop_clip();
     }
 
     /// 单个 SpinButton 渲染（上/下 chevron 自绘）。
@@ -441,6 +447,366 @@ pub enum SpinButton {
 #[allow(dead_code)]
 fn _textbox_bridge(_tb: &MetroTextBox, _k: TextInputKey) -> bool {
     false
+}
+
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 text_box.rs）───────────────
+//
+// NumberBox = 数字编辑核心 + 右侧两个 SpinButton。迁移只加转发：键入走编辑核心（数字过滤），
+// Enter / 失焦提交时发 `NumberValueChanged`，Up/Down 键与 Spin 按钮走 `step_up`/`step_down`。
+// Spin 按钮在 `PointerUp` 用旧的 `hit_spin` 按 pos 判定（框架点击不细分部件）。
+
+/// 元素树动作：数值被提交或步进。携带新值。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NumberValueChanged(pub f64);
+
+/// 元素树 `Key` → 编辑核心 `TextInputKey`（与 text_box.rs 同表，控件层不依赖 harness）。
+fn num_edit_key(key: kanesumi_element::Key) -> Option<TextInputKey> {
+    use kanesumi_element::Key;
+    Some(match key {
+        Key::Char(c) => TextInputKey::Char(c),
+        Key::Backspace => TextInputKey::Backspace,
+        Key::Delete => TextInputKey::Delete,
+        Key::Left => TextInputKey::Left,
+        Key::Right => TextInputKey::Right,
+        Key::Home => TextInputKey::Home,
+        Key::End => TextInputKey::End,
+        _ => return None,
+    })
+}
+
+impl MetroNumberBox {
+    /// 元素树 IME 上下文：内容提示 = Digits（软键盘数字布局），光标矩形按文本区几何。
+    fn tree_ime_context(
+        &self,
+        rect: Rect,
+        theme: &MetroTheme,
+        engine: &TextEngine,
+    ) -> crate::ime::ImeContext {
+        let style = theme.typography.body;
+        let text = self.text_rect(theme, rect);
+        let b = if self.focused { 2.0 } else { 1.0 };
+        let (before, after, cursor_byte, anchor_byte) = self.field.surrounding_text(1000);
+        let stream = self.field.display_text();
+        let geom = engine.line_geometry(&stream, style.size, 0.0);
+        let caret_x = text.origin.x + b + 10.0 + geom.caret_x(self.field.cursor());
+        crate::ime::ImeContext {
+            surrounding_before: before,
+            surrounding_after: after,
+            cursor_byte: cursor_byte as u32,
+            anchor_byte: anchor_byte as u32,
+            caret_rect: Rect::new(caret_x, text.origin.y + b + 6.0, 1.0, style.line_height),
+            content_hint: crate::ime::ImeContentHint::Digits,
+        }
+    }
+}
+
+impl kanesumi_element::Widget for MetroNumberBox {
+    /// 宽 = max(MinWidth 120, 标题宽 + Padding 16 + Spin 区 72)；高 = 标题行 + 主体。
+    fn measure(
+        &mut self,
+        ctx: &mut kanesumi_element::MeasureCtx,
+        _available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        let style = ctx.theme().typography.body;
+        let content = ctx.engine().measure(&self.header, style.size);
+        let width = (content + 16.0 + NUMBERBOX_SPIN_COLUMN_W).max(NUMBERBOX_MIN_WIDTH);
+        let header_h = if self.header.is_empty() {
+            0.0
+        } else {
+            style.line_height + 4.0
+        };
+        let body_h = (style.line_height + 11.0 + 2.0).max(32.0);
+        kanesumi_core::Size::new(width, header_h + body_h)
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        let saved = self.state;
+        self.state = crate::state::control_state(ctx.state());
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+        self.state = saved;
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, Key, PointerButton};
+        match event {
+            Event::FocusIn { .. } => {
+                self.focus();
+                ctx.invalidate_paint();
+            }
+            Event::FocusOut => {
+                self.blur();
+                if let Some(v) = self.value() {
+                    ctx.emit(NumberValueChanged(v));
+                }
+                ctx.invalidate_paint();
+            }
+            Event::PointerMove { pos } => {
+                let theme = *ctx.theme();
+                let rect = ctx.rect();
+                let hit = self.hit_spin(&theme, rect, *pos);
+                let (up, down) = (hit == Some(SpinButton::Up), hit == Some(SpinButton::Down));
+                if up != self.up_hovered || down != self.down_hovered {
+                    self.up_hovered = up;
+                    self.down_hovered = down;
+                    ctx.invalidate_paint();
+                }
+            }
+            Event::PointerLeave => {
+                let changed = self.up_hovered || self.down_hovered;
+                self.up_hovered = false;
+                self.down_hovered = false;
+                if changed {
+                    ctx.invalidate_paint();
+                }
+            }
+            Event::PointerUp {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                let theme = *ctx.theme();
+                let rect = ctx.rect();
+                let stepped = match self.hit_spin(&theme, rect, *pos) {
+                    Some(SpinButton::Up) => self.step_up(),
+                    Some(SpinButton::Down) => self.step_down(),
+                    None => None,
+                };
+                if let Some(v) = stepped {
+                    ctx.emit(NumberValueChanged(v));
+                    ctx.invalidate_paint();
+                    ctx.set_handled();
+                }
+            }
+            Event::KeyDown { key, .. } => {
+                // Tab 留给框架焦点遍历，Esc 留给弹层关闭。
+                if matches!(key, Key::Tab | Key::Escape) {
+                    return;
+                }
+                match key {
+                    Key::Enter => {
+                        if let Some(v) = self.value() {
+                            ctx.emit(NumberValueChanged(v));
+                        }
+                    }
+                    Key::Up => {
+                        if let Some(v) = self.step_up() {
+                            ctx.emit(NumberValueChanged(v));
+                        }
+                        ctx.invalidate_paint();
+                    }
+                    Key::Down => {
+                        if let Some(v) = self.step_down() {
+                            ctx.emit(NumberValueChanged(v));
+                        }
+                        ctx.invalidate_paint();
+                    }
+                    _ => {
+                        if let Some(k) = num_edit_key(*key) {
+                            self.handle_key(k);
+                            ctx.invalidate_paint();
+                        } else {
+                            return;
+                        }
+                    }
+                }
+                ctx.set_handled();
+            }
+            Event::Preedit { text, cursor_byte } => {
+                self.field.set_preedit(text, *cursor_byte);
+                ctx.invalidate_paint();
+                ctx.set_handled();
+            }
+            Event::Commit { text } => {
+                self.field.commit_ime(text);
+                ctx.invalidate_paint();
+                ctx.set_handled();
+            }
+            Event::DeleteSurrounding {
+                before_bytes,
+                after_bytes,
+            } => {
+                self.field.delete_surrounding(*before_bytes, *after_bytes);
+                ctx.invalidate_paint();
+                ctx.set_handled();
+            }
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    /// 数字框自绘聚焦边框（2px），不要框架再叠一层焦点视觉。
+    fn focus_visual(&self) -> bool {
+        false
+    }
+
+    fn ime(
+        &self,
+        rect: Rect,
+        theme: &MetroTheme,
+        engine: &TextEngine,
+    ) -> Option<crate::ime::ImeContext> {
+        self.focused.then(|| self.tree_ime_context(rect, theme, engine))
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::TextInput,
+            name: if self.header.is_empty() {
+                String::from("数字")
+            } else {
+                self.header.clone()
+            },
+            value: Some(self.field.text()),
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, Key, LayoutProps, PointerButton, WidgetId};
+
+    fn harness(props: LayoutProps) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(400.0, 200.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroNumberBox::new().with_min(0.0).with_max(100.0).with_step(2.0),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..props
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    #[test]
+    fn tab_focus_typing_and_enter_commit() {
+        let (mut h, id) = harness(LayoutProps {
+            width: Some(200.0),
+            ..LayoutProps::default()
+        });
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+        h.key(Key::Char('5'));
+        h.key(Key::Char('0'));
+        assert_eq!(h.tree.get::<MetroNumberBox>(id).unwrap().field.text(), "50");
+        h.key(Key::Enter);
+        assert_eq!(
+            h.take::<NumberValueChanged>(),
+            vec![(id, NumberValueChanged(50.0))]
+        );
+    }
+
+    #[test]
+    fn up_down_keys_step_within_bounds() {
+        let (mut h, id) = harness(LayoutProps {
+            width: Some(200.0),
+            ..LayoutProps::default()
+        });
+        h.tab();
+        h.key(Key::Enter); // 空值提交不发动作
+        assert!(h.take::<NumberValueChanged>().is_empty());
+        h.key(Key::Up); // 0 → 2
+        h.key(Key::Up); // 2 → 4
+        h.key(Key::Down); // 4 → 2
+        let acts = h.take::<NumberValueChanged>();
+        assert_eq!(
+            acts,
+            vec![
+                (id, NumberValueChanged(2.0)),
+                (id, NumberValueChanged(4.0)),
+                (id, NumberValueChanged(2.0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn non_numeric_key_is_ignored() {
+        let (mut h, id) = harness(LayoutProps {
+            width: Some(200.0),
+            ..LayoutProps::default()
+        });
+        h.tab();
+        h.key(Key::Char('a'));
+        assert_eq!(h.tree.get::<MetroNumberBox>(id).unwrap().field.text(), "");
+    }
+
+    #[test]
+    fn spin_button_pointer_up_steps() {
+        let (mut h, id) = harness(LayoutProps {
+            width: Some(200.0),
+            ..LayoutProps::default()
+        });
+        let theme = MetroTheme::ether_dark();
+        let up = {
+            let nb = h.tree.get::<MetroNumberBox>(id).unwrap();
+            nb.up_button_rect(&theme, h.rect(id))
+        };
+        h.move_to(up.center());
+        h.frame();
+        assert!(h.tree.get::<MetroNumberBox>(id).unwrap().up_hovered);
+        h.press_at(up.center(), PointerButton::Left);
+        h.release_at(up.center(), PointerButton::Left);
+        assert_eq!(
+            h.take::<NumberValueChanged>(),
+            vec![(id, NumberValueChanged(2.0))]
+        );
+    }
+
+    #[test]
+    fn ime_hint_is_digits() {
+        let (mut h, id) = harness(LayoutProps {
+            width: Some(200.0),
+            ..LayoutProps::default()
+        });
+        h.tab();
+        h.type_text("7");
+        assert_eq!(h.tree.get::<MetroNumberBox>(id).unwrap().field.text(), "7");
+        let ctx = h.tree.ime_context().expect("聚焦后应有 IME 上下文");
+        assert_eq!(ctx.content_hint, crate::ime::ImeContentHint::Digits);
+    }
+
+    #[test]
+    fn passes_insurance_checks_including_squeezed() {
+        let (mut h, id) = harness(LayoutProps::default());
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+
+        let narrow = h.tree.insert_with(
+            h.root(),
+            MetroNumberBox::with_header("数量"),
+            LayoutProps {
+                width: Some(40.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        h.assert_contained();
+        h.assert_no_hit_outside(narrow);
+        h.assert_paint_within(narrow, Insets::ZERO);
+    }
+
+    #[test]
+    fn disabled_box_ignores_input() {
+        let (mut h, id) = harness(LayoutProps {
+            width: Some(200.0),
+            ..LayoutProps::default()
+        });
+        h.tree.set_enabled(id, false);
+        h.frame();
+        h.tab();
+        assert_ne!(h.tree.focused(), Some(id));
+    }
 }
 
 #[cfg(test)]
