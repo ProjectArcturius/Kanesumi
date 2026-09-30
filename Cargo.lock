@@ -1194,6 +1194,16 @@ name = "kanesumi-core"
 version = "0.1.0"
 
 [[package]]
+name = "kanesumi-element"
+version = "0.1.0"
+dependencies = [
+ "kanesumi-anim",
+ "kanesumi-canvas",
+ "kanesumi-core",
+ "log",
+]
+
+[[package]]
 name = "kanesumi-gallery"
 version = "0.1.0"
 dependencies = [
