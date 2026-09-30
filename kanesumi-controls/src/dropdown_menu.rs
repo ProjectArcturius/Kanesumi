@@ -628,6 +628,15 @@ impl MetroDropdownMenu {
                 it.checked = false;
             }
         }
+        // 回写到父项的子菜单定义：子菜单面板是展开时的临时副本，只改副本的话
+        // 收起再展开选择就丢了（2026-09-30 MenuFlyout 键盘测试发现）。
+        if let Some(parent) = path.parent.and_then(|p| self.items.get_mut(p)) {
+            for (k, it) in parent.submenu.iter_mut().enumerate() {
+                if it.radio_group.as_deref() == Some(group.as_str()) {
+                    it.checked = k == path.index;
+                }
+            }
+        }
         true
     }
 }
