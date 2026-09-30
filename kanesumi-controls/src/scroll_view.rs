@@ -10,6 +10,7 @@
 // 滚轮路由、可选弹簧平滑滚动。宿主渲染内容时以 `content_offset` 平移 + 视口裁剪。
 
 use kanesumi_anim::{MetroPresets, SpringAnim};
+use kanesumi_canvas::Scene;
 use kanesumi_core::{Rect, Size};
 
 /// 滚轮离散步（合成器 Axis discrete ≈ 50px/格）。
@@ -202,6 +203,242 @@ impl MetroScrollView {
     /// 内容平移偏移（渲染内容前应用）。
     pub fn content_offset(&self) -> f32 {
         -self.offset
+    }
+}
+
+// ── 元素树接入：滚动容器（参 docs/ELEMENT_TREE.md §Ⅹ E4 / ROADMAP M5-1）────────────
+//
+// 「任何内容放不下就有滚动」的统一容器：子节点以视口宽、无界高量测，按 `-offset` 排在
+// 视口之外（`scrolls_children`），框架的容器裁剪同时约束绘制与命中（画不到、也点不到
+// 视口外的子节点）。滚动条画在内容之上（`paint_after`）。键盘焦点落到视口外的后代时，
+// 框架经 `bring_into_view` 让本容器把它滚进来（XAML BringIntoView）。
+//
+// 注意（与 XAML 同）：放进 `Stack::column` 且不给 `grow` 时，可用高度是无界的 ——
+// 视口会长到与内容一样高，也就无从滚动。滚动容器需要一个有界的高度（grow / 固定高 / 根）。
+
+impl kanesumi_element::Widget for MetroScrollView {
+    fn measure(&mut self, ctx: &mut kanesumi_element::MeasureCtx, available: Size) -> Size {
+        let mut content = Size::ZERO;
+        for c in ctx.children() {
+            let d = ctx.measure_child(c, Size::new(available.width, f32::INFINITY));
+            content = Size::new(content.width.max(d.width), content.height.max(d.height));
+        }
+        self.content_size = content;
+        Size::new(
+            content.width.min(available.width),
+            content.height.min(available.height),
+        )
+    }
+
+    fn arrange(&mut self, ctx: &mut kanesumi_element::ArrangeCtx, rect: Rect) {
+        self.viewport_size = rect.size;
+        // 视口变大 / 内容变短后，旧偏移可能越界 → 夹紧（不做动画）。
+        let max = self.max_offset();
+        if self.offset > max {
+            self.scroll_to(max, false);
+        }
+        let content_h = self.content_size.height.max(rect.size.height);
+        for c in ctx.children() {
+            ctx.arrange_child(
+                c,
+                Rect::new(
+                    rect.origin.x,
+                    rect.origin.y - self.offset,
+                    rect.size.width,
+                    content_h,
+                ),
+            );
+        }
+    }
+
+    fn paint(&mut self, _ctx: &mut kanesumi_element::PaintCtx, _scene: &mut Scene) {}
+
+    /// 滚动条（叠在内容之上）。拇指几何取自 `scrollbar_thumb_rect`（视口本地 → 表面坐标）。
+    fn paint_after(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        if !self.scrollbar_visible() {
+            return;
+        }
+        let rect = ctx.rect();
+        let t = self.scrollbar_thumb_rect();
+        let thumb = Rect::new(
+            rect.origin.x + t.origin.x,
+            rect.origin.y + t.origin.y,
+            t.size.width,
+            t.size.height,
+        );
+        let theme = ctx.theme();
+        let color = theme
+            .colors
+            .on_surface_variant
+            .with_alpha(theme.indication.base_medium_low);
+        scene.fill_rect(color, thumb);
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        if let kanesumi_element::Event::Scroll { dy, .. } = event {
+            // 不可滚时不截停：滚动链交给外层容器（XAML ScrollChaining）。
+            if !self.is_scrollable() {
+                return;
+            }
+            let before = self.offset;
+            self.scroll_wheel(*dy);
+            if self.offset != before {
+                ctx.invalidate_arrange();
+                ctx.invalidate_paint();
+                ctx.emit(ScrollOffsetChanged(self.offset));
+            }
+            ctx.set_handled();
+        }
+    }
+
+    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, dt: f64) {
+        let before = self.offset;
+        MetroScrollView::update(self, dt);
+        if self.offset != before {
+            ctx.invalidate_arrange();
+            ctx.invalidate_paint();
+        }
+        if self.is_animating() {
+            ctx.request_anim_frame();
+        }
+    }
+
+    fn scrolls_children(&self) -> bool {
+        true
+    }
+
+    fn bring_into_view(&mut self, ctx: &mut kanesumi_element::EventCtx, target: Rect) -> bool {
+        let rect = ctx.rect();
+        // 表面坐标 → 内容坐标（内容原点 = 视口原点 − offset）。
+        let pos = target.origin.y - rect.origin.y + self.offset;
+        let before = self.offset;
+        self.scroll_into_view(pos, target.size.height, false);
+        if self.offset != before {
+            ctx.invalidate_arrange();
+            ctx.invalidate_paint();
+            ctx.emit(ScrollOffsetChanged(self.offset));
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// 元素树动作：滚动偏移变化（虚拟化列表据此决定实现哪些项）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollOffsetChanged(pub f32);
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use crate::button::MetroButton;
+    use kanesumi_core::Point;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::widgets::Stack;
+    use kanesumi_element::{Align, LayoutProps, Modifiers, WidgetId};
+
+    /// 视口 200×100，内容 = 10 个 40 高的按钮（共 400）。
+    fn harness() -> (TestHarness, WidgetId, Vec<WidgetId>) {
+        let mut h = TestHarness::new(300.0, 300.0);
+        let sv = MetroScrollView {
+            smooth_scroll: false,
+            ..MetroScrollView::default()
+        };
+        let sv = h.tree.insert_with(
+            h.root(),
+            sv,
+            LayoutProps {
+                width: Some(200.0),
+                height: Some(100.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        let col = h.tree.insert(sv, Stack::column());
+        let items = (0..10)
+            .map(|i| {
+                h.tree.insert_with(
+                    col,
+                    MetroButton::new(format!("项 {i}")),
+                    LayoutProps {
+                        height: Some(40.0),
+                        ..LayoutProps::default()
+                    },
+                )
+            })
+            .collect();
+        h.frame();
+        (h, sv, items)
+    }
+
+    #[test]
+    fn wheel_scrolls_and_clamps() {
+        let (mut h, sv, items) = harness();
+        assert_eq!(h.rect(items[0]).origin.y, 0.0);
+        h.tree.scroll(Point::new(50.0, 50.0), 0.0, 50.0, Modifiers::NONE);
+        h.frame();
+        assert_eq!(h.rect(items[0]).origin.y, -50.0);
+        assert_eq!(h.take::<ScrollOffsetChanged>(), vec![(sv, ScrollOffsetChanged(50.0))]);
+        for _ in 0..20 {
+            h.tree.scroll(Point::new(50.0, 50.0), 0.0, 50.0, Modifiers::NONE);
+        }
+        h.frame();
+        assert_eq!(h.tree.get::<MetroScrollView>(sv).unwrap().offset, 300.0, "夹紧到内容 − 视口");
+        assert_eq!(h.rect(items[9]).bottom(), 100.0, "末项贴视口底");
+    }
+
+    #[test]
+    fn content_outside_viewport_is_neither_hit_nor_contained_violation() {
+        let (mut h, sv, items) = harness();
+        h.tree.scroll(Point::new(50.0, 50.0), 0.0, 60.0, Modifiers::NONE);
+        h.frame();
+        // 项 1 的上半截（y ∈ [-20, 0)）被滚出视口：视口外不命中。
+        assert_eq!(h.tree.hit(Point::new(50.0, 105.0)), None, "视口下方不命中内容");
+        assert_eq!(h.tree.hit(Point::new(50.0, 5.0)), Some(items[1]));
+        h.assert_contained();
+        h.assert_no_hit_outside(sv);
+    }
+
+    #[test]
+    fn tab_brings_offscreen_item_into_view() {
+        let (mut h, sv, items) = harness();
+        for _ in 0..5 {
+            h.tab();
+        }
+        assert_eq!(h.tree.focused(), Some(items[4]));
+        let r = h.rect(items[4]);
+        assert!(r.origin.y >= 0.0 && r.bottom() <= 100.0, "焦点项在视口内 {r:?}");
+        assert!(h.tree.get::<MetroScrollView>(sv).unwrap().offset > 0.0);
+    }
+
+    #[test]
+    fn unscrollable_content_lets_wheel_bubble() {
+        let mut h = TestHarness::new(300.0, 300.0);
+        let sv = h.tree.insert(h.root(), MetroScrollView::default());
+        h.tree.insert(sv, MetroButton::new("短"));
+        h.frame();
+        h.tree.scroll(Point::new(10.0, 10.0), 0.0, 50.0, Modifiers::NONE);
+        h.frame();
+        assert!(h.take::<ScrollOffsetChanged>().is_empty());
+        assert_eq!(h.tree.get::<MetroScrollView>(sv).unwrap().offset, 0.0);
+    }
+
+    #[test]
+    fn scrollbar_is_drawn_over_content_when_scrollable() {
+        use kanesumi_canvas::SceneCommand;
+        let (h, sv, _) = harness();
+        let cmds = &h.last.scene.commands;
+        let thumb_x = h.rect(sv).right() - SCROLLBAR_THICKNESS + 1.0;
+        let thumb = cmds
+            .iter()
+            .position(|c| matches!(c, SceneCommand::FillRect { rect, .. } if rect.origin.x == thumb_x))
+            .expect("可滚时应画出滚动条拇指");
+        let last_text = cmds
+            .iter()
+            .rposition(|c| matches!(c, SceneCommand::Text { .. }))
+            .unwrap();
+        assert!(thumb > last_text, "拇指画在全部内容之后（叠在上层）");
     }
 }
 

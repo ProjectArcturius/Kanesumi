@@ -109,7 +109,7 @@ pub use rating_control::{MetroRatingControl, RatingValueChanged};
 pub use repeater::{MetroRepeater, RepeaterLayout, RepeaterOrientation};
 pub use retained::RetainedScene;
 pub use scroll_view::{
-    SCROLLBAR_MIN_THUMB, SCROLLBAR_THICKNESS, SCROLL_WHEEL_STEP, MetroScrollView, ScrollBarVisibility,
+    SCROLLBAR_MIN_THUMB, SCROLLBAR_THICKNESS, SCROLL_WHEEL_STEP, MetroScrollView, ScrollBarVisibility, ScrollOffsetChanged,
     ScrollMode,
 };
 pub use selector_flyout::MetroSelectorFlyout;
