@@ -356,6 +356,248 @@ impl MetroColorPicker {
     }
 }
 
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3）─────────────────────────────────
+//
+// 多区域拖拽：旧 API（`press` / `drag_to` / `release` / `hover` / `render`）原样保留给未迁移的
+// App。`PointerDown` 用旧 `press` 记录命中通道并立即取值，`PointerMove` 按该通道持续更新，
+// `PointerUp` 结束；拖动中每次取值变化都发 `ColorChanged`（UWP Slider 语义，参规范 §4）。
+// ⚠ 盘点：旧实现只对四条通道滑轨做命中 / 取值（`channel_at` 遍历 `slider_rect`）；Spectrum
+// 是纯展示色带、无命中与取值，故迁移不为其新增交互（行为与视觉以旧 `render` 为准）。
+// 绘制越界（§6）：满值拇指右缘越出 rect 5px（有意视觉），同时预览底边 / Hex 行因 `measure`
+// 与 `render` 的预留不一致而画出 rect 下缘最多约 42px（旧逻辑 bug，见批报告「范围外发现」）。
+// 取 §6 的「裁剪」方案：`Widget::paint` 把自身绘制夹进 `rect ⊕ 拇指半径` —— 右侧放行有意
+// 的 5px 拇指外溢（并声明 `paint_overflow`），其余方向的越界（预览 / Hex）一并裁掉。
+
+/// 元素树动作：颜色被用户改变（拖动滑轨 / 单点）。携带新颜色；拖动中持续发。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColorChanged(pub Color);
+
+impl kanesumi_element::Widget for MetroColorPicker {
+    fn measure(
+        &mut self,
+        _ctx: &mut kanesumi_element::MeasureCtx,
+        _available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        MetroColorPicker::measure(self)
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        // §6：夹进 rect ⊕ 拇指半径（右侧），裁掉预览 / Hex 的底部越界，同时保留拇指外溢。
+        let r = ctx.rect();
+        scene.push_clip(Rect::new(
+            r.origin.x,
+            r.origin.y,
+            r.size.width + COLOR_THUMB / 2.0,
+            r.size.height,
+        ));
+        self.render(ctx.theme(), ctx.engine(), r, scene);
+        scene.pop_clip();
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, PointerButton};
+        match event {
+            Event::PointerDown {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                let rect = ctx.rect();
+                let before = self.color;
+                // `press` 命中通道则记录拖动通道并立即取值。
+                if self.press(rect, *pos) {
+                    if self.color != before {
+                        ctx.emit(ColorChanged(self.color));
+                    }
+                    ctx.invalidate_paint();
+                    ctx.set_handled();
+                }
+            }
+            Event::PointerMove { pos } => {
+                let rect = ctx.rect();
+                if self.dragging.is_some() {
+                    let before = self.color;
+                    self.drag_to(rect, *pos);
+                    if self.color != before {
+                        ctx.emit(ColorChanged(self.color));
+                    }
+                }
+                self.hover(rect, *pos);
+                ctx.invalidate_paint();
+            }
+            Event::PointerLeave => {
+                self.hovered_channel = None;
+                ctx.invalidate_paint();
+            }
+            Event::PointerUp {
+                button: PointerButton::Left,
+                ..
+            } => {
+                self.release();
+                ctx.invalidate_paint();
+                ctx.set_handled();
+            }
+            _ => {}
+        }
+    }
+
+    fn paint_overflow(&self) -> kanesumi_element::Insets {
+        // 拇指半径 5 在满值处越出右缘（参本节盘点）；左右两端其它方向不溢出。
+        kanesumi_element::Insets::new(0.0, 0.0, COLOR_THUMB / 2.0, 0.0)
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Other,
+            name: String::from("颜色选择器"),
+            value: Some(self.hex()),
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, LayoutProps, PointerButton, WidgetId};
+
+    fn harness(props: LayoutProps) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(400.0, 320.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroColorPicker::default(),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..props
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    /// 通道滑轨几何（轨道底 rect）。
+    fn channel_track(h: &TestHarness, id: WidgetId, ch: ColorChannel) -> Rect {
+        let rect = h.rect(id);
+        h.tree.get::<MetroColorPicker>(id).unwrap().track_geom(rect, ch).0
+    }
+
+    /// 满值拇指越出的许可（§6）。
+    fn overflow() -> Insets {
+        Insets::new(0.0, 0.0, COLOR_THUMB / 2.0, 0.0)
+    }
+
+    #[test]
+    fn press_drag_updates_channel_continuously() {
+        let (mut h, id) = harness(LayoutProps::default());
+        let track = channel_track(&h, id, ColorChannel::Red);
+        let y = track.center().y;
+        let start = Point::new(track.origin.x + track.size.width * 0.2, y);
+        let end = Point::new(track.origin.x + track.size.width * 0.8, y);
+        h.press_at(start, PointerButton::Left);
+        h.move_to(end);
+        h.release_at(end, PointerButton::Left);
+        h.frame();
+        let vals: Vec<Color> = h
+            .take::<ColorChanged>()
+            .into_iter()
+            .map(|(_, c)| c.0)
+            .collect();
+        assert!(vals.len() >= 2, "按下 + 拖动各发一次，实际 {}", vals.len());
+        assert!(
+            vals.last().unwrap().r > 0.7,
+            "拖到 80% → R≈0.8，实际 {}",
+            vals.last().unwrap().r
+        );
+        assert_eq!(
+            h.tree.get::<MetroColorPicker>(id).unwrap().dragging,
+            None,
+            "释放后结束拖动"
+        );
+    }
+
+    #[test]
+    fn drag_only_changes_hit_channel() {
+        let (mut h, id) = harness(LayoutProps::default());
+        let before = h.tree.get::<MetroColorPicker>(id).unwrap().color;
+        let track = channel_track(&h, id, ColorChannel::Green);
+        let y = track.center().y;
+        let start = Point::new(track.origin.x + track.size.width * 0.1, y);
+        let end = Point::new(track.origin.x + track.size.width * 0.9, y);
+        h.press_at(start, PointerButton::Left);
+        h.move_to(end);
+        h.release_at(end, PointerButton::Left);
+        h.frame();
+        let after = h.tree.get::<MetroColorPicker>(id).unwrap().color;
+        assert!(after.g > 0.8, "G 被更新，实际 {}", after.g);
+        assert_eq!(after.r, before.r, "R 不变");
+        assert_eq!(after.b, before.b, "B 不变");
+        assert_eq!(after.a, before.a, "A 不变");
+    }
+
+    #[test]
+    fn tap_sets_value_and_reports() {
+        let (mut h, id) = harness(LayoutProps::default());
+        let track = channel_track(&h, id, ColorChannel::Blue);
+        h.click_at(Point::new(
+            track.origin.x + track.size.width * 0.5,
+            track.center().y,
+        ));
+        assert_eq!(h.take::<ColorChanged>().len(), 1, "单点发一次动作");
+        let b = h.tree.get::<MetroColorPicker>(id).unwrap().color.b;
+        assert!((b - 0.5).abs() < 0.02, "B≈0.5，实际 {b}");
+    }
+
+    #[test]
+    fn pointer_move_sets_and_leave_clears_hover() {
+        let (mut h, id) = harness(LayoutProps::default());
+        let track = channel_track(&h, id, ColorChannel::Alpha);
+        h.move_to(track.center());
+        h.frame();
+        assert_eq!(
+            h.tree.get::<MetroColorPicker>(id).unwrap().hovered_channel,
+            Some(ColorChannel::Alpha)
+        );
+        h.tree.pointer_leave();
+        h.frame();
+        assert_eq!(
+            h.tree.get::<MetroColorPicker>(id).unwrap().hovered_channel,
+            None
+        );
+    }
+
+    #[test]
+    fn sizes_and_passes_insurance_checks() {
+        let (h, id) = harness(LayoutProps::default());
+        assert!(h.rect(id).size.width >= 312.0);
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, overflow());
+    }
+
+    #[test]
+    fn squeezed_still_passes_insurance_checks() {
+        let (h, id) = harness(LayoutProps {
+            width: Some(40.0),
+            ..LayoutProps::default()
+        });
+        assert_eq!(h.rect(id).size.width, 40.0);
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, overflow());
+    }
+
+    #[test]
+    fn disabled_ignores_input() {
+        let (mut h, id) = harness(LayoutProps::default());
+        h.tree.set_enabled(id, false);
+        h.frame();
+        h.click_at(channel_track(&h, id, ColorChannel::Red).center());
+        assert!(h.take::<ColorChanged>().is_empty());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
