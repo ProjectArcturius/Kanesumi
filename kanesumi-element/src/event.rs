@@ -88,6 +88,9 @@ pub enum Event {
     Commit { text: String },
     /// IME 周边删除（焦点）。
     DeleteSurrounding { before_bytes: u32, after_bytes: u32 },
+    /// 本控件打开的弹层已关闭（被选中项关闭、点外部、Esc、失焦 —— 任何原因）。
+    /// 投给弹层的锚点，不冒泡。控件据此复位「展开中」外观。
+    PopupClosed { popup: crate::id::WidgetId },
     /// 获得 / 失去焦点（不冒泡）。`keyboard` = 由 Tab 等键盘操作获得（决定是否画焦点视觉）。
     FocusIn { keyboard: bool },
     FocusOut,
@@ -98,7 +101,11 @@ impl Event {
     pub fn bubbles(&self) -> bool {
         !matches!(
             self,
-            Event::PointerEnter | Event::PointerLeave | Event::FocusIn { .. } | Event::FocusOut
+            Event::PointerEnter
+                | Event::PointerLeave
+                | Event::FocusIn { .. }
+                | Event::FocusOut
+                | Event::PopupClosed { .. }
         )
     }
 }

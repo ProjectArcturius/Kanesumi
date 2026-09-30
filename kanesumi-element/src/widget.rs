@@ -225,6 +225,10 @@ impl PaintCtx<'_> {
     pub fn rect(&self) -> Rect {
         self.rect
     }
+    /// 表面矩形（画级联子菜单等越出自身的弹层内容时用）。
+    pub fn surface(&self) -> Rect {
+        self.tree.surface()
+    }
     pub fn state(&self) -> ControlStates {
         self.state
     }
@@ -256,6 +260,14 @@ impl EventCtx<'_> {
     }
     pub fn theme(&self) -> &MetroTheme {
         self.tree.theme()
+    }
+    /// 表面矩形（弹层放置 / 子菜单翻转用）。
+    pub fn surface(&self) -> Rect {
+        self.tree.surface()
+    }
+    /// 聚焦任意节点（打开弹层后把焦点移进去）。不可聚焦 → false。
+    pub fn focus_widget(&mut self, id: WidgetId, keyboard: bool) -> bool {
+        self.tree.focus(id, keyboard)
     }
     /// 排版引擎（首帧之前为 None）。点击定位光标等文本命中用。
     pub fn engine(&self) -> Option<&TextEngine> {

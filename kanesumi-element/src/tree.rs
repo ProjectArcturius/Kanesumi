@@ -1134,6 +1134,11 @@ impl Tree {
         }
     }
 
+    /// 表面矩形（逻辑坐标，原点 0,0）。弹层放置 / 级联子菜单翻转用。
+    pub fn surface(&self) -> Rect {
+        Rect::new(0.0, 0.0, self.size.width, self.size.height)
+    }
+
     /// 上一帧的排版引擎（首帧之前为 None）。
     pub fn engine(&self) -> Option<&TextEngine> {
         self.engine.as_ref()
@@ -1296,9 +1301,21 @@ impl Tree {
         id
     }
 
+    /// 关闭弹层。锚点收到 `Event::PopupClosed`；若焦点原在弹层内，交还锚点
+    /// （XAML Flyout 关闭后焦点回到触发器，键盘用户不会「掉焦点」）。
     pub fn close_popup(&mut self, id: WidgetId) {
-        if self.popups.iter().any(|(p, _)| *p == id) {
-            self.remove(id);
+        let Some(pos) = self.popups.iter().position(|(p, _)| *p == id) else {
+            return;
+        };
+        let spec = self.popups[pos].1;
+        let focus_inside = self.focus.is_some_and(|f| self.is_ancestor_or_self(id, f));
+        let keyboard = self.focus_keyboard;
+        self.remove(id);
+        if let Some(anchor) = spec.anchor.filter(|a| self.contains(*a)) {
+            if focus_inside {
+                self.focus(anchor, keyboard);
+            }
+            self.deliver(anchor, &Event::PopupClosed { popup: id });
         }
     }
 

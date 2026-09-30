@@ -455,3 +455,54 @@ fn hidden_animation_is_parked_and_resumes_when_shown() {
     assert!(ticks.get() > parked_at, "重新可见后恢复");
     assert!(h.tree.needs_frame());
 }
+
+// ── 弹层关闭通知与焦点交还 ────────────────────────────────────────────────────
+
+/// 记录收到的 PopupClosed 次数的锚点控件。
+struct Anchor {
+    closed: Rc<Cell<u32>>,
+}
+
+impl Widget for Anchor {
+    fn measure(&mut self, _: &mut MeasureCtx, _: Size) -> Size {
+        Size::new(80.0, 30.0)
+    }
+    fn paint(&mut self, _: &mut PaintCtx, _: &mut Scene) {}
+    fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
+        match event {
+            Event::PopupClosed { .. } => self.closed.set(self.closed.get() + 1),
+            Event::Click => {
+                let p = ctx.open_popup(
+                    Border::new().background(Color::rgb(0.3, 0.3, 0.3)),
+                    PopupSpec::default(),
+                );
+                let _ = p;
+            }
+            _ => {}
+        }
+    }
+    fn focusable(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn closing_popup_notifies_anchor_and_returns_focus() {
+    let mut h = TestHarness::new(300.0, 300.0);
+    let closed = Rc::new(Cell::new(0));
+    let a = h.tree.insert_with(h.root(), Anchor { closed: closed.clone() }, fixed(80.0, 30.0));
+    h.frame();
+    h.click(a);
+    let pop = h.tree.popups().next().expect("点击应打开弹层");
+    let inner = h.tree.insert(pop, TestButton::new(40.0, 20.0));
+    h.frame();
+    h.tree.focus(inner, true);
+    assert!(h.key(Key::Escape), "Esc 关闭弹层");
+    assert_eq!(closed.get(), 1, "锚点收到 PopupClosed");
+    assert_eq!(h.tree.focused(), Some(a), "焦点交还锚点");
+    // 程序化关闭同样通知。
+    h.click(a);
+    let pop2 = h.tree.popups().next().unwrap();
+    h.tree.close_popup(pop2);
+    assert_eq!(closed.get(), 2);
+}
