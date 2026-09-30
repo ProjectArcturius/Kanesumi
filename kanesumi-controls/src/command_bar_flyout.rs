@@ -91,11 +91,14 @@ pub struct MetroCommandBarFlyout {
     pub hovered: Option<usize>,
     /// 动画。
     pub anim: PopupAnim,
+    /// 元素树下打开本命令条的控件（动作携带它，App 据此分派）；旧路径不用。
+    tree_owner: Option<kanesumi_element::WidgetId>,
 }
 
 impl MetroCommandBarFlyout {
     pub fn new(commands: Vec<CommandButton>) -> Self {
         Self {
+            tree_owner: None,
             commands,
             panel_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             hovered: None,
@@ -232,12 +235,16 @@ impl MetroCommandBarFlyout {
 //
 // 旧路径里命令条是自持浮层：调用方 `open(anchor, screen)` 先算好 `panel_rect`，再自行渲染与命中，
 // 宿主还得把整屏 `screen` 传进来。元素树里它是覆盖层上的「面板 Widget」：`measure` 报面板尺寸、
-// `arrange` 记下自身矩形、`paint` 画面板；命令点击发 `CommandInvoked(idx)` 后 `close_popup` 自身。
+// `arrange` 记下自身矩形、`paint` 画面板；命令点击发 `CommandInvoked { owner, index }` 后 `close_popup` 自身。
 // 由其它控件经 `open_below`（锚下缘）/ `open_at`（点锚定）打开。旧 `open(&mut self, …)` API 保留不动。
 
-/// 元素树动作：命令条上第 `idx` 个命令被点击（对应 `commands[idx]`）。
+/// 元素树动作：命令条上第 `index` 个命令被点击（对应 `commands[index]`）。
+/// `owner` = 打开命令条的控件（与 `MenuInvoked` 同一语义，App 按 owner 分派）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CommandInvoked(pub usize);
+pub struct CommandInvoked {
+    pub owner: kanesumi_element::WidgetId,
+    pub index: usize,
+}
 
 impl MetroCommandBarFlyout {
     /// 命中命令按钮索引（面板边框之内）。面板外或越过按钮序列末尾返回 None。
@@ -280,6 +287,7 @@ impl MetroCommandBarFlyout {
     ) -> kanesumi_element::WidgetId {
         let owner = ctx.id();
         let mut bar = Self::new(commands);
+        bar.tree_owner = Some(owner);
         bar.anim.open();
         let id = ctx.open_popup(
             bar,
@@ -345,7 +353,9 @@ impl kanesumi_element::Widget for MetroCommandBarFlyout {
             } => {
                 // 命令点击：发动作并关闭自身（关闭后 owner 收 PopupClosed、焦点交还）。
                 if let Some(idx) = self.command_index_at(*pos) {
-                    ctx.emit(CommandInvoked(idx));
+                    // tree_owner 仅在经 open_* 打开时为 Some；直接插入覆盖层时以自身为 owner。
+                    let owner = self.tree_owner.unwrap_or(ctx.id());
+                    ctx.emit(CommandInvoked { owner, index: idx });
                     ctx.close_popup(ctx.id());
                 }
                 ctx.set_handled();
@@ -457,7 +467,10 @@ mod tree_tests {
         let p = only_popup(&h);
         assert!(h.rect(p).origin.y >= h.rect(owner).bottom(), "命令条在锚点下方");
         h.click_at(first_button_center(h.rect(p)));
-        assert_eq!(h.take::<CommandInvoked>(), vec![(p, CommandInvoked(0))]);
+        assert_eq!(
+            h.take::<CommandInvoked>(),
+            vec![(p, CommandInvoked { owner, index: 0 })]
+        );
         assert!(h.tree.popups().next().is_none(), "点命令后关闭");
     }
 
