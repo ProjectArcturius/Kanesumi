@@ -279,6 +279,187 @@ impl MetroSlider {
     }
 }
 
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 button.rs）──────────────────
+//
+// 旧 API（`measure(width)` / `press` / `drag_to` / `release` / `render` / `hit_test`）原样
+// 保留给未迁移的 App；`Widget` 实现把指针与方向键翻译成值变更动作。拖动期间每次移动都发
+// `SliderValueChanged`（UWP 语义，参规范 §4）。命中与焦点交给框架，命中区沿用旧轨道区。
+
+/// 元素树动作：滑块值被用户改变（点击 / 拖动 / 方向键）。携带新值。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SliderValueChanged(pub f64);
+
+impl kanesumi_element::Widget for MetroSlider {
+    /// 固有尺寸：宽度取 `available.width`（无界时默认 200），高 = Header + 32（CONTROL_SPEC §43）。
+    fn measure(&mut self, _ctx: &mut kanesumi_element::MeasureCtx, available: Size) -> Size {
+        let width = if available.width.is_finite() {
+            available.width
+        } else {
+            200.0
+        };
+        MetroSlider::measure(self, width)
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        let saved = self.state;
+        self.state = crate::state::control_state(ctx.state());
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+        self.state = saved;
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, Key, PointerButton};
+        match event {
+            Event::PointerDown {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                let rect = ctx.rect();
+                if let Some(v) = self.press(rect, *pos) {
+                    ctx.emit(SliderValueChanged(v));
+                }
+                ctx.invalidate_paint();
+                ctx.set_handled();
+            }
+            Event::PointerMove { pos } => {
+                if let Some(v) = self.drag_to(ctx.rect(), *pos) {
+                    ctx.emit(SliderValueChanged(v));
+                    ctx.invalidate_paint();
+                }
+            }
+            Event::PointerUp {
+                button: PointerButton::Left,
+                ..
+            } => {
+                self.release();
+                ctx.invalidate_paint();
+            }
+            Event::KeyDown { key, .. } => {
+                // 无步长时按范围 1% 步进；范围为 0 时夹紧后不变，不发动作。
+                let step = self
+                    .step
+                    .unwrap_or(((self.max - self.min).abs() * 0.01).max(1e-9));
+                let target = match key {
+                    Key::Left | Key::Down => self.value - step,
+                    Key::Right | Key::Up => self.value + step,
+                    _ => return,
+                };
+                let old = self.value;
+                self.set_value(target);
+                if (self.value - old).abs() > 1e-9 {
+                    ctx.emit(SliderValueChanged(self.value));
+                    ctx.invalidate_paint();
+                }
+                ctx.set_handled();
+            }
+            _ => {}
+        }
+    }
+
+    fn hit_test(&self, rect: Rect, pos: Point) -> bool {
+        MetroSlider::hit_test(self, rect, pos)
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Other,
+            name: self.header.clone(),
+            value: Some(format!("{}", self.value)),
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, Key, LayoutProps, PointerButton, WidgetId};
+
+    fn harness() -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(320.0, 200.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroSlider::new().with_header("音量"),
+            LayoutProps {
+                width: Some(200.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    #[test]
+    fn click_sets_value_and_reports() {
+        let (mut h, id) = harness();
+        h.click(id);
+        let actions = h.take::<SliderValueChanged>();
+        assert_eq!(actions.len(), 1);
+        let v = actions[0].1;
+        assert!((v.0 - 50.0).abs() < 2.0, "中点应约 50，实际 {}", v.0);
+        assert!((h.tree.get::<MetroSlider>(id).unwrap().value - v.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn drag_updates_value_continuously() {
+        let (mut h, id) = harness();
+        let r = h.rect(id);
+        let y = r.center().y;
+        h.press_at(Point::new(r.origin.x + 20.0, y), PointerButton::Left);
+        h.move_to(Point::new(r.right() - 20.0, y));
+        h.release_at(Point::new(r.right() - 20.0, y), PointerButton::Left);
+        h.frame();
+        let vals: Vec<f64> = h
+            .take::<SliderValueChanged>()
+            .into_iter()
+            .map(|(_, v)| v.0)
+            .collect();
+        assert!(vals.len() >= 2, "按下 + 拖动各发一次，实际 {}", vals.len());
+        assert!((vals.last().unwrap() - 100.0).abs() < 5.0, "拖到最右应接近 100");
+    }
+
+    #[test]
+    fn arrow_keys_step_one_percent_and_tab_focuses() {
+        let (mut h, id) = harness();
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+        h.key(Key::Right);
+        let v = h.tree.get::<MetroSlider>(id).unwrap().value;
+        assert!((v - 1.0).abs() < 1e-6, "无步长时按范围 1% 步进，实际 {v}");
+        h.take::<SliderValueChanged>();
+        h.key(Key::Left);
+        assert!(h.tree.get::<MetroSlider>(id).unwrap().value.abs() < 1e-9);
+    }
+
+    #[test]
+    fn sizes_and_passes_insurance_checks() {
+        let (mut h, id) = harness();
+        assert!(h.rect(id).size.width >= SLIDER_MIN_W);
+        h.move_to(h.center(id));
+        h.frame();
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn disabled_ignores_input() {
+        let (mut h, id) = harness();
+        h.tree.set_enabled(id, false);
+        h.frame();
+        h.click(id);
+        assert!(h.take::<SliderValueChanged>().is_empty());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
