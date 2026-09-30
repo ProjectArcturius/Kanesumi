@@ -12,6 +12,10 @@ use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::typography::TextStyle;
 use kanesumi_core::{FontWeight, MetroTheme, Point, Rect, Size};
+use kanesumi_element::{
+    Event, EventCtx, Key, MeasureCtx, PaintCtx, PointerButton, PopupSpec, UpdateCtx, Widget,
+    WidgetId,
+};
 
 use crate::dropdown_menu::{MenuItem, MetroDropdownMenu};
 use crate::popup::{place_popup, popup_gap};
@@ -56,6 +60,10 @@ pub struct MetroBreadcrumbBar {
     pub hovered_ellipsis: bool,
     /// Ellipsis 下拉（隐藏项）。
     pub menu: MetroDropdownMenu,
+    /// 元素树下打开的溢出面板（`BreadcrumbOverflow` 节点）；旧路径不用。
+    tree_popup: Option<WidgetId>,
+    /// 元素树下最近一次按下的位置（`Event::Click` 不带坐标，用它换算命中项）。
+    press_pos: Option<Point>,
 }
 
 impl Default for MetroBreadcrumbBar {
@@ -65,6 +73,8 @@ impl Default for MetroBreadcrumbBar {
             hovered_item: None,
             hovered_ellipsis: false,
             menu: MetroDropdownMenu::new(Vec::new()),
+            tree_popup: None,
+            press_pos: None,
         }
     }
 }
@@ -282,6 +292,11 @@ impl MetroBreadcrumbBar {
         let style = Self::item_style();
         let layout = self.layout(engine, rect);
 
+        // 容器语义 = 裁到自身矩形（参 docs/COMPOSITION.md 契约 12）：折叠布局「至少保留
+        // 末项」在极窄宽度下连一项也放不下，不裁就会画到 rect 之外（2026-10-01 迁移发现）。
+        // 下拉菜单画在 rect 之外，故在它之前 pop_clip。
+        scene.push_clip(rect);
+
         let mut x = rect.origin.x;
         // Ellipsis
         if layout.ellipsis {
@@ -364,10 +379,460 @@ impl MetroBreadcrumbBar {
             }
         }
 
+        scene.pop_clip();
+
         // Ellipsis 下拉
         if self.menu.anim.is_visible() {
             self.menu.render(theme, engine, screen, scene);
         }
+    }
+}
+
+// ── 元素树接入（弹层类控件，参 docs/ELEMENT_MIGRATION.md §8）────────────────────
+//
+// 触发器（本控件）只负责「打开溢出面板」与命中面包屑项；被折叠的层级放进覆盖层上的
+// 独立节点 `BreadcrumbOverflow`（包一个 `MetroDropdownMenu` 负责面板绘制与命中），
+// 面板直接以**被折叠层级的原索引**发 `BreadcrumbClicked` 并关闭自身 —— App 只需处理
+// 一种动作，不必把菜单索引换算回层级索引。
+//
+// 「展开中」用私有字段 `tree_popup` 记；面板因任何原因关闭（选中 / 点外部 / Esc）都会
+// 收到 `Event::PopupClosed`，在那里复位，不自己猜关闭时机。
+
+/// 元素树动作：某级面包屑被激活。载荷 = 层级索引（溢出面板里的项也是原索引）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BreadcrumbClicked(pub usize);
+
+impl MetroBreadcrumbBar {
+    /// 元素树：打开被折叠层级的溢出面板（锚在 Ellipsis 下缘）。`keyboard` 为真时
+    /// 焦点进面板并预选首项。返回弹层 id（首帧前无排版引擎时返回 None）。
+    fn open_overflow(&mut self, ctx: &mut EventCtx, keyboard: bool) -> Option<WidgetId> {
+        let engine = ctx.engine().cloned()?;
+        let layout = self.layout(&engine, ctx.rect());
+        let indices: Vec<usize> = (0..layout.start).collect();
+        let labels: Vec<String> = indices.iter().map(|i| self.items[*i].clone()).collect();
+        if indices.is_empty() {
+            return None; // 无折叠项（未触发命中判定时的兜底）
+        }
+        let panel = BreadcrumbOverflow::new(indices, labels, keyboard);
+        let at = self
+            .ellipsis_rect(&engine, ctx.rect())
+            .map(|er| Point::new(er.origin.x, er.bottom()));
+        let id = ctx.open_popup(
+            panel,
+            PopupSpec {
+                at,
+                gap: popup_gap(),
+                ..PopupSpec::default()
+            },
+        );
+        ctx.focus_widget(id, keyboard);
+        Some(id)
+    }
+}
+
+impl Widget for MetroBreadcrumbBar {
+    /// 固有尺寸：不折叠时的完整宽度（转发旧 `measure`）。
+    fn measure(&mut self, ctx: &mut MeasureCtx, _available: Size) -> Size {
+        MetroBreadcrumbBar::measure(self, ctx.engine())
+    }
+
+    fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
+        let theme = *ctx.theme();
+        // 遮罩不画（覆盖层目前无全屏遮罩机制，详见本批报告）；旧 `render` 里的下拉
+        // 在树路径恒关闭（`menu.anim` 未开），不会重复绘制。
+        MetroBreadcrumbBar::render(self, &theme, ctx.engine(), ctx.rect(), ctx.surface(), scene);
+    }
+
+    fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
+        match event {
+            Event::PointerMove { pos } => {
+                if let Some(engine) = ctx.engine().cloned() {
+                    self.hover(&engine, ctx.rect(), *pos);
+                    ctx.invalidate_paint();
+                }
+            }
+            Event::PointerLeave => {
+                let had_item = self.hovered_item.take().is_some();
+                let had_ellipsis = std::mem::replace(&mut self.hovered_ellipsis, false);
+                if had_item || had_ellipsis {
+                    ctx.invalidate_paint();
+                }
+            }
+            // 记下按下位置：`Event::Click` 不带坐标，而命中哪一级必须按坐标算。
+            // 弹层打开时的「点触发器」在 `pointer_down` 就被框架轻触关闭并按吞掉处理，
+            // 届时不会投递本事件 —— 天然避免「关掉又立刻重开」。
+            Event::PointerDown {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                self.press_pos = Some(*pos);
+            }
+            Event::Click => {
+                let Some(pos) = self.press_pos.take() else {
+                    return;
+                };
+                let Some(engine) = ctx.engine().cloned() else {
+                    return;
+                };
+                match self.hit(&engine, ctx.rect(), pos) {
+                    BreadcrumbClick::Index(i) => {
+                        ctx.emit(BreadcrumbClicked(i));
+                    }
+                    BreadcrumbClick::Ellipsis => match self.tree_popup.take() {
+                        Some(p) => ctx.close_popup(p),
+                        None => self.tree_popup = self.open_overflow(ctx, false),
+                    },
+                    BreadcrumbClick::None => return,
+                }
+                ctx.invalidate_paint();
+                ctx.set_handled();
+            }
+            Event::KeyDown { key, .. } => {
+                match key {
+                    // Down / Enter / Space 打开溢出面板（键盘用户 Tab 到本控件后可直接开）。
+                    Key::Down | Key::Enter | Key::Char(' ') => match self.tree_popup.take() {
+                        Some(p) => ctx.close_popup(p),
+                        None => self.tree_popup = self.open_overflow(ctx, true),
+                    },
+                    // Tab / Esc 留给框架（焦点遍历 / 弹层关闭）。
+                    _ => return,
+                }
+                ctx.invalidate_paint();
+                ctx.set_handled();
+            }
+            Event::PopupClosed { popup } if self.tree_popup == Some(*popup) => {
+                self.tree_popup = None;
+                ctx.invalidate_paint();
+            }
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Other,
+            name: self
+                .items
+                .last()
+                .cloned()
+                .unwrap_or_else(|| "面包屑".to_string()),
+            value: Some(self.items.join(" / ")),
+            checked: None,
+        })
+    }
+}
+
+/// 溢出面板（覆盖层节点）：被折叠的层级即菜单项，选中时按原索引发动作。
+struct BreadcrumbOverflow {
+    /// 菜单项 → `MetroBreadcrumbBar::items` 的原始索引（一一对应）。
+    indices: Vec<usize>,
+    menu: MetroDropdownMenu,
+}
+
+impl BreadcrumbOverflow {
+    /// `preselect` = 键盘打开时预选首项（焦点入面板后可直接 Enter）。
+    fn new(indices: Vec<usize>, labels: Vec<String>, preselect: bool) -> Self {
+        let mut menu = MetroDropdownMenu::new(labels.into_iter().map(MenuItem::new).collect());
+        menu.anim.open();
+        if preselect {
+            menu.hovered = (!menu.items.is_empty()).then_some(0);
+        }
+        Self { indices, menu }
+    }
+
+    /// 菜单项索引 → 被折叠层级的原索引。
+    fn original_index(&self, menu_index: usize) -> Option<usize> {
+        self.indices.get(menu_index).copied()
+    }
+
+    /// Up/Down 环状移动悬停项。
+    fn step(&mut self, delta: isize) {
+        let n = self.menu.items.len();
+        if n == 0 {
+            return;
+        }
+        self.menu.hovered = Some(match self.menu.hovered {
+            Some(i) => (i as isize + delta).rem_euclid(n as isize) as usize,
+            None if delta > 0 => 0,
+            None => n - 1,
+        });
+    }
+
+    /// 选中菜单第 `menu_index` 项：按原索引发动作并关闭自身。
+    fn invoke(&mut self, ctx: &mut EventCtx, menu_index: usize) {
+        if let Some(original) = self.original_index(menu_index) {
+            ctx.emit(BreadcrumbClicked(original));
+            ctx.close_popup(ctx.id());
+        }
+    }
+}
+
+impl Widget for BreadcrumbOverflow {
+    fn measure(&mut self, ctx: &mut MeasureCtx, _available: Size) -> Size {
+        self.menu.panel_size(ctx.engine())
+    }
+
+    fn arrange(&mut self, _ctx: &mut kanesumi_element::ArrangeCtx, rect: Rect) {
+        self.menu.panel_rect = rect;
+    }
+
+    fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
+        let theme = *ctx.theme();
+        self.menu.render_panel(&theme, ctx.engine(), scene);
+        if self.menu.is_animating() {
+            ctx.request_anim_frame();
+        }
+    }
+
+    fn update(&mut self, ctx: &mut UpdateCtx, dt: f64) {
+        self.menu.update(dt);
+        ctx.invalidate_paint();
+        if self.menu.is_animating() {
+            ctx.request_anim_frame();
+        }
+    }
+
+    fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
+        match event {
+            Event::PointerMove { pos } => {
+                if let Some(engine) = ctx.engine().cloned()
+                    && self.menu.hover(&engine, ctx.surface(), *pos)
+                {
+                    ctx.invalidate_paint();
+                }
+            }
+            Event::PointerUp {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                if let Some(i) = self.menu.item_at(*pos) {
+                    self.invoke(ctx, i);
+                }
+                ctx.set_handled();
+            }
+            Event::KeyDown { key, .. } => {
+                match key {
+                    Key::Down => self.step(1),
+                    Key::Up => self.step(-1),
+                    Key::Enter | Key::Char(' ') => {
+                        if let Some(i) = self.menu.hovered {
+                            self.invoke(ctx, i);
+                        }
+                    }
+                    // Tab / Esc 留给框架（焦点遍历 / 弹层关闭）。
+                    _ => return,
+                }
+                ctx.invalidate_paint();
+                ctx.set_handled();
+            }
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    /// 面板以悬停高亮表示当前项，不要框架焦点框。
+    fn focus_visual(&self) -> bool {
+        false
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::List,
+            name: "折叠层级".to_string(),
+            value: None,
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, LayoutProps};
+
+    const ITEMS: [&str; 4] = ["首页", "文档", "项目", "Ether"];
+
+    fn harness(width: Option<f32>) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(600.0, 300.0);
+        let bar = MetroBreadcrumbBar::new(ITEMS.iter().map(|s| s.to_string()).collect());
+        let id = h.tree.insert_with(
+            h.root(),
+            bar,
+            LayoutProps {
+                width,
+                h_align: Align::Start,
+                v_align: Align::Start,
+                margin: Insets::new(20.0, 20.0, 0.0, 0.0),
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    /// 折叠后 Ellipsis 中心（窄宽夹具用）。
+    fn ellipsis_center(h: &TestHarness, id: WidgetId) -> Point {
+        let r = h.rect(id);
+        let bar = h.tree.get::<MetroBreadcrumbBar>(id).unwrap();
+        bar.ellipsis_rect(&h.engine, r)
+            .expect("折叠布局应有 Ellipsis")
+            .center()
+    }
+
+    /// 可见面包屑项中心。
+    fn level_center(h: &TestHarness, id: WidgetId, index: usize) -> Point {
+        let r = h.rect(id);
+        let bar = h.tree.get::<MetroBreadcrumbBar>(id).unwrap();
+        bar.item_rect(&h.engine, r, index).center()
+    }
+
+    #[test]
+    fn click_level_emits_breadcrumb_clicked() {
+        let (mut h, id) = harness(None);
+        h.click_at(level_center(&h, id, 0));
+        assert_eq!(
+            h.take::<BreadcrumbClicked>(),
+            vec![(id, BreadcrumbClicked(0))]
+        );
+        h.click_at(level_center(&h, id, 2));
+        assert_eq!(
+            h.take::<BreadcrumbClicked>(),
+            vec![(id, BreadcrumbClicked(2))]
+        );
+        // 末项（当前层级）仍是可点层级。
+        h.click_at(level_center(&h, id, 3));
+        assert_eq!(
+            h.take::<BreadcrumbClicked>(),
+            vec![(id, BreadcrumbClicked(3))]
+        );
+    }
+
+    #[test]
+    fn ellipsis_opens_panel_and_pick_reports_original_index() {
+        let (mut h, id) = harness(Some(120.0));
+        let start = {
+            let bar = h.tree.get::<MetroBreadcrumbBar>(id).unwrap();
+            bar.layout(&h.engine, h.rect(id)).start
+        };
+        assert!(start >= 2, "窄宽应折叠出至少两级，实际 start={start}");
+        h.click_at(ellipsis_center(&h, id));
+        let p = h.tree.popups().next().expect("点 Ellipsis 应打开溢出面板");
+        let pr = h.rect(p);
+        assert!(
+            pr.origin.y >= h.rect(id).bottom() - 0.5,
+            "面板在锚点下方 {pr:?}"
+        );
+        assert_eq!(
+            h.tree.get::<MetroBreadcrumbBar>(id).unwrap().tree_popup,
+            Some(p),
+            "触发器记下弹层"
+        );
+        // 点面板第二项：应发被折叠层级的**原索引**（= 1），不是菜单索引。
+        h.click_at(Point::new(pr.origin.x + 20.0, pr.origin.y + 32.0 + 16.0));
+        assert_eq!(
+            h.take::<BreadcrumbClicked>(),
+            vec![(p, BreadcrumbClicked(1))]
+        );
+        assert!(h.tree.popups().next().is_none(), "选中后面板关闭");
+        assert!(
+            h.tree
+                .get::<MetroBreadcrumbBar>(id)
+                .unwrap()
+                .tree_popup
+                .is_none(),
+            "PopupClosed 后复位"
+        );
+    }
+
+    #[test]
+    fn keyboard_opens_panel_focuses_and_returns() {
+        let (mut h, id) = harness(Some(120.0));
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id), "Tab 聚焦面包屑");
+        h.key(Key::Down); // 键盘打开：预选首项
+        let p = h.tree.popups().next().expect("Down 应打开溢出面板");
+        assert_eq!(h.tree.focused(), Some(p), "键盘打开焦点进面板");
+        h.key(Key::Down); // 首项 → 次项
+        h.key(Key::Enter);
+        assert_eq!(
+            h.take::<BreadcrumbClicked>(),
+            vec![(p, BreadcrumbClicked(1))]
+        );
+        assert_eq!(h.tree.focused(), Some(id), "关闭后焦点回触发器");
+        assert!(h.tree.popups().next().is_none());
+    }
+
+    #[test]
+    fn escape_and_outside_click_reset_tree_popup() {
+        // Esc
+        let (mut h, id) = harness(Some(120.0));
+        h.click_at(ellipsis_center(&h, id));
+        assert!(h.tree.popups().next().is_some());
+        h.key(Key::Escape);
+        assert!(h.tree.popups().next().is_none(), "Esc 关闭面板");
+        assert!(h.take::<BreadcrumbClicked>().is_empty());
+        assert!(
+            h.tree
+                .get::<MetroBreadcrumbBar>(id)
+                .unwrap()
+                .tree_popup
+                .is_none()
+        );
+        // 点外部
+        let (mut h, id) = harness(Some(120.0));
+        h.click_at(ellipsis_center(&h, id));
+        h.click_at(Point::new(580.0, 280.0));
+        assert!(h.tree.popups().next().is_none(), "点外部关闭面板");
+        assert!(h.take::<BreadcrumbClicked>().is_empty());
+        assert!(
+            h.tree
+                .get::<MetroBreadcrumbBar>(id)
+                .unwrap()
+                .tree_popup
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn disabled_bar_does_not_open_panel() {
+        let (mut h, id) = harness(Some(120.0));
+        h.tree.set_enabled(id, false);
+        h.click_at(ellipsis_center(&h, id));
+        assert!(h.tree.popups().next().is_none(), "禁用后点击不打开面板");
+        assert!(h.take::<BreadcrumbClicked>().is_empty());
+    }
+
+    #[test]
+    fn passes_insurance_checks_closed_and_open() {
+        let (mut h, id) = harness(Some(120.0));
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+        h.click_at(ellipsis_center(&h, id));
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+        let p = h.tree.popups().next().expect("面板应打开");
+        h.assert_paint_within(p, Insets::ZERO);
+    }
+
+    #[test]
+    fn squeezed_width_still_passes_insurance_checks() {
+        let (h, id) = harness(Some(40.0));
+        assert!(h.rect(id).size.width <= 40.0, "夹具确实压窄");
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
     }
 }
 
