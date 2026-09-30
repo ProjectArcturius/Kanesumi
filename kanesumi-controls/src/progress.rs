@@ -103,13 +103,15 @@ impl MetroProgressBar {
     /// 渲染到 `rect`。轨道为细底，指示条为强调色（错误红 / 暂停 0.6 不透明）。
     pub fn render(&self, theme: &MetroTheme, _engine: &TextEngine, rect: Rect, scene: &mut Scene) {
         let colors = &theme.colors;
-        // 高度：取 rect 高，但不低于 `min_height`（CONTROL_SPEC §4 MinHeight 4）。
-        // 参 V13：原本 `min_height.max(rect.height.min(4.0))` 恒为 4，压死了自定义高度。
-        let height = rect.size.height.max(self.min_height);
+        // 高度取 rect 实高，**不再越出 rect**：旧实现 `height = rect.h.max(min_height)`
+        // 在 rect 高不足 MinHeight(4) 时让轨道纵向越出（2026-09-30 几何盘点结论）。
+        // MinHeight 现由 `measure` 保证（布局会请求至少 4px），`render` 只负责把绘制夹在
+        // 给定矩形内（参 docs/ELEMENT_MIGRATION.md §6：旧行为越界 → 新行为裁剪）。
+        let height = rect.size.height.max(0.0);
         let bar_rect = Rect::new(
             rect.origin.x,
-            rect.origin.y + (rect.size.height - height) / 2.0,
-            rect.size.width,
+            rect.origin.y,
+            rect.size.width.max(0.0),
             height,
         );
 
@@ -273,6 +275,209 @@ impl MetroProgressRing {
                 scene.arc(center, radius, self.thickness, color, 0.0, sweep);
             }
         }
+    }
+}
+
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 button.rs）────────────────
+//
+// 展示类进度控件：不可聚焦、不发动作。Bar 的不确定态是持续动画（`update` 推进相位并续帧），
+// 确定态是稳态（滑动 / Paused / Error 三条 MetroAnim 到稳态后不再请求帧，参
+// ELEMENT_MIGRATION.md §2 `update` 行）。Ring 同理。`paint` 也按 `is_animating` 续帧，
+// 以便 App 经 `Tree::edit` 改动值 / 状态后动画能被踢起来（`EditCtx` 无请求帧能力）。
+
+impl MetroProgressBar {
+    /// 是否仍在动画：不确定态恒动；确定态看滑动 / Paused / Error 过渡是否到稳态。
+    pub fn is_animating(&self) -> bool {
+        self.mode == ProgressMode::Indeterminate
+            || !self.slide.is_steady()
+            || !self.paused_fade.is_steady()
+            || !self.error_blend.is_steady()
+    }
+}
+
+impl kanesumi_element::Widget for MetroProgressBar {
+    /// 无默认宽（CONTROL_SPEC §4「由宿主定」）：宽度取可用约束，高取 `min_height`。
+    fn measure(
+        &mut self,
+        _ctx: &mut kanesumi_element::MeasureCtx,
+        available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        let width = if available.width.is_finite() {
+            available.width
+        } else {
+            0.0
+        };
+        kanesumi_core::Size::new(width, self.min_height)
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+        if self.is_animating() {
+            ctx.request_anim_frame();
+        }
+    }
+
+    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, dt: f64) {
+        MetroProgressBar::update(self, dt);
+        if self.is_animating() {
+            ctx.invalidate_paint();
+            ctx.request_anim_frame();
+        }
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Other,
+            name: String::new(),
+            value: Some(format!("{:.0}%", self.display_value() * 100.0)),
+            checked: None,
+        })
+    }
+}
+
+impl kanesumi_element::Widget for MetroProgressRing {
+    /// 默认 32×32、Min 16（CONTROL_SPEC §5）。
+    fn measure(
+        &mut self,
+        _ctx: &mut kanesumi_element::MeasureCtx,
+        _available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        let s = self.size.max(16.0);
+        kanesumi_core::Size::new(s, s)
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        self.render(ctx.theme(), ctx.rect(), scene);
+        if self.indeterminate && self.active {
+            ctx.request_anim_frame();
+        }
+    }
+
+    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, dt: f64) {
+        MetroProgressRing::update(self, dt);
+        if self.indeterminate && self.active {
+            ctx.invalidate_paint();
+            ctx.request_anim_frame();
+        }
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Other,
+            name: String::new(),
+            value: Some(format!("{:.0}%", self.value * 100.0)),
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, LayoutProps, WidgetId};
+
+    fn node(widget: impl kanesumi_element::Widget, props: LayoutProps) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(300.0, 100.0);
+        let id = h.tree.insert_with(h.root(), widget, props);
+        h.frame();
+        (h, id)
+    }
+
+    fn start() -> LayoutProps {
+        LayoutProps {
+            h_align: Align::Start,
+            v_align: Align::Start,
+            ..LayoutProps::default()
+        }
+    }
+
+    fn assert_insurance(h: &TestHarness, id: WidgetId) {
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn determinate_bar_passes_insurance_checks() {
+        let (h, id) = node(MetroProgressBar::new(), start());
+        assert!(h.rect(id).size.height >= 4.0);
+        assert_insurance(&h, id);
+    }
+
+    /// 高不足（2px）时旧 render 纵向越界；按 §6 夹进 rect 后三断言仍成立。
+    #[test]
+    fn height_squeezed_bar_is_clamped_and_passes_insurance_checks() {
+        let (h, id) = node(
+            MetroProgressBar::new(),
+            LayoutProps {
+                height: Some(2.0),
+                ..start()
+            },
+        );
+        assert_eq!(h.rect(id).size.height, 2.0);
+        assert_insurance(&h, id);
+    }
+
+    #[test]
+    fn width_squeezed_bar_still_within() {
+        let (h, id) = node(
+            MetroProgressBar::new(),
+            LayoutProps {
+                width: Some(40.0),
+                ..start()
+            },
+        );
+        assert_insurance(&h, id);
+    }
+
+    #[test]
+    fn determinate_settles_and_stops_requesting_frames() {
+        let (mut h, id) = node(MetroProgressBar::new(), start());
+        h.tree
+            .edit(id, |bar: &mut MetroProgressBar, _| bar.set_value(0.5));
+        h.settle();
+        assert_eq!(
+            h.tree.get::<MetroProgressBar>(id).unwrap().display_value(),
+            0.5
+        );
+        assert!(!h.last.animating, "确定态到稳态后不再续帧");
+    }
+
+    #[test]
+    fn indeterminate_keeps_animating() {
+        let (mut h, _id) = node(MetroProgressBar::indeterminate(), start());
+        h.frame();
+        assert!(h.last.animating, "不确定态应持续请求帧");
+    }
+
+    #[test]
+    fn ring_passes_insurance_checks() {
+        let (h, id) = node(MetroProgressRing::new(), start());
+        assert_insurance(&h, id);
+    }
+
+    /// 压窄用例：环形被强制 16px 宽（短边取齐）后三断言仍成立。
+    #[test]
+    fn squeezed_ring_still_within() {
+        let (h, id) = node(
+            MetroProgressRing::new(),
+            LayoutProps {
+                width: Some(16.0),
+                ..start()
+            },
+        );
+        assert_insurance(&h, id);
+    }
+
+    #[test]
+    fn ring_determinate_still_and_indeterminate_animates() {
+        let (mut h, id) = node(MetroProgressRing::new(), start());
+        assert!(!h.last.animating, "确定态环形静止");
+        h.tree
+            .edit(id, |r: &mut MetroProgressRing, _| r.indeterminate = true);
+        h.frame();
+        assert!(h.last.animating, "不确定态环形持续请求帧");
     }
 }
 
