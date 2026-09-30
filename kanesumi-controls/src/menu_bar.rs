@@ -61,6 +61,14 @@ pub struct MetroMenuBar {
     open_index: Option<usize>,
     /// 每 header 对应的 flyout（一一映射，`items.len()`）。渲染 / 命中 / 动画都走它。
     flyouts: Vec<MetroDropdownMenu>,
+    /// 元素树下当前展开的菜单弹层（`MenuFlyout` 节点）；旧路径不用。
+    tree_popup: Option<kanesumi_element::WidgetId>,
+    /// 元素树下展开弹层对应的 header 索引（用于 Selected 外观）。
+    tree_open: Option<usize>,
+    /// 元素树键盘游标（Left/Right 移动 / Enter 打开）。
+    tree_cursor: Option<usize>,
+    /// 元素树按下的 header 索引（PointerDown 记录，PointerUp 复核）。
+    tree_press: Option<usize>,
 }
 
 impl MetroMenuBar {
@@ -76,6 +84,10 @@ impl MetroMenuBar {
             pressed_header: None,
             open_index: None,
             flyouts,
+            tree_popup: None,
+            tree_open: None,
+            tree_cursor: None,
+            tree_press: None,
         }
     }
 
@@ -348,7 +360,11 @@ impl MetroMenuBar {
             // 背景高亮：Selected（flyout 开）≡ Pressed 亮度；PointerOver 更淡
             // （参 CONTROL_SPEC §5 规律 5：悬停用中性）。两者都是**中性浅叠**，
             // 故直接取令牌，不再在此写 alpha 数字。
-            let bg = if self.open_index == Some(i) || self.pressed_header == Some(i) {
+            let bg = if self.open_index == Some(i)
+                || self.pressed_header == Some(i)
+                || self.tree_open == Some(i)
+                || self.tree_press == Some(i)
+            {
                 Some(theme.indication.press_subtle_tint)
             } else if self.hovered_header == Some(i) {
                 Some(theme.indication.subtle_tint)
@@ -388,6 +404,305 @@ impl MetroMenuBar {
         {
             flyout.render_panel(theme, engine, scene);
         }
+    }
+}
+
+// ── 元素树接入（弹层类，参 docs/ELEMENT_MIGRATION.md §8）──────────────────────────
+//
+// 旧路径里每 header 各持一个 `MetroDropdownMenu` 并画在自己的 Scene 里（需宿主传 `screen`）。
+// 元素树里菜单是覆盖层上的独立节点 `MenuFlyout`：本控件只负责「点哪个标题在它下方开哪个菜单」、
+// 「菜单已开时 hover 到别的标题就切换（UWP hover-swap）」、「Left/Right 在标题间移动」。
+// 面板锚点用标题矩形左下角（`MenuFlyout::open_at`），不是整个控件下缘。
+// 选中项沿用 `MenuFlyout` 的 `MenuInvoked`，`owner` = 本 MenuBar id。
+impl kanesumi_element::Widget for MetroMenuBar {
+    /// 固有尺寸：全部标题宽之和 × 行高；宽度可随可用宽收缩（超出部分由 `render` 的裁剪收束）。
+    fn measure(
+        &mut self,
+        ctx: &mut kanesumi_element::MeasureCtx,
+        available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        let w = self.total_width(ctx.engine());
+        let w = if available.width.is_finite() {
+            w.min(available.width)
+        } else {
+            w
+        };
+        kanesumi_core::Size::new(w.max(0.0), self.header_height)
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        let theme = *ctx.theme();
+        self.render(&theme, ctx.engine(), ctx.rect(), ctx.surface(), scene);
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, Key, PointerButton};
+        match event {
+            Event::PointerMove { pos } => {
+                let Some(engine) = ctx.engine().cloned() else {
+                    return;
+                };
+                let hit = self.header_at(&engine, ctx.rect(), *pos);
+                let changed = hit != self.hovered_header;
+                self.hovered_header = hit;
+                // UWP hover-swap：菜单已开且指针移到另一个标题 → 关当前、开那个。
+                if let Some(idx) = hit
+                    && self.tree_popup.is_some()
+                    && self.tree_open != Some(idx)
+                {
+                    self.open_tree_menu(ctx, &engine, idx, false);
+                    ctx.invalidate_paint();
+                } else if changed {
+                    ctx.invalidate_paint();
+                }
+            }
+            Event::PointerLeave => {
+                self.hovered_header = None;
+                ctx.invalidate_paint();
+            }
+            Event::PointerDown {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                let Some(engine) = ctx.engine().cloned() else {
+                    return;
+                };
+                if let Some(idx) = self.header_at(&engine, ctx.rect(), *pos) {
+                    self.tree_press = Some(idx);
+                    ctx.invalidate_paint();
+                    ctx.set_handled();
+                }
+            }
+            Event::PointerUp {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                let pressed = self.tree_press.take();
+                let Some(engine) = ctx.engine().cloned() else {
+                    return;
+                };
+                if let Some(idx) = pressed
+                    && self.header_at(&engine, ctx.rect(), *pos) == Some(idx)
+                {
+                    if self.tree_popup.is_some() && self.tree_open == Some(idx) {
+                        self.close_tree_menu(ctx);
+                    } else {
+                        self.open_tree_menu(ctx, &engine, idx, false);
+                    }
+                }
+                ctx.invalidate_paint();
+                ctx.set_handled();
+            }
+            Event::KeyDown { key: Key::Right, .. } => {
+                self.move_tree_cursor(ctx, 1);
+                ctx.set_handled();
+            }
+            Event::KeyDown { key: Key::Left, .. } => {
+                self.move_tree_cursor(ctx, -1);
+                ctx.set_handled();
+            }
+            Event::KeyDown {
+                key: Key::Enter | Key::Down,
+                ..
+            } => {
+                if let Some(idx) = self.tree_cursor
+                    && let Some(engine) = ctx.engine().cloned()
+                {
+                    self.open_tree_menu(ctx, &engine, idx, true);
+                    ctx.set_handled();
+                }
+            }
+            Event::FocusIn { .. } if self.tree_cursor.is_none() && !self.items.is_empty() => {
+                // 键盘聚焦时游标落首项并高亮（MenuBar 无逐项焦点视觉，以标题高亮示意）。
+                self.tree_cursor = Some(0);
+                self.hovered_header = Some(0);
+                ctx.invalidate_paint();
+            }
+            Event::PopupClosed { popup } if self.tree_popup == Some(*popup) => {
+                self.tree_popup = None;
+                self.tree_open = None;
+                ctx.invalidate_paint();
+            }
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Group,
+            name: String::from("菜单栏"),
+            value: None,
+            checked: None,
+        })
+    }
+}
+
+impl MetroMenuBar {
+    /// 元素树：关闭当前弹层，并以第 `idx` 个标题矩形左下角为锚点打开其菜单。
+    /// `keyboard` 为真时预选首项并把焦点移入弹层。
+    fn open_tree_menu(
+        &mut self,
+        ctx: &mut kanesumi_element::EventCtx,
+        engine: &TextEngine,
+        idx: usize,
+        keyboard: bool,
+    ) {
+        if idx >= self.items.len() {
+            return;
+        }
+        if let Some(p) = self.tree_popup.take() {
+            ctx.close_popup(p);
+        }
+        self.tree_open = Some(idx);
+        let items = self.items[idx].items.clone();
+        let at = self
+            .header_rects(engine, ctx.rect())
+            .get(idx)
+            .map(|r| Point::new(r.origin.x, r.bottom()));
+        let id = match at {
+            Some(pt) => crate::menu_flyout::MenuFlyout::open_at(ctx, items, pt, keyboard),
+            None => crate::menu_flyout::MenuFlyout::open(ctx, items, keyboard),
+        };
+        self.tree_popup = Some(id);
+    }
+
+    fn close_tree_menu(&mut self, ctx: &mut kanesumi_element::EventCtx) {
+        if let Some(p) = self.tree_popup.take() {
+            ctx.close_popup(p);
+        }
+        self.tree_open = None;
+    }
+
+    /// 元素树：Left/Right 在标题间移动（循环），更新键盘游标与高亮。
+    fn move_tree_cursor(&mut self, ctx: &mut kanesumi_element::EventCtx, delta: isize) {
+        if self.items.is_empty() {
+            return;
+        }
+        let n = self.items.len() as isize;
+        let base = match self.tree_cursor {
+            Some(i) => i as isize,
+            None if delta > 0 => -1,
+            None => 0,
+        };
+        let next = (base + delta).rem_euclid(n) as usize;
+        self.tree_cursor = Some(next);
+        self.hovered_header = Some(next);
+        ctx.invalidate_paint();
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use crate::menu_flyout::MenuInvoked;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, Key, LayoutProps, WidgetId};
+
+    fn harness() -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(600.0, 400.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroMenuBar::new(vec![
+                MenuBarItem::new(
+                    "文件",
+                    vec![MenuItem::new("新建"), MenuItem::new("打开"), MenuItem::new("保存")],
+                ),
+                MenuBarItem::new("编辑", vec![MenuItem::new("撤销"), MenuItem::new("重做")]),
+                MenuBarItem::new("视图", vec![MenuItem::new("全屏"), MenuItem::new("放大")]),
+            ]),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    fn header_center(h: &TestHarness, id: WidgetId, i: usize) -> Point {
+        let bar = h.tree.get::<MetroMenuBar>(id).unwrap();
+        bar.header_rects(&h.engine, h.rect(id))[i].center()
+    }
+
+    fn only_popup(h: &TestHarness) -> WidgetId {
+        let mut it = h.tree.popups();
+        let p = it.next().expect("菜单应已打开");
+        assert!(it.next().is_none(), "同一时刻只应有一个菜单弹层");
+        p
+    }
+
+    #[test]
+    fn click_header_opens_below_title_and_item_reports_owner() {
+        let (mut h, id) = harness();
+        h.click_at(header_center(&h, id, 0));
+        let p = only_popup(&h);
+        assert_eq!(h.tree.get::<MetroMenuBar>(id).unwrap().tree_open, Some(0));
+        assert!(
+            h.rect(p).origin.y >= h.rect(id).bottom(),
+            "菜单落在标题栏下方"
+        );
+        let pr = h.rect(p);
+        h.click_at(Point::new(pr.origin.x + 20.0, pr.origin.y + 16.0));
+        let acts = h.take::<MenuInvoked>();
+        assert_eq!(acts.len(), 1);
+        assert_eq!(acts[0].1.owner, id);
+        assert_eq!(acts[0].1.label, "新建");
+        let bar = h.tree.get::<MetroMenuBar>(id).unwrap();
+        assert!(bar.tree_popup.is_none() && bar.tree_open.is_none(), "选中后复位");
+    }
+
+    #[test]
+    fn hover_swaps_menu_to_another_header() {
+        let (mut h, id) = harness();
+        h.click_at(header_center(&h, id, 0));
+        let old = only_popup(&h);
+        h.move_to(header_center(&h, id, 1));
+        h.frame();
+        let new = only_popup(&h);
+        assert_ne!(old, new, "hover 切换应换一个弹层");
+        assert_eq!(h.tree.get::<MetroMenuBar>(id).unwrap().tree_open, Some(1));
+    }
+
+    #[test]
+    fn keyboard_moves_cursor_and_opens_with_focus_inside() {
+        let (mut h, id) = harness();
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+        h.key(Key::Right); // 游标 0 → 1
+        h.key(Key::Enter);
+        let p = only_popup(&h);
+        assert_eq!(h.tree.focused(), Some(p), "键盘打开焦点入菜单");
+        assert_eq!(h.tree.get::<MetroMenuBar>(id).unwrap().tree_open, Some(1));
+        h.key(Key::Escape);
+        assert_eq!(h.tree.focused(), Some(id), "Esc 关闭后焦点回菜单栏");
+        assert!(h.tree.get::<MetroMenuBar>(id).unwrap().tree_popup.is_none());
+    }
+
+    #[test]
+    fn outside_click_dismisses_and_resets() {
+        let (mut h, id) = harness();
+        h.click_at(header_center(&h, id, 0));
+        assert!(h.tree.popups().next().is_some());
+        h.click_at(Point::new(580.0, 390.0));
+        assert!(h.tree.popups().next().is_none());
+        let bar = h.tree.get::<MetroMenuBar>(id).unwrap();
+        assert!(bar.tree_popup.is_none() && bar.tree_open.is_none(), "点外部后复位");
+    }
+
+    #[test]
+    fn passes_insurance_checks_while_open() {
+        let (mut h, id) = harness();
+        h.click_at(header_center(&h, id, 0));
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
     }
 }
 
