@@ -29,6 +29,7 @@ pub mod info_badge;
 pub mod info_bar;
 pub mod list;
 pub mod menu_bar;
+pub mod menu_flyout;
 pub mod metro_tile;
 pub mod navigation_view;
 pub mod number_box;
@@ -89,6 +90,7 @@ pub use info_badge::{InfoBadgeKind, MetroInfoBadge};
 pub use info_bar::{InfoBarClosed, InfoBarClick, InfoBarSeverity, MetroInfoBar};
 pub use list::MetroList;
 pub use menu_bar::{MenuBarItem, MetroMenuBar};
+pub use menu_flyout::{MenuFlyout, MenuInvoked};
 pub use metro_tile::{MetroTile, TileClicked, TileLive, TileSize};
 pub use navigation_view::{
     MetroNavigationView, NavigationAction, NavigationPaneMode, NavigationViewItem,
