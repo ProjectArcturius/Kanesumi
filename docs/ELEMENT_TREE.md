@@ -247,6 +247,24 @@ pub trait TreeApp {
 | **E5** 应用 | Gallery 全量 → Settings 窗口 → TopBar → Librarian → Launcher（egui 形态直接重写） | 工人（调度者审阅），每个应用一份迁移任务书 | 手写 `Rect::new` 降到只剩协议/硬件几何 |
 | **E6** 无障碍 | AccessKit 接入 | 调度者 | Orca 能读出 Settings |
 
+### 进度（2026-09-30 收工时）
+
+| 期 | 状态 | 说明 |
+|---|---|---|
+| E1 | ✅ | `kanesumi-element`；21 项契约测试 |
+| E2 | ✅ | Button / CheckBox / TextBox 参照；`TreeHost`；`tree_demo` 在 Arch Plasma 真机截图核对 |
+| E3 | 🔵 24/47 | 已迁：button check_box text_box · icon_button switch slider radio_buttons rating_control · text surface info_badge progress(Bar+Ring) person_picture info_bar animated_icon · password_box number_box metro_tile pips_pager pager_control title_bar · tab_row swipe_control color_picker。操作规范 `docs/ELEMENT_MIGRATION.md` |
+| E4 | 🔵 | ✅ 定时器、`paint_after`、滚动钩子 / `bring_into_view`、隐藏动画暂停、`MetroScrollView` 滚动容器。⬜ 弹层类控件（下方）、`ItemsRepeater` 虚拟化、覆盖层映射 `floating_layers` |
+
+**E3 余下（需 E4 能力，调度者先定模板再派工）**：
+- 弹层类（走覆盖层 `open_popup`）：dropdown_menu、selector_flyout、drop_down_button、split_button、menu_bar、context_menu、command_bar_flyout、teaching_tip、auto_suggest_box、breadcrumb_bar、dialog；
+- 滚动 / 虚拟化类：list、tree_view、tab_view、navigation_view；
+- 特殊：expander（展开改变高度 —— 需裁定「布局动画」语义）、candidate_window（IME 引擎宿主专用表面）、
+  two_pane_view / parallax_view / repeater（布局容器，非控件）。
+
+**迁移中顺带修复的旧 bug**（均有回归测试）：光标从不闪烁（render 每帧重置闪烁相位）、密码框未聚焦时显示明文、
+色板自然尺寸下预览与 Hex 行越界、IME 空提交误报 TextChanged、librarian 自 39b8574 起无法编译。
+
 旧 API 在 E5 结束前保持可用（`LayoutLeaf` / `Decl` / `FocusRing` / 控件的旧 `render(theme, engine, rect, scene)`），
 E5 结束后统一删除并记入 `CANON_VS_TEMPORARY`。
 
