@@ -17,6 +17,15 @@ pub const COLOR_THUMB: f32 = 10.0;
 pub const COLOR_SLIDER_H: f32 = 24.0;
 /// 预览块高（Spectrum 隐藏时 44）。
 pub const COLOR_PREVIEW_H: f32 = 44.0;
+/// Hex 文本行高（≥ 正文行高 22）。
+pub const COLOR_HEX_ROW_H: f32 = 24.0;
+/// Spectrum 以下全部内容的高度：间距 8 + 4 条滑轨（24 + 8）+ 预览块（44 − 4）+ 间距 6 + Hex 行。
+///
+/// 2026-09-30 更正：旧实现三处各算一套 —— `measure` 取 372、`spectrum_rect` 只扣 156、
+/// `render` 实际需要 ≈206 —— 自然尺寸下预览底边越出约 20px、Hex 行越出约 42px
+/// （E3 批 D 迁移时发现，元素树的容器裁剪会把它们直接裁掉）。现统一以本常量推导。
+pub const COLOR_BELOW_SPECTRUM_H: f32 =
+    8.0 + 4.0 * (COLOR_SLIDER_H + 8.0) + (COLOR_PREVIEW_H - 4.0) + 6.0 + COLOR_HEX_ROW_H;
 /// 轨道圆角（ColorPickerSliderCornerRadius = 6，Kanesumi 取 Slight=2 适配直角铁律）。
 const TRACK_CORNER: CornerRadius = CornerRadius::Slight;
 
@@ -105,13 +114,9 @@ impl MetroColorPicker {
     /// 固有尺寸（垂直朝向 Min 312 / Max 392）。
     pub fn measure(&self) -> kanesumi_core::Size {
         let w = 312.0;
-        let content = 200.0 + ALL_CHANNELS.len() as f32 * (COLOR_SLIDER_H + 8.0) + COLOR_PREVIEW_H;
-        let h = if self.show_spectrum {
-            312.0_f32.max(content)
-        } else {
-            ALL_CHANNELS.len() as f32 * (COLOR_SLIDER_H + 8.0) + COLOR_PREVIEW_H + 16.0
-        };
-        kanesumi_core::Size::new(w, h)
+        // Spectrum 自然边长 200（宽 312 时由高度约束决定边长，见 `spectrum_rect`）。
+        let spectrum = if self.show_spectrum { 200.0 } else { 0.0 };
+        kanesumi_core::Size::new(w, spectrum + COLOR_BELOW_SPECTRUM_H)
     }
 
     /// Spectrum rect（顶部）。
@@ -122,7 +127,8 @@ impl MetroColorPicker {
         let side = rect
             .size
             .width
-            .min(rect.size.height - COLOR_SLIDER_H * 4.0 - COLOR_PREVIEW_H - 16.0);
+            .min(rect.size.height - COLOR_BELOW_SPECTRUM_H)
+            .max(0.0);
         Some(Rect::new(rect.origin.x, rect.origin.y, side, side))
     }
 
@@ -347,7 +353,7 @@ impl MetroColorPicker {
                 pr.origin.x,
                 pr.origin.y + COLOR_PREVIEW_H - 4.0 + 6.0,
                 pr.size.width,
-                style.line_height,
+                COLOR_HEX_ROW_H,
             ),
             colors.on_surface_variant,
             style,
@@ -486,6 +492,28 @@ mod tree_tests {
     /// 满值拇指越出的许可（§6）。
     fn overflow() -> Insets {
         Insets::new(0.0, 0.0, COLOR_THUMB / 2.0, 0.0)
+    }
+
+    #[test]
+    fn natural_size_contains_every_row_without_clipping() {
+        use kanesumi_canvas::SceneCommand;
+        for show_spectrum in [true, false] {
+            let mut cp = MetroColorPicker::new();
+            cp.show_spectrum = show_spectrum;
+            let size = cp.measure();
+            let rect = Rect::new(0.0, 0.0, size.width, size.height);
+            let mut scene = Scene::default();
+            cp.render(&MetroTheme::ether_dark(), &kanesumi_element::testing::test_engine(), rect, &mut scene);
+            for cmd in &scene.commands {
+                if let SceneCommand::Text { rect: r, .. } | SceneCommand::FillRect { rect: r, .. } = cmd {
+                    assert!(
+                        r.bottom() <= rect.bottom() + 0.5,
+                        "自然尺寸下 {cmd:?} 越出底边 {}",
+                        rect.bottom()
+                    );
+                }
+            }
+        }
     }
 
     #[test]
