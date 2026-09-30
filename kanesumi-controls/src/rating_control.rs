@@ -189,6 +189,187 @@ fn star_text_rect(cell: &Rect, style: &TextStyle) -> Rect {
     )
 }
 
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 button.rs）──────────────────
+//
+// 旧 API（`measure` / `hover` / `click` / `render`）原样保留给未迁移的 App。
+// `PointerMove` 调 `hover` 预览，`PointerUp` 调 `click` 提交；`PointerLeave` 清悬停
+// （旧 API 无专门方法，直接清 `hover_value`）。方向键 Left/Right 以整星步进。
+// 命中与焦点交给框架。
+
+/// 元素树动作：评分值被用户改变（点击 / 方向键）。携带新值。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RatingValueChanged(pub f64);
+
+impl MetroRatingControl {
+    /// 方向键步进：从当前值（四舍五入）±1 星，夹紧 [0, max_rating]。只读时不变。
+    fn step_by(&mut self, delta: f64) -> Option<f64> {
+        if self.is_read_only {
+            return None;
+        }
+        let old = self.value;
+        self.value = (self.value.round() + delta).clamp(0.0, self.max_rating as f64);
+        if (self.value - old).abs() < 1e-9 {
+            None
+        } else {
+            Some(self.value)
+        }
+    }
+}
+
+impl kanesumi_element::Widget for MetroRatingControl {
+    fn measure(
+        &mut self,
+        _ctx: &mut kanesumi_element::MeasureCtx,
+        _available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        MetroRatingControl::measure(self)
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, Key, PointerButton};
+        match event {
+            Event::PointerMove { pos } => {
+                self.hover(ctx.rect(), *pos);
+                ctx.invalidate_paint();
+            }
+            Event::PointerLeave => {
+                self.hover_value = None;
+                ctx.invalidate_paint();
+            }
+            Event::PointerUp {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                if let Some(v) = self.click(ctx.rect(), *pos) {
+                    ctx.emit(RatingValueChanged(v));
+                }
+                ctx.invalidate_paint();
+            }
+            Event::KeyDown { key, .. } => {
+                let delta = match key {
+                    Key::Left => -1.0,
+                    Key::Right => 1.0,
+                    _ => return,
+                };
+                if let Some(v) = self.step_by(delta) {
+                    ctx.emit(RatingValueChanged(v));
+                    ctx.invalidate_paint();
+                }
+                ctx.set_handled();
+            }
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        !self.is_read_only
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Other,
+            name: String::new(),
+            value: Some(format!("{}", self.value)),
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, Key, LayoutProps, WidgetId};
+
+    fn harness() -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(320.0, 200.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroRatingControl::new(),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    fn star_center(h: &TestHarness, id: WidgetId, k: usize) -> Point {
+        h.tree
+            .get::<MetroRatingControl>(id)
+            .unwrap()
+            .star_rect(h.rect(id), k)
+            .center()
+    }
+
+    #[test]
+    fn click_sets_value_and_reports() {
+        let (mut h, id) = harness();
+        h.click_at(star_center(&h, id, 3));
+        assert_eq!(
+            h.take::<RatingValueChanged>(),
+            vec![(id, RatingValueChanged(3.0))]
+        );
+        assert_eq!(h.tree.get::<MetroRatingControl>(id).unwrap().value, 3.0);
+    }
+
+    #[test]
+    fn hover_previews_and_leave_clears() {
+        let (mut h, id) = harness();
+        h.move_to(star_center(&h, id, 4));
+        h.frame();
+        assert_eq!(
+            h.tree.get::<MetroRatingControl>(id).unwrap().hover_value,
+            Some(4.0)
+        );
+        h.tree.pointer_leave();
+        h.frame();
+        assert_eq!(
+            h.tree.get::<MetroRatingControl>(id).unwrap().hover_value,
+            None
+        );
+    }
+
+    #[test]
+    fn arrow_keys_step_stars_and_tab_focuses() {
+        let (mut h, id) = harness();
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+        h.key(Key::Right);
+        assert_eq!(h.tree.get::<MetroRatingControl>(id).unwrap().value, 1.0);
+        h.key(Key::Right);
+        h.key(Key::Left);
+        assert_eq!(h.tree.get::<MetroRatingControl>(id).unwrap().value, 1.0);
+        assert_eq!(h.take::<RatingValueChanged>().len(), 3);
+    }
+
+    #[test]
+    fn sizes_and_passes_insurance_checks() {
+        let (h, id) = harness();
+        assert!(h.rect(id).size.width > 0.0 && h.rect(id).size.height > 0.0);
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn disabled_ignores_input() {
+        let (mut h, id) = harness();
+        h.tree.set_enabled(id, false);
+        h.frame();
+        h.click_at(star_center(&h, id, 2));
+        assert!(h.take::<RatingValueChanged>().is_empty());
+        assert_eq!(h.tree.get::<MetroRatingControl>(id).unwrap().value, 0.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
