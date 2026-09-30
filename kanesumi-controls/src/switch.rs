@@ -400,6 +400,217 @@ impl MetroSwitch {
     }
 }
 
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 button.rs）──────────────────
+//
+// 旧 API（`press` / `drag_to` / `release` / `update` / `render`）原样保留给未迁移的
+// App；`Widget` 实现把指针按下 / 移动 / 释放与 Space 键翻译成拖动或点动，命中与
+// 焦点交给框架。注意：旧 `hit_test` 需要 `theme` 而 `Widget::hit_test` 拿不到，故
+// 保留默认整矩形命中；`press` 内部仍会用旧 `hit_test` 复核轨道，落在 Header / 状态
+// 文本上不会误切换（详见本批报告）。
+
+/// 元素树动作：开关被用户切换（点击 / 拖动 / Space）。携带切换后的新状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SwitchToggled(pub bool);
+
+impl kanesumi_element::Widget for MetroSwitch {
+    /// 固有尺寸（CONTROL_SPEC §3）：宽 = max(MinWidth 154, 轨道 40 + 12 gap + 状态文本宽)；
+    /// 高 = Header 行（可选）+ max(轨道 20, 行高)。状态文本取 On/Off 较宽者，避免切换跳动。
+    fn measure(
+        &mut self,
+        ctx: &mut kanesumi_element::MeasureCtx,
+        _available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        let style = ctx.theme().typography.body;
+        let (tw, th) = self.shape.track_size();
+        let state_w = ctx
+            .engine()
+            .measure(&self.on_text, style.size)
+            .max(ctx.engine().measure(&self.off_text, style.size));
+        let header_h = if self.header.is_empty() {
+            0.0
+        } else {
+            style.line_height + 8.0
+        };
+        kanesumi_core::Size::new(
+            (tw + 12.0 + state_w).max(154.0),
+            header_h + th.max(style.line_height),
+        )
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        let saved = self.state;
+        self.state = crate::state::control_state(ctx.state());
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+        self.state = saved;
+    }
+
+    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, dt: f64) {
+        MetroSwitch::update(self, dt);
+        if self.is_animating() {
+            ctx.invalidate_paint();
+            ctx.request_anim_frame();
+        }
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, Key, PointerButton};
+        match event {
+            Event::PointerDown {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                let rect = ctx.rect();
+                let theme = *ctx.theme();
+                self.press(rect, &theme, *pos);
+                ctx.set_handled();
+            }
+            // 框架在按下后自动捕获指针，移出控件也会收到 Move。
+            Event::PointerMove { pos } if self.drag.is_some() => {
+                self.drag_to(*pos);
+                ctx.invalidate_paint();
+            }
+            Event::PointerUp {
+                button: PointerButton::Left,
+                ..
+            } => {
+                if self.release() {
+                    ctx.emit(SwitchToggled(self.checked));
+                }
+                ctx.invalidate_paint();
+                if self.is_animating() {
+                    ctx.request_anim_frame();
+                }
+                ctx.set_handled();
+            }
+            Event::KeyDown {
+                key: Key::Char(' '),
+                ..
+            } => {
+                self.set_checked(!self.checked);
+                ctx.emit(SwitchToggled(self.checked));
+                ctx.invalidate_paint();
+                ctx.request_anim_frame();
+                ctx.set_handled();
+            }
+            // Tab / Escape 留给框架（焦点遍历 / 弹层关闭）。
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Switch,
+            name: self.header.clone(),
+            value: Some(if self.checked {
+                self.on_text.clone()
+            } else {
+                self.off_text.clone()
+            }),
+            checked: Some(self.checked),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, Key, LayoutProps, PointerButton, WidgetId};
+
+    fn harness() -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(320.0, 200.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroSwitch::with_header("Wi-Fi"),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    fn track_center(h: &TestHarness, id: WidgetId) -> Point {
+        let theme = MetroTheme::ether_dark();
+        let sw = h.tree.get::<MetroSwitch>(id).unwrap();
+        sw.track_rect(h.rect(id), &theme).center()
+    }
+
+    #[test]
+    fn click_toggles_and_reports_new_state() {
+        let (mut h, id) = harness();
+        let c = track_center(&h, id);
+        h.press_at(c, PointerButton::Left);
+        h.release_at(c, PointerButton::Left);
+        h.frame();
+        assert_eq!(h.take::<SwitchToggled>(), vec![(id, SwitchToggled(true))]);
+        assert!(h.tree.get::<MetroSwitch>(id).unwrap().checked);
+        h.settle();
+    }
+
+    #[test]
+    fn drag_past_midpoint_snaps_on() {
+        let (mut h, id) = harness();
+        let theme = MetroTheme::ether_dark();
+        let track = h
+            .tree
+            .get::<MetroSwitch>(id)
+            .unwrap()
+            .track_rect(h.rect(id), &theme);
+        let start = Point::new(track.origin.x + 3.0, track.center().y);
+        let end = Point::new(track.right() - 3.0, track.center().y);
+        h.press_at(start, PointerButton::Left);
+        h.move_to(end);
+        h.release_at(end, PointerButton::Left);
+        h.frame();
+        assert_eq!(
+            h.take::<SwitchToggled>(),
+            vec![(id, SwitchToggled(true))],
+            "拖到右侧过半 → on"
+        );
+        h.settle();
+    }
+
+    #[test]
+    fn space_toggles_and_tab_focuses() {
+        let (mut h, id) = harness();
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+        h.key(Key::Char(' '));
+        assert_eq!(h.take::<SwitchToggled>(), vec![(id, SwitchToggled(true))]);
+        h.settle();
+    }
+
+    #[test]
+    fn sizes_and_passes_insurance_checks() {
+        let (h, id) = harness();
+        assert!(h.rect(id).size.width >= 154.0);
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn disabled_ignores_input() {
+        let (mut h, id) = harness();
+        h.tree.set_enabled(id, false);
+        h.frame();
+        let c = track_center(&h, id);
+        h.press_at(c, PointerButton::Left);
+        h.release_at(c, PointerButton::Left);
+        h.frame();
+        assert!(h.take::<SwitchToggled>().is_empty());
+        assert!(!h.tree.get::<MetroSwitch>(id).unwrap().checked);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
