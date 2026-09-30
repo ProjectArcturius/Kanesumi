@@ -314,6 +314,104 @@ impl MetroPersonPicture {
         }
     }
 }
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 button.rs）────────────────
+//
+// 纯展示圆形头像：不可聚焦、不发动作。`measure` 取规格默认 96×96（CONTROL_SPEC §16），
+// `paint` 转发旧 `render`。徽标按 Margin `0,-4,-4,0` 画在头像右上**外侧** 4px，故声明
+// `paint_overflow` 为 top/right 各 4（与 `person_picture.rs` 既有 `badge_rect` 的
+// `right()+4` / `origin.y-4` 方向核对一致）。
+
+impl kanesumi_element::Widget for MetroPersonPicture {
+    fn measure(
+        &mut self,
+        _ctx: &mut kanesumi_element::MeasureCtx,
+        _available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        kanesumi_core::Size::new(96.0, 96.0)
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+    }
+
+    /// 徽标外溢：上 4、右 4（左 / 下为 0）。框架据此扩展损伤范围。
+    fn paint_overflow(&self) -> kanesumi_element::Insets {
+        kanesumi_element::Insets::new(0.0, 4.0, 4.0, 0.0)
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Other,
+            name: self.display_name.clone(),
+            value: None,
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, LayoutProps, Widget, WidgetId};
+
+    /// 徽标实际外溢方向：上 4、右 4。
+    const OVERFLOW: Insets = Insets::new(0.0, 4.0, 4.0, 0.0);
+
+    fn harness(pic: MetroPersonPicture, props: LayoutProps) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(300.0, 200.0);
+        let id = h.tree.insert_with(h.root(), pic, props);
+        h.frame();
+        (h, id)
+    }
+
+    fn start() -> LayoutProps {
+        LayoutProps {
+            h_align: Align::Start,
+            v_align: Align::Start,
+            ..LayoutProps::default()
+        }
+    }
+
+    fn badged() -> MetroPersonPicture {
+        MetroPersonPicture {
+            display_name: "John Smith".into(),
+            badge_number: 7,
+            ..MetroPersonPicture::default()
+        }
+    }
+
+    #[test]
+    fn default_size_and_passes_insurance_checks() {
+        let (h, id) = harness(badged(), start());
+        assert_eq!(h.rect(id).size.width, 96.0);
+        assert_eq!(h.rect(id).size.height, 96.0);
+        assert_eq!(
+            h.tree.get::<MetroPersonPicture>(id).unwrap().paint_overflow(),
+            OVERFLOW,
+            "paint_overflow 必须与实际外溢方向一致"
+        );
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, OVERFLOW);
+    }
+
+    /// 压窄用例：头像被强制 40px 宽（短边取齐）后徽标仍只外溢 4px，三断言成立。
+    #[test]
+    fn squeezed_width_still_within() {
+        let (h, id) = harness(
+            badged(),
+            LayoutProps {
+                width: Some(40.0),
+                ..start()
+            },
+        );
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, OVERFLOW);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
