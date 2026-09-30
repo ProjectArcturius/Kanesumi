@@ -25,6 +25,8 @@ pub struct MetroDropDownButton {
     pub state: ControlState,
     /// 关联的下拉菜单（MenuFlyout）。
     pub menu: MetroDropdownMenu,
+    /// 元素树下当前展开的菜单弹层（`MenuFlyout` 节点）；旧路径不用。
+    tree_popup: Option<kanesumi_element::WidgetId>,
 }
 
 impl MetroDropDownButton {
@@ -33,6 +35,7 @@ impl MetroDropDownButton {
             label: label.into(),
             state: ControlState::Normal,
             menu: MetroDropdownMenu::new(items),
+            tree_popup: None,
         }
     }
 
@@ -225,6 +228,149 @@ impl MetroDropDownButton {
         if self.menu.anim.is_visible() {
             self.menu.render(theme, engine, screen, scene);
         }
+    }
+}
+
+// ── 元素树接入（弹层类参照实现，参 docs/ELEMENT_MIGRATION.md §8）──────────────────
+//
+// 旧路径里按钮自己持有并绘制 `menu`（面板画在按钮的 Scene 里，需要宿主传整屏 `screen`）；
+// 元素树里菜单是覆盖层上的独立节点 `MenuFlyout`：按钮只负责「打开」与「展开中外观」，
+// 菜单的放置、命中、键盘、关闭、焦点交还全部由框架与 MenuFlyout 承担。
+// 选中结果以 `MenuInvoked { owner: 本按钮 id, .. }` 交给 App。
+
+impl kanesumi_element::Widget for MetroDropDownButton {
+    fn measure(
+        &mut self,
+        ctx: &mut kanesumi_element::MeasureCtx,
+        _available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        MetroDropDownButton::measure(self, ctx.engine(), ctx.theme().typography.body)
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        let saved = self.state;
+        // 菜单展开期间保持「按下」外观（UWP DropDownButton 的 Pressed 视觉状态持续到 Flyout 关闭）。
+        self.state = if self.tree_popup.is_some() && !ctx.state().disabled {
+            ControlState::Pressed
+        } else {
+            crate::state::control_state(ctx.state())
+        };
+        let theme = *ctx.theme();
+        self.render(&theme, ctx.engine(), ctx.rect(), ctx.surface(), scene);
+        self.state = saved;
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, Key};
+        let keyboard = match event {
+            Event::Click => false,
+            Event::KeyDown {
+                key: Key::Enter | Key::Char(' ') | Key::Down,
+                ..
+            } => true,
+            Event::PopupClosed { popup } => {
+                if self.tree_popup == Some(*popup) {
+                    self.tree_popup = None;
+                    ctx.invalidate_paint();
+                }
+                return;
+            }
+            _ => return,
+        };
+        // 已展开时再次激活 = 收起（与旧 `toggle` 语义一致）。
+        match self.tree_popup.take() {
+            Some(p) => ctx.close_popup(p),
+            None => {
+                let items = self.menu.items.clone();
+                self.tree_popup = Some(crate::menu_flyout::MenuFlyout::open(ctx, items, keyboard));
+            }
+        }
+        ctx.invalidate_paint();
+        ctx.set_handled();
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Button,
+            name: self.label.clone(),
+            value: None,
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use crate::menu_flyout::MenuInvoked;
+    use kanesumi_core::Point;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, Key, LayoutProps, WidgetId};
+
+    fn harness() -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(500.0, 400.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroDropDownButton::new(
+                "排序方式",
+                vec![MenuItem::new("名称"), MenuItem::new("日期"), MenuItem::new("大小")],
+            ),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                margin: Insets::new(10.0, 10.0, 0.0, 0.0),
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    #[test]
+    fn click_opens_menu_and_choice_reports_owner() {
+        let (mut h, id) = harness();
+        h.click(id);
+        let p = h.tree.popups().next().expect("点击打开菜单");
+        assert!(h.tree.get::<MetroDropDownButton>(id).unwrap().tree_popup.is_some());
+        let pr = h.rect(p);
+        h.click_at(Point::new(pr.origin.x + 20.0, pr.origin.y + 32.0 + 16.0));
+        let acts = h.take::<MenuInvoked>();
+        assert_eq!(acts.len(), 1);
+        assert_eq!(acts[0].1.owner, id);
+        assert_eq!(acts[0].1.label, "日期");
+        assert!(
+            h.tree.get::<MetroDropDownButton>(id).unwrap().tree_popup.is_none(),
+            "菜单关闭后按钮复位"
+        );
+    }
+
+    #[test]
+    fn click_again_closes_and_keyboard_opens_with_focus_inside() {
+        let (mut h, id) = harness();
+        h.click(id);
+        // 菜单开着时点按钮：点在覆盖层之外 → 框架轻触关闭并吞掉这次点击（不会立刻重开）。
+        h.click(id);
+        assert!(h.tree.popups().next().is_none());
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+        h.key(Key::Down);
+        let p = h.tree.popups().next().expect("Down 键打开菜单");
+        assert_eq!(h.tree.focused(), Some(p), "键盘打开时焦点进菜单");
+        h.key(Key::Escape);
+        assert_eq!(h.tree.focused(), Some(id), "Esc 关闭后焦点回按钮");
+    }
+
+    #[test]
+    fn passes_insurance_checks_while_open() {
+        let (mut h, id) = harness();
+        h.click(id);
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
     }
 }
 

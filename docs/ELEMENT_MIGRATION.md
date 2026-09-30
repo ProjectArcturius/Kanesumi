@@ -107,3 +107,22 @@ cargo clippy -p kanesumi-controls --all-targets 2>&1 | grep generated
 ```
 
 一个控件一次提交：`feat(controls): <控件名> 接入元素树。`，正文列动作类型、事件映射、测试、以及任何 §6 的修正。
+
+## §8 弹层类控件（E4，参照 `drop_down_button.rs` + `menu_flyout.rs`）
+
+旧路径里弹层画在触发控件自己的 Scene 里（宿主要传整屏 `screen`，矮表面画不出去、命中要手算）。
+元素树里**弹层是覆盖层上的独立节点**：
+
+| 事 | 做法 |
+|---|---|
+| 打开菜单 | `MenuFlyout::open(ctx, items, keyboard)`（锚在本控件下缘）/ `MenuFlyout::open_at(ctx, items, pos, keyboard)`（右键：锚在指针处）。记下返回的弹层 id |
+| 打开自定义面板 | 写一个面板 `Widget`（照 `MenuFlyout` 的结构：`measure` 返回面板尺寸、`arrange` 记下自身矩形、`paint` 画面板），用 `ctx.open_popup(widget, PopupSpec { anchor: Some(ctx.id()), gap, modal, .. })` 打开 |
+| 模态（对话框） | `PopupSpec { modal: true, anchor: None, .. }` → 表面居中、点外部不关闭、Tab 被限制在弹层内 |
+| 展开中外观 | 控件持 `tree_popup: Option<WidgetId>`（私有字段，旧 API 不用）；`paint` 里据此画「展开中」 |
+| 关闭 | 任何原因关闭（选中 / 点外部 / Esc / 失焦 / `ctx.close_popup(id)`）控件都会收到 `Event::PopupClosed { popup }` —— **在这里复位 `tree_popup`**，不要自己猜何时关了 |
+| 结果 | 菜单选中由 `MenuFlyout` 发 `MenuInvoked { owner, path, label, checked }`，App 按 `owner` 分派；自定义面板发自己的动作并 `ctx.close_popup(ctx.id())` |
+| 再次激活 | 展开时再点控件：点在覆盖层之外 → 框架先轻触关闭并吞掉这次点击（不会立即重开）；键盘激活时自己判断 `tree_popup` 决定开 / 关 |
+| 键盘 | Enter / Space / Down 打开且 `keyboard = true`（焦点进菜单、预选首项）；Esc 由框架关闭并把焦点交还控件 |
+
+**测试必须覆盖**：打开后弹层存在且位置在锚点下方（或按规格）；选中 / 点外部 / Esc 三种关闭后 `tree_popup` 复位；
+键盘打开时焦点在弹层、关闭后回控件；打开状态下三条保险断言仍成立。

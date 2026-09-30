@@ -28,8 +28,12 @@ pub struct PopupDismissed;
 /// 弹层规格。参 ELEMENT_TREE §Ⅴ.2。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PopupSpec {
-    /// 锚点元素：面板贴其下缘放置，下方放不下则上翻；`None` = 表面居中（对话框）。
+    /// 锚点元素：面板贴其下缘放置，下方放不下则上翻；`None` 且无 `at` = 表面居中（对话框）。
+    /// 锚点同时决定「谁收 `PopupClosed`、焦点交还给谁」。
     pub anchor: Option<WidgetId>,
+    /// 点锚定（右键菜单）：面板左上角落在该点，右侧放不下翻左、下方放不下翻上。
+    /// 设置后优先于 `anchor` 的下缘放置（`anchor` 仍用于关闭通知与焦点交还）。
+    pub at: Option<Point>,
     /// 与锚点的间距。
     pub gap: f32,
     /// 模态：点外部不关闭、吞掉点击；Tab 限制在弹层内（焦点陷阱）。
@@ -42,6 +46,7 @@ impl Default for PopupSpec {
     fn default() -> Self {
         Self {
             anchor: None,
+            at: None,
             gap: 0.0,
             modal: false,
             light_dismiss: true,
@@ -1352,8 +1357,13 @@ impl Tree {
         let w = desired.width.min(bounds.size.width);
         let h = desired.height.min(bounds.size.height);
         let anchor = spec.anchor.and_then(|a| self.rect(a));
-        let (x, y) = match anchor {
-            Some(a) => {
+        let (x, y) = match (spec.at, anchor) {
+            // 右键菜单：点锚定（CONTEXT_MENU_SPEC §Ⅲ，同 `place_context_menu`）。
+            (Some(p), _) => (
+                if p.x + w > bounds.right() { p.x - w } else { p.x },
+                if p.y + h > bounds.bottom() { p.y - h } else { p.y },
+            ),
+            (None, Some(a)) => {
                 let below = a.bottom() + spec.gap;
                 let above = a.origin.y - spec.gap - h;
                 // 下方放不下且上方放得下 → 上翻（ComboBoxHelper 判据）。
@@ -1364,7 +1374,7 @@ impl Tree {
                 };
                 (a.origin.x, y)
             }
-            None => (
+            (None, None) => (
                 bounds.origin.x + (bounds.size.width - w) / 2.0,
                 bounds.origin.y + (bounds.size.height - h) / 2.0,
             ),

@@ -65,6 +65,25 @@ impl MenuFlyout {
         id
     }
 
+    /// 右键菜单：在指针位置打开（点锚定，右 / 下放不下时翻转）。`owner` 仍是本控件。
+    pub fn open_at(ctx: &mut EventCtx, items: Vec<MenuItem>, at: Point, keyboard: bool) -> WidgetId {
+        let owner = ctx.id();
+        let mut flyout = MenuFlyout::new(owner, items);
+        if keyboard && !flyout.menu.items.is_empty() {
+            flyout.menu.hovered = Some(0);
+        }
+        let id = ctx.open_popup(
+            flyout,
+            PopupSpec {
+                anchor: Some(owner),
+                at: Some(at),
+                ..PopupSpec::default()
+            },
+        );
+        ctx.focus_widget(id, keyboard);
+        id
+    }
+
     fn item(&self, path: MenuPath) -> Option<&MenuItem> {
         match path.parent {
             None => self.menu.items.get(path.index),
