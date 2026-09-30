@@ -163,6 +163,122 @@ fn label_style() -> kanesumi_core::TextStyle {
     kanesumi_core::TextStyle::new(12.0, 16.0, kanesumi_core::FontWeight::Normal)
 }
 
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 button.rs）──────────────────
+//
+// 旧 API（无参 `measure` / `render` / `hit_test`）原样保留给未迁移的 App；
+// `Widget` 实现只做量测转发、按框架状态绘制、把点击 / 键盘激活翻译成动作。
+// 命中、焦点、hover / pressed 维护交给框架。
+
+/// 元素树动作：图标按钮被激活（点击 / Enter / Space）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IconButtonClicked;
+
+impl kanesumi_element::Widget for MetroIconButton {
+    fn measure(
+        &mut self,
+        _ctx: &mut kanesumi_element::MeasureCtx,
+        _available: Size,
+    ) -> Size {
+        MetroIconButton::measure(self)
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        let saved = self.state;
+        self.state = crate::state::control_state(ctx.state());
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+        self.state = saved;
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, Key};
+        if matches!(
+            event,
+            Event::Click
+                | Event::KeyDown {
+                    key: Key::Enter | Key::Char(' '),
+                    ..
+                }
+        ) {
+            ctx.emit(IconButtonClicked);
+            ctx.set_handled();
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Button,
+            name: if self.label.is_empty() {
+                self.icon.clone()
+            } else {
+                self.label.clone()
+            },
+            value: None,
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, Key, LayoutProps, WidgetId};
+
+    fn harness() -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(320.0, 200.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroIconButton::with_label("\u{E72D}", "分享"),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    #[test]
+    fn click_and_keyboard_activate() {
+        let (mut h, id) = harness();
+        h.click(id);
+        h.tab();
+        h.key(Key::Enter);
+        h.key(Key::Char(' '));
+        assert_eq!(h.take::<IconButtonClicked>().len(), 3);
+    }
+
+    #[test]
+    fn sizes_and_passes_insurance_checks() {
+        let (h, id) = harness();
+        assert_eq!(h.rect(id).size, kanesumi_core::Size::new(68.0, 56.0));
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn tab_focuses() {
+        let (mut h, id) = harness();
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+    }
+
+    #[test]
+    fn disabled_ignores_activation() {
+        let (mut h, id) = harness();
+        h.tree.set_enabled(id, false);
+        h.frame();
+        h.click(id);
+        assert!(h.take::<IconButtonClicked>().is_empty());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
