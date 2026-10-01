@@ -1,4 +1,5 @@
 use kanesumi_anim::{EasingMode, MetroAnim, UwpEasing};
+use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::{Color, FontWeight, MetroTheme, Point, Rect, TextStyle};
@@ -27,6 +28,18 @@ impl MetroTab {
 
 /// 管道滑行时长（秒）。UWP TabView SelectionIndicator = 250ms。
 const PIPE_DURATION: f64 = 0.25;
+/// 溢出时左右翻页按钮边长（UWP Pivot 页签条翻页键）。
+const OVERFLOW_BTN_W: f32 = 40.0;
+/// 拖动判定阈值（小于此视为点击，避免拖动误触选中）。
+const DRAG_THRESHOLD: f32 = 4.0;
+
+/// 拖动状态（页签条横向滚动）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DragState {
+    start_x: f32,
+    start_scroll: f32,
+    moved: bool,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetroTabRow {
@@ -35,11 +48,18 @@ pub struct MetroTabRow {
     pub hovered: Option<usize>,
     /// Header 高（UWP 48）。
     pub header_height: f32,
+    /// `compact` 样式：标题 15px（Win10 设置二级页签观感），由调用方选择。
+    pub compact: bool,
+    /// 页签条水平滚动偏移（逻辑 px，>= 0）。溢出时由滚轮 / 拖动 / 翻页键推进。
+    pub scroll: f32,
     /// 上一次选中（切换动画起点）。首次 select 前 = selected 自身（无动画）。
     prev_selected: usize,
     /// 管道位置动画（value ∈ [0, 1]，0 = prev、1 = current）。
     /// 稳态在 1（画在 current 上）；`select` 时 jump_to(0) + set_target(1) 重启滑行。
     select_anim: MetroAnim,
+    /// `select` 改变了选中 → 下一帧把选中页签滚入可见（滚轮 / 拖动不置位，避免被拉回）。
+    needs_scroll: bool,
+    drag: Option<DragState>,
 }
 
 impl Default for MetroTabRow {
@@ -51,8 +71,12 @@ impl Default for MetroTabRow {
             selected: 0,
             hovered: None,
             header_height: 48.0,
+            compact: false,
+            scroll: 0.0,
             prev_selected: 0,
             select_anim: anim,
+            needs_scroll: false,
+            drag: None,
         }
     }
 }
@@ -65,14 +89,21 @@ impl MetroTabRow {
         }
     }
 
+    /// 选择 `compact` 样式（标题 15px，参 CONTROL_SPEC §6）。
+    pub fn with_compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        self
+    }
+
     /// 选中指定 tab。若与当前不同，启动管道滑行 + 文字色 crossfade。
-    /// 同一 tab 重复 select 幂等，不重启动画。
+    /// 同一 tab 重复 select 幂等，不重启动画。下一帧自动把选中页签滚入可见。
     pub fn select(&mut self, index: usize) {
         if index >= self.tabs.len() || index == self.selected {
             return;
         }
         self.prev_selected = self.selected;
         self.selected = index;
+        self.needs_scroll = true;
         // 归零重启：value 直接落到 0（老 bug 参 dialog.rs L110 —— 不 jump_to
         // 则 set_target 会从残余 value 继续，看起来管道会往回蹦一下）。
         self.select_anim.jump_to(0.0);
@@ -89,10 +120,19 @@ impl MetroTabRow {
         self.select_anim.value() as f32
     }
 
-    /// Header 文字样式：24 SemiLight，字距 −2.5%（UWP CharacterSpacing=−25）。
+    /// Header 文字样式（展开态）：24 SemiLight，字距 −2.5%（UWP CharacterSpacing=−25）。
     /// V16：字距落到 TextStyle.letter_spacing_em，render/measure 全局生效。
     pub fn header_style() -> TextStyle {
         TextStyle::new(24.0, 30.0, FontWeight::Semilight).with_letter_spacing_em(-0.025)
+    }
+
+    /// 当前文字样式：`compact`（15px，Win10 设置二级页签）或展开态 24px。
+    pub fn style(&self) -> TextStyle {
+        if self.compact {
+            TextStyle::new(15.0, 20.0, FontWeight::Normal)
+        } else {
+            Self::header_style()
+        }
     }
 
     /// 单个 Header 宽度 = 文字宽（含字距）+ 左右 12px。
@@ -100,14 +140,14 @@ impl MetroTabRow {
         if index >= self.tabs.len() {
             return 0.0;
         }
-        let style = Self::header_style();
+        let style = self.style();
         engine.measure_with_spacing(&self.tabs[index].label, style.size, style.letter_spacing_em)
             + 24.0
     }
 
     /// 全部 Header 总宽。
     pub fn total_width(&self, engine: &TextEngine) -> f32 {
-        let style = Self::header_style();
+        let style = self.style();
         self.tabs
             .iter()
             .map(|t| {
@@ -116,17 +156,84 @@ impl MetroTabRow {
             .sum()
     }
 
+    /// 从第 0 个页签到 `index` 之前的累计宽（未计滚动偏移）。
+    fn tab_offset(&self, engine: &TextEngine, index: usize) -> f32 {
+        (0..index.min(self.tabs.len()))
+            .map(|i| self.header_width(engine, i))
+            .sum()
+    }
+
+    /// 页签总宽超出可用宽 → 需要横向滚动与翻页按钮（UWP Pivot 溢出行为）。
+    pub fn overflowing(&self, engine: &TextEngine, rect: Rect) -> bool {
+        self.total_width(engine) > rect.size.width + 0.5
+    }
+
+    /// 页签条的矩形：溢出时左右各让出翻页按钮宽；否则就是自身矩形。
+    fn strip_rect(&self, engine: &TextEngine, rect: Rect) -> Rect {
+        if self.overflowing(engine, rect) {
+            let w = (rect.size.width - 2.0 * OVERFLOW_BTN_W).max(0.0);
+            Rect::new(rect.origin.x + OVERFLOW_BTN_W, rect.origin.y, w, rect.size.height)
+        } else {
+            rect
+        }
+    }
+
+    /// 溢出时左右翻页按钮 `(left, right)`；不溢出返回 None。
+    pub fn overflow_buttons(&self, engine: &TextEngine, rect: Rect) -> Option<(Rect, Rect)> {
+        if !self.overflowing(engine, rect) {
+            return None;
+        }
+        let d = OVERFLOW_BTN_W.min(rect.size.height.max(0.0));
+        let y = rect.origin.y + (rect.size.height - d) / 2.0;
+        Some((
+            Rect::new(rect.origin.x, y, d, d),
+            Rect::new(rect.right() - OVERFLOW_BTN_W, y, OVERFLOW_BTN_W, d),
+        ))
+    }
+
+    /// 最大滚动偏移。
+    pub fn max_scroll(&self, engine: &TextEngine, rect: Rect) -> f32 {
+        let strip = self.strip_rect(engine, rect);
+        (self.total_width(engine) - strip.size.width).max(0.0)
+    }
+
+    /// 把选中页签完整滚入可见（参 UWP Pivot `BringSelectedTabIntoView`）。
+    pub fn ensure_selected_visible(&mut self, engine: &TextEngine, rect: Rect) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        let strip = self.strip_rect(engine, rect);
+        if strip.size.width <= 0.0 {
+            return;
+        }
+        let sel = self.selected.min(self.tabs.len() - 1);
+        let start = self.tab_offset(engine, sel);
+        let end = start + self.header_width(engine, sel);
+        if start < self.scroll {
+            self.scroll = start;
+        } else if end > self.scroll + strip.size.width {
+            // 右缘越界 → 右对齐；页签比视口还宽时退化为左对齐（左缘优先可见）。
+            self.scroll = (end - strip.size.width).min(start);
+        }
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll(engine, rect));
+    }
+
     /// Header 命中测试：`rect` = TabRow 布局矩形；`pos` = **绝对**指针坐标。
     ///
     /// 与 [`MetroSwitch::hit_test`] 约定一致——命中逻辑集中在控件内，调用方
-    /// 无需手动减 origin。历史 bug：旧签名 `(engine, x)` 把 x 当**相对**坐标，
-    /// Gallery 传绝对 `p.x` → 命中偏移一个 `rect.origin.x`。
+    /// 无需手动减 origin。溢出的翻页按钮区不算页签（返回 None）。
     pub fn tab_at(&self, engine: &TextEngine, rect: Rect, pos: Point) -> Option<usize> {
-        if !rect.contains(pos) {
+        if let Some((l, r)) = self.overflow_buttons(engine, rect)
+            && (l.contains(pos) || r.contains(pos))
+        {
             return None;
         }
-        let style = Self::header_style();
-        let mut cursor = rect.origin.x;
+        let strip = self.strip_rect(engine, rect);
+        if !strip.contains(pos) {
+            return None;
+        }
+        let style = self.style();
+        let mut cursor = strip.origin.x - self.scroll;
         for (i, tab) in self.tabs.iter().enumerate() {
             let w = engine.measure_with_spacing(&tab.label, style.size, style.letter_spacing_em)
                 + 24.0;
@@ -138,10 +245,10 @@ impl MetroTabRow {
         None
     }
 
-    /// 单个 tab 的（label_x, label_w），x 相对 `rect.origin.x` 展开。
-    fn label_geoms(&self, engine: &TextEngine, rect: Rect) -> Vec<(f32, f32)> {
-        let style = Self::header_style();
-        let mut cursor = rect.origin.x;
+    /// 单个 tab 的（label_x, label_w），x 已计入滚动偏移（`strip` 为页签条区）。
+    fn label_geoms(&self, engine: &TextEngine, strip: Rect) -> Vec<(f32, f32)> {
+        let style = self.style();
+        let mut cursor = strip.origin.x - self.scroll;
         let mut out = Vec::with_capacity(self.tabs.len());
         for tab in &self.tabs {
             let label_w =
@@ -162,13 +269,14 @@ impl MetroTabRow {
             return;
         }
         let colors = &theme.colors;
-        let style = Self::header_style();
-        let geoms = self.label_geoms(engine, rect);
+        let style = self.style();
+        let strip = self.strip_rect(engine, rect);
+        let geoms = self.label_geoms(engine, strip);
         let progress = self.select_anim.value().clamp(0.0, 1.0) as f32;
 
-        // 容器语义 = 裁到自身矩形（2026-09-22 审计 P0-2）：页签按内容定宽，总宽可超控件宽，
-        // 无裁剪时最右页签会画到相邻控件上。
-        scene.push_clip(rect);
+        // 容器语义 = 裁到自身矩形（2026-09-22 审计 P0-2）：页签按内容定宽，总宽可超控件宽。
+        // 溢出时另裁到页签条区（strip），避免页签画到左右翻页按钮下面。
+        scene.push_clip(strip);
 
         for (i, tab) in self.tabs.iter().enumerate() {
             let (label_x, label_w) = geoms[i];
@@ -218,7 +326,31 @@ impl MetroTabRow {
         );
 
         scene.pop_clip();
+
+        // 左右翻页键（仅溢出时）：到底时淡出该侧。
+        if let Some((left, right)) = self.overflow_buttons(engine, rect) {
+            let max = self.max_scroll(engine, rect);
+            // 到端的翻页键淡出（强度用 MetroIndication 具名档，不写字面 alpha）。
+            let dim = colors
+                .on_surface_variant
+                .with_alpha(theme.indication.base_medium_low);
+            let lcolor = if self.scroll > 0.5 { colors.on_surface_variant } else { dim };
+            let rcolor = if self.scroll < max - 0.5 { colors.on_surface_variant } else { dim };
+            glyph::chevron_left(scene, inset_btn(left), lcolor);
+            glyph::chevron_right(scene, inset_btn(right), rcolor);
+        }
     }
+}
+
+/// 翻页键矩形内缩成 12×12 的 chevron 绘制区。
+fn inset_btn(btn: Rect) -> Rect {
+    let d = 12.0_f32.min(btn.size.width).min(btn.size.height);
+    Rect::new(
+        btn.origin.x + (btn.size.width - d) / 2.0,
+        btn.origin.y + (btn.size.height - d) / 2.0,
+        d,
+        d,
+    )
 }
 
 // ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 radio_buttons.rs）──────────
@@ -249,6 +381,11 @@ impl kanesumi_element::Widget for MetroTabRow {
     }
 
     fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        // 选中变化后把该页签滚入可见（拖动中不打扰用户的横向滚动）。
+        if self.needs_scroll && self.drag.is_none() {
+            self.ensure_selected_visible(ctx.engine(), ctx.rect());
+            self.needs_scroll = false;
+        }
         // render 自己成对 PushClip/PopClip 到 rect，无需再加裁剪。
         self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
     }
@@ -264,7 +401,45 @@ impl kanesumi_element::Widget for MetroTabRow {
     fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
         use kanesumi_element::{Event, Key, PointerButton};
         match event {
+            Event::PointerDown {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                // 页签条内按下 → 记起点，准备横向拖动（点翻页键不起拖）。
+                let in_strip = match ctx.engine() {
+                    Some(engine) => {
+                        let on_btn = self
+                            .overflow_buttons(engine, ctx.rect())
+                            .is_some_and(|(l, r)| l.contains(*pos) || r.contains(*pos));
+                        self.strip_rect(engine, ctx.rect()).contains(*pos) && !on_btn
+                    }
+                    None => false,
+                };
+                if in_strip {
+                    self.drag = Some(DragState {
+                        start_x: pos.x,
+                        start_scroll: self.scroll,
+                        moved: false,
+                    });
+                }
+            }
             Event::PointerMove { pos } => {
+                if self.drag.is_some() {
+                    let max = match ctx.engine() {
+                        Some(engine) => self.max_scroll(engine, ctx.rect()),
+                        None => 0.0,
+                    };
+                    if let Some(d) = self.drag.as_mut() {
+                        let dx = pos.x - d.start_x;
+                        if dx.abs() > DRAG_THRESHOLD {
+                            d.moved = true;
+                        }
+                        if d.moved {
+                            self.scroll = (d.start_scroll - dx).clamp(0.0, max);
+                        }
+                    }
+                }
                 if let Some(engine) = ctx.engine() {
                     self.hovered = self.tab_at(engine, ctx.rect(), *pos);
                 }
@@ -279,6 +454,30 @@ impl kanesumi_element::Widget for MetroTabRow {
                 button: PointerButton::Left,
                 ..
             } => {
+                // 拖动结束：滚动已生效，不把这次释放当点击（也不触发翻页键，
+                // 即使指针恰好停在按钮上）。
+                if self.drag.take().is_some_and(|d| d.moved) {
+                    ctx.invalidate_paint();
+                    return;
+                }
+                // 翻页键：点左 / 右键翻一页。
+                if let Some(engine) = ctx.engine()
+                    && let Some((l, r)) = self.overflow_buttons(engine, ctx.rect())
+                {
+                    let max = self.max_scroll(engine, ctx.rect());
+                    let step = self.strip_rect(engine, ctx.rect()).size.width.max(1.0);
+                    if l.contains(*pos) && self.scroll > 0.0 {
+                        self.scroll = (self.scroll - step).clamp(0.0, max);
+                        ctx.invalidate_paint();
+                        ctx.set_handled();
+                        return;
+                    } else if r.contains(*pos) && self.scroll < max {
+                        self.scroll = (self.scroll + step).clamp(0.0, max);
+                        ctx.invalidate_paint();
+                        ctx.set_handled();
+                        return;
+                    }
+                }
                 let before = self.selected;
                 // 先取出命中结果，结束对 ctx 的不可变借用，再发动作。
                 let hit = match ctx.engine() {
@@ -292,6 +491,22 @@ impl kanesumi_element::Widget for MetroTabRow {
                         ctx.invalidate_paint();
                         ctx.request_anim_frame();
                     }
+                    ctx.set_handled();
+                }
+            }
+            Event::Scroll { dx, dy, .. } => {
+                let (overflow, max) = match ctx.engine() {
+                    Some(engine) => (
+                        self.overflowing(engine, ctx.rect()),
+                        self.max_scroll(engine, ctx.rect()),
+                    ),
+                    None => (false, 0.0),
+                };
+                if overflow {
+                    // 横向条：优先取 dx，普通滚轮只有 dy 时也横移。
+                    let delta = if dx.abs() > 0.0 { *dx } else { *dy };
+                    self.scroll = (self.scroll + delta).clamp(0.0, max);
+                    ctx.invalidate_paint();
                     ctx.set_handled();
                 }
             }
@@ -491,6 +706,105 @@ mod tree_tests {
         assert!(h.take::<TabSelectionChanged>().is_empty());
         assert_eq!(h.tree.get::<MetroTabRow>(id).unwrap().selected, 0);
         h.settle();
+    }
+
+    /// 六个中文页签塞进窄条 → 溢出。
+    fn wide_harness(width: f32) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(width, 120.0);
+        let tabs: Vec<MetroTab> = (0..6).map(|i| MetroTab::new(format!("标签{i}"))).collect();
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroTabRow::new(tabs),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    #[test]
+    fn no_pager_when_not_overflowing() {
+        let (h, id) = harness(LayoutProps::default());
+        let row = h.tree.get::<MetroTabRow>(id).unwrap();
+        assert!(!row.overflowing(&h.engine, h.rect(id)));
+        assert!(row.overflow_buttons(&h.engine, h.rect(id)).is_none());
+    }
+
+    #[test]
+    fn overflow_shows_pager_and_right_click_scrolls() {
+        let (mut h, id) = wide_harness(160.0);
+        let right = {
+            let row = h.tree.get::<MetroTabRow>(id).unwrap();
+            assert!(row.overflowing(&h.engine, h.rect(id)), "总宽应超可用宽");
+            row.overflow_buttons(&h.engine, h.rect(id))
+                .expect("溢出应有翻页键")
+                .1
+        };
+        assert_eq!(h.tree.get::<MetroTabRow>(id).unwrap().scroll, 0.0);
+        h.click_at(right.center());
+        assert!(
+            h.tree.get::<MetroTabRow>(id).unwrap().scroll > 0.0,
+            "点右键应横向翻页"
+        );
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn selecting_last_tab_scrolls_it_into_view() {
+        // 宽 240：单个页签窄于页签条（160），可完整滚入。
+        let (mut h, id) = wide_harness(240.0);
+        h.tree.edit::<MetroTabRow, _>(id, |r, _| r.select(5));
+        h.frame();
+        let row = h.tree.get::<MetroTabRow>(id).unwrap();
+        let rect = h.rect(id);
+        let strip = row.strip_rect(&h.engine, rect);
+        let last = row.tabs.len() - 1;
+        let start = row.tab_offset(&h.engine, last);
+        let end = start + row.header_width(&h.engine, last);
+        assert!(start >= row.scroll - 0.01, "选中页签左缘应在视口内");
+        assert!(
+            end <= row.scroll + strip.size.width + 0.01,
+            "选中页签右缘应完全可见（end={end}, 视口右={}）",
+            row.scroll + strip.size.width
+        );
+    }
+
+    #[test]
+    fn wheel_scrolls_horizontally() {
+        let (mut h, id) = wide_harness(160.0);
+        let c = h.rect(id).center();
+        h.tree
+            .scroll(c, 40.0, 0.0, kanesumi_element::Modifiers::NONE);
+        h.frame();
+        assert!(h.tree.get::<MetroTabRow>(id).unwrap().scroll > 0.0);
+    }
+
+    #[test]
+    fn drag_scrolls_without_selecting() {
+        let (mut h, id) = wide_harness(160.0);
+        let rect = h.rect(id);
+        let p0 = Point::new(rect.origin.x + 80.0, rect.center().y);
+        let m = kanesumi_element::Modifiers::NONE;
+        let p1 = Point::new(p0.x - 60.0, p0.y);
+        h.tree.pointer_down(p0, kanesumi_element::PointerButton::Left, m);
+        h.tree.pointer_move(p1);
+        h.tree.pointer_up(p1, kanesumi_element::PointerButton::Left, m);
+        h.frame();
+        assert!(
+            h.tree.get::<MetroTabRow>(id).unwrap().scroll > 0.0,
+            "左拖应向右滚"
+        );
+        assert!(h.take::<TabSelectionChanged>().is_empty(), "拖动不应选中");
+    }
+
+    #[test]
+    fn compact_style_uses_15px_title() {
+        let row = MetroTabRow::new(vec![MetroTab::new("常规")]).with_compact(true);
+        assert_eq!(row.style().size, 15.0);
+        assert_eq!(MetroTabRow::header_style().size, 24.0, "展开态仍是 24");
     }
 }
 
