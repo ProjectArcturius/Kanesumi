@@ -1428,6 +1428,13 @@ impl Shell {
         if self.app.needs_redraw() {
             self.dirty = true;
         }
+        // 浮层同理：App 在 tick 里改了浮层树（Launcher 升起动画等）而此刻没有挂起的帧回调时，
+        // 只靠回调置脏会让浮层停在上一帧（快速开合后磁贴墙卡在半途，2026-10-01 实测）。
+        for i in 0..self.floating.len() {
+            if self.floating_visible_cache[i] && self.app.floating_needs_redraw(i) {
+                self.floating_dirty[i] = true;
+            }
+        }
         if self.ctx_menu.is_animating() {
             // 右键菜单开/关动画推进中 → 逐帧呈现；静态 Open 不再锁帧（S1）。
             self.dirty = true;
