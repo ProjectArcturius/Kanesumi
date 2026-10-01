@@ -1106,8 +1106,9 @@ impl Shell {
         }
         // ⚠ 光栅器惰性创建前先同步当前 App 请求高度：面板打开时 floating_height 返回
         //   面板高，f.height 可能仍是收起值 → 光栅器用 0 高度创建 → 浮层永远不可见。
+        //   全屏浮层（四边锚定）不参与：高度 0 = 铺满，按 0 同步会把它压成 1px（R1 Launcher 不出图）。
         let h = app.floating_height(idx);
-        if (h - f.height).abs() >= 0.5 {
+        if !f.fullscreen && (h - f.height).abs() >= 0.5 {
             let h = h.max(1.0);
             f.layer_surface.set_size(f.width as u32, h as u32);
             f.height = h;
