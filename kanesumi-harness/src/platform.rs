@@ -797,7 +797,9 @@ impl Shell {
                 ls.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
                 ls.set_exclusive_zone(0);
                 ls.set_size(0, 0);
-                ls.set_keyboard_interactivity(KeyboardInteractivity::None);
+                // OnDemand：桌面点中后要能收键盘（Delete / F2 / Enter / 方向键 / 重命名输入）。
+                // 曾为 None —— 桌面上一切键盘操作都无效（2026-10-01 桌面审计）。
+                ls.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
                 ls.commit();
                 layer_surface = Some(ls);
                 layer_shell = Some(shell);

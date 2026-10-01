@@ -142,7 +142,7 @@ pub enum InputEvent {
         modifiers: Modifiers,
     },
     /// 双击 —— 与第二次 `PointerPressed` **同时**下发（后者照常投递，App 的单击
-    /// 语义不丢）。外壳按 [`ClickTracker`] 判定：同按钮、间隔 ≤250ms、位移 ≤5px。
+    /// 语义不丢）。外壳按 [`ClickTracker`] 判定：同按钮、间隔 ≤500ms、位移 ≤5px。
     /// App 需「单击选中 / 双击打开」类语义时匹配本变体（不可见双击 = 新单击序列）。
     DoubleClick {
         x: f32,
@@ -589,12 +589,13 @@ impl PendingImeBatch {
     }
 }
 
-/// 双击判定参数。参 UWP `GetDoubleClickTime`（默认 500ms）/ X11 `multi-click time`
-/// 惯例；Kanesumi 取 250ms（轻盈短促铁律对齐）、位移 5px 容差。
-const DOUBLE_CLICK_MS: u32 = 250;
+/// 双击判定参数。取 UWP `GetDoubleClickTime` 默认 500ms（GNOME 400、macOS 约 500）、位移 5px 容差。
+/// 曾取 250ms「对齐轻盈短促」—— 那是动画铁律，不适用于输入判定：常速双击被拆成两次单击，
+/// 桌面 / 文件夹「双击打不开」（2026-10-01 桌面审计）。
+const DOUBLE_CLICK_MS: u32 = 500;
 const DOUBLE_CLICK_TOLERANCE_PX: f32 = 5.0;
 
-/// 双击检测器 —— 记录每次指针按下，判定「同按钮、间隔 ≤250ms、位移 ≤5px」为双击。
+/// 双击检测器 —— 记录每次指针按下，判定「同按钮、间隔 ≤500ms、位移 ≤5px」为双击。
 ///
 /// 语义：第二次按下判定为双击（外壳随后下发 `InputEvent::DoubleClick`）；判定后复位，
 /// 故三次快速点击 = 单击 + 双击 + 单击（第三次重新开始计数，Windows 惯例）。
@@ -787,7 +788,11 @@ mod tests {
     fn click_tracker_second_quick_press_is_double() {
         let mut t = ClickTracker::default();
         assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1000));
-        assert!(t.record(PointerButton::Left, 10.0, 10.0, 1100), "250ms 内同点同按钮 = 双击");
+        assert!(t.record(PointerButton::Left, 10.0, 10.0, 1100), "500ms 内同点同按钮 = 双击");
+        // 常速双击（约 350ms）也必须成立。
+        let mut t2 = ClickTracker::default();
+        assert!(!t2.record(PointerButton::Left, 10.0, 10.0, 1000));
+        assert!(t2.record(PointerButton::Left, 10.0, 10.0, 1350), "常速双击 350ms = 双击");
         // 复位后第三次快速点击重新计数（新单击）。
         assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1200), "双击后复位，第三次为新单击");
     }
@@ -796,7 +801,7 @@ mod tests {
     fn click_tracker_slow_second_press_is_single() {
         let mut t = ClickTracker::default();
         assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1000));
-        assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1300), ">250ms 不算双击");
+        assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1600), ">500ms 不算双击");
     }
 
     #[test]
