@@ -11,8 +11,8 @@ pub mod role;
 pub mod system_theme;
 pub mod tree_host;
 
-#[cfg(target_os = "linux")]
 pub mod cpu_raster;
+pub(crate) mod glyph_layout;
 
 #[cfg(target_os = "linux")]
 pub mod dmabuf;
@@ -23,10 +23,8 @@ pub mod platform;
 #[cfg(target_os = "linux")]
 pub mod render;
 
-#[cfg(target_os = "linux")]
 pub mod snapshot;
 
-#[cfg(target_os = "linux")]
 pub use cpu_raster::CpuRenderer;
 
 pub use app::{

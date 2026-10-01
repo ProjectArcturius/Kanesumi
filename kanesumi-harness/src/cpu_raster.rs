@@ -19,7 +19,7 @@ use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, SceneCommand, TextAlign};
 use kanesumi_core::{Color, Point, Rect, TextStyle};
 
-use crate::render::{GlyphKey, PlacedGlyph, layout_text_glyphs};
+use crate::glyph_layout::{GlyphKey, PlacedGlyph, layout_text_glyphs};
 
 /// 每像素超采样数（与 GPU 路径 MSAA 4× 同构；样本位 (0.25,0.25)…(0.75,0.75)）。
 const SAMPLES: f32 = 4.0;
