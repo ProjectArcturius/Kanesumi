@@ -14,7 +14,9 @@ use crate::event::{Event, Key, Modifiers, PointerButton};
 use crate::id::WidgetId;
 use crate::ime::ImeContext;
 use crate::props::{Align, LayoutProps};
-use crate::widget::{ArrangeCtx, ControlStates, EventCtx, MeasureCtx, PaintCtx, UpdateCtx, Widget};
+use crate::widget::{
+    ArrangeCtx, ControlStates, EventCtx, MeasureCtx, PaintCtx, RealizeCtx, UpdateCtx, Widget,
+};
 
 /// 控件发给 App 的动作（控件自定义类型，App downcast）。
 pub type Action = Box<dyn Any>;
@@ -91,6 +93,8 @@ struct Flags {
     needs_measure: bool,
     needs_arrange: bool,
     needs_paint: bool,
+    /// 下一帧 measure 之前需要调用 `Widget::realize`（虚拟化容器增删子节点）。
+    needs_realize: bool,
     disabled: bool,
 }
 
@@ -123,6 +127,7 @@ impl Node {
                 needs_measure: true,
                 needs_arrange: true,
                 needs_paint: true,
+                needs_realize: true,
                 disabled: false,
             },
             desired: Size::ZERO,
@@ -284,13 +289,23 @@ impl Tree {
         widget: impl Widget,
         props: LayoutProps,
     ) -> WidgetId {
+        self.insert_boxed_with(parent, Box::new(widget), props)
+    }
+
+    /// 装箱版 `insert_with`（元素工厂 `ItemFactory::build` 返回 `Box<dyn Widget>` 时用）。
+    pub fn insert_boxed_with(
+        &mut self,
+        parent: WidgetId,
+        widget: Box<dyn Widget>,
+        props: LayoutProps,
+    ) -> WidgetId {
         let parent = if self.contains(parent) {
             parent
         } else {
             log::error!("kanesumi-element: insert 的父节点不存在，改挂内容根");
             self.root
         };
-        let id = self.alloc(Box::new(widget), Some(parent), props);
+        let id = self.alloc(widget, Some(parent), props);
         if let Some(p) = self.node_mut(parent) {
             p.children.push(id);
         }
@@ -415,6 +430,7 @@ impl Tree {
             n.flags.needs_measure = true;
             n.flags.needs_arrange = true;
             n.flags.needs_paint = true;
+            n.flags.needs_realize = true;
         }
         self.full_repaint = true;
         self.dirty = true;
@@ -540,9 +556,20 @@ impl Tree {
             let Some(n) = self.node_mut(c) else { break };
             n.flags.needs_measure = true;
             n.flags.needs_arrange = true;
+            // 量测失效的源头是「子树 / 数据变了」—— 需要 realize 的容器（虚拟化列表）
+            // 沿祖先链一并标记，下一帧按新视口重新实现（参 ELEMENT_TREE §Ⅳ-bis）。
+            n.flags.needs_realize = true;
             cur = n.parent;
         }
         self.dirty = true;
+    }
+
+    /// 只标记本节点需要 realize（滚动偏移变化 / 数据变化这类不动量测缓存的来源）。
+    pub fn invalidate_realize(&mut self, id: WidgetId) {
+        if let Some(n) = self.node_mut(id) {
+            n.flags.needs_realize = true;
+            self.dirty = true;
+        }
     }
 
     pub fn invalidate_arrange(&mut self, id: WidgetId) {
@@ -644,6 +671,54 @@ impl Tree {
         self.dirty = true;
     }
 
+    // ── 实现钩子（参 §Ⅳ-bis）───────────────────────────────────────────────
+
+    /// 对「`wants_realize()` 且被标记 `needs_realize`」的可见节点调用 `Widget::realize`。
+    /// 先序执行；回调里插入的新子节点若自身需要 realize，将在下一帧处理（本帧 measure 仍会量测它）。
+    fn realize_dirty(&mut self, engine: &TextEngine) {
+        let mut ids = Vec::new();
+        for r in [self.root, self.overlay] {
+            self.collect_realize(r, &mut ids);
+        }
+        if ids.is_empty() {
+            return;
+        }
+        for id in ids {
+            let Some(mut w) = self.node_mut(id).and_then(|n| n.widget.take()) else {
+                continue;
+            };
+            {
+                let mut ctx = RealizeCtx {
+                    tree: self,
+                    id,
+                    engine,
+                };
+                w.realize(&mut ctx);
+            }
+            if let Some(n) = self.node_mut(id) {
+                n.widget = Some(w);
+                // 回调里 insert / remove / invalidate_measure 会再次标记本节点；本帧已实现，
+                // 视为已消费 —— 连续重复 realize 会与「避免每帧调用」的初衷相悖。
+                n.flags.needs_realize = false;
+            }
+        }
+    }
+
+    fn collect_realize(&self, id: WidgetId, out: &mut Vec<WidgetId>) {
+        let Some(n) = self.node(id) else { return };
+        if !n.props.visible {
+            return;
+        }
+        if n.flags.needs_realize
+            && n.widget.as_ref().is_some_and(|w| w.wants_realize())
+        {
+            out.push(id);
+        }
+        for &c in &n.children {
+            self.collect_realize(c, out);
+        }
+    }
+
     // ── 帧 ──────────────────────────────────────────────────────────────────
 
     /// 出一帧：动画 tick → 布局 → 绘制 → 拼接 + 损伤。
@@ -678,7 +753,10 @@ impl Tree {
             }
         }
 
-        // 2. 布局。弹层位置依赖锚点矩形 —— 有弹层时每帧重排覆盖层（弹层子树本身有缓存，代价只是重算槽位）。
+        // 2. 实现钩子：虚拟化容器在 measure 之前按上一帧视口增删子节点（参 §Ⅳ-bis）。
+        self.realize_dirty(engine);
+
+        // 3. 布局。弹层位置依赖锚点矩形 —— 有弹层时每帧重排覆盖层（弹层子树本身有缓存，代价只是重算槽位）。
         if !self.popups.is_empty() {
             self.invalidate_arrange(self.overlay);
         }
@@ -693,12 +771,12 @@ impl Tree {
             self.check_containment();
         }
 
-        // 3. 绘制脏节点。
+        // 4. 绘制脏节点。
         for r in [self.root, self.overlay] {
             self.paint_dirty(r, engine);
         }
 
-        // 4. 拼接。
+        // 5. 拼接。
         let mut scene = Scene::default();
         self.compose(self.root, &mut scene);
         // 遮罩：任一打开的弹层要求时，在覆盖层之前整面压暗（弹层自身画在遮罩之上）。
@@ -713,7 +791,7 @@ impl Tree {
             self.compose(self.overlay, &mut scene);
         }
 
-        // 5. 焦点控件的 IME 上下文（用本帧布局与排版）。
+        // 6. 焦点控件的 IME 上下文（用本帧布局与排版）。
         self.ime = self.focus.and_then(|f| {
             let n = self.node(f)?;
             n.widget.as_ref()?.ime(n.rect, &self.theme, engine)
