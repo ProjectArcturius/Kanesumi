@@ -201,6 +201,17 @@
 - `Unselected → UnselectedLocked`：**0.33s**，头滑出 **+40px** + 淡出（`PivotHeaderItemLockedTranslation`）——非选中头滑出签名动效
 - Selected 切换瞬时
 
+### 溢出与滚动（2026-10-01 补）
+- 页签条总宽 > 可用宽时**横向滚动**：滚轮（优先 `dx`，仅 `dy` 时横移）/ 拖动页签条（拖动阈值 4px，拖动结束不当作点击选中）。
+- **选中页签自动滚入可见**（右缘越界右对齐；单个页签比视口宽时退化为左对齐）。
+- 左右边缘出现翻页键 `‹ ›`（**40×40，仅溢出时**）；点按翻一页（页签条宽）。到端一侧淡出为
+  `MetroIndication.base_medium_low`。
+- 页签绘制裁到页签条区（翻页键下不画页签）；翻页键区不命中页签。实现参 `kanesumi-controls/src/tab_row.rs`。
+
+### compact 样式（2026-10-01 补）
+- 调用方 `MetroTabRow::with_compact(true)` 选择：标题 **15px / Normal**（Win10 设置二级页签观感），
+  默认展开态 24 / SemiLight / −2.5%。
+
 ---
 
 ## 7 · List（ListView/ListViewItem 参考）
@@ -1006,13 +1017,27 @@ else → SinglePane（PanePriority 指定单面板）
 | PaneToggle 按钮 | **40×40**（左侧最上） |
 | Item | 高 **40**、icon 16、字 14、Padding 左 16 |
 | 选中指示条 | **3×16** 强调色（NavigationViewSelectionIndicator 3/16），项左侧 |
-| Header Margin | `56,44,0,0`（Header 位于 pane 右、顶栏下） |
+| Header Margin | `56,44,0,0`（左缘 = **pane 当前推挤宽 + 56**，上 44、Header 高 40） |
 | 选中/悬停底 | 白 8% / 15%（SubtleFill） |
 
 ### 行为
 - 点项 → 选中（返回索引路径）；点 toggle → 展开/收窄 Pane（320↔48）。
 - Footer 项独立（会话操作，非导航）。
-- `content_rect` = Pane 右（Left）或顶栏下（Top）；`header_rect` 依 Margin。
+- `content_rect` = Header 之下；`header_rect` 依 Margin。
+
+### 内容区几何（Left 四态，2026-10-01 修正）
+内容 / Header 左缘 = `pane 当前推挤宽 + Header Margin 左（56）`，不再固定从**自身原点 + 56** 起算
+—— 旧实现 pane 展开（320）时内容压住左侧类目，点类目被内容子节点截走。pane 有展开/收窄动画，
+内容随推挤宽在 `arrange` 中平移（**不重量测**，铁律 4）。
+
+| 模式 | pane 收起宽 | 推挤行为（WinUI `NavigationViewDisplayMode`） |
+|---|---|---|
+| `Left` | 48 | 常驻推挤，内容随 320↔48 动画平移（`Expanded`） |
+| `LeftCompact` | 48 | 图标栏恒推挤 48；展开的 pane **覆盖**内容（内容不移动，`Compact`） |
+| `LeftMinimal` | 0 | 仅汉堡键；展开 pane **覆盖**内容（`Minimal`） |
+| `Top` | — | 顶栏下起算，无左侧推挤 |
+
+极端窄窗口（pane 已占满宽）内容退化为零宽，绝不越出父矩形。
 
 ---
 

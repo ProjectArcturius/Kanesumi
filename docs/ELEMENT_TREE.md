@@ -278,7 +278,7 @@ pub trait TreeApp {
 
 | 期 | 内容 | 执行 | 验收 |
 |---|---|---|---|
-| **E1** 骨架 | `kanesumi-element`：Tree/Node/Widget/Ctx、布局（缓存+失效+保险机制）、绘制缓存+损伤、命中/路由/捕获/hover/Click、焦点+Tab、覆盖层+LightDismiss、`VisualState`；内置容器 `Stack`（行/列）、`Border`（背景/描边/内边距）、`Label`；**测试夹具 `TestHarness`**（无外壳驱动指针/键盘、断言矩形/命中/损伤） | 调度者 | 单元测试全绿；夹具能跑通「点击→动作→编辑→重绘损伤」闭环 |
+| **E1** 骨架 | `kanesumi-element`：Tree/Node/Widget/Ctx、布局（缓存+失效+保险机制）、绘制缓存+损伤、命中/路由/捕获/hover/Click、焦点+Tab、覆盖层+LightDismiss、`VisualState`；内置容器 `Stack`（行/列）、`Border`（背景/描边/内边距）、`Label`（文本）、`Image`（位图 / SVG 图标，Stretch 四值 + tint）；**测试夹具 `TestHarness`**（无外壳驱动指针/键盘、断言矩形/命中/损伤） | 调度者 | 单元测试全绿；夹具能跑通「点击→动作→编辑→重绘损伤」闭环 |
 | **E2** 参照 | `MetroButton`、`MetroCheckBox`、`MetroTextBox` 三个控件实现 `Widget`（覆盖：纯点击 / 带状态切换 / 焦点+IME）；harness `TreeHost`；gallery 一页迁移为参照页 | 调度者 | 参照页在 Arch 上真机跑通（Plasma 嵌套），键盘可走完 |
 | **E3** 控件批量 | 其余控件按 E2 模板迁移，每批 4~6 个，每个控件附「矩形外 1px 不可命中」「绘制 ⊆ rect⊕overflow」「键盘可达」通用测试 | 工人（两机并行） | 每批 `cargo test`/`clippy` 基线；调度者逐批审阅 |
 | **E4** 容器 | `ScrollViewer`（裁剪+滚动+命中三合一）、`ItemsRepeater` 虚拟化（keyed 回收）、`Grid`（`structure/grid` 接入）；覆盖层映射到 `floating_layers` | 调度者设计 + 工人填充 | `ROADMAP` M5 验收 |
@@ -302,6 +302,13 @@ pub trait TreeApp {
 
 **迁移中顺带修复的旧 bug**（均有回归测试）：光标从不闪烁（render 每帧重置闪烁相位）、密码框未聚焦时显示明文、
 色板自然尺寸下预览与 Hex 行越界、IME 空提交误报 TextChanged、librarian 自 39b8574 起无法编译。
+
+**2026-10-01 元素树补缺**（Settings 重建暴露的框架缺口）：
+- 新增内置 `Image`（`widgets/image.rs`）：持 `Icon` 或 SVG 路径，SVG 按目标尺寸 × 缩放惰性光栅并缓存、
+  缩放变化重光栅；`Stretch::{None, Uniform, UniformToFill, Fill}` + 可选 `tint`（`ThemeColor`）。
+- `MetroNavigationView` 内容区 / Header 几何修正：左缘 = pane 当前推挤宽 + Header 左间距（Left 四态，
+  展开推挤 / Compact·Minimal 覆盖），不再压住左侧类目。
+- `MetroTabRow` 溢出：横向滚动（滚轮 / 拖动）、选中自动滚入可见、左右 `‹ ›` 翻页键；新增 `compact` 样式（15px）。
 
 旧 API 在 E5 结束前保持可用（`LayoutLeaf` / `Decl` / `FocusRing` / 控件的旧 `render(theme, engine, rect, scene)`），
 E5 结束后统一删除并记入 `CANON_VS_TEMPORARY`。
