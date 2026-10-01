@@ -58,6 +58,23 @@ fn srgb_encode_f32(c: f32) -> f32 {
     }
 }
 
+/// 线性 → sRGB 编码查表（4096 档）：图片逐像素编码不再走三次 `powf`（全屏背板一帧省几十毫秒）。
+fn srgb_encode_lut() -> &'static [f32; 4096] {
+    static LUT: OnceLock<[f32; 4096]> = OnceLock::new();
+    LUT.get_or_init(|| {
+        let mut t = [0.0f32; 4096];
+        for (i, v) in t.iter_mut().enumerate() {
+            *v = srgb_encode_f32(i as f32 / 4095.0);
+        }
+        t
+    })
+}
+
+#[inline]
+fn srgb_encode_fast(c: f32) -> f32 {
+    srgb_encode_lut()[(c.clamp(0.0, 1.0) * 4095.0 + 0.5) as usize]
+}
+
 #[inline]
 fn srgb_decode_u8(v: u8) -> f32 {
     srgb_decode_lut()[v as usize]
@@ -99,9 +116,9 @@ fn blend_px(px: &mut [u8; 4], color: [f32; 4], cov: f32) {
     ];
     // 覆盖样本存储值 = 线性混合后 sRGB 编码（GPU 逐样本混合 + 存储编码）。
     let s = [
-        srgb_encode_f32(p[0] + d[0] * (1.0 - a)),
-        srgb_encode_f32(p[1] + d[1] * (1.0 - a)),
-        srgb_encode_f32(p[2] + d[2] * (1.0 - a)),
+        srgb_encode_fast(p[0] + d[0] * (1.0 - a)),
+        srgb_encode_fast(p[1] + d[1] * (1.0 - a)),
+        srgb_encode_fast(p[2] + d[2] * (1.0 - a)),
     ];
     px[0] = lerp_u8(px[0], s[0] * 255.0, cov);
     px[1] = lerp_u8(px[1], s[1] * 255.0, cov);
@@ -825,13 +842,15 @@ impl CpuRenderer {
                 let s10 = texel(src, sw, u1, v0);
                 let s01 = texel(src, sw, u0, v1);
                 let s11 = texel(src, sw, u1, v1);
-                // 逐通道双线性（sRGB 解码后线性插值）。
+                // 逐通道双线性（颜色 sRGB 解码后线性插值；alpha 本是线性量，不过 sRGB 曲线 ——
+                // 与 GPU 的 *UnormSrgb 纹理一致，否则半透明边缘发暗）。
                 let mut lin = [0.0f32; 4];
                 for ch in 0..4 {
-                    let c00 = srgb_decode_u8(s00[ch]);
-                    let c10 = srgb_decode_u8(s10[ch]);
-                    let c01 = srgb_decode_u8(s01[ch]);
-                    let c11 = srgb_decode_u8(s11[ch]);
+                    let dec = |v: u8| if ch == 3 { v as f32 / 255.0 } else { srgb_decode_u8(v) };
+                    let c00 = dec(s00[ch]);
+                    let c10 = dec(s10[ch]);
+                    let c01 = dec(s01[ch]);
+                    let c11 = dec(s11[ch]);
                     lin[ch] = c00 * (1.0 - fu) * (1.0 - fv)
                         + c10 * fu * (1.0 - fv)
                         + c01 * (1.0 - fu) * fv
@@ -851,8 +870,10 @@ impl CpuRenderer {
                 let idx = (py * self.w + px) as usize * 4;
                 let mut px4 = [self.buf[idx], self.buf[idx + 1], self.buf[idx + 2], self.buf[idx + 3]];
                 let mut c = [0.0f32; 4];
+                // rgb 是预乘值；blend_px 收直通色，故先除回 alpha 再编码（a=1 时与旧路径一致）。
                 for ch in 0..3 {
-                    c[ch] = srgb_encode_f32(rgb[ch]).clamp(0.0, 1.0);
+                    let straight = if a > 0.0 { rgb[ch] / a } else { 0.0 };
+                    c[ch] = srgb_encode_fast(straight);
                 }
                 c[3] = alpha;
                 blend_px(&mut px4, c, 1.0);
