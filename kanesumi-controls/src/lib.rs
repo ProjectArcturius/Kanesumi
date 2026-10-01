@@ -91,12 +91,13 @@ pub use icon_button::{IconButtonClicked, MetroIconButton};
 pub use ime::{ImeContentHint, ImeContext};
 pub use info_badge::{InfoBadgeKind, MetroInfoBadge};
 pub use info_bar::{InfoBarClosed, InfoBarClick, InfoBarSeverity, MetroInfoBar};
-pub use list::MetroList;
+pub use list::{ListSelectionChanged, MetroList};
 pub use menu_bar::{MenuBarItem, MetroMenuBar};
 pub use menu_flyout::{MenuFlyout, MenuInvoked};
 pub use metro_tile::{MetroTile, TileClicked, TileLive, TileSize};
 pub use navigation_view::{
-    MetroNavigationView, NavigationAction, NavigationPaneMode, NavigationViewItem,
+    MetroNavigationView, NavigationAction, NavigationItemInvoked, NavigationPaneMode,
+    NavigationViewItem,
 };
 pub use number_box::{MetroNumberBox, NumberValueChanged, SpinButton, SpinPlacement};
 pub use pager_control::{MetroPagerControl, PagerPageChanged, PagerAction, PagerHover, PagerItem};
@@ -125,7 +126,9 @@ pub use surface::MetroSurface;
 pub use swipe_control::{MetroSwipeControl, SwipeAction, SwipeInvoked, SwipeItem, SwipeItemAction, SwipeMode};
 pub use switch::{MetroSwitch, SwitchToggled};
 pub use tab_row::{MetroTab, MetroTabRow, TabSelectionChanged};
-pub use tab_view::{MetroTabView, TabHover, TabViewAction};
+pub use tab_view::{
+    MetroTabView, TabAddRequested, TabCloseRequested, TabHover, TabSelected, TabViewAction,
+};
 pub use teaching_tip::{
     MetroTeachingTip, TeachingTipAction, TeachingTipClick, TeachingTipClosed, TeachingTipPlacement,
     TeachingTipSide,
@@ -134,7 +137,7 @@ pub use text::MetroText;
 pub use text_box::{MetroTextBox, TextChanged, TextSubmitted};
 pub use text_field::{TextInputKey, TextField};
 pub use title_bar::{MetroTitleBar, TitleBarAction, TitleBarClick};
-pub use tree_view::{MetroTreeView, TreeAction, TreeRow, TreeViewNode};
+pub use tree_view::{MetroTreeView, TreeAction, TreeItemInvoked, TreeRow, TreeViewNode};
 pub use two_pane_view::{
     MetroTwoPaneView, TwoPaneMode, TwoPanePriority, TwoPaneTallConfig, TwoPaneWideConfig,
 };

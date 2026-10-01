@@ -514,6 +514,8 @@ impl kanesumi_element::Widget for MetroNavigationView {
         // 内容区随 Pane 宽度变化；子节点全部排进 content_rect。
         let content = self.content_rect(rect);
         for c in ctx.children() {
+            // 先按内容区量测：非拉伸对齐的页面要靠期望尺寸定位（未量测 → 期望为 0）。
+            ctx.measure_child(c, content.size);
             ctx.arrange_child(c, content);
         }
     }
@@ -600,6 +602,23 @@ impl kanesumi_element::Widget for MetroNavigationView {
 #[cfg(test)]
 mod tree_tests {
     use super::*;
+
+    #[test]
+    fn start_aligned_page_gets_its_desired_size() {
+        // 回归：arrange 前未量测子节点 → 非拉伸页面期望尺寸为 0（看不见）。
+        let mut h = TestHarness::new(800.0, 600.0);
+        let nav = h.tree.insert(h.root(), MetroNavigationView::new(vec![NavigationViewItem::new("一")]));
+        let page = h.tree.insert_with(
+            nav,
+            Label::new("页面内容"),
+            LayoutProps { h_align: Align::Start, v_align: Align::Start, ..LayoutProps::default() },
+        );
+        h.frame();
+        let r = h.rect(page);
+        assert!(r.size.width > 0.0 && r.size.height > 0.0, "页面应有内容尺寸 {r:?}");
+        let content = h.tree.get::<MetroNavigationView>(nav).unwrap().content_rect(h.rect(nav));
+        assert_eq!((r.origin.x, r.origin.y), (content.origin.x, content.origin.y));
+    }
     use kanesumi_element::testing::TestHarness;
     use kanesumi_element::widgets::Label;
     use kanesumi_element::{Align, Insets, LayoutProps, WidgetId};
