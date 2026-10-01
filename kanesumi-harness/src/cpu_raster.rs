@@ -313,7 +313,7 @@ impl CpuRenderer {
                         *overflow, Some(text_clip),
                     );
                 }
-                SceneCommand::Image { rgba, width, height, rect, tint } => {
+                SceneCommand::Image { rgba, width, height, rect, tint, opacity } => {
                     if is_fully_clipped(&clip_stack) {
                         continue;
                     }
@@ -323,6 +323,7 @@ impl CpuRenderer {
                         *height,
                         *rect,
                         *tint,
+                        *opacity,
                         clip_through_damage(effective_clip(&clip_stack)),
                     );
                 }
@@ -745,6 +746,8 @@ impl CpuRenderer {
 
     /// Image 命令 → 双线性采样 blit（sRGB 解码后线性插值，同 GPU 采样器语义）。
     /// `tint` 复刻 IMAGE_SHADER：None/白 = 原色；其他 = 以图标 alpha 蒙版染色。
+    /// `opacity` 为整体不透明度乘子（0..=1）：在 tint 之上再乘最终 alpha。
+    #[allow(clippy::too_many_arguments)]
     fn emit_image(
         &mut self,
         rgba: &[u8],
@@ -752,6 +755,7 @@ impl CpuRenderer {
         sh: u32,
         rect: Rect,
         tint: Option<Color>,
+        opacity: f32,
         clip: Option<Rect>,
     ) {
         if sw == 0 || sh == 0 || rgba.len() < (sw * sh * 4) as usize {
@@ -825,7 +829,9 @@ impl CpuRenderer {
                     (Some(t), false) => [t[0] * a, t[1] * a, t[2] * a],
                     _ => [lin[0] * a, lin[1] * a, lin[2] * a],
                 };
-                if a <= 0.0 {
+                // opacity 为额外乘子：叠加到最终 alpha（opacity=1 时与旧行为逐位一致）。
+                let alpha = a * opacity.clamp(0.0, 1.0);
+                if alpha <= 0.0 {
                     continue;
                 }
                 let idx = (py * self.w + px) as usize * 4;
@@ -834,7 +840,7 @@ impl CpuRenderer {
                 for ch in 0..3 {
                     c[ch] = srgb_encode_f32(rgb[ch]).clamp(0.0, 1.0);
                 }
-                c[3] = a;
+                c[3] = alpha;
                 blend_px(&mut px4, c, 1.0);
                 self.buf[idx..idx + 4].copy_from_slice(&px4);
             }
@@ -1008,6 +1014,26 @@ mod tests {
         blend_px(&mut px, [1.0, 1.0, 1.0, 0.5], 1.0);
         assert_eq!(px[0], 188);
         assert_eq!(px[3], 255); // a = 0.5 + 1*(1-0.5) = 1
+    }
+
+    /// Image opacity 乘子（R2）：不透明白图，opacity 0 / 0.5 / 1 的像素值。
+    /// 0.5 叠透明底 → 线性 0.5 → sRGB 188，alpha 128。
+    #[test]
+    fn image_opacity_scales_pixel() {
+        use kanesumi_canvas::icon::Icon;
+        let icon = Icon {
+            rgba: vec![255u8; 2 * 2 * 4].into(),
+            width: 2,
+            height: 2,
+        };
+        let render = |op: f32| {
+            let mut scene = Scene::default();
+            scene.image_with_opacity(&icon, Rect::new(0.0, 0.0, 2.0, 2.0), None, op);
+            render_scene(&scene, 2.0, 2.0)
+        };
+        assert_eq!(px_at(&render(1.0), 0, 0), [255, 255, 255, 255], "opacity 1 = 原色");
+        assert_eq!(px_at(&render(0.5), 0, 0), [188, 188, 188, 128], "opacity 0.5 = 半透明");
+        assert_eq!(px_at(&render(0.0), 0, 0), [0, 0, 0, 0], "opacity 0 = 全透明");
     }
 
     #[test]

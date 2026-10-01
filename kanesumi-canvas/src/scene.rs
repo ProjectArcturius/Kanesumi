@@ -60,7 +60,9 @@ pub enum SceneCommand {
     /// 弹出一层裁剪。与 `PushClip` 必须成对。
     PopClip,
     /// 位图（SVG 光栅化的图标等）。`rgba` 为直通 RGBA（非预乘），`width`/`height` 为像素；
-    /// `rect` 为绘制目标（逻辑坐标）；`tint` 为染色（None = 原色，Some = 用指定色替换非透明像素）。
+    /// `rect` 为绘制目标（逻辑坐标）；`tint` 为染色（None = 原色，Some = 用指定色替换非透明像素）；
+    /// `opacity` 为整体不透明度乘子（0..=1，默认 1）—— 在 tint 语义之上再乘，供图标随
+    /// 视觉树整体淡入淡出（Launcher 升起时 Dock 图标渐隐，参 R2 报告）。
     /// `rgba` 用 `Arc<[u8]>` 共享 —— clone 零拷贝（每帧 Scene 构建不再深拷贝位图）。
     Image {
         rgba: Arc<[u8]>,
@@ -68,6 +70,7 @@ pub enum SceneCommand {
         height: u32,
         rect: Rect,
         tint: Option<Color>,
+        opacity: f32,
     },
     /// 填充三角形 —— Metro 自绘几何 glyph 的最小原语（chevron/箭头/收合指示等）。
     /// 参 docs/VISUAL_ISSUES.md V7：Kanesumi 不假设 Fluent/Segoe MDL2 字体存在，
@@ -243,14 +246,27 @@ impl Scene {
     }
 
     /// 绘制位图（图标等）。`icon` 为已光栅化的直通 RGBA；`rect` 为逻辑目标矩形；
-    /// `tint` 为染色（None = 原色）。
+    /// `tint` 为染色（None = 原色）。opacity 默认 1（完全不透明）。
     pub fn image(&mut self, icon: &super::icon::Icon, rect: Rect, tint: Option<Color>) {
+        self.image_with_opacity(icon, rect, tint, 1.0);
+    }
+
+    /// 绘制位图并指定不透明度乘子（0..=1）。`tint` 语义不变；`opacity` 在 tint 之上再乘，
+    /// 用于整体淡入淡出。超范围值夹到 0..=1。
+    pub fn image_with_opacity(
+        &mut self,
+        icon: &super::icon::Icon,
+        rect: Rect,
+        tint: Option<Color>,
+        opacity: f32,
+    ) {
         self.commands.push(SceneCommand::Image {
             rgba: icon.rgba.clone(),
             width: icon.width,
             height: icon.height,
             rect,
             tint,
+            opacity: opacity.clamp(0.0, 1.0),
         });
     }
 
@@ -429,10 +445,33 @@ mod tests {
                 width: 2,
                 height: 2,
                 tint: Some(_),
+                opacity: 1.0,
                 ..
             }
         ));
         assert_eq!(scene.commands.len(), 1);
+    }
+
+    /// opacity 是额外乘子：`image()` 默认 1.0，`image_with_opacity` 夹到 0..=1。
+    #[test]
+    fn image_opacity_builder_clamps() {
+        use super::super::icon::Icon;
+        let icon = Icon {
+            rgba: vec![0; 16].into(),
+            width: 2,
+            height: 2,
+        };
+        let mut scene = Scene::default();
+        scene.image_with_opacity(&icon, Rect::new(0.0, 0.0, 16.0, 16.0), None, 0.5);
+        scene.image_with_opacity(&icon, Rect::new(0.0, 0.0, 16.0, 16.0), None, 2.0);
+        assert!(matches!(
+            scene.commands[0],
+            SceneCommand::Image { opacity, .. } if (opacity - 0.5).abs() < f32::EPSILON
+        ));
+        assert!(matches!(
+            scene.commands[1],
+            SceneCommand::Image { opacity, .. } if opacity == 1.0
+        ));
     }
 
     #[test]

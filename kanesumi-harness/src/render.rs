@@ -91,8 +91,9 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
 }
 "#;
 
-/// 图标管线：RGBA8 纹理采样。`in.color` 承载 tint：白色 (1,1,1) = 原色；
-/// 其他 = 染色（以图标 alpha 为形状蒙版替换颜色）。输出预乘供混合。
+/// 图标管线：RGBA8 纹理采样。`in.color` 的 rgb 承载 tint：白色 (1,1,1) = 原色；
+/// 其他 = 染色（以图标 alpha 为形状蒙版替换颜色）；`in.color.a` 承载 opacity 乘子
+/// （0..=1，默认 1），叠加到输出 rgb 与 alpha。输出预乘供混合。
 const IMAGE_SHADER: &str = r#"
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let low = c / vec3<f32>(12.92);
@@ -119,7 +120,8 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     let src = textureSample(img_tex, samp, in.uv);
     let is_tint = in.color.r != 1.0 || in.color.g != 1.0 || in.color.b != 1.0;
     let rgb = select(src.rgb * src.a, srgb_to_linear(in.color.rgb) * src.a, is_tint);
-    return vec4<f32>(rgb, src.a);
+    let opacity = in.color.a;
+    return vec4<f32>(rgb * opacity, src.a * opacity);
 }
 "#;
 
@@ -918,6 +920,7 @@ impl Renderer {
                     height,
                     rect,
                     tint,
+                    opacity,
                 } => {
                     if is_fully_clipped(&clip_stack) {
                         continue;
@@ -934,6 +937,7 @@ impl Renderer {
                         *height,
                         *rect,
                         *tint,
+                        *opacity,
                     );
                     push_image(&mut steps, before, image_runs.len() as u32, clip);
                 }
@@ -1443,8 +1447,8 @@ fn fnv1a(data: &[u8]) -> u32 {
 }
 
 /// 为一条 Image 命令生成纹理 quad：`rgba` 直通像素 → `rect` 目标矩形。
-/// 无 tint（None）→ 白（原色）；有 tint → 染色。key = rgba 内容 FNV 哈希。
-/// 纹理上传去重由 `Renderer::ensure_image`（`contains_key`）负责，这里只排队。
+/// 无 tint（None）→ 白（原色）；有 tint → 染色。`opacity` 存入顶点色 alpha（shader 乘子）。
+/// key = rgba 内容 FNV 哈希。纹理上传去重由 `Renderer::ensure_image`（`contains_key`）负责，这里只排队。
 #[allow(clippy::too_many_arguments)]
 fn emit_image(
     ndc: &dyn Fn(f32, f32) -> [f32; 2],
@@ -1456,9 +1460,10 @@ fn emit_image(
     height: u32,
     rect: Rect,
     tint: Option<Color>,
+    opacity: f32,
 ) {
     let key = fnv1a(rgba);
-    let c = tint.unwrap_or(Color::WHITE);
+    let c = tint.unwrap_or(Color::WHITE).with_alpha(opacity.clamp(0.0, 1.0));
     let start = verts.len() as u32;
     push_quad(
         verts,
