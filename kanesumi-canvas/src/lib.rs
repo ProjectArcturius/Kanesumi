@@ -5,6 +5,7 @@
 // （tokens / 主题 / 排版 / 几何）；本 crate 消费 core 并产出绘制命令。
 // 依赖方向：core ← canvas ← controls/harness/gallery。
 
+pub mod acrylic;
 pub mod geometry;
 pub mod glyph;
 pub mod icon;
@@ -16,6 +17,7 @@ pub use geometry::{
     ROUNDED_SEGS, Triangle, rounded_rect_polygon, triangulate_arc, triangulate_fill,
     triangulate_stroke,
 };
+pub use acrylic::{Acrylic, backdrop};
 pub use icon::{Icon, rasterize_svg};
 pub use layout::{
     Constraints, CrossAlign, LaidKind, LaidNode, LaidTree, LayoutLeaf, LayoutNode, layout,

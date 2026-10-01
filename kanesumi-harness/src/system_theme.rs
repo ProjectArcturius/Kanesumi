@@ -26,6 +26,51 @@ pub fn config_path() -> PathBuf {
 }
 
 /// 读取系统主题。文件缺失 / 不可读 → 默认（暗色 + 默认 accent）。
+/// 亚克力背板设置（壁纸 + 模糊 + 着色），与主题同一份 theme.toml。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Backdrop {
+    pub wallpaper: Option<std::path::PathBuf>,
+    /// 模糊半径（逻辑像素，0 = 清晰）。
+    pub blur: f32,
+    /// 着色强度 0..1。
+    pub tint: f32,
+}
+
+impl Default for Backdrop {
+    fn default() -> Self {
+        Self { wallpaper: None, blur: 24.0, tint: 0.5 }
+    }
+}
+
+/// 读背板设置（文件缺失 → 默认：无壁纸）。
+pub fn load_backdrop() -> Backdrop {
+    std::fs::read_to_string(config_path()).map(|r| parse_backdrop(&r)).unwrap_or_default()
+}
+
+pub fn parse_backdrop(raw: &str) -> Backdrop {
+    let mut b = Backdrop::default();
+    for line in raw.lines() {
+        let line = line.trim();
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let (k, v) = (k.trim(), v.trim().trim_matches('"'));
+        match k {
+            "wallpaper" => b.wallpaper = (!v.is_empty()).then(|| std::path::PathBuf::from(v)),
+            "acrylic_blur" => {
+                if let Ok(x) = v.parse::<f32>() {
+                    b.blur = if x.is_finite() { x.clamp(0.0, 120.0) } else { b.blur };
+                }
+            }
+            "acrylic_tint" => {
+                if let Ok(x) = v.parse::<f32>() {
+                    b.tint = x.clamp(0.0, 1.0);
+                }
+            }
+            _ => {}
+        }
+    }
+    b
+}
+
 pub fn load() -> MetroTheme {
     match std::fs::read_to_string(config_path()) {
         Ok(raw) => parse(&raw),
@@ -66,6 +111,15 @@ pub fn fingerprint() -> Option<SystemTime> {
 mod tests {
     use super::*;
     use kanesumi_core::Color;
+
+    #[test]
+    fn parses_backdrop() {
+        let b = parse_backdrop("wallpaper = \"/w.png\"\nacrylic_blur = 0\nacrylic_tint = 0.2\n");
+        assert_eq!(b.wallpaper, Some(std::path::PathBuf::from("/w.png")));
+        assert_eq!((b.blur, b.tint), (0.0, 0.2));
+        assert_eq!(parse_backdrop("").blur, 24.0, "缺省 24");
+        assert_eq!(parse_backdrop("acrylic_blur = 9999").blur, 120.0, "夹上限");
+    }
 
     #[test]
     fn parses_accent_and_scheme() {
