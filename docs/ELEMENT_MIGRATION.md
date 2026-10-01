@@ -117,7 +117,11 @@ cargo clippy -p kanesumi-controls --all-targets 2>&1 | grep generated
 |---|---|
 | 打开菜单 | `MenuFlyout::open(ctx, items, keyboard)`（锚在本控件下缘）/ `MenuFlyout::open_at(ctx, items, pos, keyboard)`（右键：锚在指针处）。记下返回的弹层 id |
 | 打开自定义面板 | 写一个面板 `Widget`（照 `MenuFlyout` 的结构：`measure` 返回面板尺寸、`arrange` 记下自身矩形、`paint` 画面板），用 `ctx.open_popup(widget, PopupSpec { anchor: Some(ctx.id()), gap, modal, .. })` 打开 |
-| 模态（对话框） | `PopupSpec { modal: true, anchor: None, .. }` → 表面居中、点外部不关闭、Tab 被限制在弹层内 |
+| 方位 | `side: PopupSide::{Bottom, Top, Left, Right}` + `align`（沿边对齐）；放不下自动翻对侧。默认 Bottom |
+| 模态（对话框） | `PopupSpec { side: PopupSide::Center, modal: true, light_dismiss: false, scrim: true, .. }` → 表面居中（锚点仍是打开者，关闭通知 / 焦点交还照常）、点外部不关闭、Tab 限制在弹层内、框架在弹层下铺主题遮罩。**不要**用 `at` 手算居中（旧做法）—— 参 `dialog.rs` `show_modal` |
+| 遮罩 | `scrim: true` 由框架画（`theme.overlay_color` 整面），控件自己不画遮罩 |
+| 多区域控件判区 | `Event::Click` 不带坐标 → 用 `ctx.pointer()`（最近一次指针位置）判点在哪个区（分体按钮 / 面包屑） |
+| 面板发动作 | 面板是独立节点，关闭后 id 失效 → 动作里带 `owner`（打开面板的控件 id），App 按 owner 分派（`MenuInvoked` / `CommandInvoked` / `BreadcrumbClicked` 同语义） |
 | 展开中外观 | 控件持 `tree_popup: Option<WidgetId>`（私有字段，旧 API 不用）；`paint` 里据此画「展开中」 |
 | 关闭 | 任何原因关闭（选中 / 点外部 / Esc / 失焦 / `ctx.close_popup(id)`）控件都会收到 `Event::PopupClosed { popup }` —— **在这里复位 `tree_popup`**，不要自己猜何时关了 |
 | 结果 | 菜单选中由 `MenuFlyout` 发 `MenuInvoked { owner, path, label, checked }`，App 按 `owner` 分派；自定义面板发自己的动作并 `ctx.close_popup(ctx.id())` |
