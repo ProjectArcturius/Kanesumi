@@ -156,6 +156,44 @@ pub trait Widget: Any {
 4. **调试断言**（`debug_assertions`）：arrange 后逐节点校验 `rect ⊆ parent.rect`、非 NaN、非负；
    paint 后校验命令未越过 `rect ⊕ paint_overflow`。违反即 `log::error!` + 诊断落盘（不 panic）。
 
+### Ⅳ-bis 实现钩子（虚拟化容器，2026-10-01 立）
+
+长列表不能把全部行插成节点（Librarian 一个目录几千项、Launcher 全部应用几百项）。对照 WinUI
+`ItemsRepeater`：容器在 **measure 里按「有效视口」向 `ElementFactory` 要元素、回收离开视口的
+元素**（参 `reference/microsoft-ui-xaml/dev/Repeater/`）。元素树用 `Widget::realize` 钩子表达
+同一件事 —— 容器的**子节点不是数据，而是数据在视口内的投影**。
+
+```rust
+pub trait Widget {
+    /// 布局前的子节点实现钩子（虚拟化容器用）。默认不做事。
+    fn realize(&mut self, _ctx: &mut RealizeCtx) {}
+    /// 是否需要 realize（避免框架每帧对所有节点做可实现性判断）。
+    fn wants_realize(&self) -> bool { false }
+}
+```
+
+- **时机**：`Tree::frame` 在 **measure 之前**，对「`wants_realize()` 为真且被标记
+  `needs_realize`」的可见节点调用一次（先序）。调用后标记清除 —— 回调里 `insert` / `remove` /
+  `invalidate_measure` 再次产生的标记视为本帧已消费（避免每帧反复 realize）。
+- **标记来源**：`invalidate_measure`（子树 / 数据变了）、`insert`（新子节点）、尺寸变化、
+  以及显式的 `Tree::invalidate_realize` / `EventCtx::invalidate_realize` /
+  `UpdateCtx::invalidate_realize` / `ArrangeCtx::invalidate_realize`（滚动偏移变化、视口变化）。
+- **`RealizeCtx` 能做的**：读自身上一帧 `rect`、读 `surface` / 主题 / 引擎；在**自身下**
+  增删子节点（`insert_child` / `insert_child_boxed` / `remove_child` / `children`）、
+  `edit::<T>(child, ..)` 改子控件、`set_child_visible`、`invalidate_measure`。**不能碰自身子树
+  以外的节点**（也不能编辑自身 —— 回调期间控件实例已被框架取出）。
+- **回收语义**：被 `remove_child` 移除的子节点走 `Tree::remove` 既有清理路径（焦点 / 指向 /
+  按下 / 捕获 / 悬停 / 弹层 owner / 动画 / 定时器一并断开）。**焦点节点不回收**（XAML 同样钉住
+  焦点元素）—— 容器的 `RealizeCtx::is_focus_related` 判定，焦点所在行留在原位直到失焦。
+- **保险机制仍成立**：`clips_children` + `scrolls_children` 让「子矩形 ⊆ 父矩形」断言豁免滚动
+  容器；被回收的行以 `visible = false` 保留在子节点列表里（不参与量测 / 绘制 / 命中），池上限
+  = 可见数，超出的行才真正删除。
+
+**首个消费者**：`kanesumi-controls/src/items_repeater.rs` 的 `ItemsRepeater`（纵向等高 Stack /
+等宽 UniformGrid）—— 几何复用 `MetroRepeater`、滚动状态复用 `MetroScrollView`，realize 按
+「可见范围 + 上下 overscan」维护「索引 → 节点」映射并按数据键回收复用。示例见
+`kanesumi-gallery/examples/virtual_list.rs`（一万行），样张 `docs/research/items_repeater/`。
+
 ## §Ⅴ 绘制与损伤
 
 ### Ⅴ.1 逐节点命令缓存
@@ -254,11 +292,11 @@ pub trait TreeApp {
 | E1 | ✅ | `kanesumi-element`；21 项契约测试 |
 | E2 | ✅ | Button / CheckBox / TextBox 参照；`TreeHost`；`tree_demo` 在 Arch Plasma 真机截图核对 |
 | E3 | 🔵 24/47 | 已迁：button check_box text_box · icon_button switch slider radio_buttons rating_control · text surface info_badge progress(Bar+Ring) person_picture info_bar animated_icon · password_box number_box metro_tile pips_pager pager_control title_bar · tab_row swipe_control color_picker。操作规范 `docs/ELEMENT_MIGRATION.md` |
-| E4 | 🔵 | ✅ 定时器、`paint_after`、滚动钩子 / `bring_into_view`、隐藏动画暂停、`MetroScrollView` 滚动容器。⬜ 弹层类控件（下方）、`ItemsRepeater` 虚拟化、覆盖层映射 `floating_layers` |
+| E4 | 🔵 | ✅ 定时器、`paint_after`、滚动钩子 / `bring_into_view`、隐藏动画暂停、`MetroScrollView` 滚动容器、**`ItemsRepeater` 虚拟化（§Ⅳ-bis realize 钩子；keyed 回收）**。⬜ 弹层类控件（下方）、覆盖层映射 `floating_layers` |
 
 **E3 余下（需 E4 能力，调度者先定模板再派工）**：
 - 弹层类（走覆盖层 `open_popup`）：dropdown_menu、selector_flyout、drop_down_button、split_button、menu_bar、context_menu、command_bar_flyout、teaching_tip、auto_suggest_box、breadcrumb_bar、dialog；
-- 滚动 / 虚拟化类：list、tree_view、tab_view、navigation_view；
+- 滚动 / 虚拟化类：list、tree_view、tab_view、navigation_view（底层 `ItemsRepeater` / `realize` 钩子已就绪，见 §Ⅳ-bis）；
 - 特殊：expander（展开改变高度 —— 需裁定「布局动画」语义）、candidate_window（IME 引擎宿主专用表面）、
   two_pane_view / parallax_view / repeater（布局容器，非控件）。
 

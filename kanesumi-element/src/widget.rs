@@ -80,6 +80,20 @@ pub trait Widget: Any {
     /// 结构保证「动画只动视觉」：`UpdateCtx` 只提供 `invalidate_paint`，不提供量测失效。
     fn update(&mut self, _ctx: &mut UpdateCtx, _dt: f64) {}
 
+    /// 布局前的子节点实现钩子（虚拟化容器用）。默认不做事。
+    ///
+    /// 调用时机：`Tree::frame` 在 measure 之前，对本节点被标记 `needs_realize` 且
+    /// `wants_realize()` 为真时调用一次，调用后标记清除。容器在这里按**上一帧**的 `rect`
+    /// 视口增删子节点（`RealizeCtx::insert_child` / `remove_child`）—— 被移除的子节点会走
+    /// 框架的回收清理（焦点 / 捕获 / 悬停 / 弹层引用一并断开）。参 docs/ELEMENT_TREE.md §Ⅳ-bis。
+    fn realize(&mut self, _ctx: &mut RealizeCtx) {}
+
+    /// 是否需要 `realize`（避免框架每帧对所有节点做可实现性判断）。
+    /// 返回 true 的容器必须能从**任意帧**的 `realize` 幂等收敛（重复调用不改变结果）。
+    fn wants_realize(&self) -> bool {
+        false
+    }
+
     /// 占 Tab 位、可被点击聚焦。
     fn focusable(&self) -> bool {
         false
@@ -201,6 +215,10 @@ impl ArrangeCtx<'_> {
     pub(crate) fn popup_slot(&self, child: WidgetId, desired: Size, bounds: Rect) -> Rect {
         self.tree.popup_slot(child, desired, bounds)
     }
+    /// 视口 / 可用尺寸变化后要求本节点重新 `realize`（下一帧 measure 之前）。
+    pub fn invalidate_realize(&mut self) {
+        self.tree.invalidate_realize(self.id);
+    }
 }
 
 pub struct PaintCtx<'a> {
@@ -296,6 +314,10 @@ impl EventCtx<'_> {
     pub fn invalidate_paint(&mut self) {
         self.tree.invalidate_paint(self.id);
     }
+    /// 要求本节点下一帧 measure 之前重新 `realize`（虚拟化容器：滚动偏移 / 数据变化后）。
+    pub fn invalidate_realize(&mut self) {
+        self.tree.invalidate_realize(self.id);
+    }
     pub fn request_anim_frame(&mut self) {
         self.tree.request_anim(self.id);
     }
@@ -345,11 +367,120 @@ impl UpdateCtx<'_> {
     pub fn invalidate_arrange(&mut self) {
         self.tree.invalidate_arrange(self.id);
     }
+    /// 要求本节点下一帧 measure 之前重新 `realize`（虚拟化容器：平滑滚动推进后）。
+    pub fn invalidate_realize(&mut self) {
+        self.tree.invalidate_realize(self.id);
+    }
     pub fn request_anim_frame(&mut self) {
         self.tree.request_anim(self.id);
     }
     /// `secs` 秒后再调用本节点 `update`（等待期间不占帧）。
     pub fn request_timer(&mut self, secs: f64) {
         self.tree.request_timer(self.id, secs);
+    }
+}
+
+/// 实现钩子上下文（参 `Widget::realize` / docs/ELEMENT_TREE.md §Ⅳ-bis）。
+///
+/// 回调期间控件实例已被框架从 arena 取出，因此本上下文**不能编辑自身**（`edit(self.id, ..)`
+/// 会因目标不存在而返回 None）；只能访问主题 / 引擎 / `children()`，并在自身下增删子节点。
+pub struct RealizeCtx<'a> {
+    pub(crate) tree: &'a mut Tree,
+    pub(crate) id: WidgetId,
+    pub(crate) engine: &'a TextEngine,
+}
+
+impl RealizeCtx<'_> {
+    pub fn id(&self) -> WidgetId {
+        self.id
+    }
+
+    /// 排版引擎（本帧的，与 measure / paint 同源）。
+    pub fn engine(&self) -> &TextEngine {
+        self.engine
+    }
+
+    pub fn theme(&self) -> &MetroTheme {
+        self.tree.theme()
+    }
+
+    /// 本节点**上一帧**的矩形（首帧未排列时为零矩形）。虚拟化容器据此取视口。
+    pub fn rect(&self) -> Rect {
+        self.tree
+            .rect(self.id)
+            .unwrap_or_else(|| Rect::new(0.0, 0.0, 0.0, 0.0))
+    }
+
+    /// 表面矩形（首帧视口未知时的兜底 —— 根下的容器首帧即可用）。
+    pub fn surface(&self) -> Rect {
+        self.tree.surface()
+    }
+
+    /// 本节点当前全部子节点（含被回收池隐藏的）。
+    pub fn children(&self) -> Vec<WidgetId> {
+        self.tree.children(self.id).to_vec()
+    }
+
+    pub fn child_props(&self, child: WidgetId) -> LayoutProps {
+        self.tree.props(child).unwrap_or_default()
+    }
+
+    /// 在自身之下追加子节点（由框架回收）。
+    pub fn insert_child(&mut self, widget: impl Widget) -> WidgetId {
+        self.tree.insert(self.id, widget)
+    }
+
+    /// 在自身之下追加子节点（带框架布局属性）。
+    pub fn insert_child_with(&mut self, widget: impl Widget, props: LayoutProps) -> WidgetId {
+        self.tree.insert_with(self.id, widget, props)
+    }
+
+    /// 在自身之下追加**装箱**子节点（`ItemFactory::build` 的产物）。
+    pub fn insert_child_boxed(&mut self, widget: Box<dyn Widget>) -> WidgetId {
+        self.tree.insert_boxed_with(self.id, widget, LayoutProps::default())
+    }
+
+    /// 删除一个**直接子节点**（及其子树）。非直接子节点忽略。
+    pub fn remove_child(&mut self, child: WidgetId) {
+        if self.tree.parent(child) == Some(self.id) {
+            self.tree.remove(child);
+        }
+    }
+
+    /// 编辑子节点（语义同 `Tree::edit`）。目标为自身或不存在时返回 None。
+    pub fn edit<T: Widget, R>(
+        &mut self,
+        child: WidgetId,
+        f: impl FnOnce(&mut T, &mut crate::tree::EditCtx) -> R,
+    ) -> Option<R> {
+        self.tree.edit(child, f)
+    }
+
+    pub fn set_child_visible(&mut self, child: WidgetId, visible: bool) {
+        self.tree
+            .update_props(child, |p| p.visible = visible);
+    }
+
+    pub fn child_visible(&self, child: WidgetId) -> bool {
+        self.tree
+            .props(child)
+            .is_some_and(|p| p.visible)
+    }
+
+    /// `node` 是否为焦点节点的祖先或自身（焦点节点不回收，参 docs/ELEMENT_TREE.md §Ⅳ-bis）。
+    pub fn is_focus_related(&self, node: WidgetId) -> bool {
+        self.tree
+            .focused()
+            .is_some_and(|f| self.tree.is_ancestor_or_self(node, f))
+    }
+
+    /// 子节点变化 / 视口变化后置本节点量测失效（下一帧重排）。
+    pub fn invalidate_measure(&mut self) {
+        self.tree.invalidate_measure(self.id);
+    }
+
+    /// 要求本节点下一个 realize 周期再实现一次（数据变化时用）。
+    pub fn invalidate_realize(&mut self) {
+        self.tree.invalidate_realize(self.id);
     }
 }

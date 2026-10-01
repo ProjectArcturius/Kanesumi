@@ -1102,3 +1102,81 @@ fn theme_tokens_reskin_on_set_theme() {
         "旧主题色不残留"
     );
 }
+
+// ── realize 实现钩子（§Ⅳ-bis）───────────────────────────────────────────────
+
+/// 虚拟化容器夹具：记录 realize 调用次数；`keep` 为真时保留一个可聚焦子控件，否则移除。
+struct Realizer {
+    calls: Rc<Cell<u32>>,
+    keep: Rc<Cell<bool>>,
+    child: Option<kanesumi_element::WidgetId>,
+}
+
+impl Widget for Realizer {
+    fn measure(&mut self, _ctx: &mut MeasureCtx, available: Size) -> Size {
+        available
+    }
+    fn paint(&mut self, _ctx: &mut PaintCtx, _scene: &mut Scene) {}
+    fn wants_realize(&self) -> bool {
+        true
+    }
+    fn realize(&mut self, ctx: &mut kanesumi_element::RealizeCtx) {
+        self.calls.set(self.calls.get() + 1);
+        if self.keep.get() {
+            if self.child.is_none() {
+                self.child = Some(ctx.insert_child(TestButton::new(40.0, 40.0)));
+            }
+        } else {
+            self.child = None;
+            for c in ctx.children() {
+                ctx.remove_child(c);
+            }
+        }
+    }
+}
+
+#[test]
+fn realize_runs_only_when_marked() {
+    let calls = Rc::new(Cell::new(0));
+    let mut h = TestHarness::new(200.0, 200.0);
+    let id = h.tree.insert(
+        h.root(),
+        Realizer {
+            calls: calls.clone(),
+            keep: Rc::new(Cell::new(true)),
+            child: None,
+        },
+    );
+    h.frame();
+    assert_eq!(calls.get(), 1, "首帧 realize 一次");
+    h.frame();
+    h.frame();
+    assert_eq!(calls.get(), 1, "无失效不重复 realize");
+    h.tree.edit::<Realizer, _>(id, |_r, ctx| ctx.invalidate_measure());
+    h.frame();
+    assert_eq!(calls.get(), 2, "标记后 realize 一次");
+    assert!(!h.tree.children(id).is_empty(), "realize 插入了子节点");
+}
+
+#[test]
+fn removed_child_releases_focus() {
+    let keep = Rc::new(Cell::new(true));
+    let mut h = TestHarness::new(200.0, 200.0);
+    let id = h.tree.insert(
+        h.root(),
+        Realizer {
+            calls: Rc::new(Cell::new(0)),
+            keep: keep.clone(),
+            child: None,
+        },
+    );
+    h.frame();
+    let child = h.tree.children(id)[0];
+    assert!(h.tree.focus(child, false));
+    assert_eq!(h.tree.focused(), Some(child));
+    keep.set(false);
+    h.tree.edit::<Realizer, _>(id, |_r, ctx| ctx.invalidate_measure());
+    h.frame();
+    assert!(h.tree.children(id).is_empty(), "realize 移除了子节点");
+    assert_eq!(h.tree.focused(), None, "被移除的焦点子节点已从焦点表清理");
+}
