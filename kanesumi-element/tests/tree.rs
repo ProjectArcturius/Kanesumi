@@ -960,7 +960,16 @@ fn compose_local_damage_frame_excludes_non_intersecting_nodes() {
     assert_eq!(first.damage, None, "首帧全量");
     assert!(has_color(&first.scene, blue));
 
-    // 局部帧：只含与 damage 相交的节点（近处红，不含远处蓝）。
+    // 默认不按 damage 剔除（整幅消费方 —— wgpu 直出 / 快照 —— 拿到的 Scene 必须完整）。
+    h.move_to(h.center(m1));
+    let out = h.frame().clone();
+    assert!(out.damage.is_some(), "悬停应产出局部 damage");
+    assert!(has_color(&out.scene, blue), "未开 damage_cull 时局部帧也须完整");
+
+    // 开启后（外壳确认 CPU 局部光栅）：只含与 damage 相交的节点（近处红，不含远处蓝）。
+    h.tree.set_damage_cull(true);
+    h.move_to(Point::new(390.0, 10.0));
+    h.frame();
     h.move_to(h.center(m1));
     let out = h.frame().clone();
     assert!(out.damage.is_some(), "悬停应产出局部 damage");

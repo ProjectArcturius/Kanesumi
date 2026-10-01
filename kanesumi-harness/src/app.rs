@@ -254,6 +254,15 @@ pub trait App {
     /// 浮层表面输入事件（指针坐标 = 该表面本地逻辑坐标）。外壳按指针所在表面路由。
     fn floating_input(&mut self, _index: usize, _event: InputEvent) {}
 
+    /// 第 `index` 个浮层上一次 `render_floating` 的损伤（`None` = 整幅）。外壳据此局部光栅。
+    /// 默认 `None`：旧 App 每帧整幅，行为不变。
+    fn floating_damage(&mut self, _index: usize) -> Option<Rect> {
+        None
+    }
+
+    /// 外壳通知：第 `index` 个浮层下一帧须整幅（重新显示 / 尺寸变化 / 光栅器新建）。
+    fn floating_full_repaint(&mut self, _index: usize) {}
+
     /// 浮层请求高度（动态显示/收起）。返回 0 = 收起（表面高度 0，无命中无渲染）。
     /// 外壳每帧比对后经 `set_size` 立即生效（参主表面 `preferred_height` 同款机制）。
     fn floating_height(&self, _index: usize) -> f32 {
@@ -352,6 +361,10 @@ pub trait App {
     fn damage_hint(&mut self) -> Option<Rect> {
         None
     }
+
+    /// 外壳通知：主表面走 CPU 局部光栅（只重画 damage 区），App 可按 damage 剔除绘制。
+    /// wgpu 直出等整幅消费方不调用（默认关）。参 kanesumi-element `Tree::set_damage_cull`。
+    fn set_damage_cull(&mut self, _on: bool) {}
 
     /// 表面键盘焦点变化回调。`focused=false` 时 App 应关闭弹层（右键菜单/对话框等），
     /// 避免「失焦残留」（参 CONTEXT_MENU_SPEC §Ⅵ LightDismiss 之外的应用侧关闭路径）。

@@ -200,6 +200,9 @@ pub struct Tree {
     /// 弹层分离：主表面 Scene 不含覆盖层（及遮罩），每个弹层经 `popup_scene` 单独取，
     /// 由外壳画进各自的 xdg_popup 表面。参 ELEMENT_TREE §弹层分离。
     detached_popups: bool,
+    /// 按本帧 damage 剔除拼接（只拼与 damage 相交的节点）。**仅当消费方只重绘 damage 区**
+    ///（CPU 局部光栅）才可开；整幅重画的消费方（wgpu 直出、快照）开了会丢内容。默认关。
+    damage_cull: bool,
 }
 
 impl Tree {
@@ -225,6 +228,7 @@ impl Tree {
             timers: Vec::new(),
             parked: Vec::new(),
             damage: None,
+            damage_cull: false,
             full_repaint: true,
             dirty: true,
             ime: None,
@@ -241,6 +245,17 @@ impl Tree {
     // ── 结构 ────────────────────────────────────────────────────────────────
 
     /// 内容根：App 把页面挂在它下面。根的每个子节点都铺满整个表面（Z 叠放）。
+    /// 开 / 关按 damage 剔除拼接（见字段注释）。外壳确认本表面走局部光栅后才开。
+    pub fn set_damage_cull(&mut self, on: bool) {
+        self.damage_cull = on;
+    }
+
+    /// 下一帧整幅重画（外壳的缓冲失效：表面重新显示 / 尺寸变化 / 光栅器新建）。
+    pub fn request_full_repaint(&mut self) {
+        self.full_repaint = true;
+        self.dirty = true;
+    }
+
     pub fn root(&self) -> WidgetId {
         self.root
     }
@@ -734,8 +749,8 @@ impl Tree {
         let frame_damage = if self.full_repaint { None } else { self.damage };
         let surface = Rect::new(0.0, 0.0, size.width, size.height);
         let cull = match frame_damage {
-            None => Some(surface),
-            Some(d) => d.intersect(surface),
+            Some(d) if self.damage_cull => d.intersect(surface),
+            _ => Some(surface),
         };
         let mut scene = Scene::default();
         self.compose(self.root, &mut scene, cull);

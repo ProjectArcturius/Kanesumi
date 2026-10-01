@@ -111,6 +111,8 @@ struct FloatingTree {
     tree: Tree,
     pending_dt: f64,
     pointer: Point,
+    /// 上一次 `render_floating` 的帧损伤（`None` = 整幅）。
+    damage: Option<Rect>,
 }
 
 /// 外壳输入 → 树方法（主表面 / 浮层共用）。返回没有控件处理的按键（交给 App 加速键）。
@@ -177,7 +179,9 @@ impl<A: TreeApp> TreeHost<A> {
             .map(|i| {
                 let mut t = Tree::new(app.theme());
                 app.build_floating(i, &mut t);
-                FloatingTree { tree: t, pending_dt: 0.0, pointer: Point::new(0.0, 0.0) }
+                // 浮层恒为 CPU 光栅 + 局部提交（外壳按 `floating_damage` 只重画损伤区）。
+                t.set_damage_cull(true);
+                FloatingTree { tree: t, pending_dt: 0.0, pointer: Point::new(0.0, 0.0), damage: None }
             })
             .collect();
         Self {
@@ -307,7 +311,19 @@ impl<A: TreeApp> App for TreeHost<A> {
             return Scene::default();
         };
         let dt = std::mem::take(&mut f.pending_dt);
-        f.tree.frame(engine, size, dt).scene
+        let out = f.tree.frame(engine, size, dt);
+        f.damage = out.damage;
+        out.scene
+    }
+
+    fn floating_damage(&mut self, index: usize) -> Option<Rect> {
+        self.floating.get(index).and_then(|f| f.damage)
+    }
+
+    fn floating_full_repaint(&mut self, index: usize) {
+        if let Some(f) = self.floating.get_mut(index) {
+            f.tree.request_full_repaint();
+        }
     }
 
     fn floating_input(&mut self, index: usize, event: InputEvent) {
@@ -415,6 +431,10 @@ impl<A: TreeApp> App for TreeHost<A> {
 
     fn damage_hint(&mut self) -> Option<Rect> {
         self.damage.take()
+    }
+
+    fn set_damage_cull(&mut self, on: bool) {
+        self.tree.set_damage_cull(on);
     }
 
     fn focus_changed(&mut self, focused: bool) {

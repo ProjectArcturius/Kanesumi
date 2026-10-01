@@ -364,6 +364,10 @@ pub(crate) struct Shell {
     dirty: bool,
     /// 各浮层表面脏标记（与 `floating` 等长）。
     floating_dirty: Vec<bool>,
+    /// 浮层下一帧须整幅（新建 / 重新显示）。参 `render_floating_frame` 局部光栅。
+    floating_full: Vec<bool>,
+    /// 浮层上一帧光栅的物理尺寸（变了 → 整幅）。
+    floating_raster_size: Vec<Option<(u32, u32)>>,
     /// 上一迭代各浮层可见性（翻转检测 → 置脏）。
     floating_visible_cache: Vec<bool>,
 
@@ -1003,6 +1007,8 @@ impl Shell {
             cpu: None,
             dirty: true,
             floating_dirty: vec![false; floating.len()],
+            floating_full: vec![true; floating.len()],
+            floating_raster_size: vec![None; floating.len()],
             floating_visible_cache: vec![false; floating.len()],
             scale: 1.0,
             _fractional_scale_manager: fractional_scale_manager,
@@ -1156,6 +1162,12 @@ impl Shell {
             f.cpu = Some(CpuRenderer::new(f.width, f.height, f.scale));
             log::info!("浮层 CPU 光栅化器已创建（{:.0}x{:.0}）", f.width, f.height);
         }
+        // 局部光栅：新建 / 重新显示 / 尺寸变了 → 整幅（先通知 App 整幅拼接）；否则按 App 帧损伤。
+        let phys_now = f.cpu.as_ref().map(|c| c.physical_size());
+        let full = self.floating_full[idx] || self.floating_raster_size[idx] != phys_now;
+        if full {
+            app.floating_full_repaint(idx);
+        }
         let t_render = Instant::now();
         let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             app.render_floating(&self.engine, idx, Size::new(f.width, f.height))
@@ -1180,7 +1192,8 @@ impl Shell {
         if let Some(cpu) = f.cpu.as_mut() {
             let (pw, ph) = cpu.physical_size();
             let t = Instant::now();
-            let rgba = cpu.render(&self.engine, &scene, None);
+            let damage = if full { None } else { app.floating_damage(idx) };
+            let rgba = cpu.render(&self.engine, &scene, damage);
             raster_ms = t.elapsed().as_secs_f32() * 1000.0;
             // 浮层同样走 dmabuf 直通（默认）—— 控制面板 / Launcher / 菜单等浮层一并受益。
             let scale = f.scale;
@@ -1194,9 +1207,11 @@ impl Shell {
                 ph,
                 rgba,
                 scale,
-                None,
+                damage,
             );
             commit_ms = t.elapsed().as_secs_f32() * 1000.0;
+            self.floating_full[idx] = false;
+            self.floating_raster_size[idx] = phys_now;
         }
         if let Some(p) = self.perf_floating.get_mut(idx) {
             p.record(render_ms, raster_ms, commit_ms);
@@ -1347,6 +1362,8 @@ impl Shell {
                 self.scale,
             );
             self.cpu = Some(cpu);
+            // CPU 局部光栅只重画 damage 区 → App 可按 damage 剔除拼接（wgpu 整幅直出不开）。
+            self.app.set_damage_cull(true);
         }
     }
 
@@ -1389,6 +1406,8 @@ impl Shell {
             let visible = self.app.floating_visible(i);
             if visible && !self.floating_visible_cache[i] {
                 self.floating_dirty[i] = true;
+                // 隐藏期间缓冲内容不可信 → 重新显示的首帧整幅。
+                self.floating_full[i] = true;
             }
             self.floating_visible_cache[i] = visible;
         }
