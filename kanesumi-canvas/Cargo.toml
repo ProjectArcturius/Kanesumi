@@ -13,6 +13,9 @@ kanesumi-core = { path = "../kanesumi-core" }
 ab_glyph_rasterizer = "0.1"
 # SVG → RGBA 光栅化（图标管线，与 Ether monorepo 侧 ether-assets 同款管线，Kanesumi 自足）。
 resvg = "0.44"
+# JPEG 解码（壁纸多为 JPEG；resvg 只解 PNG/SVG）。锁到工作区已有 0.4.21（经 resvg 传递引入，
+# Cargo.lock 已存在，Arch 离线构建无需新下载）。参 icon::rasterize_image。
+zune-jpeg = "0.4"
 # UAX #14 断行 —— 为 CJK/混合文本提供正确的允许断行点集合（禁则规则）。参 V14。
 unicode-linebreak = "0.1"
 # OpenType 塑形 + BiDi + 字素簇。排版不得按 Unicode 标量逐字推进。

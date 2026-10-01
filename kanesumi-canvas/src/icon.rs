@@ -50,7 +50,12 @@ impl Icon {
 /// tiny-skia 输出 premultiplied RGBA → 去预乘直通 RGBA。参 rasterize_svg。
 pub fn rasterize_png(path: impl AsRef<Path>) -> Option<Icon> {
     let data = std::fs::read(path).ok()?;
-    let pixmap = resvg::tiny_skia::Pixmap::decode_png(&data).ok()?;
+    rasterize_png_bytes(&data)
+}
+
+/// 把 PNG 字节解码为直通 RGBA 图标。参 rasterize_png。
+pub fn rasterize_png_bytes(data: &[u8]) -> Option<Icon> {
+    let pixmap = resvg::tiny_skia::Pixmap::decode_png(data).ok()?;
     let (w, h) = (pixmap.width(), pixmap.height());
     let raw = pixmap.data();
     let mut rgba = Vec::with_capacity(raw.len());
@@ -67,6 +72,59 @@ pub fn rasterize_png(path: impl AsRef<Path>) -> Option<Icon> {
             )
         };
         rgba.extend_from_slice(&[r, g, b, a]);
+    }
+    Some(Icon {
+        rgba: Arc::from(rgba),
+        width: w,
+        height: h,
+    })
+}
+
+/// 按**文件头魔数**分派解码 PNG / JPEG（不信扩展名）。用于壁纸等外部图片。
+/// 失败 / 未知格式返回 None。JPEG 输出不透明 RGBA（alpha 255）。
+pub fn rasterize_image(path: impl AsRef<Path>) -> Option<Icon> {
+    let data = std::fs::read(path).ok()?;
+    rasterize_image_bytes(&data)
+}
+
+/// 按字节魔数分派：PNG（`\x89PNG\r\n\x1a\n`）/ JPEG（`FF D8 FF`）。参 rasterize_image。
+pub fn rasterize_image_bytes(data: &[u8]) -> Option<Icon> {
+    if data.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        rasterize_png_bytes(data)
+    } else if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        rasterize_jpeg_bytes(data)
+    } else {
+        None
+    }
+}
+
+/// 把 JPEG 字节解码为不透明 RGBA（alpha 255）。zune-jpeg 默认输出 RGB（某些灰度图输出
+/// 单通道 Luma），按输出长度判定通道数；失败返回 None。
+fn rasterize_jpeg_bytes(data: &[u8]) -> Option<Icon> {
+    let mut decoder = zune_jpeg::JpegDecoder::new(data);
+    let pixels = decoder.decode().ok()?;
+    let info = decoder.info()?;
+    let (w, h) = (info.width as u32, info.height as u32);
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let n = (w as usize) * (h as usize);
+    let mut rgba = Vec::with_capacity(n * 4);
+    if pixels.len() >= n * 4 {
+        // 已是 RGBA：仅需保证 alpha（zune 默认不会走到这里，防御性保留）。
+        for c in pixels[..n * 4].chunks_exact(4) {
+            rgba.extend_from_slice(&[c[0], c[1], c[2], 255]);
+        }
+    } else if pixels.len() >= n * 3 {
+        for c in pixels[..n * 3].chunks_exact(3) {
+            rgba.extend_from_slice(&[c[0], c[1], c[2], 255]);
+        }
+    } else if pixels.len() >= n {
+        for &g in &pixels[..n] {
+            rgba.extend_from_slice(&[g, g, g, 255]);
+        }
+    } else {
+        return None;
     }
     Some(Icon {
         rgba: Arc::from(rgba),
@@ -149,5 +207,27 @@ mod tests {
     #[test]
     fn missing_svg_returns_none() {
         assert!(rasterize_svg("/nonexistent/icon.svg", 24).is_none());
+    }
+
+    /// 魔数分派：JPEG 夹具（16×16 纯橙 #E57812，224 字节）解码尺寸 / 像素正确。
+    #[test]
+    fn rasterizes_jpeg_by_magic() {
+        let data = include_bytes!("../assets/test_icon.jpg");
+        let icon = rasterize_image_bytes(data).expect("JPEG 应解码");
+        assert_eq!((icon.width, icon.height), (16, 16));
+        assert_eq!(icon.rgba.len(), 16 * 16 * 4);
+        let px = &icon.rgba[..4];
+        assert_eq!(px[3], 255, "JPEG 输出 alpha 恒 255");
+        // 纯橙 #E57812 经 JPEG 有损编码 → 实测 e3 78 10，留容差（防通道错位）。
+        assert!((px[0] as i32 - 227).abs() <= 16, "R≈227: {}", px[0]);
+        assert!((px[1] as i32 - 120).abs() <= 24, "G≈120: {}", px[1]);
+        assert!((px[2] as i32 - 16).abs() <= 24, "B≈16: {}", px[2]);
+    }
+
+    /// 未知格式（无 PNG/JPEG 魔数）返回 None，不 panic。
+    #[test]
+    fn unknown_image_bytes_return_none() {
+        assert!(rasterize_image_bytes(b"not an image").is_none());
+        assert!(rasterize_image_bytes(&[]).is_none());
     }
 }

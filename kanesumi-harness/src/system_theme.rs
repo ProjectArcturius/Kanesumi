@@ -47,6 +47,19 @@ pub fn load_backdrop() -> Backdrop {
     std::fs::read_to_string(config_path()).map(|r| parse_backdrop(&r)).unwrap_or_default()
 }
 
+/// 读取背板壁纸并解码为 RGBA（PNG / JPEG 按文件头魔数分派，参 `rasterize_image`）。
+/// 未配置壁纸或解码失败 → None（渲染回退纯色底，不 panic）。
+/// 这是壁纸「只解 PNG」断链的接回点：真实壁纸多为 JPEG。
+pub fn load_wallpaper() -> Option<kanesumi_canvas::Icon> {
+    load_wallpaper_from(&load_backdrop())
+}
+
+/// 从给定背板设置解码壁纸（便于测试 / 调用方复用已解析的设置）。
+pub fn load_wallpaper_from(backdrop: &Backdrop) -> Option<kanesumi_canvas::Icon> {
+    let path = backdrop.wallpaper.as_ref()?;
+    kanesumi_canvas::rasterize_image(path)
+}
+
 pub fn parse_backdrop(raw: &str) -> Backdrop {
     let mut b = Backdrop::default();
     for line in raw.lines() {
@@ -119,6 +132,24 @@ mod tests {
         assert_eq!((b.blur, b.tint), (0.0, 0.2));
         assert_eq!(parse_backdrop("").blur, 24.0, "缺省 24");
         assert_eq!(parse_backdrop("acrylic_blur = 9999").blur, 120.0, "夹上限");
+    }
+
+    /// 壁纸解码：JPEG 也能读（旧路径只解 PNG）。用仓内 JPEG 夹具，不依赖环境变量。
+    #[test]
+    fn loads_jpeg_wallpaper_by_magic() {
+        let jpg = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../kanesumi-canvas/assets/test_icon.jpg");
+        let b = Backdrop {
+            wallpaper: Some(jpg),
+            blur: 0.0,
+            tint: 0.0,
+        };
+        let icon = load_wallpaper_from(&b).expect("JPEG 壁纸应解码");
+        assert_eq!((icon.width, icon.height), (16, 16));
+        assert!(
+            load_wallpaper_from(&Backdrop::default()).is_none(),
+            "无壁纸 → None"
+        );
     }
 
     #[test]
