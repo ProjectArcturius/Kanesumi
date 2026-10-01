@@ -13,7 +13,7 @@ use kanesumi_anim::{MetroAnim, MetroPresets};
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::typography::TextStyle;
-use kanesumi_core::{FontWeight, MetroTheme, Point, Rect};
+use kanesumi_core::{FontWeight, MetroTheme, Point, Rect, Size};
 
 use crate::state::ControlState;
 
@@ -302,6 +302,284 @@ impl MetroExpander {
                 );
             }
         }
+    }
+}
+
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 button.rs）────────────────────
+//
+// **容器**：标题行由控件自绘（`render_header`），内容 = 子节点（App 把内容挂到它下面）。
+// `measure` = 标题高 +（展开时）子节点期望高。尺寸在切换那一刻失效一次；动画期间只
+// `invalidate_arrange`（子节点槽位随进度变化）与 `invalidate_paint`（内容底/裁剪随进度重画），
+// **不**重新量测子树（参 ELEMENT_TREE §Ⅴ.1）。注：框架的 `UpdateCtx` 有意不提供量测失效
+// （动画只动视觉），故收起时容器在切换那一刻直接塌回标题高，没有「高度动画」这一段。
+//
+// 框架只能把子节点裁到本节点矩形，无法裁到「内容可见窗」这一子区域，故动画期间子节点槽位
+// 直接取 `content_clip`（可见窗）本身：收起稳态退化为零高槽位（子节点不可命中），展开态为
+// 完整 `content_rect`。
+
+/// 元素树动作：展开态改变（点标题 / Enter / Space）。携带新的展开态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpanderToggled(pub bool);
+
+impl kanesumi_element::Widget for MetroExpander {
+    fn measure(
+        &mut self,
+        ctx: &mut kanesumi_element::MeasureCtx,
+        available: Size,
+    ) -> Size {
+        let header = EXPANDER_HEADER_HEIGHT;
+        let w = if available.width.is_finite() {
+            available.width.max(0.0)
+        } else {
+            0.0
+        };
+        let content_avail = if available.height.is_finite() {
+            (available.height - header).max(0.0)
+        } else {
+            f32::INFINITY
+        };
+        let mut content_h = 0.0f32;
+        if self.expanded {
+            for c in ctx.children() {
+                let d = ctx.measure_child(c, Size::new(w, content_avail));
+                content_h = content_h.max(d.height);
+            }
+        }
+        self.content_height = content_h;
+        Size::new(w, header + content_h)
+    }
+
+    fn arrange(&mut self, ctx: &mut kanesumi_element::ArrangeCtx, rect: Rect) {
+        // 展开稳态 = 完整内容区；动画期节点槽位 = 可见窗（见节首说明）；
+        // 收起稳态 = 内容原点上的零高槽位（子节点排进去但不可命中）。
+        let slot = if self.expanded && !self.is_animating() {
+            self.content_rect(rect)
+        } else {
+            self.content_clip(rect).unwrap_or_else(|| {
+                let c = self.content_rect(rect);
+                Rect::new(c.origin.x, c.origin.y, c.size.width, 0.0)
+            })
+        };
+        // 子节点期望尺寸已在 `measure` 里算好，此处不再量测 —— 动画期量测会破坏「只动视觉」。
+        for c in ctx.children() {
+            ctx.arrange_child(c, slot);
+        }
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        let saved = self.state;
+        self.state = crate::state::control_state(ctx.state());
+        self.render_header(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+        self.render_content(ctx.theme(), ctx.rect(), scene);
+        self.state = saved;
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, Key, PointerButton};
+        let rect = ctx.rect();
+        let toggled = match event {
+            Event::PointerUp {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => self.hit_header(rect, *pos),
+            Event::KeyDown { key: Key::Enter, .. }
+            | Event::KeyDown { key: Key::Char(' '), .. } => true,
+            _ => false,
+        };
+        if !toggled {
+            return;
+        }
+        self.toggle();
+        // 尺寸只在切换这一刻变一次：展开立刻撑到内容高，收起在动画结束再塌回标题高。
+        ctx.invalidate_measure();
+        ctx.invalidate_arrange();
+        ctx.invalidate_paint();
+        ctx.request_anim_frame();
+        ctx.emit(ExpanderToggled(self.expanded));
+        ctx.set_handled();
+    }
+
+    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, dt: f64) {
+        let was_animating = self.is_animating();
+        MetroExpander::update(self, dt);
+        if self.is_animating() {
+            // 动画期内容可见窗变化 → 重排槽位；内容底/chevron 重画。
+            ctx.invalidate_arrange();
+            ctx.invalidate_paint();
+            ctx.request_anim_frame();
+        } else if was_animating {
+            // 动画刚结束：按完整内容区重排一次，避免稳态槽位停在动画末帧的近似值。
+            ctx.invalidate_arrange();
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn hit_test(&self, rect: Rect, pos: Point) -> bool {
+        // 只有标题行可交互；内容区的空白不拦截，交给下层。
+        self.hit_header(rect, pos)
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Group,
+            name: self.header.clone(),
+            value: None,
+            checked: Some(self.expanded),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use kanesumi_canvas::Scene;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::widgets::Label;
+    use kanesumi_element::{Align, Insets, LayoutProps, MeasureCtx, PaintCtx, Widget, WidgetId};
+
+    /// 计数用子控件：记录 `measure` 被调用次数（验证动画期间不重量测）。
+    struct Counted {
+        size: Size,
+        count: Rc<Cell<u32>>,
+    }
+
+    impl Widget for Counted {
+        fn measure(&mut self, _ctx: &mut MeasureCtx, _available: Size) -> Size {
+            self.count.set(self.count.get() + 1);
+            self.size
+        }
+        fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
+            scene.fill_rect(kanesumi_core::Color::WHITE, ctx.rect());
+        }
+    }
+
+    fn harness() -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(400.0, 300.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroExpander::new("网络"),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    fn header_center(h: &TestHarness, id: WidgetId) -> Point {
+        h.tree
+            .get::<MetroExpander>(id)
+            .unwrap()
+            .header_rect(h.rect(id))
+            .center()
+    }
+
+    #[test]
+    fn collapsed_is_header_high_and_child_unhittable() {
+        let (mut h, id) = harness();
+        let child = h.tree.insert(id, Label::new("内容"));
+        h.frame();
+        assert_eq!(h.rect(id).size.height, EXPANDER_HEADER_HEIGHT, "收起 = 标题高");
+        assert_eq!(h.rect(child).size.height, 0.0, "收起 → 子节点零高槽位");
+        assert_ne!(h.tree.hit(Point::new(200.0, 60.0)), Some(child));
+    }
+
+    #[test]
+    fn expanding_reveals_child_in_content_rect() {
+        let (mut h, id) = harness();
+        let child = h.tree.insert(id, Label::new("内容"));
+        h.frame();
+        h.click_at(header_center(&h, id));
+        h.settle();
+        let content = h
+            .tree
+            .get::<MetroExpander>(id)
+            .unwrap()
+            .content_rect(h.rect(id));
+        let r = h.rect(child);
+        assert_eq!(r, content, "展开稳态子节点铺满 content_rect");
+        assert_eq!(h.tree.hit(r.center()), Some(child), "展开后子节点可命中");
+    }
+
+    #[test]
+    fn toggle_emits_with_new_state() {
+        let (mut h, id) = harness();
+        h.click_at(header_center(&h, id));
+        assert_eq!(h.take::<ExpanderToggled>(), vec![(id, ExpanderToggled(true))]);
+        h.settle();
+        h.tab();
+        h.key(kanesumi_element::Key::Enter);
+        assert_eq!(h.take::<ExpanderToggled>(), vec![(id, ExpanderToggled(false))]);
+    }
+
+    #[test]
+    fn child_not_remeasured_during_animation() {
+        let (mut h, id) = harness();
+        let count = Rc::new(Cell::new(0));
+        h.tree.insert(
+            id,
+            Counted {
+                size: Size::new(120.0, 40.0),
+                count: count.clone(),
+            },
+        );
+        h.frame();
+        assert_eq!(count.get(), 0, "收起稳态不量测子节点");
+        h.click_at(header_center(&h, id));
+        let at_toggle = count.get();
+        assert!(at_toggle >= 1, "展开切换量测一次子节点");
+        h.frame();
+        h.frame();
+        assert_eq!(count.get(), at_toggle, "动画期间不重新量测子节点");
+        h.settle();
+        assert_eq!(count.get(), at_toggle, "稳态不再增量测");
+    }
+
+    #[test]
+    fn sizes_and_passes_insurance_checks() {
+        let (mut h, id) = harness();
+        h.tree.insert(id, Label::new("内容"));
+        h.frame();
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn squeezed_still_passes_insurance_checks() {
+        let mut h = TestHarness::new(400.0, 300.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroExpander::new("网络"),
+            LayoutProps {
+                width: Some(40.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.tree.insert(id, Label::new("内容"));
+        h.frame();
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn disabled_ignores_toggle() {
+        let (mut h, id) = harness();
+        h.tree.set_enabled(id, false);
+        h.frame();
+        h.click_at(header_center(&h, id));
+        assert!(h.take::<ExpanderToggled>().is_empty());
     }
 }
 
