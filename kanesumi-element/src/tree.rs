@@ -82,8 +82,10 @@ impl Default for PopupSpec {
 #[derive(Debug, Clone, Default)]
 pub struct FrameOutput {
     pub scene: Scene,
-    /// 本帧变化区域；`None` = 全量重绘（首帧 / 尺寸变化 / 主题变化）。
+    /// 本帧变化区域；`None` = 全量重绘（首帧 / 尺寸变化 / 主题变化）**或本帧什么都没变** —— 二者用 `full` 区分。
     pub damage: Option<Rect>,
+    /// 本帧是否整幅重绘。`!full && damage == None` = 什么都没变（外壳可跳过光栅与提交）。
+    pub full: bool,
     /// 是否仍有动画在跑（外壳据此继续请求帧）。
     pub animating: bool,
 }
@@ -850,12 +852,14 @@ impl Tree {
             n.widget.as_ref()?.ime(n.rect, &self.theme, engine)
         });
 
+        let full = self.full_repaint;
         self.full_repaint = false;
         self.damage = None;
         self.dirty = false;
         FrameOutput {
             scene,
             damage: frame_damage,
+            full,
             animating: !self.anim.is_empty(),
         }
     }

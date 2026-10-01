@@ -126,9 +126,6 @@ pub struct CpuRenderer {
     buf: Vec<u8>,
     /// 字形位图缓存：key = GlyphKey。静态文本每帧零重栅格化。
     glyph_bitmaps: HashMap<GlyphKey, (kanesumi_canvas::text::GlyphMetrics, Vec<u8>)>,
-    /// 图标缓存（FNV 内容去重）。`Arc<[u8]>` 共享字节，命中仅增引用计数——
-    /// 旧 `(Vec<u8>,..).clone()` 每帧整张拷一遍，缓存形同虚设（参 egui texture atlas）。
-    images: HashMap<u32, (Arc<[u8]>, u32, u32)>,
     /// 文本布局缓存（egui GalleyCache 同构思想，参 reference/egui fonts.rs 1061-1292）：
     /// key = 布局参数打包（内容 fnv1a + rect/style/align/wrap/max_lines/overflow/scale）。
     /// 静态文本每帧零重排版 —— 命中只 blit（字形位图已在 glyph_bitmaps）。
@@ -158,7 +155,6 @@ impl CpuRenderer {
             scale,
             buf: Vec::new(),
             glyph_bitmaps: HashMap::new(),
-            images: HashMap::new(),
             layout_cache: HashMap::new(),
             layout_used: HashSet::new(),
             layout_prev_used: HashSet::new(),
@@ -761,13 +757,9 @@ impl CpuRenderer {
         if sw == 0 || sh == 0 || rgba.len() < (sw * sh * 4) as usize {
             return;
         }
-        let key = fnv1a(rgba);
-        let cached = self
-            .images
-            .entry(key)
-            .or_insert_with(|| (Arc::from(rgba), sw, sh))
-            .clone();
-        let (src, sw, sh) = cached;
+        // 直接采样命令里的像素（Arc 由 Scene 持有）：不再逐帧对整幅图做内容哈希 + 缓存 ——
+        // 全屏亚克力背板 4 MB，每帧哈希一遍就是几毫秒（2026-10-01 Launcher 浮层实测）。
+        let src = rgba;
         let scale = self.scale;
         let x0 = rect.origin.x * scale;
         let y0 = rect.origin.y * scale;
@@ -799,18 +791,40 @@ impl CpuRenderer {
         let py0 = y0c.floor().max(0.0) as u32;
         let px1 = (x1c.ceil().min(self.w as f32)) as u32;
         let py1 = (y1c.ceil().min(self.h as f32)) as u32;
+        // 1:1 快路径（像素对齐、尺寸相等、不染色、不透明度 1 —— 全屏背板 / 预光栅图标的常态）：
+        // 不透明像素直接拷贝（sRGB 解码再编码回原值，与通用路径逐字节一致），省掉逐像素
+        // 双线性 + 三次 powf（1280×800 一帧约 40 ms → 数毫秒）。半透明像素仍走通用路径。
+        let aligned = (x0 - x0.round()).abs() < 0.01
+            && (y0 - y0.round()).abs() < 0.01
+            && (dst_w - sw as f32).abs() < 0.5
+            && (dst_h - sh as f32).abs() < 0.5;
+        let fast = aligned && tint_is_white && opacity >= 1.0;
         for py in py0..py1 {
             for px in px0..px1 {
+                if fast {
+                    let (u, v) = ((px as f32 - x0.round()) as u32, (py as f32 - y0.round()) as u32);
+                    if u < sw && v < sh {
+                        let s = texel(src, sw, u, v);
+                        if s[3] == 255 {
+                            let idx = (py * self.w + px) as usize * 4;
+                            self.buf[idx..idx + 4].copy_from_slice(&[s[0], s[1], s[2], 255]);
+                            continue;
+                        }
+                        if s[3] == 0 {
+                            continue;
+                        }
+                    }
+                }
                 // 目标像素中心 → 源坐标（双线性）。
                 let u = ((px as f32 + 0.5 - x0) / dst_w * sw as f32 - 0.5).clamp(0.0, sw as f32 - 1.0);
                 let v = ((py as f32 + 0.5 - y0) / dst_h * sh as f32 - 0.5).clamp(0.0, sh as f32 - 1.0);
                 let (u0, v0) = (u.floor() as u32, v.floor() as u32);
                 let (u1, v1) = ((u0 + 1).min(sw - 1), (v0 + 1).min(sh - 1));
                 let (fu, fv) = (u - u0 as f32, v - v0 as f32);
-                let s00 = texel(&src[..], sw, u0, v0);
-                let s10 = texel(&src[..], sw, u1, v0);
-                let s01 = texel(&src[..], sw, u0, v1);
-                let s11 = texel(&src[..], sw, u1, v1);
+                let s00 = texel(src, sw, u0, v0);
+                let s10 = texel(src, sw, u1, v0);
+                let s01 = texel(src, sw, u0, v1);
+                let s11 = texel(src, sw, u1, v1);
                 // 逐通道双线性（sRGB 解码后线性插值）。
                 let mut lin = [0.0f32; 4];
                 for ch in 0..4 {

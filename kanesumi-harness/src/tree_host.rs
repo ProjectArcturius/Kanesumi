@@ -312,7 +312,7 @@ impl<A: TreeApp> App for TreeHost<A> {
         };
         let dt = std::mem::take(&mut f.pending_dt);
         let out = f.tree.frame(engine, size, dt);
-        f.damage = out.damage;
+        f.damage = frame_damage(&out);
         out.scene
     }
 
@@ -501,8 +501,8 @@ impl<A: TreeApp> App for TreeHost<A> {
                 }
             }
         }
-        // 外壳契约：None = 全量。多帧未被取走时并入（保守）。
-        self.damage = match (self.damage.take(), frame.damage) {
+        // 外壳契约：None = 全量；零面积 = 本帧没变（外壳跳过光栅与提交）。多帧未被取走时并入（保守）。
+        self.damage = match (self.damage.take(), frame_damage(&frame)) {
             (_, None) => None,
             (None, Some(d)) => Some(d),
             (Some(a), Some(b)) => Some(union(a, b)),
@@ -511,7 +511,25 @@ impl<A: TreeApp> App for TreeHost<A> {
     }
 }
 
+/// 元素树帧 → 外壳损伤：整幅 → `None`；没变 → 零面积矩形（外壳据此跳过光栅与提交）；局部 → 该矩形。
+/// 元素树的 `damage == None` 同时表示「整幅」与「没变」，必须用 `full` 区分，否则「没变」被当整幅光栅
+///（Launcher 浮层每次指针移动整屏重光栅 40 ms，2026-10-01 实测）。
+fn frame_damage(out: &kanesumi_element::FrameOutput) -> Option<Rect> {
+    if out.full {
+        None
+    } else {
+        Some(out.damage.unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0)))
+    }
+}
+
 fn union(a: Rect, b: Rect) -> Rect {
+    // 零面积 = 「没变」，是并集的单位元（否则原点处的空矩形会把包围盒拉到左上角）。
+    if a.size.width <= 0.0 || a.size.height <= 0.0 {
+        return b;
+    }
+    if b.size.width <= 0.0 || b.size.height <= 0.0 {
+        return a;
+    }
     let x0 = a.origin.x.min(b.origin.x);
     let y0 = a.origin.y.min(b.origin.y);
     let x1 = a.right().max(b.right());

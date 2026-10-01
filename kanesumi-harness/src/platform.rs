@@ -1195,6 +1195,10 @@ impl Shell {
             let (pw, ph) = cpu.physical_size();
             let t = Instant::now();
             let damage = if full { None } else { app.floating_damage(idx) };
+            // 零面积 = 这一帧什么都没变：不光栅、不提交。
+            if damage.is_some_and(|d| d.size.width <= 0.0 || d.size.height <= 0.0) {
+                return;
+            }
             let rgba = cpu.render(&self.engine, &scene, damage);
             raster_ms = t.elapsed().as_secs_f32() * 1000.0;
             // 浮层同样走 dmabuf 直通（默认）—— 控制面板 / Launcher / 菜单等浮层一并受益。
@@ -1222,6 +1226,7 @@ impl Shell {
 
     /// 浮层输入事件错误边界。事件到达即置脏（I-4）。
     fn emit_floating_input(&mut self, idx: usize, event: InputEvent) {
+        let is_move = matches!(event, InputEvent::PointerMoved { .. });
         let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.app.floating_input(idx, event);
         }))
@@ -1229,7 +1234,9 @@ impl Shell {
         if !ok {
             log::error!("App::floating_input panic，已隔离");
         }
-        if idx < self.floating_dirty.len() {
+        // 纯指针移动：App 说浮层没变就不重画（同主表面 S1 悬停门控）。此前每次移动都整屏重画 Launcher 浮层。
+        // 旧 App 的 floating_needs_redraw 默认 true，行为不变。
+        if idx < self.floating_dirty.len() && (!is_move || self.app.floating_needs_redraw(idx)) {
             self.floating_dirty[idx] = true;
         }
     }
@@ -1296,7 +1303,10 @@ impl Shell {
     fn take_damage(&mut self) -> Option<Rect> {
         let mut d = self.pending_damage.take();
         if let Some(app_d) = self.app.damage_hint() {
+            let empty = app_d.size.width <= 0.0 || app_d.size.height <= 0.0;
             d = Some(match d {
+                // App 报「没变」（零面积）：外壳自己的待重画区照旧，不并入原点处的空矩形。
+                Some(p) if empty => p,
                 Some(p) => union_rect(p, app_d),
                 None => app_d,
             });
@@ -1514,6 +1524,10 @@ impl Shell {
         // 输出分派：layer-shell → CPU 光栅化 + SHM 提交；xdg-shell → wgpu 直出。
         // S4：本帧局部损坏矩形（CPU 光栅只重绘该区；GPU 直出全量，恒定消费）。
         let damage = self.take_damage();
+        // 零面积 = 这一帧什么都没变（元素树报告）：CPU 表面不光栅、不提交。
+        if self.cpu.is_some() && damage.is_some_and(|d| d.size.width <= 0.0 || d.size.height <= 0.0) {
+            return;
+        }
         let mut raster_ms = 0.0f32;
         let mut commit_ms = 0.0f32;
         if let Some(cpu) = self.cpu.as_mut() {
