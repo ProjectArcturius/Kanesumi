@@ -67,7 +67,7 @@ pub use auto_suggest_box::{AutoSuggestAction, MetroAutoSuggestBox, QuerySubmitte
 pub use breadcrumb_bar::{BreadcrumbClick, BreadcrumbClicked, MetroBreadcrumbBar};
 pub use button::{ButtonClicked, ButtonKind, MetroButton};
  pub use candidate_window::{
-    MetroCandidateWindow, CANDIDATES_PER_PAGE, CANDIDATE_HL_PAD, CANDIDATE_ITEM_GAP, CANDIDATE_MAX_W,
+    CandidateChosen, MetroCandidateWindow, CANDIDATES_PER_PAGE, CANDIDATE_HL_PAD, CANDIDATE_ITEM_GAP, CANDIDATE_MAX_W,
     CANDIDATE_PAD_X, CANDIDATE_PAD_Y, CANDIDATE_ROW_H,
 };
 pub use check_box::{CheckState, CheckToggled, MetroCheckBox};
@@ -86,7 +86,7 @@ pub use dialog::{
 };
 pub use drop_down_button::MetroDropDownButton;
 pub use dropdown_menu::{MenuItem, MenuPath, MenuInteractionSignature, MetroDropdownMenu, SubmenuState};
-pub use expander::{ExpandDirection, MetroExpander};
+pub use expander::{ExpandDirection, ExpanderToggled, MetroExpander};
 pub use icon_button::{IconButtonClicked, MetroIconButton};
 pub use ime::{ImeContentHint, ImeContext};
 pub use info_badge::{InfoBadgeKind, MetroInfoBadge};
