@@ -41,11 +41,28 @@ const NAV_TOP_ICON_SLOT: f32 = 28.0;
 /// Top 模式无图标项额外左移（保持与带图标项 label 视觉起点接近，对齐 render `else x += 16`）。
 const NAV_TOP_NO_ICON_PAD: f32 = 16.0;
 
-/// 导航模式。
+/// 导航模式（对应 WinUI `NavigationViewPaneDisplayMode` 的左侧四态 + 顶部）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavigationPaneMode {
+    /// 左侧展开 / 收起（WinUI `Left`）：pane 常驻并**推挤**内容，宽 320↔48 随动画插值。
     Left,
+    /// 左侧图标栏（WinUI `LeftCompact`）：收起时 48 图标栏推挤内容；打开时 pane 以 320
+    /// **覆盖**内容（内容不随 pane 展开而移动）。
+    LeftCompact,
+    /// 左侧最小（WinUI `LeftMinimal`）：仅汉堡键，内容占满；打开时 pane **覆盖**内容。
+    LeftMinimal,
+    /// 顶部（WinUI `Top`）：顶栏横排，内容在顶栏下。
     Top,
+}
+
+impl NavigationPaneMode {
+    pub fn is_left(self) -> bool {
+        !matches!(self, NavigationPaneMode::Top)
+    }
+
+    pub fn is_top(self) -> bool {
+        matches!(self, NavigationPaneMode::Top)
+    }
 }
 
 /// 导航项。
@@ -145,10 +162,29 @@ impl MetroNavigationView {
         }
     }
 
-    /// 当前 Pane 宽（Left 模式）—— 展开/收窄进度插值（320↔48 平滑过渡）。
+    /// 当前 Pane 宽（Left 模式）—— 展开/收窄进度插值。
+    ///
+    /// `Left` / `LeftCompact`：48↔320（有一根常驻图标栏，展开沿其加宽）。
+    /// `LeftMinimal`：0↔320（无图标栏，展开即整块浮出）。
     pub fn pane_width(&self) -> f32 {
         let p = self.pane.value() as f32;
-        NAV_PANE_COMPACT + (NAV_PANE_EXPANDED - NAV_PANE_COMPACT) * p
+        match self.mode {
+            NavigationPaneMode::LeftMinimal => NAV_PANE_EXPANDED * p,
+            _ => NAV_PANE_COMPACT + (NAV_PANE_EXPANDED - NAV_PANE_COMPACT) * p,
+        }
+    }
+
+    /// 内容区被 pane **推挤**的宽度（参 CONTROL_SPEC §28）。
+    ///
+    /// - `Left`：随 pane 动画插值（展开推挤、收起让位）。
+    /// - `LeftCompact`：恒为图标栏宽 48；展开的 pane 覆盖其上，内容不移动。
+    /// - `LeftMinimal`：恒为 0；展开的 pane 覆盖内容。
+    fn content_push(&self, rect: Rect) -> f32 {
+        match self.mode {
+            NavigationPaneMode::Left => self.effective_pane_width(rect),
+            NavigationPaneMode::LeftCompact => NAV_PANE_COMPACT.min(rect.size.width.max(0.0)),
+            NavigationPaneMode::LeftMinimal | NavigationPaneMode::Top => 0.0,
+        }
     }
 
     /// Pane 展开进度 [0,1]（0 = 收窄，1 = 展开）。
@@ -163,6 +199,11 @@ impl MetroNavigationView {
         }
         self.pane_expanded = expanded;
         self.pane.set_target(if expanded { 1.0 } else { 0.0 });
+    }
+
+    /// 直接设定 Pane 展开进度 [0,1]（快照 / 测试用，不启动动画）。
+    pub fn set_pane_progress(&mut self, progress: f32) {
+        self.pane.jump_to(progress.clamp(0.0, 1.0) as f64);
     }
 
     /// Pane 展开/收窄动画是否进行中。
@@ -180,22 +221,17 @@ impl MetroNavigationView {
         self.pane_width().min(rect.size.width.max(0.0))
     }
 
-    /// Toggle 按钮 rect。
+    /// Toggle 按钮 rect（Left / Top 均在原点起 40×40）。
     pub fn toggle_rect(&self, rect: Rect) -> Rect {
-        match self.mode {
-            NavigationPaneMode::Left => {
-                Rect::new(rect.origin.x, rect.origin.y, NAV_TOGGLE, NAV_TOGGLE)
-            }
-            NavigationPaneMode::Top => {
-                Rect::new(rect.origin.x, rect.origin.y, NAV_TOGGLE, NAV_TOGGLE)
-            }
-        }
+        Rect::new(rect.origin.x, rect.origin.y, NAV_TOGGLE, NAV_TOGGLE)
     }
 
     /// 项区（Left：Pane 内 Toggle 下方；Top：Toggle 右侧横排）。
     fn item_area(&self, rect: Rect) -> Rect {
         match self.mode {
-            NavigationPaneMode::Left => Rect::new(
+            NavigationPaneMode::Left
+            | NavigationPaneMode::LeftCompact
+            | NavigationPaneMode::LeftMinimal => Rect::new(
                 rect.origin.x,
                 rect.origin.y + NAV_TOGGLE,
                 self.effective_pane_width(rect),
@@ -237,7 +273,9 @@ impl MetroNavigationView {
     pub fn top_item_rects(&self, engine: &TextEngine, rect: Rect) -> Vec<Rect> {
         let area = self.item_area(rect);
         match self.mode {
-            NavigationPaneMode::Left => {
+            NavigationPaneMode::Left
+            | NavigationPaneMode::LeftCompact
+            | NavigationPaneMode::LeftMinimal => {
                 let mut y = area.origin.y;
                 self.items
                     .iter()
@@ -265,15 +303,27 @@ impl MetroNavigationView {
         }
     }
 
-    /// Header rect（Left：pane 右、y=44；Top：顶栏下）。
+    /// Header rect（Left：**pane 推挤宽 + Header Margin**、y=44；Top：顶栏下）。
+    ///
+    /// 2026-10-01 修正：旧实现固定从 `origin + (56,44)` 起算，pane 展开（320）时内容区压住
+    /// 左侧类目、点类目被内容子节点截走。现按 WinUI `NavigationView` 语义从 pane 当前推挤宽之后起算
+    /// —— `Left` 随展开/收窄动画平移（只动 arrange，不重量测），`LeftCompact` / `LeftMinimal`
+    /// 打开时 pane 覆盖、内容不移动。
     pub fn header_rect(&self, rect: Rect) -> Rect {
         match self.mode {
-            NavigationPaneMode::Left => Rect::new(
-                rect.origin.x + NAV_HEADER_MARGIN.0,
-                rect.origin.y + NAV_HEADER_MARGIN.1,
-                (rect.size.width - self.effective_pane_width(rect) - NAV_HEADER_MARGIN.0).max(0.0),
-                NAV_ITEM_H,
-            ),
+            NavigationPaneMode::Left
+            | NavigationPaneMode::LeftCompact
+            | NavigationPaneMode::LeftMinimal => {
+                let push = self.content_push(rect);
+                // 夹到父右缘：极端窄窗口下 pane 已占满，内容退化为零宽，绝不越出父矩形。
+                let x = (rect.origin.x + push + NAV_HEADER_MARGIN.0).min(rect.right());
+                Rect::new(
+                    x,
+                    rect.origin.y + NAV_HEADER_MARGIN.1,
+                    (rect.right() - x).max(0.0),
+                    NAV_ITEM_H,
+                )
+            }
             NavigationPaneMode::Top => Rect::new(
                 rect.origin.x + NAV_TOGGLE,
                 rect.origin.y + NAV_TOP_HEIGHT,
@@ -323,7 +373,7 @@ impl MetroNavigationView {
                 self.selected = Some(path.clone());
                 NavigationAction::Select(path)
             }
-            NavigationAction::Toggle if self.mode == NavigationPaneMode::Left => {
+            NavigationAction::Toggle if self.mode.is_left() => {
                 self.set_pane_expanded(!self.pane_expanded);
                 NavigationAction::Toggle
             }
@@ -362,6 +412,21 @@ impl MetroNavigationView {
                 Rect::new(cx - bar_w / 2.0, cy + dy - t / 2.0, bar_w, t),
             );
         }
+
+        // 项列表裁到 pane 区：LeftMinimal 收起（pane 宽 0）时不得让图标漏到内容上；
+        // Top 模式裁到顶栏高。Toggle 已在此之外画好，始终可见。
+        let pane_clip = match self.mode {
+            NavigationPaneMode::Top => {
+                Rect::new(rect.origin.x, rect.origin.y, rect.size.width, NAV_TOP_HEIGHT)
+            }
+            _ => Rect::new(
+                rect.origin.x,
+                rect.origin.y,
+                self.effective_pane_width(rect),
+                rect.size.height,
+            ),
+        };
+        scene.push_clip(pane_clip);
 
         let rects = self.top_item_rects(engine, rect);
         // Pane 展开进度：label / chevron / 子项按进度淡入（Top 模式恒全显）。
@@ -408,12 +473,8 @@ impl MetroNavigationView {
                 x += 16.0; // 无 icon 时 label 顶到 padding 16
             }
             // label（收窄态隐藏；展开/收窄动画期间按进度淡入淡出）
-            if pane_p > 0.0 || self.mode == NavigationPaneMode::Top {
-                let alpha = if self.mode == NavigationPaneMode::Top {
-                    1.0
-                } else {
-                    pane_p
-                };
+            if pane_p > 0.0 || self.mode.is_top() {
+                let alpha = if self.mode.is_top() { 1.0 } else { pane_p };
                 let label_w = (r.right() - x - 12.0).max(0.0);
                 let fg = if selected {
                     colors.on_surface
@@ -474,7 +535,8 @@ impl MetroNavigationView {
                 }
             }
         }
-        scene.pop_clip();
+        scene.pop_clip(); // pane 裁剪
+        scene.pop_clip(); // 整体矩形裁剪
     }
 }
 
@@ -565,8 +627,8 @@ impl kanesumi_element::Widget for MetroNavigationView {
                         ctx.set_handled();
                     }
                     NavigationAction::Toggle => {
-                        // 仅 Left 模式真正翻转（Top 模式 handle_click 返回 Toggle 但不改状态）。
-                        if self.mode == NavigationPaneMode::Left {
+                        // 仅左侧模式真正翻转（Top 模式 handle_click 返回 Toggle 但不改状态）。
+                        if self.mode.is_left() {
                             ctx.invalidate_arrange();
                             ctx.invalidate_paint();
                             ctx.request_anim_frame();
@@ -698,6 +760,34 @@ mod tree_tests {
             h.tree.get::<MetroNavigationView>(id).unwrap().selected,
             Some(vec![1])
         );
+    }
+
+    /// 回归：内容区铺满后压在左侧类目上时，点类目被内容（会吞指针的控件）截走。
+    /// 修好后内容从 pane 右起算，类目中心的点先命中导航控件本身。
+    #[test]
+    fn content_child_does_not_steal_category_clicks() {
+        let (mut h, id) = harness(800.0, 600.0);
+        // 内容子节点用一个会吞 PointerUp 的按钮铺满，模拟「滚动容器截走点击」。
+        let content = h.tree.insert(id, crate::MetroButton::new("页面内容"));
+        h.frame();
+        let nr = h.rect(id);
+        let items = h
+            .tree
+            .get::<MetroNavigationView>(id)
+            .unwrap()
+            .top_item_rects(&h.engine, nr);
+        assert!(
+            !h.rect(content).contains(items[1].center()),
+            "内容子节点不应覆盖类目中心 {:?}",
+            h.rect(content)
+        );
+        h.click_at(items[1].center());
+        assert_eq!(
+            h.take::<NavigationItemInvoked>(),
+            vec![(id, NavigationItemInvoked(1))],
+            "点类目应选中而非命中内容"
+        );
+        h.settle();
     }
 
     #[test]
@@ -837,16 +927,55 @@ mod tests {
     }
 
     #[test]
-    fn content_rect_beside_pane() {
+    fn content_rect_clears_expanded_pane() {
+        // 展开（320）：内容从 pane 右 + Header Margin 起算，不再压住左侧类目。
         let n = nav();
         let r = area();
         let cr = n.content_rect(r);
-        assert_eq!(cr.origin.x, 56.0, "Header Margin 左 56");
-        assert_eq!(
-            cr.origin.y,
-            44.0 + 40.0,
-            "Header Margin 上 44 + header 高 40"
-        );
+        assert_eq!(cr.origin.x, NAV_PANE_EXPANDED + NAV_HEADER_MARGIN.0);
+        assert_eq!(cr.size.width, r.size.width - NAV_PANE_EXPANDED - NAV_HEADER_MARGIN.0);
+        assert_eq!(cr.origin.y, NAV_HEADER_MARGIN.1 + NAV_ITEM_H);
+    }
+
+    #[test]
+    fn content_rect_follows_collapsed_rail() {
+        // Left 收起（48）：内容随 pane 动画平移到 48 + Margin。
+        let mut n = nav();
+        n.set_pane_expanded(false);
+        n.pane.jump_to(0.0);
+        let cr = n.content_rect(area());
+        assert_eq!(cr.origin.x, NAV_PANE_COMPACT + NAV_HEADER_MARGIN.0);
+    }
+
+    #[test]
+    fn left_compact_opens_over_content() {
+        // LeftCompact：常驻 48 图标栏推挤；打开（320）时 pane 覆盖，内容不移动。
+        let mut n = MetroNavigationView {
+            mode: NavigationPaneMode::LeftCompact,
+            ..nav()
+        };
+        n.pane.jump_to(0.0);
+        let closed = n.content_rect(area());
+        n.set_pane_expanded(true);
+        n.pane.jump_to(1.0);
+        let opened = n.content_rect(area());
+        assert_eq!(closed.origin.x, NAV_PANE_COMPACT + NAV_HEADER_MARGIN.0);
+        assert_eq!(opened.origin.x, closed.origin.x, "覆盖不推挤内容");
+    }
+
+    #[test]
+    fn left_minimal_content_full_width() {
+        // LeftMinimal：仅汉堡键，内容从 Margin 起算；打开覆盖，内容不动。
+        let mut n = MetroNavigationView {
+            mode: NavigationPaneMode::LeftMinimal,
+            ..nav()
+        };
+        n.pane.jump_to(0.0);
+        let closed = n.content_rect(area());
+        assert_eq!(closed.origin.x, NAV_HEADER_MARGIN.0);
+        n.set_pane_expanded(true);
+        n.pane.jump_to(1.0);
+        assert_eq!(n.content_rect(area()).origin.x, NAV_HEADER_MARGIN.0);
     }
 
     #[test]
