@@ -18,7 +18,7 @@ pub use geometry::{
     triangulate_stroke,
 };
 pub use acrylic::{Acrylic, backdrop};
-pub use icon::{Icon, rasterize_svg};
+pub use icon::{Icon, rasterize_image, rasterize_png, rasterize_svg};
 pub use layout::{
     Constraints, CrossAlign, LaidKind, LaidNode, LaidTree, LayoutLeaf, LayoutNode, layout,
 };
