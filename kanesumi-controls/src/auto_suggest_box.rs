@@ -648,8 +648,14 @@ impl MetroAutoSuggestBox {
                 let shown = self.shown.clone();
                 let hl = self.highlighted;
                 ctx.edit::<SuggestionList, _>(p, |list, e| {
+                    // 项数变 → 面板高变：必须重量测（只重画会沿用旧高度）。
+                    let resized = list.shown.len() != shown.len();
                     list.set_items(shown, hl);
-                    e.invalidate_paint();
+                    if resized {
+                        e.invalidate_measure();
+                    } else {
+                        e.invalidate_paint();
+                    }
                 });
             }
             None => {
@@ -1029,6 +1035,23 @@ mod tree_tests {
         assert!(
             h.rect(p).origin.y >= h.rect(id).bottom(),
             "弹层贴在输入框下方"
+        );
+    }
+
+    #[test]
+    fn popup_height_follows_suggestion_count() {
+        // 回归：项数变化只重画不重量测 → 面板沿用旧高度。
+        let (mut h, _id) = harness();
+        h.tab();
+        h.type_text("香"); // 香蕉 / 百香果
+        let p = popup(&h);
+        let two = h.rect(p).size.height;
+        h.type_text("果"); // 「香果」→ 百香果（弹层不关，原地更新）
+        assert_eq!(popup(&h), p, "同一弹层原地更新");
+        let one = h.rect(p).size.height;
+        assert!(
+            (two - one - AUTOSUGGEST_ITEM_H).abs() < 0.5,
+            "少一项面板矮一行：{two} → {one}"
         );
     }
 

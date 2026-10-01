@@ -63,7 +63,7 @@ pub mod tree_view;
 pub mod two_pane_view;
 
 pub use animated_icon::{IconDirection, MetroAnimatedIcon};
-pub use auto_suggest_box::{AutoSuggestAction, MetroAutoSuggestBox};
+pub use auto_suggest_box::{AutoSuggestAction, MetroAutoSuggestBox, QuerySubmitted, SuggestionChosen};
 pub use breadcrumb_bar::{BreadcrumbClick, BreadcrumbClicked, MetroBreadcrumbBar};
 pub use button::{ButtonClicked, ButtonKind, MetroButton};
  pub use candidate_window::{
