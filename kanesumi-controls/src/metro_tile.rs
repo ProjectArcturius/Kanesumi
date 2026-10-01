@@ -40,13 +40,18 @@ impl TileSize {
 pub enum TileLive {
     /// 无动态内容。
     None,
-    /// 徽标角标（1×1 迷你 / 叠加右上角）。
+    /// 徽标角标（右下角叠加）。
     Badge(u32),
     /// 单条预览（2×2 标准）。
     Preview(String),
     /// 内容行（4×2 更大）：最近邮件主题 / 最近照片 caption。
     Lines(Vec<String>),
 }
+
+/// Win10 开始屏幕磁贴图标边长占磁贴**短边**的比例（标准磁贴图标约 40%）。
+const TILE_ICON_RATIO: f32 = 0.4;
+/// 标题 / 内容的内边距（Win10 左、下各 8px）。
+const TILE_PAD: f32 = 8.0;
 
 /// MetroTile —— 磁贴。
 #[derive(Debug, Clone, PartialEq)]
@@ -93,7 +98,9 @@ impl MetroTile {
         rect.contains(pos)
     }
 
-    /// 渲染到 `rect`。顺序：基调色底 → 交互 tint → 图标 → 标题 → 动态内容 → 徽标。
+    /// 渲染到 `rect`。顺序：基调色底 → 交互 tint → 图标（居中）→ 标题（左下）→ 内容 → 徽标（右下）。
+    /// 版式按 Win10 开始屏幕：图标居中（占短边 40%），标题左下（内边距 8px，单行省略）；
+    /// 小磁贴（Mini）只有图标无标题；宽磁贴（Large）图标居中、标题左下。
     pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
         let indication = &theme.indication;
         let corner = theme.tokens.corner_radius;
@@ -112,49 +119,66 @@ impl MetroTile {
             TileSize::Large => self.render_large(theme, rect, scene),
         }
 
-        // 徽标（叠加右上角，1×1 或任一档）。
+        // 徽标（叠加右下角，任一档）。
         if let TileLive::Badge(count) = &self.live {
             self.render_badge(theme, engine, rect, *count, scene);
         }
     }
 
-    /// 迷你 1×1：图标居中（40×40），无标题。
-    fn render_mini(&self, rect: Rect, scene: &mut Scene) {
-        let icon_size = 40.0;
-        let ir = Rect::new(
-            rect.origin.x + (rect.size.width - icon_size) / 2.0,
-            rect.origin.y + (rect.size.height - icon_size) / 2.0,
-            icon_size,
-            icon_size,
-        );
-        self.render_icon(scene, ir);
+    /// 磁贴内图标矩形：居中，边长 = 短边 × [`TILE_ICON_RATIO`]（Win10 约 40%）。
+    fn icon_rect(rect: Rect) -> Rect {
+        let s = rect.size.width.min(rect.size.height) * TILE_ICON_RATIO;
+        Rect::new(
+            rect.origin.x + (rect.size.width - s) / 2.0,
+            rect.origin.y + (rect.size.height - s) / 2.0,
+            s,
+            s,
+        )
     }
 
-    /// 标准 2×2：图标 40 左上，标题（body）在下，单条预览（caption）再下。
+    /// 标题 / 内容左起始 x 与可用宽度（左右各 [`TILE_PAD`]）。
+    fn text_bounds(rect: Rect) -> (f32, f32, f32) {
+        let x = rect.origin.x + TILE_PAD;
+        (
+            x,
+            rect.size.width - TILE_PAD * 2.0,
+            rect.bottom() - TILE_PAD,
+        )
+    }
+
+    /// 迷你 1×1：仅居中图标，无标题（Win10 小磁贴）。
+    fn render_mini(&self, rect: Rect, scene: &mut Scene) {
+        self.render_icon(scene, Self::icon_rect(rect));
+    }
+
+    /// 标准 2×2：图标居中；标题左下（caption，单行省略）；单条预览叠在标题之上。
     fn render_standard(&self, theme: &MetroTheme, rect: Rect, scene: &mut Scene) {
-        let pad = 8.0;
-        let body = theme.typography.body;
+        self.render_icon(scene, Self::icon_rect(rect));
         let caption = theme.typography.caption;
-
-        let icon = Rect::new(rect.origin.x + pad, rect.origin.y + pad, 40.0, 40.0);
-        self.render_icon(scene, icon);
-
-        let text_x = rect.origin.x + pad;
-        let content_w = rect.size.width - pad * 2.0;
-        // 标题（body）：icon 之下。
-        scene.text(
+        let (text_x, content_w, title_bottom) = Self::text_bounds(rect);
+        // 标题（caption）：左下角。
+        scene.label(
             self.label.clone(),
-            Rect::new(text_x, icon.bottom() + 6.0, content_w, body.line_height),
+            Rect::new(
+                text_x,
+                title_bottom - caption.line_height,
+                content_w,
+                caption.line_height,
+            ),
             Color::WHITE,
-            body,
+            caption,
             TextAlign::Left,
         );
-        // 单条预览（caption）：标题之下。
+        // 单条预览（caption）：标题之上，次级不透明度。
         if let TileLive::Preview(text) = &self.live {
-            let y = icon.bottom() + 6.0 + body.line_height + 2.0;
-            scene.text(
+            scene.label(
                 text.clone(),
-                Rect::new(text_x, y, content_w, caption.line_height),
+                Rect::new(
+                    text_x,
+                    title_bottom - caption.line_height * 2.0,
+                    content_w,
+                    caption.line_height,
+                ),
                 Color::WHITE.with_alpha(theme.indication.secondary_opacity),
                 caption,
                 TextAlign::Left,
@@ -162,34 +186,33 @@ impl MetroTile {
         }
     }
 
-    /// 更大 4×2：图标 48 左上，标题 + 内容行在右侧。
+    /// 更大 4×2：图标居中；标题左下；内容行自标题向上堆叠（最多 3 行）。
     fn render_large(&self, theme: &MetroTheme, rect: Rect, scene: &mut Scene) {
-        let pad = 8.0;
-        let body = theme.typography.body;
+        self.render_icon(scene, Self::icon_rect(rect));
         let caption = theme.typography.caption;
-
-        let icon = Rect::new(rect.origin.x + pad, rect.origin.y + pad, 48.0, 48.0);
-        self.render_icon(scene, icon);
-
-        let text_x = icon.right() + 12.0;
-        let content_w = rect.right() - pad - text_x;
-        // 标题（body）。
-        scene.text(
+        let (text_x, content_w, title_bottom) = Self::text_bounds(rect);
+        // 标题（caption）：左下角。
+        scene.label(
             self.label.clone(),
-            Rect::new(text_x, icon.origin.y, content_w, body.line_height),
+            Rect::new(
+                text_x,
+                title_bottom - caption.line_height,
+                content_w,
+                caption.line_height,
+            ),
             Color::WHITE,
-            body,
+            caption,
             TextAlign::Left,
         );
-        // 内容行（caption）：标题之下，最多 3 行。
+        // 内容行（caption）：标题之上，最多 3 行。
         let rows = match &self.live {
             TileLive::Lines(lines) => lines.clone(),
             TileLive::Preview(p) => vec![p.clone()],
             _ => Vec::new(),
         };
         for (i, line) in rows.iter().take(3).enumerate() {
-            let y = icon.origin.y + body.line_height + 4.0 + i as f32 * caption.line_height;
-            scene.text(
+            let y = title_bottom - caption.line_height * (i as f32 + 2.0);
+            scene.label(
                 line.clone(),
                 Rect::new(text_x, y, content_w, caption.line_height),
                 Color::WHITE.with_alpha(theme.indication.secondary_opacity),
@@ -199,13 +222,12 @@ impl MetroTile {
         }
     }
 
-    /// 图标渲染：染白 glyph 居中缩放（不裁切），无图标则跳过。
+    /// 图标渲染：glyph 等比缩放至 `rect` 内并居中（不裁切），无图标则跳过。
+    /// 缩放不设 1.0 上限——磁贴要求图标占短边固定比例，调用方应提供足够分辨率。
     fn render_icon(&self, scene: &mut Scene, rect: Rect) {
         let Some(icon) = &self.icon else { return };
-        // 等比缩放至 rect 内（透明 glyph 按目标边缩放）。
-        let scale = (rect.size.width / icon.width as f32)
-            .min(rect.size.height / icon.height as f32)
-            .min(1.0);
+        let scale =
+            (rect.size.width / icon.width as f32).min(rect.size.height / icon.height as f32);
         let w = icon.width as f32 * scale;
         let h = icon.height as f32 * scale;
         let r = Rect::new(
@@ -217,7 +239,7 @@ impl MetroTile {
         scene.image(icon, r, self.icon_tint);
     }
 
-    /// 徽标：右上角小方块 + 白字数字。
+    /// 徽标：右下角小方块 + 白字数字（Win10 磁贴角标位）。
     fn render_badge(
         &self,
         theme: &MetroTheme,
@@ -228,7 +250,12 @@ impl MetroTile {
     ) {
         let badge = 20.0;
         let pad = 6.0;
-        let br = Rect::new(rect.right() - badge - pad, rect.origin.y + pad, badge, badge);
+        let br = Rect::new(
+            rect.right() - badge - pad,
+            rect.bottom() - badge - pad,
+            badge,
+            badge,
+        );
         scene.fill_rounded_rect(theme.colors.primary, br, CornerRadius::Square);
         let text = count.to_string();
         let label = theme.typography.label;
@@ -429,6 +456,102 @@ mod tests {
         assert_eq!(TileSize::Mini.cells(), (1, 1));
         assert_eq!(TileSize::Standard.cells(), (2, 2));
         assert_eq!(TileSize::Large.cells(), (4, 2));
+    }
+
+    /// 测试用 8×8 不透明白图（几何断言只需尺寸）。
+    fn white_icon() -> Icon {
+        Icon {
+            rgba: vec![255u8; 8 * 8 * 4].into(),
+            width: 8,
+            height: 8,
+        }
+    }
+
+    /// Win10 版式：图标居中且占短边 40%；标题左下（左 / 下内边距各 8）。
+    #[test]
+    fn win10_layout_icon_centered_title_bottom_left() {
+        let theme = MetroTheme::ether_dark();
+        let engine = engine();
+        let rect = Rect::new(0.0, 0.0, 136.0, 136.0);
+        let mut t = tile();
+        t.icon = Some(white_icon());
+        let mut scene = Scene::default();
+        t.render(&theme, &engine, rect, &mut scene);
+
+        let img = scene
+            .commands
+            .iter()
+            .find_map(|c| match c {
+                SceneCommand::Image { rect, .. } => Some(*rect),
+                _ => None,
+            })
+            .expect("有图标 → Image 命令");
+        assert!(
+            (img.center().x - 68.0).abs() < 0.01 && (img.center().y - 68.0).abs() < 0.01,
+            "图标居中: {:?}",
+            img
+        );
+        assert!(
+            (img.size.width - 136.0 * 0.4).abs() < 0.5,
+            "图标占短边 40%: {}",
+            img.size.width
+        );
+
+        let title = scene
+            .commands
+            .iter()
+            .find_map(|c| match c {
+                SceneCommand::Text { content, rect, .. } if content == "邮件" => Some(*rect),
+                _ => None,
+            })
+            .expect("标题");
+        assert!((title.origin.x - 8.0).abs() < 0.01, "标题左内边距 8");
+        assert!((title.bottom() - 128.0).abs() < 0.01, "标题底内边距 8");
+    }
+
+    /// 小磁贴（Mini）只有居中图标，无标题。
+    #[test]
+    fn mini_has_icon_only() {
+        let theme = MetroTheme::ether_dark();
+        let engine = engine();
+        let mut t = MetroTile::new("音乐", TileSize::Mini, Color::from_hex(0xFF_4C_A0_5E));
+        t.icon = Some(white_icon());
+        let mut scene = Scene::default();
+        t.render(&theme, &engine, Rect::new(0.0, 0.0, 64.0, 64.0), &mut scene);
+        assert!(
+            scene
+                .commands
+                .iter()
+                .any(|c| matches!(c, SceneCommand::Image { .. })),
+            "Mini 有图标"
+        );
+        assert!(
+            !scene
+                .commands
+                .iter()
+                .any(|c| matches!(c, SceneCommand::Text { content, .. } if content == "音乐")),
+            "Mini 无标题"
+        );
+    }
+
+    /// 徽标角标在右下角（不再右上）。
+    #[test]
+    fn badge_sits_bottom_right() {
+        let mut t = tile();
+        t.live = TileLive::Badge(12);
+        let scene = render_scene(&t, Rect::new(0.0, 0.0, 136.0, 136.0));
+        // 徽标底块是最后一个 FillRect（括号角标 20px，右 / 下各留 6px）。
+        let badge = scene
+            .commands
+            .iter()
+            .rev()
+            .find_map(|c| match c {
+                SceneCommand::FillRect { rect, .. } => Some(*rect),
+                _ => None,
+            })
+            .expect("徽标底块");
+        assert!((badge.right() - (136.0 - 6.0)).abs() < 0.01, "右内边距 6");
+        assert!((badge.bottom() - (136.0 - 6.0)).abs() < 0.01, "底内边距 6");
     }
 
     #[test]

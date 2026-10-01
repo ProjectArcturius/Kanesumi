@@ -1743,4 +1743,68 @@ MetroCalendarDatePicker {
 
 ---
 
+## 47 · MetroTile（磁贴 / Start Tile）
+
+> 数据源：**Win8 / Win10 开始屏幕版式**（Metro 遗产，非 WinUI；`PORT_ROADMAP.md` §控件表记
+> MetroTile「无源」）。尺寸档取 `Ether-main TILES_DESIGN.md` §3（Mini 1×1 / Standard 2×2 /
+> Large 4×2，只横向延长，高恒 ≤ 2）。实现：`kanesumi-controls/src/metro_tile.rs`。
+
+### 版式（2026-10-01 按 Win10 重排）
+
+| 档 | 图标 | 标题 | 动态内容 | 徽标 |
+|---|---|---|---|---|
+| **Mini 1×1** | 居中，占短边 **40%** | **无** | 无 | 右下 |
+| **Standard 2×2** | 居中，占短边 **40%** | 左下，单行省略 | 单条预览（标题之上） | 右下 |
+| **Large 4×2** | 居中，占短边 **40%** | 左下，单行省略 | 最多 3 行（自标题向上） | 右下 |
+
+- **图标居中**：矩形 = 磁贴短边 × 0.4，几何中心与磁贴中心重合；按原图宽高比等比缩放置入
+  （不裁切、不设 1.0 上限——调用方负责提供足够分辨率）。
+- **标题左下**：左、下内边距各 **8px**；字号 = `typography.caption`（13px / 18px 行高），
+  单行省略（`Scene::label`）。小磁贴（Mini）不画标题。
+- **徽标角标**：20×20 方块，右、下各留 6px（**右下角**，Win10 开始屏幕角标位）；数字用
+  `typography.label` 居中，底色 `colors.primary`、字色 `colors.on_primary`。
+- 动态内容（Live Tile）为次级信息，用 `Color::WHITE × secondary_opacity`；Standard 的
+  单条预览叠在标题之上，Large 的内容行自标题行向上堆叠。
+
+> ⚠ 旧版式（图标左上、标题紧贴图标下方、徽标右上）为 Kanesumi 早期权宜，**已废止**；
+> 与 Win10 开始屏幕不符。若再出现「图标左上」即回归。
+
+### 颜色与状态
+
+| 项 | 值 |
+|---|---|
+| 底 | `base_color`（manifest 单一基调色；Chorus harmonize 前可直用） |
+| 悬停 / 按压 | `indication.hover_tint` / `indication.press_tint` 叠层（硬切换） |
+| 图标 | `icon_tint`（默认白，Lumia 磁贴风格）；无 tint 时保留原色 |
+| 圆角 | `theme.tokens.corner_radius` |
+
+### 尺寸
+
+- 固有尺寸（元素树）= 跨单元数 × 单元边长 64 + 单元间隔 8 ×（跨单元数 − 1）：
+  Mini **64×64**、Standard **136×136**、Large **280×136**。参 `TileSize::cells`。
+- 控件只在给定 `rect` 内渲染；rect 由网格（`UniformGrid` / `TileWall`）分配。
+
+### 行为
+
+- 激活：点击 / Enter / Space → emit `TileClicked`；命中测试 = `rect.contains(pos)`。
+- 可聚焦（`focusable = true`），无障碍角色 `Button`，名称 = 标题。
+- 渲染整体夹进 `rect`（成对 `PushClip` / `PopClip`），压低尺寸不越界。
+
+### 控件 API
+
+```
+MetroTile {
+    size: TileSize             // Mini | Standard | Large
+    base_color: Color          // 基调色
+    icon: Option<Icon>         // 透明 glyph（with_svg / set 图标）
+    icon_tint: Option<Color>   // 默认白
+    label: String              // 标题（Mini 不显示）
+    state: ControlState
+    live: TileLive             // None | Badge(u32) | Preview(String) | Lines(Vec<String>)
+    // Widget：emit TileClicked
+}
+```
+
+---
+
 
