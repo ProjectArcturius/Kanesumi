@@ -964,12 +964,6 @@ mod tests {
         r
     }
 
-    fn render_scene_damaged(scene: &Scene, w: f32, h: f32, d: Rect) -> CpuRenderer {
-        let mut r = CpuRenderer::new(w, h, 1.0);
-        r.render_inner(None, scene, Some(d));
-        r
-    }
-
     fn px_at(r: &CpuRenderer, x: u32, y: u32) -> [u8; 4] {
         let idx = (y * r.w + x) as usize * 4;
         [r.buf[idx], r.buf[idx + 1], r.buf[idx + 2], r.buf[idx + 3]]

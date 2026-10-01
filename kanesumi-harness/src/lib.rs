@@ -28,8 +28,8 @@ pub mod snapshot;
 pub use cpu_raster::CpuRenderer;
 
 pub use app::{
-    App, AppConfig, ImeAction, ImeContentHint, ImeContext, InputEvent, Key, Modifiers,
-    PendingImeBatch, PointerButton, PopupRequest, compute_ime_action,
+    AnchorKind, App, AppConfig, FloatingLayer, ImeAction, ImeContentHint, ImeContext, InputEvent, Key,
+    LayerKind, Modifiers, PendingImeBatch, PointerButton, PopupRequest, compute_ime_action,
 };
 pub use context_menu::{ContextMenuAction, ContextMenuState};
 pub use appmenu::{AppMenuHandle, MenuItem, MenuTree, MenuUpdate, ToggleType};

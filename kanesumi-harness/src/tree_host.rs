@@ -21,7 +21,7 @@ use kanesumi_canvas::text::TextEngine;
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
 use kanesumi_element::{Action, Key, Modifiers, Tree, WidgetId};
 
-use crate::app::{App, AppConfig, ImeContext, InputEvent, PopupRequest};
+use crate::app::{App, AppConfig, FloatingLayer, ImeContext, InputEvent, PopupRequest};
 use crate::appmenu::{AppMenuHandle, MenuTree};
 
 /// 元素树应用。
@@ -70,6 +70,87 @@ pub trait TreeApp {
     fn on_menu_command(&mut self, _tree: &mut Tree, _id: i32) {}
 
     fn set_appmenu_handle(&mut self, _handle: AppMenuHandle) {}
+
+    // ── 浮层表面（Launcher 全屏层、面板…）：每个浮层一棵独立的元素树 ─────────
+
+    /// 浮层表面声明（启动时读一次，外壳据此建 layer 表面）。
+    fn floating_layers(&self) -> Vec<FloatingLayer> {
+        Vec::new()
+    }
+
+    /// 启动时为第 `index` 个浮层建树。
+    fn build_floating(&mut self, _index: usize, _tree: &mut Tree) {}
+
+    /// 浮层当前是否显示（隐藏时不渲染、不收输入）。
+    fn floating_visible(&self, _index: usize) -> bool {
+        true
+    }
+
+    /// 浮层请求高度（非全屏浮层；0 = 收起）。
+    fn floating_height(&self, _index: usize) -> f32 {
+        0.0
+    }
+
+    /// 浮层树上的控件动作。`main` 是主表面树（一个动作可以同时改两边，如 Launcher 里点应用后关层）。
+    fn on_floating_action(
+        &mut self,
+        _index: usize,
+        _tree: &mut Tree,
+        _main: &mut Tree,
+        _from: WidgetId,
+        _action: Action,
+    ) {
+    }
+
+    /// 浮层树的每帧 tick（与 `tick` 对应）。
+    fn tick_floating(&mut self, _index: usize, _tree: &mut Tree, _dt: f64) {}
+}
+
+/// 一个浮层表面的树与输入状态。
+struct FloatingTree {
+    tree: Tree,
+    pending_dt: f64,
+    pointer: Point,
+}
+
+/// 外壳输入 → 树方法（主表面 / 浮层共用）。返回没有控件处理的按键（交给 App 加速键）。
+fn feed(t: &mut Tree, pointer: &mut Point, event: InputEvent) -> Option<(Key, Modifiers)> {
+    match event {
+        InputEvent::PointerMoved { x, y } => {
+            *pointer = Point::new(x, y);
+            t.pointer_move(*pointer);
+        }
+        InputEvent::PointerPressed { x, y, button, modifiers } => {
+            *pointer = Point::new(x, y);
+            t.pointer_down(*pointer, button, modifiers);
+        }
+        InputEvent::PointerReleased { x, y, button, modifiers } => {
+            *pointer = Point::new(x, y);
+            t.pointer_up(*pointer, button, modifiers);
+        }
+        InputEvent::DoubleClick { x, y, button, .. } => {
+            t.pointer_double(Point::new(x, y), button);
+        }
+        InputEvent::Scroll { x, y, modifiers } => {
+            t.scroll(*pointer, x, y, modifiers);
+        }
+        InputEvent::KeyPressed { key, modifiers } => {
+            if !t.key_down(key, modifiers) {
+                return Some((key, modifiers));
+            }
+        }
+        InputEvent::PointerLeft => t.pointer_leave(),
+        InputEvent::Preedit { text, cursor_byte } => {
+            t.preedit(text, cursor_byte);
+        }
+        InputEvent::Commit { text } => {
+            t.commit(text);
+        }
+        InputEvent::DeleteSurrounding { before_bytes, after_bytes } => {
+            t.delete_surrounding(before_bytes, after_bytes);
+        }
+    }
+    None
 }
 
 /// 把 `TreeApp` 接成外壳可运行的 `App`。
@@ -84,12 +165,21 @@ pub struct TreeHost<A: TreeApp> {
     pointer: Point,
     /// 弹层分离模式下需重画的弹层（key = `WidgetId::to_u64`）。
     popup_dirty: std::collections::HashSet<u64>,
+    /// 浮层表面的树（与 `TreeApp::floating_layers` 一一对应）。
+    floating: Vec<FloatingTree>,
 }
 
 impl<A: TreeApp> TreeHost<A> {
     pub fn new(mut app: A) -> Self {
         let mut tree = Tree::new(app.theme());
         app.build(&mut tree);
+        let floating = (0..app.floating_layers().len())
+            .map(|i| {
+                let mut t = Tree::new(app.theme());
+                app.build_floating(i, &mut t);
+                FloatingTree { tree: t, pending_dt: 0.0, pointer: Point::new(0.0, 0.0) }
+            })
+            .collect();
         Self {
             app,
             tree,
@@ -97,7 +187,13 @@ impl<A: TreeApp> TreeHost<A> {
             damage: None,
             pointer: Point::new(0.0, 0.0),
             popup_dirty: std::collections::HashSet::new(),
+            floating,
         }
+    }
+
+    /// 第 `index` 个浮层的树（测试 / 外部驱动用）。
+    pub fn floating_tree(&self, index: usize) -> Option<&Tree> {
+        self.floating.get(index).map(|f| &f.tree)
     }
 
     /// 弹层 key → 元素 id（只认当前打开的弹层）。
@@ -141,12 +237,22 @@ impl<A: TreeApp> TreeHost<A> {
     /// （上限防止两个控件互相触发的死循环）。
     fn drain_actions(&mut self) {
         for _ in 0..16 {
+            let mut any = false;
             let actions = self.tree.take_actions();
-            if actions.is_empty() {
-                return;
-            }
+            any |= !actions.is_empty();
             for (from, action) in actions {
                 self.app.on_action(&mut self.tree, from, action);
+            }
+            for i in 0..self.floating.len() {
+                let actions = self.floating[i].tree.take_actions();
+                any |= !actions.is_empty();
+                for (from, action) in actions {
+                    self.app
+                        .on_floating_action(i, &mut self.floating[i].tree, &mut self.tree, from, action);
+                }
+            }
+            if !any {
+                return;
             }
         }
         log::error!("TreeHost: 动作链 16 轮仍未收敛，疑似控件间循环触发");
@@ -165,6 +271,9 @@ impl<A: TreeApp> App for TreeHost<A> {
     fn set_theme(&mut self, theme: MetroTheme) {
         if *self.tree.theme() != theme {
             self.tree.set_theme(theme);
+            for f in &mut self.floating {
+                f.tree.set_theme(theme);
+            }
             self.app.on_theme(theme);
         }
     }
@@ -175,6 +284,38 @@ impl<A: TreeApp> App for TreeHost<A> {
 
     fn preferred_height(&self) -> Option<f32> {
         self.app.preferred_height()
+    }
+
+    fn floating_layers(&self) -> Vec<FloatingLayer> {
+        self.app.floating_layers()
+    }
+
+    fn floating_visible(&self, index: usize) -> bool {
+        self.app.floating_visible(index)
+    }
+
+    fn floating_height(&self, index: usize) -> f32 {
+        self.app.floating_height(index)
+    }
+
+    fn floating_needs_redraw(&self, index: usize) -> bool {
+        self.floating.get(index).is_some_and(|f| f.tree.needs_frame())
+    }
+
+    fn render_floating(&mut self, engine: &TextEngine, index: usize, size: Size) -> Scene {
+        let Some(f) = self.floating.get_mut(index) else {
+            return Scene::default();
+        };
+        let dt = std::mem::take(&mut f.pending_dt);
+        f.tree.frame(engine, size, dt).scene
+    }
+
+    fn floating_input(&mut self, index: usize, event: InputEvent) {
+        if let Some(f) = self.floating.get_mut(index) {
+            // 浮层没有加速键：未处理的按键丢弃（加速键属于主表面 / 应用级）。
+            let _ = feed(&mut f.tree, &mut f.pointer, event);
+        }
+        self.drain_actions();
     }
 
     fn enable_popups(&mut self, bounds: Rect) -> bool {
@@ -234,6 +375,11 @@ impl<A: TreeApp> App for TreeHost<A> {
         // 定时器在 update 里推进：外壳空闲时也有兜底唤醒（~100ms），到期者置脏出帧。
         self.tree.tick_timers(dt);
         self.app.tick(&mut self.tree, dt);
+        for (i, f) in self.floating.iter_mut().enumerate() {
+            f.pending_dt += dt;
+            f.tree.tick_timers(dt);
+            self.app.tick_floating(i, &mut f.tree, dt);
+        }
         self.drain_actions();
     }
 
@@ -263,6 +409,9 @@ impl<A: TreeApp> App for TreeHost<A> {
     fn focus_changed(&mut self, focused: bool) {
         if !focused {
             self.tree.dismiss_popups();
+            for f in &mut self.floating {
+                f.tree.dismiss_popups();
+            }
             self.drain_actions();
         }
     }
@@ -276,54 +425,8 @@ impl<A: TreeApp> App for TreeHost<A> {
         if !matches!(event, InputEvent::PointerMoved { .. }) {
             log::debug!("input {event:?} focus_before={:?}", self.tree.focused());
         }
-        let t = &mut self.tree;
-        match event {
-            InputEvent::PointerMoved { x, y } => {
-                self.pointer = Point::new(x, y);
-                t.pointer_move(self.pointer);
-            }
-            InputEvent::PointerPressed {
-                x,
-                y,
-                button,
-                modifiers,
-            } => {
-                self.pointer = Point::new(x, y);
-                t.pointer_down(self.pointer, button, modifiers);
-            }
-            InputEvent::PointerReleased {
-                x,
-                y,
-                button,
-                modifiers,
-            } => {
-                self.pointer = Point::new(x, y);
-                t.pointer_up(self.pointer, button, modifiers);
-            }
-            InputEvent::DoubleClick { x, y, button, .. } => {
-                t.pointer_double(Point::new(x, y), button);
-            }
-            InputEvent::Scroll { x, y, modifiers } => {
-                t.scroll(self.pointer, x, y, modifiers);
-            }
-            InputEvent::KeyPressed { key, modifiers } => {
-                if !t.key_down(key, modifiers) {
-                    self.app.on_key(&mut self.tree, key, modifiers);
-                }
-            }
-            InputEvent::PointerLeft => t.pointer_leave(),
-            InputEvent::Preedit { text, cursor_byte } => {
-                t.preedit(text, cursor_byte);
-            }
-            InputEvent::Commit { text } => {
-                t.commit(text);
-            }
-            InputEvent::DeleteSurrounding {
-                before_bytes,
-                after_bytes,
-            } => {
-                t.delete_surrounding(before_bytes, after_bytes);
-            }
+        if let Some((key, modifiers)) = feed(&mut self.tree, &mut self.pointer, event) {
+            self.app.on_key(&mut self.tree, key, modifiers);
         }
         self.drain_actions();
     }
@@ -447,6 +550,76 @@ mod tests {
         let mut s = Scene::default();
         h.render_into(e, Size::new(400.0, 300.0), &mut s);
         s
+    }
+
+    /// 带一个浮层的应用：浮层里一个按钮，点它 → 主表面状态标签改写（跨树动作）。
+    struct WithOverlay {
+        config: AppConfig,
+        status: Option<WidgetId>,
+        overlay_button: Option<WidgetId>,
+        open: bool,
+    }
+
+    impl TreeApp for WithOverlay {
+        fn config(&self) -> &AppConfig {
+            &self.config
+        }
+        fn build(&mut self, tree: &mut Tree) {
+            self.status = Some(tree.insert(tree.root(), kanesumi_element::widgets::Label::new("idle")));
+        }
+        fn on_action(&mut self, _tree: &mut Tree, _from: WidgetId, _action: Action) {}
+        fn floating_layers(&self) -> Vec<FloatingLayer> {
+            vec![FloatingLayer::new(
+                "test-overlay",
+                crate::app::LayerKind::Overlay,
+                crate::app::AnchorKind::Fullscreen,
+                0.0,
+                0.0,
+            )]
+        }
+        fn build_floating(&mut self, _i: usize, tree: &mut Tree) {
+            let start = LayoutProps { h_align: Align::Start, v_align: Align::Start, ..LayoutProps::default() };
+            self.overlay_button = Some(tree.insert_with(tree.root(), MetroButton::new("关闭"), start));
+        }
+        fn floating_visible(&self, _i: usize) -> bool {
+            self.open
+        }
+        fn on_floating_action(&mut self, _i: usize, _tree: &mut Tree, main: &mut Tree, from: WidgetId, action: Action) {
+            if Some(from) == self.overlay_button && action.downcast_ref::<ButtonClicked>().is_some() {
+                self.open = false;
+                if let Some(id) = self.status {
+                    main.edit::<kanesumi_element::widgets::Label, _>(id, |l, _| l.text = "closed".into());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn floating_surface_has_its_own_tree_and_cross_tree_actions() {
+        let mut h = TreeHost::new(WithOverlay {
+            config: AppConfig::new("org.ether.test", "t", EtherRole::Browser, 400.0, 300.0),
+            status: None,
+            overlay_button: None,
+            open: true,
+        });
+        let e = test_engine();
+        assert_eq!(h.floating_layers().len(), 1);
+        assert!(h.floating_visible(0));
+        h.update(1.0 / 60.0);
+        let _ = h.render_floating(&e, 0, Size::new(800.0, 600.0));
+        let b = h.app().overlay_button.unwrap();
+        let c = h.floating_tree(0).unwrap().rect(b).unwrap().center();
+        // 浮层坐标系里的点击只进浮层树。
+        h.floating_input(0, InputEvent::PointerMoved { x: c.x, y: c.y });
+        h.floating_input(0, InputEvent::PointerPressed { x: c.x, y: c.y, button: PointerButton::Left, modifiers: Modifiers::NONE });
+        h.floating_input(0, InputEvent::PointerReleased { x: c.x, y: c.y, button: PointerButton::Left, modifiers: Modifiers::NONE });
+        assert!(!h.floating_visible(0), "浮层动作关掉了浮层");
+        let status = h.app().status.unwrap();
+        assert_eq!(h.tree().get::<kanesumi_element::widgets::Label>(status).unwrap().text, "closed", "跨树改主表面");
+        // 主题推送到所有树。
+        let light = MetroTheme::light(kanesumi_core::Accent::default());
+        h.set_theme(light);
+        assert_eq!(*h.floating_tree(0).unwrap().theme(), light);
     }
 
     #[test]
