@@ -6,8 +6,8 @@
 //
 // 无子节点；`hit_test` 沿用默认（矩形内命中），与 Label 一致。
 //
-// TODO(opacity)：`SceneCommand::Image` 尚无 opacity 字段（另一工人在加）。加好后在此加
-// `pub opacity: f32` 并透传给 `Scene::image`；当前只做 `tint`。
+// 不透明度：`opacity`（`None` = 1.0）透传 `Scene::image_with_opacity`。用 `Option` 而非 `f32`：
+// 本类型派生 `Default`，裸 `f32` 会默认成 0 → 整图不可见。
 
 use std::path::PathBuf;
 
@@ -66,6 +66,8 @@ pub struct Image {
     pub height: Option<f32>,
     /// SVG 重光栅的显示缩放（逻辑 px → 目标像素），默认 1.0。
     pub scale: f32,
+    /// 整图不透明度（0..1；`None` = 1.0）。
+    pub opacity: Option<f32>,
     raster: Option<RasterCache>,
 }
 
@@ -78,6 +80,7 @@ impl Image {
             width: None,
             height: None,
             scale: 1.0,
+            opacity: None,
             raster: None,
         }
     }
@@ -92,6 +95,12 @@ impl Image {
         let path = path.into();
         let natural = svg_natural_size(&path).unwrap_or(Size::new(24.0, 24.0));
         Self::new(ImageSource::Svg { path, natural })
+    }
+
+    /// 整图不透明度（0..1）。
+    pub fn opacity(mut self, o: f32) -> Self {
+        self.opacity = Some(o.clamp(0.0, 1.0));
+        self
     }
 
     pub fn stretch(mut self, s: Stretch) -> Self {
@@ -156,13 +165,14 @@ impl Widget for Image {
         let intrinsic = self.intrinsic_size();
         let stretch = self.stretch;
         let tint = self.tint.map(|b| b.resolve(ctx.theme()));
+        let opacity = self.opacity.unwrap_or(1.0);
         let Some(icon) = self.rasterized(dest) else {
             return;
         };
         let fitted = fitted_rect(intrinsic, dest, stretch);
         // 裁剪到自身矩形：UniformToFill / None 的目标矩形可越出容器。
         scene.push_clip(dest);
-        scene.image(icon, fitted, tint);
+        scene.image_with_opacity(icon, fitted, tint, opacity);
         scene.pop_clip();
     }
 }
