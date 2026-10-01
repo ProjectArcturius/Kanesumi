@@ -698,9 +698,17 @@ impl Tree {
             self.paint_dirty(r, engine);
         }
 
-        // 4. 拼接。
+        // 4. 拼接。剔除条件 = 表面 ∩ 本帧 damage（局部帧只拼与 damage 相交的节点；
+        // 全量帧退化为表面）。与 damage 不相交的命令光栅器本就裁掉 / 不画，跳过安全。
+        // 参 ELEMENT_TREE「compose 剔除」。
+        let frame_damage = if self.full_repaint { None } else { self.damage };
+        let surface = Rect::new(0.0, 0.0, size.width, size.height);
+        let cull = match frame_damage {
+            None => Some(surface),
+            Some(d) => d.intersect(surface),
+        };
         let mut scene = Scene::default();
-        self.compose(self.root, &mut scene);
+        self.compose(self.root, &mut scene, cull);
         // 遮罩：任一打开的弹层要求时，在覆盖层之前整面压暗（弹层自身画在遮罩之上）。
         // 分离模式下弹层在别的表面上，主表面不压暗也不画覆盖层。
         if !self.detached_popups && self.popups.iter().any(|(_, s)| s.scrim) {
@@ -710,7 +718,7 @@ impl Tree {
             );
         }
         if !self.detached_popups {
-            self.compose(self.overlay, &mut scene);
+            self.compose(self.overlay, &mut scene, cull);
         }
 
         // 5. 焦点控件的 IME 上下文（用本帧布局与排版）。
@@ -719,13 +727,12 @@ impl Tree {
             n.widget.as_ref()?.ime(n.rect, &self.theme, engine)
         });
 
-        let damage = if self.full_repaint { None } else { self.damage };
         self.full_repaint = false;
         self.damage = None;
         self.dirty = false;
         FrameOutput {
             scene,
-            damage,
+            damage: frame_damage,
             animating: !self.anim.is_empty(),
         }
     }
@@ -871,9 +878,20 @@ impl Tree {
         }
     }
 
-    fn compose(&self, id: WidgetId, scene: &mut Scene) {
+    /// 拼接 `id` 子树到 Scene。`cull` = 有效裁剪矩形（`None` = 不剔除，弹层独立 Surface 用）；
+    /// 节点绘制范围（`painted_bounds`，含 overflow）与 `cull` 不相交 → **整棵子树跳过**
+    /// （含 `paint_after` 与焦点视觉）。进入裁剪子容器时与容器矩形求交，随深度收窄。
+    /// 参 ELEMENT_TREE「compose 剔除」。
+    fn compose(&self, id: WidgetId, scene: &mut Scene, cull: Option<Rect>) {
         let Some(n) = self.node(id) else { return };
         if !n.props.visible {
+            return;
+        }
+        // 自身绘制范围；从未绘制过的节点退化为其矩形（容器）以避免误裁子树。
+        let bounds = n.painted_bounds.unwrap_or(n.rect);
+        if let Some(c) = cull
+            && bounds.intersect(c).is_none()
+        {
             return;
         }
         scene.commands.extend(n.paint.iter().cloned());
@@ -882,8 +900,17 @@ impl Tree {
             if clip {
                 scene.push_clip(n.rect);
             }
+            // 裁剪子容器收窄剔除；非裁剪容器沿用当前裁剪（绘制仍受祖先约束）。
+            let child_cull = if clip {
+                match cull {
+                    Some(c) => c.intersect(n.rect),
+                    None => None,
+                }
+            } else {
+                cull
+            };
             for &c in &n.children {
-                self.compose(c, scene);
+                self.compose(c, scene, child_cull);
             }
             if clip {
                 scene.pop_clip();
@@ -1253,7 +1280,8 @@ impl Tree {
     pub fn popup_scene(&self, id: WidgetId) -> Option<Scene> {
         let extent = self.popup_extent(id)?;
         let mut scene = Scene::default();
-        self.compose(id, &mut scene);
+        // 弹层独立表面：不按 damage 剔除（整幅都要画）。
+        self.compose(id, &mut scene, None);
         scene.translate(Point::new(-extent.origin.x, -extent.origin.y));
         Some(scene)
     }

@@ -8,8 +8,8 @@ use kanesumi_core::{Color, Point, Rect, Size};
 use kanesumi_element::testing::TestHarness;
 use kanesumi_element::widgets::{Border, Label, Stack};
 use kanesumi_element::{
-    Align, Event, EventCtx, Insets, Key, LayoutProps, MeasureCtx, PaintCtx, PointerButton,
-    PopupDismissed, PopupSpec, UpdateCtx, VisualState, Widget,
+    Align, ArrangeCtx, Event, EventCtx, Insets, Key, LayoutProps, MeasureCtx, PaintCtx,
+    PointerButton, PopupDismissed, PopupSpec, UpdateCtx, VisualState, Widget,
 };
 
 // ── 测试控件 ──────────────────────────────────────────────────────────────────
@@ -829,6 +829,150 @@ fn detached_popup_is_placed_in_bounds_and_composed_separately() {
 }
 
 // ── 主题令牌（ThemeResource）：切换主题后页面背景 / 文字跟随 ───────────────────
+
+// ── compose 剔除（k-perf 第 2 步）─────────────────────────────────────────────
+
+/// 固定色块、可聚焦（hover 触发重画）的标记控件。
+struct Marker {
+    color: Color,
+}
+
+impl Widget for Marker {
+    fn measure(&mut self, _: &mut MeasureCtx, _: Size) -> Size {
+        Size::new(50.0, 50.0)
+    }
+    fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
+        scene.fill_rect(self.color, ctx.rect());
+    }
+    fn focusable(&self) -> bool {
+        true
+    }
+}
+
+fn has_color(scene: &Scene, color: Color) -> bool {
+    scene
+        .commands
+        .iter()
+        .any(|c| matches!(c, SceneCommand::FillRect { color: cc, .. } if *cc == color))
+}
+
+/// 最小滚动容器：子节点按 `offset` 排在视口之外（`scrolls_children`），并裁剪。
+struct FakeScroll {
+    offset: f32,
+}
+
+impl Widget for FakeScroll {
+    fn measure(&mut self, ctx: &mut MeasureCtx, available: Size) -> Size {
+        for c in ctx.children() {
+            ctx.measure_child(c, Size::new(available.width, f32::INFINITY));
+        }
+        available
+    }
+    fn arrange(&mut self, ctx: &mut ArrangeCtx, rect: Rect) {
+        let mut cursor = rect.origin.y - self.offset;
+        for c in ctx.children() {
+            let d = ctx.measure_child(c, rect.size);
+            ctx.arrange_child(c, Rect::new(rect.origin.x, cursor, rect.size.width, d.height));
+            cursor += d.height;
+        }
+    }
+    fn paint(&mut self, _: &mut PaintCtx, _: &mut Scene) {}
+    fn scrolls_children(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn compose_culls_children_outside_scroll_viewport() {
+    let mut h = TestHarness::new(200.0, 200.0);
+    let sv = h.tree.insert_with(
+        h.root(),
+        FakeScroll { offset: 0.0 },
+        LayoutProps {
+            width: Some(200.0),
+            height: Some(200.0),
+            h_align: Align::Start,
+            v_align: Align::Start,
+            ..LayoutProps::default()
+        },
+    );
+    let red = Color::rgb(1.0, 0.0, 0.0);
+    let green = Color::rgb(0.0, 1.0, 0.0);
+    h.tree.insert_with(
+        sv,
+        Border::new().background(red),
+        LayoutProps {
+            height: Some(100.0),
+            ..LayoutProps::default()
+        },
+    );
+    h.tree.insert_with(
+        sv,
+        Border::new().background(green),
+        LayoutProps {
+            height: Some(100.0),
+            ..LayoutProps::default()
+        },
+    );
+    h.frame();
+    assert!(has_color(&h.last.scene, red) && has_color(&h.last.scene, green));
+
+    // 滚出第一个色块：视口外子节点整棵跳过，命令不再出现在 Scene。
+    h.tree
+        .edit::<FakeScroll, _>(sv, |s, _| s.offset = 100.0);
+    let out = h.frame().clone();
+    assert!(!has_color(&out.scene, red), "视口外色块不得进 Scene");
+    assert!(has_color(&out.scene, green), "视口内色块仍在 Scene");
+}
+
+#[test]
+fn compose_local_damage_frame_excludes_non_intersecting_nodes() {
+    let mut h = TestHarness::new(400.0, 400.0);
+    let bg = Color::rgb(0.1, 0.1, 0.1);
+    h.tree.insert(h.root(), Border::new().background(bg));
+    let red = Color::rgb(1.0, 0.0, 0.0);
+    let blue = Color::rgb(0.0, 0.0, 1.0);
+    let m1 = h.tree.insert_with(
+        h.root(),
+        Marker { color: red },
+        LayoutProps {
+            width: Some(50.0),
+            height: Some(50.0),
+            margin: Insets::new(10.0, 10.0, 0.0, 0.0),
+            h_align: Align::Start,
+            v_align: Align::Start,
+            ..LayoutProps::default()
+        },
+    );
+    h.tree.insert_with(
+        h.root(),
+        Marker { color: blue },
+        LayoutProps {
+            width: Some(50.0),
+            height: Some(50.0),
+            margin: Insets::new(300.0, 300.0, 0.0, 0.0),
+            h_align: Align::Start,
+            v_align: Align::Start,
+            ..LayoutProps::default()
+        },
+    );
+    let first = h.frame().clone();
+    assert_eq!(first.damage, None, "首帧全量");
+    assert!(has_color(&first.scene, blue));
+
+    // 局部帧：只含与 damage 相交的节点（近处红，不含远处蓝）。
+    h.move_to(h.center(m1));
+    let out = h.frame().clone();
+    assert!(out.damage.is_some(), "悬停应产出局部 damage");
+    assert!(has_color(&out.scene, red));
+    assert!(!has_color(&out.scene, blue), "damage 外节点不得进 Scene");
+
+    // 全量帧不受影响：强制 full_repaint 后蓝块重新出现。
+    h.tree.set_theme(*h.tree.theme());
+    let full = h.frame().clone();
+    assert_eq!(full.damage, None);
+    assert!(has_color(&full.scene, blue), "全量帧不剔除");
+}
 
 #[test]
 fn theme_tokens_reskin_on_set_theme() {
