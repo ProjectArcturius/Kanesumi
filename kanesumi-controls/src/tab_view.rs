@@ -354,6 +354,297 @@ fn draw_close_x(scene: &mut Scene, rect: Rect, color: Color) {
     );
 }
 
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 radio_buttons.rs）──────────
+//
+// 自绘虚拟化标签页：页签条由控件按数据自画（旧 `render`），**不**把每页签变成子节点。
+// 点击页签发 `TabSelected`；点击关闭键发 `TabCloseRequested`（**不**自己删页签，由 App 决定）；
+// 点击加号发 `TabAddRequested`。页签超宽时横向滚动：`Event::Scroll` 的 dy 映射为水平偏移，
+// 偏移未变（已到端 / 不溢出）时不截停以冒泡。Ctrl+Tab / Ctrl+Shift+Tab 切页并截停；
+// 普通 Tab 不处理，留给框架做焦点遍历（参 §3）。
+
+/// 元素树动作：页签被选中（点击 / Ctrl+Tab）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TabSelected(pub usize);
+
+/// 元素树动作：请求关闭页签（App 决定是否真的移除）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TabCloseRequested(pub usize);
+
+/// 元素树动作：请求新增页签。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TabAddRequested;
+
+impl kanesumi_element::Widget for MetroTabView {
+    /// 宽取可用宽（页签条铺满视口，溢出靠横向滚动）；高 = 顶部留白 + 页签最小高。
+    fn measure(
+        &mut self,
+        _ctx: &mut kanesumi_element::MeasureCtx,
+        available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        let width = if available.width.is_finite() {
+            available.width.max(0.0)
+        } else {
+            self.total_width(f32::INFINITY)
+        };
+        kanesumi_core::Size::new(width, TABVIEW_HEADER_PAD + TABVIEW_ITEM_MIN_H)
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, Key, PointerButton};
+        let rect = ctx.rect();
+        match event {
+            Event::PointerMove { pos } => {
+                self.hover(rect, *pos);
+                ctx.invalidate_paint();
+            }
+            Event::PointerLeave => {
+                self.hovered = None;
+                ctx.invalidate_paint();
+            }
+            Event::PointerUp {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => match self.hit(rect, *pos) {
+                TabViewAction::Select(k) => {
+                    if k != self.selected_index {
+                        self.selected_index = k;
+                        ctx.emit(TabSelected(k));
+                        ctx.invalidate_paint();
+                    }
+                    ctx.set_handled();
+                }
+                TabViewAction::Close(k) => {
+                    // 不自己删页签：App 收到请求后再改 tabs。
+                    ctx.emit(TabCloseRequested(k));
+                    ctx.set_handled();
+                }
+                TabViewAction::Add => {
+                    ctx.emit(TabAddRequested);
+                    ctx.set_handled();
+                }
+                TabViewAction::None => {}
+            },
+            Event::Scroll { dy, .. } => {
+                // 页签超宽时横向滚动：滚轮 dy 映射为水平偏移。
+                let before = self.scroll_offset;
+                self.scroll_by(*dy, rect.size.width);
+                if self.scroll_offset != before {
+                    ctx.invalidate_paint();
+                    ctx.set_handled();
+                }
+            }
+            Event::KeyDown { key, modifiers } => {
+                // Ctrl+Tab / Ctrl+Shift+Tab 切页；普通 Tab 直接放行给框架焦点遍历。
+                if *key != Key::Tab || !modifiers.ctrl || self.tabs.is_empty() {
+                    return;
+                }
+                self.clamp_selection();
+                let len = self.tabs.len();
+                let next = if modifiers.shift {
+                    (self.selected_index + len - 1) % len
+                } else {
+                    (self.selected_index + 1) % len
+                };
+                if next != self.selected_index {
+                    self.selected_index = next;
+                    ctx.emit(TabSelected(next));
+                    ctx.invalidate_paint();
+                }
+                ctx.set_handled();
+            }
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Group,
+            name: String::from("标签页"),
+            value: self.tabs.get(self.selected_index).cloned(),
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, Key, LayoutProps, Modifiers, WidgetId};
+
+    fn harness(width: f32, height: f32) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(400.0, 300.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroTabView::new(
+                ["首页", "文档", "设置"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
+            LayoutProps {
+                width: Some(width),
+                height: Some(height),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    #[test]
+    fn click_selects_tab_and_reports() {
+        let (mut h, id) = harness(300.0, 40.0);
+        let r = h.rect(id);
+        let tab2 = h.tree.get::<MetroTabView>(id).unwrap().tab_rect(r, 2);
+        h.click_at(tab2.center());
+        assert_eq!(h.take::<TabSelected>(), vec![(id, TabSelected(2))]);
+        assert_eq!(
+            h.tree.get::<MetroTabView>(id).unwrap().selected_index,
+            2
+        );
+    }
+
+    #[test]
+    fn click_close_requests_without_removing() {
+        let (mut h, id) = harness(300.0, 40.0);
+        let r = h.rect(id);
+        let close = h.tree.get::<MetroTabView>(id).unwrap().close_rect(r, 0).unwrap();
+        h.click_at(close.center());
+        assert_eq!(
+            h.take::<TabCloseRequested>(),
+            vec![(id, TabCloseRequested(0))]
+        );
+        assert_eq!(
+            h.tree.get::<MetroTabView>(id).unwrap().tabs.len(),
+            3,
+            "关闭键只发请求，不由控件删页签"
+        );
+    }
+
+    #[test]
+    fn click_add_requests_add() {
+        let (mut h, id) = harness(300.0, 40.0);
+        let r = h.rect(id);
+        // 3 页签 + add 超出视口 → 先滚到末端让 add 可见。
+        h.tree
+            .scroll(r.center(), 0.0, 999.0, Modifiers::NONE);
+        h.frame();
+        let add = h.tree.get::<MetroTabView>(id).unwrap().add_rect(r).unwrap();
+        assert!(r.contains(add.center()), "滚到末端后 add 应在视口内");
+        h.click_at(add.center());
+        assert_eq!(h.take::<TabAddRequested>(), vec![(id, TabAddRequested)]);
+    }
+
+    #[test]
+    fn ctrl_tab_cycles_selection() {
+        let (mut h, id) = harness(300.0, 40.0);
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::NONE
+        };
+        assert!(h.key_with(Key::Tab, ctrl), "Ctrl+Tab 应由控件截停");
+        assert_eq!(h.tree.get::<MetroTabView>(id).unwrap().selected_index, 1);
+        let ctrl_shift = Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::NONE
+        };
+        assert!(h.key_with(Key::Tab, ctrl_shift));
+        assert_eq!(h.tree.get::<MetroTabView>(id).unwrap().selected_index, 0);
+        assert_eq!(h.take::<TabSelected>().len(), 2);
+    }
+
+    #[test]
+    fn plain_tab_is_left_to_framework() {
+        // 普通 Tab 不处理 → 框架焦点遍历到下一个可聚焦控件。
+        let mut h = TestHarness::new(400.0, 300.0);
+        let tv = h.tree.insert_with(
+            h.root(),
+            MetroTabView::new(vec!["仅一页".into()]),
+            LayoutProps {
+                width: Some(300.0),
+                height: Some(40.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        let btn = h.tree.insert_with(
+            h.root(),
+            crate::button::MetroButton::new("下一个"),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(tv));
+        h.key(Key::Tab);
+        assert_eq!(h.tree.focused(), Some(btn), "普通 Tab 应交给框架遍历");
+    }
+
+    #[test]
+    fn wheel_scrolls_horizontally() {
+        let (mut h, id) = harness(150.0, 40.0);
+        let r = h.rect(id);
+        assert!(h.tree.get::<MetroTabView>(id).unwrap().max_scroll(r.size.width) > 0.0);
+        h.tree.scroll(r.center(), 0.0, 50.0, Modifiers::NONE);
+        h.frame();
+        assert_eq!(
+            h.tree.get::<MetroTabView>(id).unwrap().scroll_offset,
+            50.0,
+            "滚轮 dy 映射为水平偏移"
+        );
+    }
+
+    #[test]
+    fn sizes_and_passes_insurance_checks() {
+        let (h, id) = harness(300.0, 40.0);
+        assert_eq!(h.rect(id).size.width, 300.0);
+        assert_eq!(h.rect(id).size.height, 40.0);
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn squeezed_still_passes_insurance_checks() {
+        let (h, id) = harness(40.0, 40.0);
+        assert_eq!(h.rect(id).size.width, 40.0);
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn disabled_ignores_input() {
+        let (mut h, id) = harness(300.0, 40.0);
+        h.tree.set_enabled(id, false);
+        h.frame();
+        let r = h.rect(id);
+        let tab2 = h.tree.get::<MetroTabView>(id).unwrap().tab_rect(r, 2);
+        h.click_at(tab2.center());
+        assert!(h.take::<TabSelected>().is_empty());
+        assert_eq!(h.tree.get::<MetroTabView>(id).unwrap().selected_index, 0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
