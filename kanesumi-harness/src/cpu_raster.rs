@@ -151,6 +151,12 @@ pub struct CpuRenderer {
     layout_cache: HashMap<u64, LayoutEntry>,
     layout_used: HashSet<u64>,
     layout_prev_used: HashSet<u64>,
+    /// 缩放图缓存：(源地址, 源长度, 指纹, 目标宽, 目标高) → 目标尺寸 sRGB 直通 RGBA。
+    /// 低分辨率亚克力背板放大到整屏、每帧逐像素双线性一帧 80+ ms；缓存后走 1:1 拷贝快路径。
+    /// 本帧 ∪ 上帧用过的保留，其余淘汰（同 layout_cache 的 generation GC）。
+    scaled: HashMap<(usize, usize, u64, u32, u32), Arc<[u8]>>,
+    scaled_used: HashSet<(usize, usize, u64, u32, u32)>,
+    scaled_prev_used: HashSet<(usize, usize, u64, u32, u32)>,
     /// 布局 miss 计数（诊断/测试：静态文本重复渲染应不增长）。
     layout_misses: u64,
 }
@@ -175,6 +181,9 @@ impl CpuRenderer {
             layout_cache: HashMap::new(),
             layout_used: HashSet::new(),
             layout_prev_used: HashSet::new(),
+            scaled: HashMap::new(),
+            scaled_used: HashSet::new(),
+            scaled_prev_used: HashSet::new(),
             layout_misses: 0,
         };
         r.resize(width, height, scale);
@@ -352,6 +361,9 @@ impl CpuRenderer {
             .collect();
         self.layout_cache.retain(|k, _| keep.contains(k));
         self.layout_prev_used = std::mem::take(&mut self.layout_used);
+        let keep_scaled: HashSet<_> = self.scaled_used.union(&self.scaled_prev_used).copied().collect();
+        self.scaled.retain(|k, _| keep_scaled.contains(k));
+        self.scaled_prev_used = std::mem::take(&mut self.scaled_used);
         &self.buf
     }
 
@@ -408,13 +420,40 @@ impl CpuRenderer {
         let py1 = (y1c.ceil().min(self.h as f32)) as u32;
         let px0 = x0c.floor().max(0.0) as u32;
         let px1 = (x1c.ceil().min(self.w as f32)) as u32;
+        // 内部整像素（覆盖率 1）快路径：结果只取决于目标字节 → 每通道 256 档查表（由 blend_px 本身生成，
+        // 与逐像素混合逐字节一致）。全屏半透明遮罩一帧 50 ms → 数毫秒（2026-10-01 Launcher 实测）。
+        let lut = {
+            let mut t = [[0u8; 256]; 4];
+            for d in 0..=255u8 {
+                let mut px4 = [d, d, d, d];
+                blend_px(&mut px4, c, 1.0);
+                for ch in 0..4 {
+                    t[ch][d as usize] = px4[ch];
+                }
+            }
+            t
+        };
+        let ix0 = x0c.ceil().max(0.0) as u32;
+        let ix1 = (x1c.floor().min(self.w as f32)).max(0.0) as u32;
         for py in py0..py1 {
             // 行覆盖率 = [py, py+1] 与 [y0c, y1c] 重叠长度。
             let cov_y = (y1c.min((py + 1) as f32) - y0c.max(py as f32)).clamp(0.0, 1.0);
             if cov_y <= 0.0 {
                 continue;
             }
+            if cov_y >= 1.0 && ix1 > ix0 {
+                let row = (py * self.w) as usize * 4;
+                for px in ix0..ix1 {
+                    let i = row + px as usize * 4;
+                    for ch in 0..4 {
+                        self.buf[i + ch] = lut[ch][self.buf[i + ch] as usize];
+                    }
+                }
+            }
             for px in px0..px1 {
+                if cov_y >= 1.0 && px >= ix0 && px < ix1 {
+                    continue; // 已由快路径写过。
+                }
                 let cov_x = (x1c.min((px + 1) as f32) - x0c.max(px as f32)).clamp(0.0, 1.0);
                 if cov_x <= 0.0 {
                     continue;
@@ -815,6 +854,25 @@ impl CpuRenderer {
             && (y0 - y0.round()).abs() < 0.01
             && (dst_w - sw as f32).abs() < 0.5
             && (dst_h - sh as f32).abs() < 0.5;
+        // 像素对齐但尺寸不等（放大的背板）：首帧按目标尺寸双线性重采样一次入缓存，之后都走 1:1 快路径。
+        let pixel_aligned = (x0 - x0.round()).abs() < 0.01
+            && (y0 - y0.round()).abs() < 0.01
+            && (dst_w - dst_w.round()).abs() < 0.01
+            && (dst_h - dst_h.round()).abs() < 0.01;
+        if !aligned && pixel_aligned && tint_is_white && opacity >= 1.0 && dst_w >= 1.0 && dst_h >= 1.0 {
+            let (tw, th) = (dst_w.round() as u32, dst_h.round() as u32);
+            let key = (src.as_ptr() as usize, src.len(), sample_fingerprint(src), tw, th);
+            let scaled = match self.scaled.get(&key) {
+                Some(b) => b.clone(),
+                None => {
+                    let b: Arc<[u8]> = Arc::from(resample_bilinear(src, sw, sh, tw, th));
+                    self.scaled.insert(key, b.clone());
+                    b
+                }
+            };
+            self.scaled_used.insert(key);
+            return self.emit_image(&scaled, tw, th, rect, tint, opacity, clip);
+        }
         let fast = aligned && tint_is_white && opacity >= 1.0;
         for py in py0..py1 {
             for px in px0..px1 {
@@ -916,6 +974,50 @@ fn point_in_triangle(px: f32, py: f32, a: &[f32; 2], b: &[f32; 2], c: &[f32; 2])
     let bc = e(b, c, (px, py));
     let ca = e(c, a, (px, py));
     (ab >= 0.0 && bc >= 0.0 && ca >= 0.0) || (ab <= 0.0 && bc <= 0.0 && ca <= 0.0)
+}
+
+/// 源字节抽样指纹（64 处）：同地址被释放后复用存了别的图时，缓存不会错配。
+fn sample_fingerprint(src: &[u8]) -> u64 {
+    let n = src.len();
+    if n == 0 {
+        return 0;
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for k in 0..64usize {
+        let b = src[(k * 2_654_435_761usize) % n];
+        h = (h ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
+/// 双线性重采样到 (tw, th)：颜色在线性空间插值、alpha 线性插值，输出 sRGB 直通 RGBA
+///（与 emit_image 通用路径的逐像素采样同一数学）。
+fn resample_bilinear(src: &[u8], sw: u32, sh: u32, tw: u32, th: u32) -> Vec<u8> {
+    let mut out = vec![0u8; (tw * th * 4) as usize];
+    for y in 0..th {
+        let v = ((y as f32 + 0.5) / th as f32 * sh as f32 - 0.5).clamp(0.0, sh as f32 - 1.0);
+        let v0 = v.floor() as u32;
+        let v1 = (v0 + 1).min(sh - 1);
+        let fv = v - v0 as f32;
+        for x in 0..tw {
+            let u = ((x as f32 + 0.5) / tw as f32 * sw as f32 - 0.5).clamp(0.0, sw as f32 - 1.0);
+            let u0 = u.floor() as u32;
+            let u1 = (u0 + 1).min(sw - 1);
+            let fu = u - u0 as f32;
+            let (s00, s10, s01, s11) = (texel(src, sw, u0, v0), texel(src, sw, u1, v0), texel(src, sw, u0, v1), texel(src, sw, u1, v1));
+            let o = ((y * tw + x) * 4) as usize;
+            for ch in 0..4 {
+                let dec = |b: u8| if ch == 3 { b as f32 / 255.0 } else { srgb_decode_u8(b) };
+                let l = dec(s00[ch]) * (1.0 - fu) * (1.0 - fv)
+                    + dec(s10[ch]) * fu * (1.0 - fv)
+                    + dec(s01[ch]) * (1.0 - fu) * fv
+                    + dec(s11[ch]) * fu * fv;
+                let e = if ch == 3 { l } else { srgb_encode_fast(l) };
+                out[o + ch] = (e.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            }
+        }
+    }
+    out
 }
 
 fn texel(src: &[u8], sw: u32, x: u32, y: u32) -> [u8; 4] {
