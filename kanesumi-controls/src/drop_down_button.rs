@@ -173,13 +173,13 @@ impl MetroDropDownButton {
         let indication = &theme.indication;
         let style = theme.typography.body;
 
-        // 底
+        // 底：标准按钮填充（UWP `ButtonBackground` = BaseLow 20%），不得取 `surface`。
         let bg = if self.state == ControlState::Disabled {
             colors
-                .surface
-                .with_alpha(colors.surface.a * indication.disabled_opacity)
+                .control_fill
+                .with_alpha(colors.control_fill.a * indication.disabled_opacity)
         } else {
-            colors.surface
+            colors.control_fill
         };
         scene.fill_rounded_rect(bg, rect, theme.tokens.corner_radius);
 

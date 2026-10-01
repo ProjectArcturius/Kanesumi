@@ -472,7 +472,10 @@ impl MetroTextBox {
             // 本库 `on_surface_variant` 即该档的实色对应物；旧实现再乘 0.9 无依据。
             (colors.on_surface_variant.with_alpha(alpha), 1.0)
         } else {
-            (colors.divider.with_alpha(alpha), 1.0)
+            // 静止边框 = UWP `TextControlBorderBrush` = BaseMediumLow 40%（亮 #66000000）。
+            // 令牌本身带 alpha，必须**乘**衰减而非覆盖（`with_alpha(alpha)` 会把 40% 冲成不透明黑）。
+            let cs = colors.control_stroke;
+            (cs.with_alpha(cs.a * alpha), 1.0)
         };
         scene.stroke_rounded_rect(stroke, inner, stroke_w, theme.tokens.corner_radius);
     }
