@@ -46,6 +46,9 @@
 | 弹窗收起 **0.26s** | 无 | **0.15s**（开 0.30 不变） | `CommandBarFlyoutCommandBar` 的 `OpeningStoryboard` 300ms / `ClosingStoryboard` 150ms（A2 L22093-22118，唯一显式 flyout 时长） |
 | ProgressBar 暂停不透明度 **0.6（两方案）** | §4 | **暗 0.6 / 亮 1.0** | `ProgressBarIndicatorPauseOpacity`（A L71 / L2798） |
 | 「对齐 UWP `ControlFastAnimationDuration`」 | presets 注释 | **该族属 WinUI，不属 UWP** | A/A′/A2/B 四份 XAML + `Windows.UI.Xaml.dll` 全 0 命中；只在 WinUI `resources.pri` 里（Normal 250 / Fast 167 / FastAnimationAfter 168 / Faster 83ms，**无 Slow**）。值 0.167 正确，归属错误 |
+| 浅色标准控件底取 `surface` `#FFFFFF` | 无（实现决策） | **`SystemControlBackgroundBaseLowBrush` → BaseLow** 亮 `#33000000` / 暗 `#33FFFFFF` | `ButtonBackground`（A L4269 → L211/L4127）；按钮族（DropDownButton / SplitButton）同。浅色白底压近白页面 → 控件隐形（Wave A4 审计 §Ⅱ-1） |
+| 浅色文本框静止边框取 `divider` `#D6D6D6` | 无 | **`TextControlBorderBrush` → BaseMediumLow** 亮 `#66000000` / 暗 `#66FFFFFF` | `themeresources.xaml` L854/L4770 → L214/L4130；旧值过淡 |
+| 浅色勾选 / 单选 / 开关外圈取 `on_surface_variant` `#5A5F66` | 无 | **`…ForegroundBaseMediumHighBrush` → BaseMediumHigh** 亮 `#CC000000` / 暗 `#CCFFFFFF` | `CheckBoxCheckBackgroundStrokeUnchecked` A L437/L4353、`RadioButtonOuterEllipseStroke` L377/L4293、`ToggleSwitchStrokeOff` L509/L4425 |
 
 ---
 
