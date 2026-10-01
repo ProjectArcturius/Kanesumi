@@ -13,6 +13,7 @@ use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign, TextOverflow};
 use kanesumi_core::{MetroTheme, Point, Rect};
 
+use crate::ime::{ImeContentHint, ImeContext};
 use crate::state::ControlState;
 use crate::text_box::MetroTextBox;
 use crate::text_field::{TextInputKey, TextField};
@@ -51,6 +52,8 @@ pub struct MetroAutoSuggestBox {
     pub scroll: f32,
     /// 上次文本（检测变化触发过滤）。
     last_text: String,
+    /// 元素树下当前展开的建议弹层（`SuggestionList` 节点）；旧路径不用。
+    tree_popup: Option<kanesumi_element::WidgetId>,
 }
 
 impl Default for MetroAutoSuggestBox {
@@ -67,6 +70,7 @@ impl Default for MetroAutoSuggestBox {
             focused: false,
             scroll: 0.0,
             last_text: String::new(),
+            tree_popup: None,
         }
     }
 }
@@ -450,6 +454,682 @@ pub enum AutoSuggestAction {
 #[allow(dead_code)]
 fn _bridge(_tb: &MetroTextBox, _k: TextInputKey) -> bool {
     false
+}
+
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；输入框模板同 text_box.rs，
+//    弹层模板参 docs/ELEMENT_MIGRATION.md §8 与 drop_down_button.rs）──────────────
+//
+// 旧路径把建议列表画在输入框自己的 Scene 里（宿主要传整屏、命中要手算）；元素树里
+// 建议弹层是覆盖层上的独立节点 `SuggestionList`：输入框只负责「过滤 / 打开 / 更新 /
+// 关闭」，弹层的放置、命中、点击由框架与弹层自身承担。弹层**不可聚焦**
+// （`focusable() = false`），焦点始终留在输入框 —— 键入不因弹层出现而中断，
+// 这正是 `EventCtx::edit` 的用例（参 `event_ctx_can_edit_another_widget_while_focus_stays`）。
+
+/// 元素树动作：用户从建议弹层选中了一项。携带该项文本。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuggestionChosen(pub String);
+
+/// 元素树动作：回车提交当前文本（无高亮项时）。携带当前全文。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuerySubmitted(pub String);
+
+/// 建议弹层面板 —— 覆盖层上的独立节点。不可聚焦，点击某项即选中。
+pub struct SuggestionList {
+    /// 打开它的输入框（关闭通知 / 回写文本的目标）。
+    owner: kanesumi_element::WidgetId,
+    /// 当前显示的建议（过滤后）。
+    shown: Vec<String>,
+    /// 高亮项下标。
+    highlighted: Option<usize>,
+    /// 期望宽度（与输入框同宽）。
+    width: f32,
+}
+
+impl SuggestionList {
+    fn new(
+        owner: kanesumi_element::WidgetId,
+        shown: Vec<String>,
+        highlighted: Option<usize>,
+        width: f32,
+    ) -> Self {
+        Self {
+            owner,
+            shown,
+            highlighted,
+            width,
+        }
+    }
+
+    fn set_items(&mut self, shown: Vec<String>, highlighted: Option<usize>) {
+        self.shown = shown;
+        self.highlighted = highlighted;
+    }
+
+    /// 第 i 项矩形（面板内）。
+    fn item_rect(panel: Rect, i: usize) -> Rect {
+        Rect::new(
+            panel.origin.x + AUTOSUGGEST_BORDER,
+            panel.origin.y + AUTOSUGGEST_BORDER + i as f32 * AUTOSUGGEST_ITEM_H,
+            (panel.size.width - 2.0 * AUTOSUGGEST_BORDER).max(0.0),
+            AUTOSUGGEST_ITEM_H,
+        )
+    }
+
+    /// 命中项下标。
+    fn hit_item(&self, panel: Rect, pos: Point) -> Option<usize> {
+        if !panel.contains(pos) {
+            return None;
+        }
+        (0..self.shown.len()).find(|i| Self::item_rect(panel, *i).contains(pos))
+    }
+}
+
+impl kanesumi_element::Widget for SuggestionList {
+    fn measure(
+        &mut self,
+        _ctx: &mut kanesumi_element::MeasureCtx,
+        available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        let max_items = (AUTOSUGGEST_LIST_MAX_H / AUTOSUGGEST_ITEM_H).floor() as usize;
+        let n = self.shown.len().min(max_items).max(1) as f32;
+        let h = n * AUTOSUGGEST_ITEM_H + 2.0 * AUTOSUGGEST_BORDER;
+        kanesumi_core::Size::new(
+            self.width.min(available.width.max(0.0)),
+            h.min(available.height.max(0.0)),
+        )
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        let theme = *ctx.theme();
+        let colors = &theme.colors;
+        let style = theme.typography.body;
+        let panel = ctx.rect();
+        scene.fill_rounded_rect(colors.surface_variant, panel, theme.tokens.corner_radius);
+        scene.stroke_rect(colors.divider, panel, AUTOSUGGEST_BORDER);
+        for (i, s) in self.shown.iter().enumerate() {
+            let item = Self::item_rect(panel, i);
+            if item.bottom() > panel.bottom() {
+                break;
+            }
+            if self.highlighted == Some(i) {
+                // 高亮 = 中性（参 CONTROL_SPEC §5 规律 5：悬停用中性）。
+                scene.fill_rect(theme.indication.hover_tint, item);
+            }
+            let text_rect = Rect::new(
+                item.origin.x + AUTOSUGGEST_ITEM_PAD,
+                item.origin.y + (AUTOSUGGEST_ITEM_H - style.line_height) / 2.0,
+                (item.size.width - 2.0 * AUTOSUGGEST_ITEM_PAD).max(0.0),
+                style.line_height,
+            );
+            scene.push_clip(text_rect);
+            scene.text_with_options(
+                s.clone(),
+                text_rect,
+                colors.on_surface,
+                style,
+                TextAlign::Left,
+                false,
+                Some(1),
+                TextOverflow::Clip,
+            );
+            scene.pop_clip();
+        }
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, PointerButton};
+        if let Event::PointerUp {
+            pos,
+            button: PointerButton::Left,
+            ..
+        } = event
+            && let Some(i) = self.hit_item(ctx.rect(), *pos)
+            && let Some(item) = self.shown.get(i).cloned()
+        {
+            ctx.emit(SuggestionChosen(item.clone()));
+            // 回写文本由弹层发起 —— 它知道被点的是哪一项；`PopupClosed` 不携带这项信息。
+            ctx.edit::<MetroAutoSuggestBox, _>(self.owner, |b, e| {
+                b.accept_suggestion(&item);
+                e.invalidate_paint();
+            });
+            ctx.close_popup(ctx.id());
+            ctx.set_handled();
+        }
+    }
+
+    /// 弹层不可聚焦：焦点始终留在输入框，键入不因弹层出现而中断。
+    fn focusable(&self) -> bool {
+        false
+    }
+}
+
+/// 元素树 `Key` → 编辑核心 `TextInputKey`（与 text_box.rs 同表；控件层不能依赖 harness，
+/// 故在此另持一份）。
+fn edit_key(key: kanesumi_element::Key) -> Option<TextInputKey> {
+    use kanesumi_element::Key;
+    Some(match key {
+        Key::Char(c) => TextInputKey::Char(c),
+        Key::Enter => TextInputKey::Enter,
+        Key::Backspace => TextInputKey::Backspace,
+        Key::Delete => TextInputKey::Delete,
+        Key::Left => TextInputKey::Left,
+        Key::Right => TextInputKey::Right,
+        Key::Up => TextInputKey::Up,
+        Key::Down => TextInputKey::Down,
+        Key::Home => TextInputKey::Home,
+        Key::End => TextInputKey::End,
+        Key::Escape => TextInputKey::Escape,
+        Key::Tab => TextInputKey::Tab,
+        Key::Unknown(_) => return None,
+    })
+}
+
+impl MetroAutoSuggestBox {
+    /// 采纳一项建议：写回文本、关弹层、清高亮。弹层节点由调用方负责移除。
+    fn accept_suggestion(&mut self, s: &str) {
+        self.field.set_text(s);
+        self.field.set_cursor(s.chars().count());
+        self.popup_open = false;
+        self.highlighted = None;
+        self.tree_popup = None;
+        self.last_text = s.to_string();
+    }
+
+    /// 依据 `shown` 打开 / 更新 / 关闭建议弹层。**不抢焦点**（弹层不可聚焦）。
+    fn sync_popup(&mut self, ctx: &mut kanesumi_element::EventCtx) {
+        if self.shown.is_empty() {
+            if let Some(p) = self.tree_popup.take() {
+                ctx.close_popup(p);
+            }
+            return;
+        }
+        match self.tree_popup {
+            Some(p) => {
+                let shown = self.shown.clone();
+                let hl = self.highlighted;
+                ctx.edit::<SuggestionList, _>(p, |list, e| {
+                    list.set_items(shown, hl);
+                    e.invalidate_paint();
+                });
+            }
+            None => {
+                let width = ctx.rect().size.width;
+                let popup =
+                    SuggestionList::new(ctx.id(), self.shown.clone(), self.highlighted, width);
+                let id = ctx.open_popup(
+                    popup,
+                    kanesumi_element::PopupSpec {
+                        anchor: Some(ctx.id()),
+                        side: kanesumi_element::PopupSide::Bottom,
+                        gap: crate::popup::popup_gap(),
+                        ..kanesumi_element::PopupSpec::default()
+                    },
+                );
+                self.tree_popup = Some(id);
+            }
+        }
+    }
+
+    /// 编辑键后：刷新过滤 → 同步弹层 →（文本真变时）报 `TextChanged`。
+    fn after_edit(&mut self, ctx: &mut kanesumi_element::EventCtx, changed: bool) {
+        if changed {
+            self.rebuild_shown();
+            self.sync_popup(ctx);
+            ctx.emit(crate::text_box::TextChanged(self.field.text()));
+        }
+        ctx.invalidate_paint();
+    }
+
+    /// Up / Down：在建议间循环移动高亮，并同步给弹层。
+    fn step_highlight(&mut self, ctx: &mut kanesumi_element::EventCtx, delta: isize) {
+        if self.tree_popup.is_none() || self.shown.is_empty() {
+            return;
+        }
+        let n = self.shown.len();
+        let cur = self
+            .highlighted
+            .map_or(0usize, |i| (i as isize + delta).rem_euclid(n as isize) as usize);
+        self.highlighted = Some(cur);
+        if let Some(p) = self.tree_popup {
+            let hl = self.highlighted;
+            ctx.edit::<SuggestionList, _>(p, |list, e| {
+                list.highlighted = hl;
+                e.invalidate_paint();
+            });
+        }
+        ctx.invalidate_paint();
+    }
+
+    /// 点击定位光标（与 MetroTextBox::place_caret_at 同款，参 CONTROL_SPEC §34）。
+    fn place_caret_at(
+        &mut self,
+        theme: &MetroTheme,
+        engine: &TextEngine,
+        body: Rect,
+        pos: Point,
+    ) {
+        let content = self.content_rect(theme, body);
+        let size = theme.typography.body.size;
+        let click_x = (pos.x + self.scroll - content.origin.x).max(0.0);
+        let text = self.field.display_text();
+        let geometry = engine.line_geometry(&text, size, 0.0);
+        self.field.set_cursor(geometry.caret_at_x(click_x));
+    }
+
+    /// 光标 x（相对 body 左缘，含滚动偏移与组合态光标）。
+    fn caret_x(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> f32 {
+        let content = self.content_rect(theme, body);
+        let size = theme.typography.body.size;
+        let text = self.field.display_text();
+        let geometry = engine.line_geometry(&text, size, 0.0);
+        let idx = self.field.cursor()
+            + if self.field.has_preedit() {
+                self.field.preedit_caret_char()
+            } else {
+                0
+            };
+        content.origin.x - self.scroll + geometry.caret_x(idx)
+    }
+
+    /// 光标矩形（表面绝对坐标，未夹右缘 —— IME 需要真实位置）。
+    fn caret_rect_absolute(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> Rect {
+        let content = self.content_rect(theme, body);
+        Rect::new(
+            self.caret_x(theme, engine, body),
+            content.origin.y,
+            2.0,
+            content.size.height,
+        )
+    }
+
+    /// 当前 IME 上下文（周边文本 + 光标矩形）。`body` 为控件主体矩形。
+    fn ime_context(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> ImeContext {
+        let (before, after, cursor_byte, anchor_byte) = self.field.surrounding_text(1000);
+        ImeContext {
+            surrounding_before: before,
+            surrounding_after: after,
+            cursor_byte: cursor_byte as u32,
+            anchor_byte: anchor_byte as u32,
+            caret_rect: self.caret_rect_absolute(theme, engine, body),
+            content_hint: ImeContentHint::Normal,
+        }
+    }
+
+    /// 键盘：Up / Down 导航弹层，Enter 选中 / 提交，Esc 关弹层；其余转编辑核心。
+    fn on_key_down(
+        &mut self,
+        ctx: &mut kanesumi_element::EventCtx,
+        key: kanesumi_element::Key,
+        modifiers: &kanesumi_element::Modifiers,
+    ) {
+        use kanesumi_element::Key;
+        // Tab 留给框架做焦点遍历。
+        if key == Key::Tab {
+            return;
+        }
+        if key == Key::Escape {
+            // 弹层开着：由输入框关闭并截停；否则留给框架（关闭其它弹层 / 无操作）。
+            if self.tree_popup.is_some() {
+                if let Some(p) = self.tree_popup.take() {
+                    ctx.close_popup(p);
+                }
+                ctx.invalidate_paint();
+                ctx.set_handled();
+            }
+            return;
+        }
+        if key == Key::Enter {
+            if let Some(i) = self.highlighted
+                && let Some(s) = self.shown.get(i).cloned()
+            {
+                let popup = self.tree_popup.take();
+                self.accept_suggestion(&s);
+                if let Some(p) = popup {
+                    ctx.close_popup(p);
+                }
+                ctx.emit(SuggestionChosen(s));
+                ctx.invalidate_paint();
+                ctx.set_handled();
+                return;
+            }
+            ctx.emit(QuerySubmitted(self.field.text()));
+            ctx.set_handled();
+            return;
+        }
+        if matches!(key, Key::Up | Key::Down) {
+            self.step_highlight(ctx, if key == Key::Up { -1 } else { 1 });
+            // 弹层未开时上下键不消费（与旧 handle_key 一致）。
+            if self.tree_popup.is_some() {
+                ctx.set_handled();
+            }
+            return;
+        }
+        if modifiers.ctrl {
+            match key {
+                Key::Char('a' | 'A') => self.field.select_all(),
+                Key::Char('z' | 'Z') => {
+                    if self.field.undo() {
+                        self.after_edit(ctx, true);
+                    }
+                }
+                _ => return,
+            }
+            ctx.invalidate_paint();
+            ctx.set_handled();
+            return;
+        }
+        let before = self.field.text();
+        if modifiers.shift {
+            match key {
+                Key::Left => self.field.move_left(true),
+                Key::Right => self.field.move_right(true),
+                Key::Home => self.field.move_home(true),
+                Key::End => self.field.move_end(true),
+                _ => {
+                    if let Some(k) = edit_key(key) {
+                        self.field.handle_key(k);
+                    }
+                }
+            }
+        } else if let Some(k) = edit_key(key) {
+            self.field.handle_key(k);
+        } else {
+            return;
+        }
+        let changed = self.field.text() != before;
+        self.after_edit(ctx, changed);
+        ctx.set_handled();
+    }
+}
+
+impl kanesumi_element::Widget for MetroAutoSuggestBox {
+    /// 宽 = max(MinWidth 64, 占位 / 标题宽 + Padding 16)；高 = 标题行 + max(MinHeight 32,
+    /// 行高 + 上下 Padding 11 + 边框 2)（与 MetroTextBox 对齐，无删除按钮列）。
+    fn measure(
+        &mut self,
+        ctx: &mut kanesumi_element::MeasureCtx,
+        available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        let style = ctx.theme().typography.body;
+        let engine = ctx.engine();
+        let content_w = engine
+            .measure(&self.placeholder, style.size)
+            .max(engine.measure(&self.header, style.size));
+        let width = (content_w + 16.0).max(64.0).min(available.width.max(0.0));
+        let header_h = if self.header.is_empty() {
+            0.0
+        } else {
+            style.line_height + 4.0
+        };
+        let body_h = (style.line_height + 11.0 + 2.0).max(32.0);
+        kanesumi_core::Size::new(width, header_h + body_h)
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        let s = ctx.state();
+        self.state = if s.disabled {
+            ControlState::Disabled
+        } else if s.focused {
+            ControlState::Focused
+        } else {
+            crate::state::control_state(s)
+        };
+        let rect = ctx.rect();
+        let theme = *ctx.theme();
+        // 建议列表已迁到独立弹层节点 `SuggestionList`：主体绘制不再画列表。
+        let popup_open = self.popup_open;
+        self.popup_open = false;
+        self.render(&theme, ctx.engine(), rect, scene);
+        self.popup_open = popup_open;
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, PointerButton};
+        match event {
+            Event::FocusIn { .. } => {
+                self.focus();
+                ctx.invalidate_paint();
+            }
+            Event::FocusOut => {
+                self.field.clear_preedit();
+                self.blur();
+                if let Some(p) = self.tree_popup.take() {
+                    ctx.close_popup(p);
+                }
+                ctx.invalidate_paint();
+            }
+            Event::PopupClosed { popup } if self.tree_popup == Some(*popup) => {
+                self.tree_popup = None;
+                ctx.invalidate_paint();
+            }
+            Event::PointerDown {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                let rect = ctx.rect();
+                let theme = *ctx.theme();
+                let body = self.body_rect(&theme, rect);
+                if let Some(engine) = ctx.engine().cloned() {
+                    self.place_caret_at(&theme, &engine, body, *pos);
+                    ctx.invalidate_paint();
+                }
+                ctx.set_handled();
+            }
+            Event::KeyDown { key, modifiers } => {
+                self.on_key_down(ctx, *key, modifiers);
+            }
+            Event::Preedit { text, cursor_byte } => {
+                self.field.set_preedit(text, *cursor_byte);
+                ctx.invalidate_paint();
+                ctx.set_handled();
+            }
+            Event::Commit { text } => {
+                let before = self.field.text();
+                self.field.commit_ime(text);
+                let changed = self.field.text() != before;
+                self.after_edit(ctx, changed);
+                ctx.set_handled();
+            }
+            Event::DeleteSurrounding {
+                before_bytes,
+                after_bytes,
+            } => {
+                let before = self.field.text();
+                self.field.delete_surrounding(*before_bytes, *after_bytes);
+                let changed = self.field.text() != before;
+                self.after_edit(ctx, changed);
+                ctx.set_handled();
+            }
+            _ => {}
+        }
+    }
+
+    /// 输入框自绘聚焦边框（2px），不要框架再叠焦点视觉。
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn focus_visual(&self) -> bool {
+        false
+    }
+
+    fn ime(
+        &self,
+        rect: Rect,
+        theme: &MetroTheme,
+        engine: &TextEngine,
+    ) -> Option<kanesumi_element::ImeContext> {
+        self.focused
+            .then(|| self.ime_context(theme, engine, self.body_rect(theme, rect)))
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::TextInput,
+            name: if self.header.is_empty() {
+                self.placeholder.clone()
+            } else {
+                self.header.clone()
+            },
+            value: Some(self.field.text()),
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, Key, LayoutProps, WidgetId};
+
+    fn boxed() -> MetroAutoSuggestBox {
+        MetroAutoSuggestBox::new().with_suggestions(
+            ["苹果", "香蕉", "菠萝", "橙子", "西瓜", "火龙果", "百香果"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        )
+    }
+
+    fn harness() -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(400.0, 300.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            boxed(),
+            LayoutProps {
+                width: Some(240.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                margin: Insets::new(10.0, 10.0, 0.0, 0.0),
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    fn text(h: &TestHarness, id: WidgetId) -> String {
+        h.tree.get::<MetroAutoSuggestBox>(id).unwrap().field.text()
+    }
+
+    fn popup(h: &TestHarness) -> WidgetId {
+        h.tree.popups().next().expect("建议弹层应已打开")
+    }
+
+    #[test]
+    fn typing_opens_popup_and_focus_stays_in_input() {
+        let (mut h, id) = harness();
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+        h.type_text("果");
+        let p = popup(&h);
+        assert_eq!(h.tree.focused(), Some(id), "弹层出现后焦点仍在输入框");
+        assert!(
+            h.rect(p).origin.y >= h.rect(id).bottom(),
+            "弹层贴在输入框下方"
+        );
+    }
+
+    #[test]
+    fn down_enter_chooses_and_closes() {
+        let (mut h, id) = harness();
+        h.tab();
+        h.type_text("果"); // 苹果 / 火龙果 / 百香果
+        h.key(Key::Down); // 高亮 0 → 1
+        h.key(Key::Enter);
+        let acts = h.take::<SuggestionChosen>();
+        assert_eq!(acts.len(), 1);
+        assert_eq!(acts[0].1, SuggestionChosen("火龙果".into()));
+        assert_eq!(text(&h, id), "火龙果");
+        assert!(h.tree.popups().next().is_none(), "选中后弹层关闭");
+        assert_eq!(h.tree.focused(), Some(id), "焦点仍在输入框");
+    }
+
+    #[test]
+    fn click_item_chooses_and_closes() {
+        let (mut h, id) = harness();
+        h.tab();
+        h.type_text("果");
+        let p = popup(&h);
+        let pr = h.rect(p);
+        h.click_at(Point::new(
+            pr.origin.x + 20.0,
+            pr.origin.y + AUTOSUGGEST_ITEM_H / 2.0,
+        ));
+        let acts = h.take::<SuggestionChosen>();
+        assert_eq!(acts.len(), 1);
+        assert_eq!(acts[0].1, SuggestionChosen("苹果".into()));
+        assert_eq!(text(&h, id), "苹果");
+        assert!(h.tree.popups().next().is_none());
+        assert_eq!(h.tree.focused(), Some(id));
+    }
+
+    #[test]
+    fn no_match_closes_popup() {
+        let (mut h, _id) = harness();
+        h.tab();
+        h.type_text("果");
+        assert!(h.tree.popups().next().is_some());
+        h.type_text("zzz");
+        assert!(h.tree.popups().next().is_none(), "无匹配关闭弹层");
+    }
+
+    #[test]
+    fn escape_closes_popup_and_keeps_focus() {
+        let (mut h, id) = harness();
+        h.tab();
+        h.type_text("果");
+        assert!(h.tree.popups().next().is_some());
+        h.key(Key::Escape);
+        assert!(h.tree.popups().next().is_none(), "Esc 关闭弹层");
+        assert_eq!(h.tree.focused(), Some(id), "焦点仍在输入框");
+    }
+
+    #[test]
+    fn enter_without_highlight_submits_query() {
+        let (mut h, id) = harness();
+        h.tab();
+        h.type_text("无匹配项"); // 无候选 → 无高亮
+        h.key(Key::Enter);
+        assert_eq!(
+            h.take::<QuerySubmitted>(),
+            vec![(id, QuerySubmitted("无匹配项".into()))]
+        );
+    }
+
+    #[test]
+    fn insurance_checks_while_popup_open() {
+        let (mut h, id) = harness();
+        h.tab();
+        h.type_text("果");
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn insurance_checks_when_squeezed() {
+        let mut h = TestHarness::new(400.0, 300.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            boxed(),
+            LayoutProps {
+                width: Some(40.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                margin: Insets::new(10.0, 10.0, 0.0, 0.0),
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        h.tab();
+        h.type_text("果");
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
 }
 
 #[cfg(test)]
