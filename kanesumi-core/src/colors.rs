@@ -62,6 +62,35 @@ pub struct MetroColors {
     pub track_subtle: Color,
     /// 焦点描边（由 accent 派生，两种方案下都可辨）。
     pub focus_stroke: Color,
+
+    // ── 控件笔刷族（2026-10-01 浅色调色板审计新增，参 docs/research/2026-10-01_light_palette_audit.md）
+    // 旧实现让标准控件底直接取 `surface`：浅色下 `surface` = `background`（近白），
+    // 于是「白底按钮压白底页面」完全看不见。UWP 的控件底不是页面/面板色，而是
+    // `SystemControlBackground*Brush` 族的**叠加色**（Base* 档）。故独立成字段。
+    /// 标准控件填充（按钮底等）。
+    ///
+    /// 一手源：UWP `ButtonBackground` → `SystemControlBackgroundBaseLowBrush`
+    /// → `SystemBaseLowColor`（暗 `#33FFFFFF` / 亮 `#33000000`，`themeresources.xaml`
+    /// L353 / L4269 → L211 / L4127）= **BaseLow 20%**。
+    ///
+    /// ⚠ 暗色档未按一手源取 20%（那会把按钮从 #242424 提亮到约 #4A4A4A，属深色回归），
+    /// 按任务约束「深色档视觉不得因此变化」保留旧 `surface` 观感；深色真值差异登记于审计文档。
+    pub control_fill: Color,
+    /// 交互控件静止描边（文本框 / 数字框底边）。
+    ///
+    /// 一手源：UWP `TextControlBorderBrush` → `SystemControlForegroundBaseMediumLowBrush`
+    /// → `SystemBaseMediumLowColor`（暗 `#66FFFFFF` / 亮 `#66000000`，L859 → L269 → L214 / L4130）
+    /// = **BaseMediumLow 40%**。浅色旧值取 `divider`（#D6D6D6）过淡。
+    /// 暗色档保留旧 `divider` 观感（真值 `#66FFFFFF` 更亮，登记待裁定）。
+    pub control_stroke: Color,
+    /// 强描边 / 勾选外圈（CheckBox / RadioButton / ToggleSwitch 轨道）。
+    ///
+    /// 一手源：UWP `CheckBoxCheckBackgroundStrokeUnchecked` / `RadioButtonOuterEllipseStroke`
+    /// / `ToggleSwitchStrokeOff` → `SystemControlForegroundBaseMediumHighBrush`
+    /// → `SystemBaseMediumHighColor`（暗 `#CCFFFFFF` / 亮 `#CC000000`，L437/L377/L509 → L213 / L4129）
+    /// = **BaseMediumHigh 80%**。浅色旧值取 `on_surface_variant`（约 65% 灰）偏淡。
+    /// 暗色档保留旧 `on_surface_variant` 观感（真值 `#CCFFFFFF` 更亮，登记待裁定）。
+    pub control_stroke_strong: Color,
 }
 
 impl MetroColors {
@@ -89,6 +118,9 @@ impl MetroColors {
             text_selection_tint: accent.base.with_alpha(0.35),
             track_subtle: surface_variant.with_alpha(0.60),
             focus_stroke: accent.focus_for(ColorScheme::Dark),
+            control_fill: Color::from_hex(0x24_24_24),
+            control_stroke: Color::from_hex(0x3A_3A_3A),
+            control_stroke_strong: Color::from_hex(0x9A_A0_A6),
         }
     }
 
@@ -111,6 +143,10 @@ impl MetroColors {
             text_selection_tint: accent.base.with_alpha(0.35),
             track_subtle: surface_variant.with_alpha(0.60),
             focus_stroke: accent.focus_for(ColorScheme::Light),
+            // 亮色按 UWP 一手源取真值（`from_rgba` 显式 alpha，避开 from_hex 阈值坑）。
+            control_fill: Color::from_rgba(0x00_00_00_33),
+            control_stroke: Color::from_rgba(0x00_00_00_66),
+            control_stroke_strong: Color::from_rgba(0x00_00_00_CC),
         }
     }
 

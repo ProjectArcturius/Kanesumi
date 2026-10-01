@@ -63,7 +63,10 @@ impl MetroButton {
         let style = theme.typography.body;
 
         let (bg, fg) = match self.kind {
-            ButtonKind::Standard => (colors.surface, colors.on_surface),
+            // 标准按钮底取 UWP `ButtonBackground`（BaseLow 20% 叠加色），不得取 `surface` ——
+            // 浅色下 `surface` 与页面同为白，#FFFFFF 按钮在白页上不可见
+            // （参 docs/research/2026-10-01_light_palette_audit.md）。
+            ButtonKind::Standard => (colors.control_fill, colors.on_surface),
             ButtonKind::Accent => (colors.primary, colors.on_primary),
         };
 

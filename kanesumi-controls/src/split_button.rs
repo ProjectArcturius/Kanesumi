@@ -227,8 +227,8 @@ impl MetroSplitButton {
         let primary = self.primary_rect(rect);
         let secondary = self.secondary_rect(rect);
 
-        // 底
-        scene.fill_rounded_rect(colors.surface, rect, theme.tokens.corner_radius);
+        // 底：标准按钮填充（UWP `ButtonBackground` = BaseLow 20%），不得取 `surface`。
+        scene.fill_rounded_rect(colors.control_fill, rect, theme.tokens.corner_radius);
         // 交互 tint
         if self.primary_pressed {
             scene.fill_rect(indication.press_tint, primary);

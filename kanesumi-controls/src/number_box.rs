@@ -392,7 +392,10 @@ impl MetroNumberBox {
             // 悬停边框 = BaseMedium 实色（一手源 themeresources L855 → L298 → L212），同 TextBox。
             (colors.on_surface_variant.with_alpha(alpha), 1.0)
         } else {
-            (colors.divider.with_alpha(alpha), 1.0)
+            // 静止边框 = UWP `TextControlBorderBrush` = BaseMediumLow 40%，同 TextBox。
+            // 令牌带 alpha，乘衰减而非覆盖。
+            let cs = colors.control_stroke;
+            (cs.with_alpha(cs.a * alpha), 1.0)
         };
         scene.stroke_rounded_rect(stroke, inner, stroke_w, theme.tokens.corner_radius);
         scene.pop_clip();

@@ -382,11 +382,11 @@ impl MetroSwitch {
                 (base.with_alpha(base.a * alpha), Color::TRANSPARENT)
             }
             (false, false) => {
-                // OFF：透明 + 描边（悬停加深）
+                // OFF：透明 + 描边（悬停加深）。UWP `ToggleSwitchStrokeOff` = BaseMediumHigh 80%。
                 let s = if is_hovered {
                     colors.on_surface
                 } else {
-                    colors.on_surface_variant
+                    colors.control_stroke_strong
                 };
                 (Color::TRANSPARENT, s.with_alpha(s.a * alpha))
             }

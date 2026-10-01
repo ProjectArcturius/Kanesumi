@@ -178,11 +178,11 @@ impl MetroRadioButtons {
             let checked = self.selected_index == Some(i);
             let hovered = self.hovered == Some(i);
 
-            // 外圈
+            // 外圈（未选中/未悬停取 UWP `RadioButtonOuterEllipseStroke` = BaseMediumHigh 80%）
             let stroke = if checked || hovered {
                 colors.on_surface
             } else {
-                colors.on_surface_variant
+                colors.control_stroke_strong
             };
             scene.stroke_rounded_rect(stroke, circle_rect, 2.0, CornerRadius::Capsule);
             // 选中圆点

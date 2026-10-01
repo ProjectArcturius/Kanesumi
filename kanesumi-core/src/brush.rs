@@ -29,6 +29,10 @@ pub enum ThemeColor {
     TextSelectionTint,
     TrackSubtle,
     FocusStroke,
+    /// 控件笔刷族（参 `MetroColors` 同名字段）。
+    ControlFill,
+    ControlStroke,
+    ControlStrokeStrong,
     /// 弹层遮罩色（`MetroTheme::overlay_color`）。
     Overlay,
 }
@@ -52,6 +56,9 @@ impl ThemeColor {
             Self::TextSelectionTint => c.text_selection_tint,
             Self::TrackSubtle => c.track_subtle,
             Self::FocusStroke => c.focus_stroke,
+            Self::ControlFill => c.control_fill,
+            Self::ControlStroke => c.control_stroke,
+            Self::ControlStrokeStrong => c.control_stroke_strong,
             Self::Overlay => theme.overlay_color,
         }
     }

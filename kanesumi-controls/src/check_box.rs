@@ -145,7 +145,9 @@ impl MetroCheckBox {
             let s = if hovered {
                 colors.on_surface
             } else {
-                colors.on_surface_variant
+                // UWP `CheckBoxCheckBackgroundStrokeUnchecked` = BaseMediumHigh 80%
+                // （亮 #CC000000）；旧取 on_surface_variant 在浅色下偏淡。
+                colors.control_stroke_strong
             };
             (
                 Color::TRANSPARENT,
