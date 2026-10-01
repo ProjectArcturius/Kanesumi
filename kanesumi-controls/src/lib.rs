@@ -12,6 +12,7 @@ pub mod animated_icon;
 pub mod auto_suggest_box;
 pub mod breadcrumb_bar;
 pub mod button;
+pub mod calendar_date_picker;
 pub mod calendar_view;
 pub mod candidate_window;
 pub mod check_box;
@@ -67,6 +68,9 @@ pub use animated_icon::{IconDirection, MetroAnimatedIcon};
 pub use auto_suggest_box::{AutoSuggestAction, MetroAutoSuggestBox, QuerySubmitted, SuggestionChosen};
 pub use breadcrumb_bar::{BreadcrumbClick, BreadcrumbClicked, MetroBreadcrumbBar};
 pub use button::{ButtonClicked, ButtonKind, MetroButton};
+pub use calendar_date_picker::{
+    DatePicked, MetroCalendarDatePicker, PICKER_PLACEHOLDER,
+};
 pub use calendar_view::{
     CalendarDisplayMode, CalendarResponse, Date, DateSelected, MetroCalendarView,
 };
