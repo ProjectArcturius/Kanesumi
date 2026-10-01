@@ -5,7 +5,7 @@
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign, TextOverflow};
-use kanesumi_core::{Color, Size, TextStyle};
+use kanesumi_core::{Brush, Size, TextStyle};
 
 use crate::widget::{AccessInfo, AccessRole, MeasureCtx, PaintCtx, Widget};
 
@@ -15,7 +15,8 @@ pub struct Label {
     /// `None` = 主题正文样式。
     pub style: Option<TextStyle>,
     /// `None` = 主题 `on_surface`。
-    pub color: Option<Color>,
+    /// 文字色。None = 主题 `on_surface`；用 `ThemeColor::*` 才随主题变化。
+    pub color: Option<Brush>,
     pub align: TextAlign,
     pub wrap: bool,
     pub max_lines: Option<usize>,
@@ -38,8 +39,8 @@ impl Label {
         self
     }
 
-    pub fn color(mut self, color: Color) -> Self {
-        self.color = Some(color);
+    pub fn color(mut self, color: impl Into<Brush>) -> Self {
+        self.color = Some(color.into());
         self
     }
 
@@ -81,7 +82,8 @@ impl Widget for Label {
 
     fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
         let style = self.style.unwrap_or(ctx.theme().typography.body);
-        let color = self.color.unwrap_or(ctx.theme().colors.on_surface);
+        let theme = *ctx.theme();
+        let color = self.color.map_or(theme.colors.on_surface, |b| b.resolve(&theme));
         let overflow = if self.wrap {
             TextOverflow::Clip
         } else {

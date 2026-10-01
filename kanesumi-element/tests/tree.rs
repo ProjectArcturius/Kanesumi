@@ -827,3 +827,26 @@ fn detached_popup_is_placed_in_bounds_and_composed_separately() {
     // 命中仍在树坐标里工作：表面之外的点命中弹层内容。
     assert!(h.tree.hit(Point::new(r.origin.x + 10.0, r.origin.y + 10.0)).is_some());
 }
+
+// ── 主题令牌（ThemeResource）：切换主题后页面背景 / 文字跟随 ───────────────────
+
+#[test]
+fn theme_tokens_reskin_on_set_theme() {
+    use kanesumi_core::{Accent, MetroTheme, ThemeColor};
+    let mut h = TestHarness::new(200.0, 100.0);
+    h.tree.insert(h.root(), Border::new().background(ThemeColor::Background));
+    let dark = *h.tree.theme();
+    let out = h.frame().clone();
+    assert!(out.scene.commands.iter().any(|c| matches!(c, SceneCommand::FillRect { color, .. } if *color == dark.colors.background)));
+    let light = MetroTheme::light(Accent::default());
+    h.tree.set_theme(light);
+    let out = h.frame().clone();
+    assert!(
+        out.scene.commands.iter().any(|c| matches!(c, SceneCommand::FillRect { color, .. } if *color == light.colors.background)),
+        "令牌背景随主题切换"
+    );
+    assert!(
+        !out.scene.commands.iter().any(|c| matches!(c, SceneCommand::FillRect { color, .. } if *color == dark.colors.background)),
+        "旧主题色不残留"
+    );
+}

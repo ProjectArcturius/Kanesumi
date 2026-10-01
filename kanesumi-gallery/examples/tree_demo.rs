@@ -10,7 +10,7 @@ use kanesumi_controls::{
     ButtonClicked, CheckState, CheckToggled, MetroButton, MetroCheckBox, MetroTextBox,
     TextChanged, TextSubmitted,
 };
-use kanesumi_core::MetroTheme;
+use kanesumi_core::{MetroTheme, ThemeColor};
 use kanesumi_harness::element::widgets::{Border, Label, Stack};
 use kanesumi_harness::element::{
     Action, Align, Insets, LayoutProps, PopupDismissed, PopupSpec, Tree, WidgetId,
@@ -52,11 +52,10 @@ impl Demo {
     }
 
     fn open_dialog(&mut self, tree: &mut Tree) {
-        let c = self.theme.colors;
         let panel = tree.open_popup(
             Border::new()
-                .background(c.surface)
-                .stroke(c.divider, 1.0)
+                .background(ThemeColor::Surface)
+                .stroke(ThemeColor::Divider, 1.0)
                 .padding(Insets::all(20.0)),
             PopupSpec {
                 modal: true,
@@ -96,11 +95,10 @@ impl TreeApp for Demo {
     }
 
     fn build(&mut self, tree: &mut Tree) {
-        let c = self.theme.colors;
         let t = self.theme.typography;
         let page = tree.insert(
             tree.root(),
-            Border::new().background(c.background).padding(Insets::all(24.0)),
+            Border::new().background(ThemeColor::Background).padding(Insets::all(24.0)),
         );
         let col = tree.insert(page, Stack::column().with_spacing(12.0));
 
@@ -111,7 +109,7 @@ impl TreeApp for Demo {
                 "这一页没有手写坐标、没有命中函数、没有焦点登记。缩放窗口看布局重排，\
                  Tab / Shift+Tab 走焦点，Enter / Space 激活，长标签自动省略。",
             )
-            .color(c.on_surface_variant)
+            .color(ThemeColor::OnSurfaceVariant)
             .wrap(Some(3)),
         );
 
@@ -147,7 +145,7 @@ impl TreeApp for Demo {
         self.ids.apply = Some(tree.insert(row, MetroButton::accent("应用")));
         self.ids.status = Some(tree.insert(
             col,
-            Label::new("状态：就绪").color(c.on_surface_variant),
+            Label::new("状态：就绪").color(ThemeColor::OnSurfaceVariant),
         ));
     }
 

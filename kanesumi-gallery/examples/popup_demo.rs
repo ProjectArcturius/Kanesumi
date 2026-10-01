@@ -9,6 +9,7 @@
 // 无头验收时设为 `ether-settings-topbar` 冒充 TopBar）。
 
 use kanesumi_controls::{MenuBarItem, MenuInvoked, MenuItem, MetroMenuBar};
+use kanesumi_core::ThemeColor;
 use kanesumi_harness::element::widgets::{Border, Label, Stack};
 use kanesumi_harness::element::{Action, Align, Insets, LayoutProps, Tree, WidgetId};
 use kanesumi_harness::{AppConfig, EtherRole, TreeApp};
@@ -28,8 +29,7 @@ impl TreeApp for Demo {
     }
 
     fn build(&mut self, tree: &mut Tree) {
-        let c = self.theme().colors;
-        let bar = tree.insert(tree.root(), Border::new().background(c.surface));
+        let bar = tree.insert(tree.root(), Border::new().background(ThemeColor::Surface));
         let row = tree.insert(bar, Stack::row().with_spacing(12.0));
         let center = LayoutProps {
             v_align: Align::Center,

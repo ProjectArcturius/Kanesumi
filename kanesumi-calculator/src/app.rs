@@ -234,12 +234,11 @@ impl TreeApp for CalculatorApp {
     /// 这一 gap 级误差是可接受的近似（参 SYSTEM_APPS_PLAN 的移植说明）。
     fn build(&mut self, tree: &mut Tree) {
         self.keys.clear();
-        let c = self.theme.colors;
 
         let page = tree.insert(
             tree.root(),
             Border::new()
-                .background(c.background)
+                .background(kanesumi_core::ThemeColor::Background)
                 .padding(Insets::all(PAD)),
         );
         let col = tree.insert(page, Stack::column().with_spacing(GAP));
