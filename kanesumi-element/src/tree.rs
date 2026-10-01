@@ -91,6 +91,8 @@ struct Flags {
     needs_measure: bool,
     needs_arrange: bool,
     needs_paint: bool,
+    /// 已在待绘集合里排队（去重；`invalidate_paint` 不重复入队）。参 `Tree::paint_queue`。
+    paint_queued: bool,
     disabled: bool,
 }
 
@@ -123,6 +125,7 @@ impl Node {
                 needs_measure: true,
                 needs_arrange: true,
                 needs_paint: true,
+                paint_queued: false,
                 disabled: false,
             },
             desired: Size::ZERO,
@@ -173,6 +176,9 @@ pub struct Tree {
     context_target: Option<WidgetId>,
     popups: Vec<(WidgetId, PopupSpec)>,
     actions: Vec<(WidgetId, Action)>,
+    /// 待绘节点集合（去重）。`invalidate_paint` / 新建 / 排列改矩形时入队，
+    /// `frame` 只处理这些节点，不再每帧递归整棵树找 `needs_paint`（参 ELEMENT_TREE）。
+    paint_queue: Vec<WidgetId>,
     anim: Vec<WidgetId>,
     /// 定时器：(节点, 剩余秒)。到期把节点放进动画 tick（调用其 `update`）。
     timers: Vec<(WidgetId, f64)>,
@@ -214,6 +220,7 @@ impl Tree {
             context_target: None,
             popups: Vec::new(),
             actions: Vec::new(),
+            paint_queue: Vec::new(),
             anim: Vec::new(),
             timers: Vec::new(),
             parked: Vec::new(),
@@ -245,13 +252,28 @@ impl Tree {
         props: LayoutProps,
     ) -> WidgetId {
         let node = Node::new(widget, parent, props);
-        if let Some(slot) = self.free.pop() {
+        let id = if let Some(slot) = self.free.pop() {
             self.nodes[slot] = Some(node);
             WidgetId::new(slot, self.gens[slot])
         } else {
             self.nodes.push(Some(node));
             self.gens.push(0);
             WidgetId::new(self.nodes.len() - 1, 0)
+        };
+        // 新节点初始 `needs_paint = true`：直接进待绘集合，避免首帧整树递归。
+        if let Some(n) = self.node_mut(id) {
+            n.flags.paint_queued = true;
+        }
+        self.paint_queue.push(id);
+        id
+    }
+
+    /// 把需要绘制的节点入待绘集合（去重）。
+    fn queue_paint(&mut self, id: WidgetId) {
+        let Some(n) = self.node_mut(id) else { return };
+        if n.flags.needs_paint && !n.flags.paint_queued {
+            n.flags.paint_queued = true;
+            self.paint_queue.push(id);
         }
     }
 
@@ -392,6 +414,8 @@ impl Tree {
             for r in resume {
                 self.request_anim(r);
             }
+            // 重新可见：确保该节点重画（隐藏期间 needs_paint 被保留但未入队）。
+            self.invalidate_paint(id);
         }
         self.invalidate_measure(id);
         if let Some(p) = self.parent(id) {
@@ -415,7 +439,9 @@ impl Tree {
             n.flags.needs_measure = true;
             n.flags.needs_arrange = true;
             n.flags.needs_paint = true;
+            n.flags.paint_queued = true;
         }
+        self.paint_queue = self.all_ids();
         self.full_repaint = true;
         self.dirty = true;
     }
@@ -560,6 +586,7 @@ impl Tree {
             n.flags.needs_paint = true;
             self.dirty = true;
         }
+        self.queue_paint(id);
     }
 
     pub(crate) fn request_anim(&mut self, id: WidgetId) {
@@ -632,12 +659,14 @@ impl Tree {
         let mut stack = vec![id];
         while let Some(cur) = stack.pop() {
             stack.extend(self.children(cur).iter().copied());
-            if let Some(b) = self.node_mut(cur).and_then(|n| {
+            let old = self.node_mut(cur).and_then(|n| {
                 n.paint.clear();
                 n.paint_after.clear();
                 n.flags.needs_paint = true;
                 n.painted_bounds.take()
-            }) {
+            });
+            self.queue_paint(cur);
+            if let Some(b) = old {
                 self.add_damage(b);
             }
         }
@@ -693,9 +722,10 @@ impl Tree {
             self.check_containment();
         }
 
-        // 3. 绘制脏节点。
-        for r in [self.root, self.overlay] {
-            self.paint_dirty(r, engine);
+        // 3. 绘制脏节点：只处理待绘集合（不再每帧递归整棵树找 needs_paint）。
+        // 集合里的悬垂 id（已删除）与不可见节点在 paint_node 内跳过。
+        for id in std::mem::take(&mut self.paint_queue) {
+            self.paint_node(id, engine);
         }
 
         // 4. 拼接。剔除条件 = 表面 ∩ 本帧 damage（局部帧只拼与 damage 相交的节点；
@@ -811,16 +841,22 @@ impl Tree {
             props.v_align,
         );
         let rect = Rect::new(x, y, w, h);
-        let Some(n) = self.node_mut(id) else { return };
-        if n.rect == rect && !n.flags.needs_arrange {
+        let (rect_changed, arrange_pending) = {
+            let Some(n) = self.node_mut(id) else { return };
+            (n.rect != rect, n.flags.needs_arrange)
+        };
+        if !rect_changed && !arrange_pending {
             return;
         }
-        if n.rect != rect {
-            n.flags.needs_paint = true;
+        if let Some(n) = self.node_mut(id) {
+            n.rect = rect;
+            n.flags.needs_arrange = false;
         }
-        n.rect = rect;
-        n.flags.needs_arrange = false;
-        let Some(mut wdg) = n.widget.take() else {
+        // 矩形变化 → 内容位置变，需重画（入待绘集合；原先直接在节点上置位）。
+        if rect_changed {
+            self.invalidate_paint(id);
+        }
+        let Some(mut wdg) = self.node_mut(id).and_then(|n| n.widget.take()) else {
             return;
         };
         let mut ctx = ArrangeCtx {
@@ -834,47 +870,56 @@ impl Tree {
         }
     }
 
-    fn paint_dirty(&mut self, id: WidgetId, engine: &TextEngine) {
+    /// 绘制单个脏节点（不再递归：待绘集合已由 `invalidate_paint` 等维护）。
+    fn paint_node(&mut self, id: WidgetId, engine: &TextEngine) {
         let Some(n) = self.node(id) else { return };
-        if !n.props.visible {
+        if !n.flags.needs_paint {
             return;
         }
-        if n.flags.needs_paint {
-            let rect = n.rect;
-            let state = self.states(id);
-            if let Some(mut w) = self.node_mut(id).and_then(|n| n.widget.take()) {
-                let mut scene = Scene::default();
-                let mut ctx = PaintCtx {
-                    tree: self,
-                    id,
-                    engine,
-                    rect,
-                    state,
-                };
-                w.paint(&mut ctx, &mut scene);
-                let mut after = Scene::default();
-                w.paint_after(&mut ctx, &mut after);
-                // 焦点视觉画在节点外一圈，一并计入绘制范围。
-                let mut bounds = w.paint_overflow().inflate(rect);
-                if w.focusable() && w.focus_visual() {
-                    bounds = crate::props::Insets::all(FOCUS_VISUAL_THICKNESS).inflate(bounds);
-                }
-                let old = self.node(id).and_then(|n| n.painted_bounds);
-                if let Some(o) = old {
-                    self.add_damage(o);
-                }
-                self.add_damage(bounds);
-                if let Some(n) = self.node_mut(id) {
-                    n.widget = Some(w);
-                    n.paint = scene.commands;
-                    n.paint_after = after.commands;
-                    n.painted_bounds = Some(bounds);
-                    n.flags.needs_paint = false;
-                }
+        // 不可见（自身或祖先）不画：保留 needs_paint，释放队列位，待重新可见时再入队。
+        if !self.effectively_visible(id) {
+            if let Some(n) = self.node_mut(id) {
+                n.flags.paint_queued = false;
             }
+            return;
         }
-        for c in self.children(id).to_vec() {
-            self.paint_dirty(c, engine);
+        let rect = n.rect;
+        let state = self.states(id);
+        let Some(mut w) = self.node_mut(id).and_then(|n| n.widget.take()) else {
+            // 控件正被回调持有（理论上不会出现在此）：释放队列位，留下次再画。
+            if let Some(n) = self.node_mut(id) {
+                n.flags.paint_queued = false;
+            }
+            return;
+        };
+        let mut scene = Scene::default();
+        let mut ctx = PaintCtx {
+            tree: self,
+            id,
+            engine,
+            rect,
+            state,
+        };
+        w.paint(&mut ctx, &mut scene);
+        let mut after = Scene::default();
+        w.paint_after(&mut ctx, &mut after);
+        // 焦点视觉画在节点外一圈，一并计入绘制范围。
+        let mut bounds = w.paint_overflow().inflate(rect);
+        if w.focusable() && w.focus_visual() {
+            bounds = crate::props::Insets::all(FOCUS_VISUAL_THICKNESS).inflate(bounds);
+        }
+        let old = self.node(id).and_then(|n| n.painted_bounds);
+        if let Some(o) = old {
+            self.add_damage(o);
+        }
+        self.add_damage(bounds);
+        if let Some(n) = self.node_mut(id) {
+            n.widget = Some(w);
+            n.paint = scene.commands;
+            n.paint_after = after.commands;
+            n.painted_bounds = Some(bounds);
+            n.flags.needs_paint = false;
+            n.flags.paint_queued = false;
         }
     }
 

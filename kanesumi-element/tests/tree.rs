@@ -974,6 +974,105 @@ fn compose_local_damage_frame_excludes_non_intersecting_nodes() {
     assert!(has_color(&full.scene, blue), "全量帧不剔除");
 }
 
+/// 记录 `paint` 调用次数的可聚焦色块（脏集合定向重画的判据）。
+struct PaintCounter {
+    paints: Rc<Cell<u32>>,
+    color: Color,
+}
+
+impl Widget for PaintCounter {
+    fn measure(&mut self, _: &mut MeasureCtx, _: Size) -> Size {
+        Size::new(40.0, 40.0)
+    }
+    fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
+        self.paints.set(self.paints.get() + 1);
+        scene.fill_rect(self.color, ctx.rect());
+    }
+    fn focusable(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn dirty_set_repaints_only_affected_node() {
+    let mut h = TestHarness::new(400.0, 400.0);
+    let pa = Rc::new(Cell::new(0));
+    let pb = Rc::new(Cell::new(0));
+    let a = h.tree.insert_with(
+        h.root(),
+        PaintCounter {
+            paints: pa.clone(),
+            color: Color::rgb(1.0, 0.0, 0.0),
+        },
+        LayoutProps {
+            width: Some(40.0),
+            height: Some(40.0),
+            margin: Insets::new(10.0, 10.0, 0.0, 0.0),
+            h_align: Align::Start,
+            v_align: Align::Start,
+            ..LayoutProps::default()
+        },
+    );
+    h.tree.insert_with(
+        h.root(),
+        PaintCounter {
+            paints: pb.clone(),
+            color: Color::rgb(0.0, 0.0, 1.0),
+        },
+        LayoutProps {
+            width: Some(40.0),
+            height: Some(40.0),
+            margin: Insets::new(200.0, 200.0, 0.0, 0.0),
+            h_align: Align::Start,
+            v_align: Align::Start,
+            ..LayoutProps::default()
+        },
+    );
+    h.frame();
+    h.frame();
+    let (ca, cb) = (pa.get(), pb.get());
+    assert!(ca >= 1 && cb >= 1, "首帧两节点都画过");
+
+    // 悬停 a：只重画 a，b 的 paint 不再被调用（旧实现每帧整树递归但 b 未失效，
+    // 此处验证待绘集合语义 —— b 既不入队也不重画）。
+    h.move_to(h.center(a));
+    h.frame();
+    assert!(pa.get() > ca, "悬停节点重画");
+    assert_eq!(pb.get(), cb, "无关节点不得重画");
+}
+
+#[test]
+fn hidden_node_is_not_painted_and_repaints_when_shown() {
+    let mut h = TestHarness::new(200.0, 200.0);
+    let p = Rc::new(Cell::new(0));
+    let id = h.tree.insert_with(
+        h.root(),
+        PaintCounter {
+            paints: p.clone(),
+            color: Color::rgb(1.0, 0.0, 0.0),
+        },
+        LayoutProps {
+            width: Some(40.0),
+            height: Some(40.0),
+            h_align: Align::Start,
+            v_align: Align::Start,
+            ..LayoutProps::default()
+        },
+    );
+    h.frame();
+    let baseline = p.get();
+    assert!(baseline >= 1);
+
+    h.tree.update_props(id, |pr| pr.visible = false);
+    h.frame();
+    h.frame();
+    assert_eq!(p.get(), baseline, "隐藏期间不绘制");
+
+    h.tree.update_props(id, |pr| pr.visible = true);
+    h.frame();
+    assert!(p.get() > baseline, "重新可见后重画");
+}
+
 #[test]
 fn theme_tokens_reskin_on_set_theme() {
     use kanesumi_core::{Accent, MetroTheme, ThemeColor};
