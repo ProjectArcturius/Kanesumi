@@ -221,6 +221,144 @@ impl MetroCandidateWindow {
     }
 }
 
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 button.rs）──────────────────
+//
+// **纯展示**：`measure` = `popup_size()`，`paint` = 旧 `render`。内容（candidates /
+// highlighted / page）仍由引擎层注入。点候选项发 `CandidateChosen`（全局下标 = 页偏移 +
+// 页内下标，照旧 `hit_candidate` 语义）。**不可聚焦** —— 焦点永远在文本框；点击不抓焦点。
+
+/// 元素树动作：候选项被点击。携带全局下标（`page × CANDIDATES_PER_PAGE + 页内下标`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CandidateChosen(pub usize);
+
+impl kanesumi_element::Widget for MetroCandidateWindow {
+    fn measure(
+        &mut self,
+        _ctx: &mut kanesumi_element::MeasureCtx,
+        _available: Size,
+    ) -> Size {
+        self.popup_size()
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, PointerButton};
+        if let Event::PointerUp {
+            pos,
+            button: PointerButton::Left,
+            ..
+        } = event
+            && let Some(i) = self.hit_candidate(ctx.rect(), *pos)
+        {
+            let global = self.page * CANDIDATES_PER_PAGE + i;
+            ctx.emit(CandidateChosen(global));
+            ctx.set_handled();
+        }
+    }
+
+    /// 纯展示：焦点永远在文本框，候选窗不占 Tab 位。
+    fn focusable(&self) -> bool {
+        false
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::List,
+            name: "候选".to_string(),
+            value: self.highlighted.and_then(|i| self.candidates.get(i).cloned()),
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, Insets, LayoutProps, Widget, WidgetId};
+
+    fn harness() -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(400.0, 300.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroCandidateWindow {
+                candidates: vec!["你好".into(), "尼豪".into(), "泥蒿".into()],
+                highlighted: Some(0),
+                page: 0,
+                has_prev: false,
+                has_next: true,
+                open: true,
+            },
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    fn item_center(h: &TestHarness, id: WidgetId, i: usize) -> Point {
+        let cw = h.tree.get::<MetroCandidateWindow>(id).unwrap();
+        let rect = h.rect(id);
+        let mut x = rect.origin.x;
+        for j in 0..i {
+            x += cw.item_width(j) + CANDIDATE_ITEM_GAP;
+        }
+        Point::new(
+            x + cw.item_width(i) / 2.0,
+            rect.origin.y + CANDIDATE_PAD_Y + CANDIDATE_ROW_H / 2.0,
+        )
+    }
+
+    #[test]
+    fn click_second_candidate_reports_index() {
+        let (mut h, id) = harness();
+        h.click_at(item_center(&h, id, 1));
+        assert_eq!(
+            h.take::<CandidateChosen>(),
+            vec![(id, CandidateChosen(1))]
+        );
+    }
+
+    #[test]
+    fn global_index_includes_page_offset() {
+        let (mut h, id) = harness();
+        h.tree.edit::<MetroCandidateWindow, _>(id, |c, ctx| {
+            c.page = 1;
+            ctx.invalidate_paint();
+        });
+        h.frame();
+        h.click_at(item_center(&h, id, 0));
+        assert_eq!(
+            h.take::<CandidateChosen>(),
+            vec![(id, CandidateChosen(CANDIDATES_PER_PAGE))]
+        );
+    }
+
+    #[test]
+    fn click_does_not_move_focus() {
+        let (mut h, id) = harness();
+        assert!(!h.tree.get::<MetroCandidateWindow>(id).unwrap().focusable());
+        assert_eq!(h.tree.focused(), None);
+        h.click_at(item_center(&h, id, 1));
+        assert_eq!(h.tree.focused(), None, "点击候选窗不改变焦点");
+    }
+
+    #[test]
+    fn sizes_and_passes_insurance_checks() {
+        let (h, id) = harness();
+        assert_eq!(h.rect(id).size, h.tree.get::<MetroCandidateWindow>(id).unwrap().popup_size());
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
