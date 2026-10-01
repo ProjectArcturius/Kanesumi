@@ -1609,4 +1609,138 @@ MetroCandidateWindow {
 
 ---
 
+## 45 · CalendarView（MetroCalendarView）
+
+> 数据源：**OS UWP 一手源**（本机 Windows SDK 10.0.26100.0）。
+> 模板与尺寸：`generic.xaml` `CalendarViewDayItemRevealStyle`（L16137）、`CalendarViewRevealStyle`
+> （L16180，头行 40 / 星期行 38 / `CalendarItemBorderThickness` 2 / `BorderThickness` 1）。
+> 笔刷：`themeresources.xaml` `CalendarView*` 键（暗 L744-769 / 亮 L4660-4685）。
+> 实现：`kanesumi-controls/src/calendar_view.rs`。日期算法自带（proleptic Gregorian），不引依赖。
+
+### 定位
+
+月历控件（UWP `CalendarView`）。三级 `DisplayMode`：
+
+```
+Month（日格 7×6） ──点头部──▶ Year（12 月 4×3） ──点头部──▶ Decade（12 年 4×3）
+      ◀──选中日/月──────────────┘        ◀──选中年──────────┘
+```
+
+### 尺寸（一手源）
+
+| 项 | 值 | 源 |
+|---|---|---|
+| 日格 MinWidth / MinHeight | **40 / 40** | `CalendarViewDayItemRevealStyle` |
+| 日格 Margin | **1**（绘制落 38×38 内） | 同上 |
+| 头行高 | **40** | 模板 `RowDefinition Height="40"` |
+| 星期行高 | **38** | 模板 `RowDefinition Height="38"` |
+| 日格区 | **7 × 6**（42 格） | `MonthView` 网格 |
+| 头部列宽比 | **5 : 1 : 1**（标题 / 上月 / 下月） | 模板列定义 |
+| 年 / 十年视图 | **4 × 3**（12 项，各占日格区） | `CalendarPanel` |
+| 视图固有尺寸 | **280 × 318**（7×40, 40+38+6×40） | 由上式推导 |
+| 日格字号 / 星期字号 | body / caption | `CalendarItemForeground` 用 `CaptionTextBlockStyle` |
+
+### 颜色与状态（一手源 → 令牌）
+
+| 态 | 底色 | 前景 | 源键 |
+|---|---|---|---|
+| 本月普通 | 透明 | `on_surface` | `CalendarItemForeground` = BaseHigh |
+| 溢出月（非本月） | `track_subtle`（弱化） | `on_surface_variant` | `OutOfScopeForeground/Background` |
+| 悬停 | `surface_variant` | `on_surface` | `HoverBorderBrush` = BaseMediumLow 40% |
+| **今天** | 透明 | `primary` | `TodayForeground`（强调色描边，`IsTodayHighlighted`） |
+| **选中日** | **`primary` 填充** | `on_primary` | `SelectedBorderBrush` = HighlightAccent |
+| 键盘游标（聚焦） | 透明 | — | `focus_stroke` 2px 描边 |
+| 年 / 十年选中项 | `primary` 填充 | `on_primary` | 同上 |
+
+颜色切换 = 瞬时硬切换（通用规律 1）。叠加顺序：底 → 今天描边 → 选中填充 → 游标。
+
+### 行为
+
+- 点日格 → 发 `DateSelected(Date)`；点到溢出（上下月）日格会**先切到对应月**再选中。
+- 点头部标题逐级上升 `Month → Year → Decade`；年 / 十年视图点月 / 年逐级返回。
+- 键盘：←/→ 移一日、↑/↓ 移一周、Enter/Space 选中游标日；PageUp/PageDown 换月。
+- 滚轮：正 `dy` 换下一月（年 / 十年视图按月 / 十年步进）。
+- 周起始日可配（`week_start`，0 = 周一，默认周一）。
+
+### Kanesumi 适配
+
+- 颜色一律走 `ThemeColor` / `MetroTheme` 令牌，深浅两档通用。
+- 「今天」由调用方传入（控件不读系统时钟，便于测试）。
+- 挤小时 `render` 成对 `push_clip/pop_clip` 裁到自身 rect（COMPOSITION 容器契约）。
+
+### 控件 API（元素树）
+
+```
+MetroCalendarView {
+    displayed: Date            // 显示月
+    selected: Option<Date>     // 选中日
+    today: Option<Date>        // 「今天」（调用方传入）
+    display_mode: CalendarDisplayMode  // Month | Year | Decade
+    week_start: u8             // 0=周一 … 6=周日
+    // Widget：点日格 → emit DateSelected(Date)
+}
+```
+
+---
+
+## 46 · CalendarDatePicker（MetroCalendarDatePicker）
+
+> 数据源：**OS UWP 一手源**（Windows SDK 10.0.26100.0）。
+> 模板与尺寸：`generic.xaml` `CalendarDatePicker`（L16671，`BorderThickness` 取自
+> `CalendarDatePickerBorderThemeThickness` = 2，底 `MinHeight` 32，`DateText` Padding `12,0,0,2`，
+> 日历字形 `E787` FontSize 12 / 列宽 32）。
+> 笔刷：`themeresources.xaml` `CalendarDatePicker*` 键（暗 L727-743 / 亮 L4643-4659）。
+> 实现：`kanesumi-controls/src/calendar_date_picker.rs`。弹层里放 `MetroCalendarView`。
+
+### 定位
+
+类 ComboBox 的日期选择触发器：显示选中日期（未选显示占位「选择日期」），点击 / 键盘打开
+弹层里的 `MetroCalendarView`；选中后关闭弹层并发 `DatePicked { owner, date }`。
+
+### 尺寸（一手源）
+
+| 项 | 值 | 源 |
+|---|---|---|
+| 边框粗细 | **2** | `CalendarDatePickerBorderThemeThickness` |
+| 触发器最小高 | **32** | 模板 `Background` `MinHeight="32"` |
+| 文本左内边距 | **12** | `DateText` `Padding="12,0,0,2"` |
+| 日历字形列宽 | **32**（字形 12px） | 模板第 3 列 `Width="32"` |
+| 文本右让位 | 8 | 模板列间隙 |
+
+### 颜色与状态（一手源 → 令牌）
+
+| 态 | 底 / 边框 | 前景 | 源键 |
+|---|---|---|---|
+| Normal | `control_fill` / `control_stroke` | 占位 `on_surface_variant`；已选 `on_surface` | `Background`/`BorderBrush`/`TextForeground` |
+| 悬停 | `surface_variant` | 同上 | `BackgroundPointerOver` |
+| 聚焦 / 展开 | `control_fill` + `focus_stroke` 2px | 同上 | `BackgroundFocused`（AccentLow 衬底） |
+| 禁用 | `control_fill` × `disabled_opacity` | `on_surface_variant` | `BackgroundDisabled` |
+| 日历字形 | — | `on_surface_variant` | `CalendarGlyphForeground` = BaseMediumHigh |
+
+### 行为
+
+- 点击 / Enter / Space / Down → 打开弹层（默认锚在触发器下方，放不下自动上翻）。
+- 弹层内选中日 → 发 `DatePicked { owner, date }` 并关闭；框架把焦点交还触发器。
+- 已展开时再次激活 → 收起；点外部 / Esc → 框架关闭并发 `PopupClosed`，控件复位展开态。
+- 展开期间触发器呈「按下」外观（与 DropDownButton 同）。
+
+### Kanesumi 适配
+
+- 颜色一律走 `ThemeColor` / `MetroTheme` 令牌，深浅两档通用。
+- 日历字形为 Kanesumi 自绘（外框 + 顶栏 + 两挂环），不依赖符号字体。
+- 弹层是覆盖层上的独立节点（参 `ELEMENT_MIGRATION.md` §8），动作带 `owner` 由 App 分派。
+
+### 控件 API（元素树）
+
+```
+MetroCalendarDatePicker {
+    selected: Option<Date>     // 选中日（None = 占位）
+    today: Date                // 「今天」（调用方传入）
+    placeholder: String        // 默认「选择日期」
+    // Widget：emit DatePicked { owner, date }（来源 id = 弹层面板）
+}
+```
+
+---
+
 
