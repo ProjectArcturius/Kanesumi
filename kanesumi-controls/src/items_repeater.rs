@@ -692,6 +692,27 @@ mod tree_tests {
     }
 
     #[test]
+    fn uniform_grid_realizes_visible_cells() {
+        let mut h = TestHarness::new(200.0, 300.0);
+        let keys = Rc::new(RefCell::new((0..10_000u64).collect()));
+        let factory = SharedFactory { keys, row_h: 60.0 };
+        let id = h.tree.insert_with(
+            h.root(),
+            ItemsRepeater::grid(Size::new(60.0, 60.0), 4.0, factory),
+            LayoutProps::default(),
+        );
+        h.frame();
+        let rep = h.tree.get::<ItemsRepeater>(id).unwrap();
+        let n = rep.realized_count();
+        assert!(n >= 9 && n <= 30, "网格只实现可见单元 + overscan，实际 {n}");
+        let r = h.rect(rep.realized_node(0).unwrap());
+        assert!(
+            (r.size.width - 60.0).abs() < 0.01 && (r.size.height - 60.0).abs() < 0.01,
+            "单元格 60×60 {r:?}"
+        );
+    }
+
+    #[test]
     fn scrolling_does_not_grow_node_count() {
         let (mut h, id, _) = harness(10_000, 300.0);
         let before = h.tree.children(id).len();
