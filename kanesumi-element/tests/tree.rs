@@ -786,3 +786,44 @@ fn modal_scrim_is_drawn_between_content_and_popup() {
             .any(|c| matches!(c, SceneCommand::FillRect { color, .. } if *color == scrim))
     );
 }
+
+
+// ── 弹层分离（外壳以 xdg_popup 承载弹层）──────────────────────────────────────
+
+#[test]
+fn detached_popup_is_placed_in_bounds_and_composed_separately() {
+    // 30px 高的「顶栏」：放置区放大到 800x600 后，面板落在表面之外，主 Scene 不含它。
+    let mut h = TestHarness::new(800.0, 30.0);
+    h.tree.set_popup_bounds(Some(Rect::new(0.0, 0.0, 800.0, 600.0)));
+    h.tree.set_detached_popups(true);
+    let anchor = h.tree.insert_with(h.root(), TestButton::new(80.0, 30.0), fixed(80.0, 30.0));
+    h.frame();
+    let p = h.tree.open_popup(panel(), PopupSpec { anchor: Some(anchor), ..PopupSpec::default() });
+    h.tree.insert_with(p, TestButton::new(120.0, 200.0), fixed(120.0, 200.0));
+    let out = h.frame().clone();
+    let r = h.rect(p);
+    assert!(r.origin.y >= 30.0 - 0.5 && r.size.height >= 200.0, "面板在锚点下方、未被 30px 表面压扁 {r:?}");
+    let panel_color = Color::rgb(0.3, 0.3, 0.3);
+    assert!(
+        !out.scene.commands.iter().any(|c| matches!(c, SceneCommand::FillRect { color, .. } if *color == panel_color)),
+        "分离模式：主 Scene 不画弹层"
+    );
+    let ps = h.tree.popup_scene(p).expect("弹层 Scene");
+    let fill = ps
+        .commands
+        .iter()
+        .find_map(|c| match c {
+            SceneCommand::FillRect { color, rect, .. } if *color == panel_color => Some(*rect),
+            _ => None,
+        })
+        .expect("弹层 Scene 含面板背景");
+    let ext = h.tree.popup_extent(p).unwrap();
+    assert!(ext.origin.x <= r.origin.x && ext.origin.y <= r.origin.y, "范围含节点矩形 {ext:?} ⊇ {r:?}");
+    assert_eq!(
+        (fill.origin.x, fill.origin.y),
+        (r.origin.x - ext.origin.x, r.origin.y - ext.origin.y),
+        "弹层 Scene 以绘制范围左上为原点"
+    );
+    // 命中仍在树坐标里工作：表面之外的点命中弹层内容。
+    assert!(h.tree.hit(Point::new(r.origin.x + 10.0, r.origin.y + 10.0)).is_some());
+}

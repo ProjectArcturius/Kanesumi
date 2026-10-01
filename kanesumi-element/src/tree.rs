@@ -188,6 +188,12 @@ pub struct Tree {
     /// 上一帧的排版引擎（`TextEngine` clone 为零拷贝）。事件处理里的文本命中
     /// （点击定位光标）要用它 —— 外壳的输入回调不带引擎。
     engine: Option<TextEngine>,
+    /// 弹层放置区（树坐标）。None = 表面本身。外壳可放大到整个输出：
+    /// 30px 高的 TopBar 上，菜单要能落到表面之外（由外壳另开 xdg_popup 承载）。
+    popup_bounds: Option<Rect>,
+    /// 弹层分离：主表面 Scene 不含覆盖层（及遮罩），每个弹层经 `popup_scene` 单独取，
+    /// 由外壳画进各自的 xdg_popup 表面。参 ELEMENT_TREE §弹层分离。
+    detached_popups: bool,
 }
 
 impl Tree {
@@ -217,6 +223,8 @@ impl Tree {
             ime: None,
             engine: None,
             pointer: None,
+            popup_bounds: None,
+            detached_popups: false,
         };
         tree.root = tree.alloc(Box::new(ZStack), None, LayoutProps::default());
         tree.overlay = tree.alloc(Box::new(OverlayRoot), None, LayoutProps::default());
@@ -675,10 +683,11 @@ impl Tree {
             self.invalidate_arrange(self.overlay);
         }
         let full = Rect::new(0.0, 0.0, size.width, size.height);
-        for r in [self.root, self.overlay] {
-            self.measure_node(r, size, engine);
-            self.arrange_node(r, full, engine);
-        }
+        self.measure_node(self.root, size, engine);
+        self.arrange_node(self.root, full, engine);
+        let bounds = self.popup_bounds();
+        self.measure_node(self.overlay, bounds.size, engine);
+        self.arrange_node(self.overlay, bounds, engine);
         self.validate_focus();
         if cfg!(debug_assertions) {
             self.check_containment();
@@ -693,13 +702,16 @@ impl Tree {
         let mut scene = Scene::default();
         self.compose(self.root, &mut scene);
         // 遮罩：任一打开的弹层要求时，在覆盖层之前整面压暗（弹层自身画在遮罩之上）。
-        if self.popups.iter().any(|(_, s)| s.scrim) {
+        // 分离模式下弹层在别的表面上，主表面不压暗也不画覆盖层。
+        if !self.detached_popups && self.popups.iter().any(|(_, s)| s.scrim) {
             scene.fill_rect(
                 self.theme.overlay_color,
                 Rect::new(0.0, 0.0, size.width, size.height),
             );
         }
-        self.compose(self.overlay, &mut scene);
+        if !self.detached_popups {
+            self.compose(self.overlay, &mut scene);
+        }
 
         // 5. 焦点控件的 IME 上下文（用本帧布局与排版）。
         self.ime = self.focus.and_then(|f| {
@@ -1180,9 +1192,70 @@ impl Tree {
         }
     }
 
-    /// 表面矩形（逻辑坐标，原点 0,0）。弹层放置 / 级联子菜单翻转用。
+    /// 表面矩形（逻辑坐标，原点 0,0）。
     pub fn surface(&self) -> Rect {
         Rect::new(0.0, 0.0, self.size.width, self.size.height)
+    }
+
+    /// 弹层放置区（树坐标）：弹层定位、级联子菜单翻转、对话框居中都以它为界。
+    /// 默认 = 表面；外壳经 `set_popup_bounds` 放大（如整个输出）。
+    pub fn popup_bounds(&self) -> Rect {
+        self.popup_bounds.unwrap_or_else(|| self.surface())
+    }
+
+    /// 设置弹层放置区。`None` 恢复为表面。
+    pub fn set_popup_bounds(&mut self, bounds: Option<Rect>) {
+        if self.popup_bounds != bounds {
+            self.popup_bounds = bounds;
+            self.invalidate_measure(self.overlay);
+            self.full_repaint = true;
+            self.dirty = true;
+        }
+    }
+
+    /// 弹层分离开关（见字段说明）。
+    pub fn set_detached_popups(&mut self, on: bool) {
+        if self.detached_popups != on {
+            self.detached_popups = on;
+            self.full_repaint = true;
+            self.dirty = true;
+        }
+    }
+
+    pub fn detached_popups(&self) -> bool {
+        self.detached_popups
+    }
+
+    /// 弹层规格（外壳据 `light_dismiss` 决定是否 `xdg_popup.grab`）。
+    pub fn popup_spec(&self, id: WidgetId) -> Option<PopupSpec> {
+        self.popups.iter().find(|(p, _)| *p == id).map(|(_, s)| *s)
+    }
+
+    /// 弹层子树的绘制范围（树坐标）：节点矩形 ∪ 子树全部 `painted_bounds`。
+    /// 级联子菜单画在弹层节点之外，承载表面要按这个范围开。首帧前为节点矩形。
+    pub fn popup_extent(&self, id: WidgetId) -> Option<Rect> {
+        let mut r = self.rect(id)?;
+        let mut stack = vec![id];
+        while let Some(n) = stack.pop() {
+            let Some(node) = self.node(n) else { continue };
+            if !node.props.visible {
+                continue;
+            }
+            if let Some(b) = node.painted_bounds {
+                r = union(r, b);
+            }
+            stack.extend(node.children.iter().copied());
+        }
+        Some(r)
+    }
+
+    /// 单个弹层的 Scene，平移到以 `popup_extent` 左上为原点（外壳直接画进弹层表面）。
+    pub fn popup_scene(&self, id: WidgetId) -> Option<Scene> {
+        let extent = self.popup_extent(id)?;
+        let mut scene = Scene::default();
+        self.compose(id, &mut scene);
+        scene.translate(Point::new(-extent.origin.x, -extent.origin.y));
+        Some(scene)
     }
 
     /// 上一帧的排版引擎（首帧之前为 None）。

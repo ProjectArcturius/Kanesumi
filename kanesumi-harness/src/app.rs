@@ -179,6 +179,17 @@ pub enum InputEvent {
 /// 状态驱动渲染（参 PLAN.md §4-1 / AnimationRules.md §III）：
 /// `state → progress → resolved spatial state → render`。
 /// App 只产出 `Scene` 绘制命令，GPU 光栅化由 harness 外壳承担——保持纯逻辑、跨平台可测。
+/// 子弹层申报（`App::popups`）：外壳为每一项开一个 xdg_popup 表面。参 Ether docs/POPUP_PLAN.md。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PopupRequest {
+    /// 稳定身份（元素树弹层 = `WidgetId::to_u64`）。
+    pub key: u64,
+    /// 弹层矩形（主表面局部坐标，可在表面之外）。
+    pub rect: Rect,
+    /// 点外部由合成器关闭（`xdg_popup.grab`；关闭后回调 `popup_dismissed`）。
+    pub grab: bool,
+}
+
 pub trait App {
     fn config(&self) -> &AppConfig;
 
@@ -248,6 +259,36 @@ pub trait App {
     fn floating_height(&self, _index: usize) -> f32 {
         0.0
     }
+
+    // ── 子弹层（xdg_popup）。参 Ether docs/POPUP_PLAN.md ─────────────────────
+
+    /// 外壳告知子弹层可用，`bounds` = 弹层放置区（主表面局部坐标，通常为整个输出）。
+    /// 返回 true = App 之后经 [`App::popups`] 申报弹层；默认 false（弹层留在主表面内）。
+    /// 放置区变化时会再次调用。
+    fn enable_popups(&mut self, _bounds: Rect) -> bool {
+        false
+    }
+
+    /// 当前应显示的子弹层（自底向上）。外壳每迭代比对，增删表面。
+    fn popups(&self) -> Vec<PopupRequest> {
+        Vec::new()
+    }
+
+    /// 该弹层内容是否变了（外壳据此重画其表面）。
+    fn popup_needs_redraw(&self, _key: u64) -> bool {
+        false
+    }
+
+    /// 画弹层（Scene 以弹层左上为原点，`size` = 弹层尺寸）。
+    fn render_popup(&mut self, _engine: &TextEngine, _key: u64, _size: Size) -> Scene {
+        Scene::default()
+    }
+
+    /// 弹层表面上的输入（坐标为弹层局部）。
+    fn popup_input(&mut self, _key: u64, _event: InputEvent) {}
+
+    /// 合成器关闭了弹层（点外部 / 抓取被夺）。
+    fn popup_dismissed(&mut self, _key: u64) {}
 
     /// 每帧 tick。`dt` 单位为秒（外壳从 frame callback 计算，参 PLAN.md §4.2 合成器时钟）。
     fn update(&mut self, _dt: f64) {}

@@ -225,9 +225,9 @@ impl PaintCtx<'_> {
     pub fn rect(&self) -> Rect {
         self.rect
     }
-    /// 表面矩形（画级联子菜单等越出自身的弹层内容时用）。
+    /// 弹层放置区（画级联子菜单等越出自身的弹层内容时用）。默认 = 表面，外壳可放大到整个输出。
     pub fn surface(&self) -> Rect {
-        self.tree.surface()
+        self.tree.popup_bounds()
     }
     pub fn state(&self) -> ControlStates {
         self.state
@@ -263,9 +263,9 @@ impl EventCtx<'_> {
     pub fn theme(&self) -> &MetroTheme {
         self.tree.theme()
     }
-    /// 表面矩形（弹层放置 / 子菜单翻转用）。
+    /// 弹层放置区（弹层放置 / 子菜单翻转用）。默认 = 表面，外壳可放大到整个输出。
     pub fn surface(&self) -> Rect {
-        self.tree.surface()
+        self.tree.popup_bounds()
     }
     /// 最近一次指针位置。`Event::Click` 不带坐标 —— 多区域控件（分体按钮、面包屑）据此判区。
     pub fn pointer(&self) -> Option<Point> {

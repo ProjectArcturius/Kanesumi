@@ -14,13 +14,14 @@
 // | damage_hint         | 本帧重画节点的新旧绘制范围之并（外壳在 render 后取）|
 // | ime_focus           | 焦点控件经 `Widget::ime` 产出的上下文               |
 // | focus_changed(false)| 关闭可轻触关闭的弹层                                |
+// | enable_popups 等    | 弹层分离：覆盖层弹层各由外壳开 xdg_popup 承载（POPUP_PLAN）|
 
 use kanesumi_canvas::Scene;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
 use kanesumi_element::{Action, Key, Modifiers, Tree, WidgetId};
 
-use crate::app::{App, AppConfig, ImeContext, InputEvent};
+use crate::app::{App, AppConfig, ImeContext, InputEvent, PopupRequest};
 use crate::appmenu::{AppMenuHandle, MenuTree};
 
 /// 元素树应用。
@@ -81,6 +82,8 @@ pub struct TreeHost<A: TreeApp> {
     damage: Option<Rect>,
     /// 最近指针位置（滚轮事件不带坐标，命中要用）。
     pointer: Point,
+    /// 弹层分离模式下需重画的弹层（key = `WidgetId::to_u64`）。
+    popup_dirty: std::collections::HashSet<u64>,
 }
 
 impl<A: TreeApp> TreeHost<A> {
@@ -93,7 +96,32 @@ impl<A: TreeApp> TreeHost<A> {
             pending_dt: 0.0,
             damage: None,
             pointer: Point::new(0.0, 0.0),
+            popup_dirty: std::collections::HashSet::new(),
         }
+    }
+
+    /// 弹层 key → 元素 id（只认当前打开的弹层）。
+    fn popup_id(&self, key: u64) -> Option<WidgetId> {
+        self.tree.popups().find(|id| id.to_u64() == key)
+    }
+
+    /// 弹层表面局部坐标 → 树坐标（平移弹层绘制范围原点）。
+    fn popup_to_tree(&self, key: u64, event: InputEvent) -> Option<InputEvent> {
+        let id = self.popup_id(key)?;
+        let o = self.tree.popup_extent(id)?.origin;
+        Some(match event {
+            InputEvent::PointerMoved { x, y } => InputEvent::PointerMoved { x: x + o.x, y: y + o.y },
+            InputEvent::PointerPressed { x, y, button, modifiers } => {
+                InputEvent::PointerPressed { x: x + o.x, y: y + o.y, button, modifiers }
+            }
+            InputEvent::PointerReleased { x, y, button, modifiers } => {
+                InputEvent::PointerReleased { x: x + o.x, y: y + o.y, button, modifiers }
+            }
+            InputEvent::DoubleClick { x, y, button, modifiers } => {
+                InputEvent::DoubleClick { x: x + o.x, y: y + o.y, button, modifiers }
+            }
+            other => other,
+        })
     }
 
     pub fn app(&self) -> &A {
@@ -147,6 +175,58 @@ impl<A: TreeApp> App for TreeHost<A> {
 
     fn preferred_height(&self) -> Option<f32> {
         self.app.preferred_height()
+    }
+
+    fn enable_popups(&mut self, bounds: Rect) -> bool {
+        self.tree.set_popup_bounds(Some(bounds));
+        self.tree.set_detached_popups(true);
+        true
+    }
+
+    fn popups(&self) -> Vec<PopupRequest> {
+        if !self.tree.detached_popups() {
+            return Vec::new();
+        }
+        self.tree
+            .popups()
+            .filter_map(|id| {
+                let rect = self.tree.popup_extent(id)?;
+                if rect.size.width < 1.0 || rect.size.height < 1.0 {
+                    return None; // 尚未排版（打开当帧）
+                }
+                let spec = self.tree.popup_spec(id)?;
+                Some(PopupRequest {
+                    key: id.to_u64(),
+                    rect,
+                    // 模态弹层不抓取：点外部不能关闭它（合成器抓取语义就是「点外部 popup_done」）。
+                    grab: spec.light_dismiss && !spec.modal,
+                })
+            })
+            .collect()
+    }
+
+    fn popup_needs_redraw(&self, key: u64) -> bool {
+        self.popup_dirty.contains(&key)
+    }
+
+    fn render_popup(&mut self, _engine: &TextEngine, key: u64, _size: Size) -> Scene {
+        self.popup_dirty.remove(&key);
+        self.popup_id(key)
+            .and_then(|id| self.tree.popup_scene(id))
+            .unwrap_or_default()
+    }
+
+    fn popup_input(&mut self, key: u64, event: InputEvent) {
+        if let Some(ev) = self.popup_to_tree(key, event) {
+            self.handle_input(ev);
+        }
+    }
+
+    fn popup_dismissed(&mut self, key: u64) {
+        if let Some(id) = self.popup_id(key) {
+            self.tree.close_popup(id);
+            self.drain_actions();
+        }
     }
 
     fn update(&mut self, dt: f64) {
@@ -274,6 +354,19 @@ impl<A: TreeApp> App for TreeHost<A> {
     fn render_into(&mut self, engine: &TextEngine, size: Size, out: &mut Scene) {
         let dt = std::mem::take(&mut self.pending_dt);
         let frame = self.tree.frame(engine, size, dt);
+        // 弹层分离：本帧损伤（None = 全量）碰到的弹层要重画其表面。
+        if self.tree.detached_popups() {
+            for id in self.tree.popups().collect::<Vec<_>>() {
+                let hit = match (frame.damage, self.tree.popup_extent(id)) {
+                    (None, _) => true,
+                    (Some(d), Some(r)) => d.intersect(r).is_some(),
+                    (Some(_), None) => false,
+                };
+                if hit {
+                    self.popup_dirty.insert(id.to_u64());
+                }
+            }
+        }
         // 外壳契约：None = 全量。多帧未被取走时并入（保守）。
         self.damage = match (self.damage.take(), frame.damage) {
             (_, None) => None,

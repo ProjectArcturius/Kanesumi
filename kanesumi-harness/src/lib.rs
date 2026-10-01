@@ -31,7 +31,7 @@ pub use cpu_raster::CpuRenderer;
 
 pub use app::{
     App, AppConfig, ImeAction, ImeContentHint, ImeContext, InputEvent, Key, Modifiers,
-    PendingImeBatch, PointerButton, compute_ime_action,
+    PendingImeBatch, PointerButton, PopupRequest, compute_ime_action,
 };
 pub use context_menu::{ContextMenuAction, ContextMenuState};
 pub use appmenu::{AppMenuHandle, MenuItem, MenuTree, MenuUpdate, ToggleType};

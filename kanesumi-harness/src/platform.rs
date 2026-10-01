@@ -89,6 +89,8 @@ use crate::role::{EtherRole, SurfaceKind};
 /// **主路径必须持久**（`~/.local/state/ether/`）—— Debian 会话里崩溃/黑屏后无法开终端，
 /// 只能重启回主系统读盘；只写 tmpfs（`/tmp`）会随重启丢失（参 `AGENTS.md` 铁律）。
 /// 另外在 `$XDG_RUNTIME_DIR` 留一份便于会话内即时查看（无持久性要求）。
+mod popups;
+
 fn write_diag(name: &str, content: &str) {
     if let Ok(home) = std::env::var("HOME") {
         let dir = std::path::Path::new(&home).join(".local/state/ether");
@@ -268,6 +270,8 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
                 shell.render_floating_frame(i, &qh);
             }
         }
+        shell.sync_popups(&qh);
+        shell.render_popups(&qh);
     }
     Ok(())
 }
@@ -482,6 +486,18 @@ pub(crate) struct Shell {
     dmabuf_feedback_obj: Option<
         wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1,
     >,
+
+    // ── 子弹层（xdg_popup）。参 platform/popups.rs ─────
+    /// 已开出的子弹层（自底向上）。
+    popups: Vec<popups::HostedPopup>,
+    /// App 接受了子弹层（enable_popups 返回 true）。
+    popups_enabled: bool,
+    /// 上次告知 App 的放置区（变化才重发）。
+    popup_bounds_sent: Option<Rect>,
+    /// 当前 seat（xdg_popup.grab 需要）。
+    seat: Option<wl_seat::WlSeat>,
+    /// 最近一次输入事件 serial（指针按下 / 按键）—— grab 必须带触发它的输入 serial。
+    last_input_serial: Option<u32>,
 }
 
 /// 单个表面的输出缓冲：SHM 双缓冲（回退）+ dmabuf 双缓冲（直通）+ 模式决策。
@@ -800,6 +816,12 @@ impl Shell {
                 ls.commit();
                 layer_surface = Some(ls);
                 layer_shell = Some(shell);
+                // 子弹层（菜单 / 面板）要 xdg_wm_base：顶 / 底条一并绑定（缺失 → 弹层留在表面内）。
+                if matches!(role.surface_kind(), SurfaceKind::LayerTop | SurfaceKind::LayerBottom) {
+                    xdg_shell = XdgShell::bind(globals, qh)
+                        .map_err(|e| log::warn!("xdg_wm_base 不可用，子弹层停用：{e}"))
+                        .ok();
+                }
             }
         }
 
@@ -1013,6 +1035,11 @@ impl Shell {
             dmabuf_feedback: None,
             dmabuf_feedback_obj,
             dmabuf_device,
+            popups: Vec::new(),
+            popups_enabled: false,
+            popup_bounds_sent: None,
+            seat: None,
+            last_input_serial: None,
         })
     }
 
@@ -2019,6 +2046,9 @@ impl SeatHandler for Shell {
         seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
+        if self.seat.is_none() {
+            self.seat = Some(seat.clone());
+        }
         if capability == Capability::Pointer && self.pointer.is_none() {
             let pointer = self
                 .seat_state
@@ -2091,6 +2121,39 @@ impl PointerHandler for Shell {
     ) {
         for event in events {
             let pos = (event.position.0 as f32, event.position.1 as f32);
+            if let PointerEventKind::Press { serial, .. } = &event.kind {
+                self.last_input_serial = Some(*serial);
+            }
+            // 子弹层表面：事件原样（弹层局部坐标）交给 App，App 平移回树坐标。
+            if let Some(key) = self.popup_key(&event.surface) {
+                let ev = match &event.kind {
+                    PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                        Some(InputEvent::PointerMoved { x: pos.0, y: pos.1 })
+                    }
+                    PointerEventKind::Leave { .. } => Some(InputEvent::PointerLeft),
+                    PointerEventKind::Press { button, .. } => Some(InputEvent::PointerPressed {
+                        x: pos.0,
+                        y: pos.1,
+                        button: map_button(*button),
+                        modifiers: self.modifiers,
+                    }),
+                    PointerEventKind::Release { button, .. } => Some(InputEvent::PointerReleased {
+                        x: pos.0,
+                        y: pos.1,
+                        button: map_button(*button),
+                        modifiers: self.modifiers,
+                    }),
+                    PointerEventKind::Axis { vertical, horizontal, .. } => {
+                        let dy = if vertical.discrete != 0 { vertical.discrete as f32 * 50.0 } else { vertical.absolute as f32 };
+                        let dx = if horizontal.discrete != 0 { horizontal.discrete as f32 * 50.0 } else { horizontal.absolute as f32 };
+                        Some(InputEvent::Scroll { x: dx, y: dy, modifiers: self.modifiers })
+                    }
+                };
+                if let Some(ev) = ev {
+                    self.emit_popup_input(key, ev);
+                }
+                continue;
+            }
             // 按指针所在表面路由：主表面 / 浮层。
             let target = if event.surface == self.surface {
                 None
@@ -2292,12 +2355,17 @@ impl KeyboardHandler for Shell {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
-        _surface: &wl_surface::WlSurface,
+        surface: &wl_surface::WlSurface,
         _serial: u32,
     ) {
         self.ime_focus_surface = false;
         self.pending_ime = PendingImeBatch::default();
         self.reconcile_ime();
+        // 键盘焦点移进本进程的抓取弹层（合成器在 grab 时转移焦点）→ 不是失焦，弹层不能因此关闭。
+        if *surface == self.surface && self.has_grabbing_popup() {
+            self.dirty = true;
+            return;
+        }
         // App 通知：失焦 → 关闭右键菜单 / 弹窗（失焦残留修复）。
         self.notify_focus_changed(false);
         self.dirty = true;
@@ -2308,9 +2376,10 @@ impl KeyboardHandler for Shell {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
-        _serial: u32,
+        serial: u32,
         event: SctkKeyEvent,
     ) {
+        self.last_input_serial = Some(serial);
         let text = event
             .utf8
             .as_deref()
@@ -2412,6 +2481,7 @@ delegate_keyboard!(Shell);
 delegate_registry!(Shell);
 delegate_xdg_shell!(Shell);
 delegate_xdg_window!(Shell);
+smithay_client_toolkit::delegate_xdg_popup!(Shell);
 delegate_layer!(Shell);
 delegate_dmabuf!(Shell);
 
@@ -2502,6 +2572,9 @@ impl DmabufHandler for Shell {
             if out.mark_released(buffer) {
                 return;
             }
+        }
+        if self.popup_buffer_released(buffer) {
+            return;
         }
         if let Some(popup) = self.im_popup.as_mut() {
             popup.out.mark_released(buffer);
@@ -3296,6 +3369,9 @@ impl Dispatch<wl_buffer::WlBuffer, ()> for Shell {
                 if slot.mark_released(proxy) {
                     return;
                 }
+            }
+            if state.popup_buffer_released(proxy) {
+                return;
             }
             if let Some(popup) = state.im_popup.as_mut()
                 && popup.out.mark_released(proxy)
