@@ -478,6 +478,245 @@ impl MetroNavigationView {
     }
 }
 
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 radio_buttons.rs）──────────
+//
+// **容器**：导航栏（Toggle + 项列表 + Footer）由控件自绘，内容区放**子节点**（App 把页面挂
+// 在它下面）。`arrange` 把每个子节点排进 `content_rect(rect)`，`clips_children` 保持 true。
+// 点导航项发 `NavigationItemInvoked`；点汉堡键展开 / 收起（Left 模式）。展开 / 收窄动画期间
+// 只 `invalidate_arrange`（内容区平移）与 `invalidate_paint`（导航栏随宽度重画），**不**重新
+// 量测子树（参 ELEMENT_TREE §Ⅴ.1「动画只动视觉」）。
+
+/// 元素树动作：导航项被选中（点击）。携带顶层项索引。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NavigationItemInvoked(pub usize);
+
+impl kanesumi_element::Widget for MetroNavigationView {
+    /// 容器通常铺满窗口：可用尺寸全要（无界轴归 0 以防非有限矩形）。
+    fn measure(
+        &mut self,
+        _ctx: &mut kanesumi_element::MeasureCtx,
+        available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        let w = if available.width.is_finite() {
+            available.width.max(0.0)
+        } else {
+            0.0
+        };
+        let h = if available.height.is_finite() {
+            available.height.max(0.0)
+        } else {
+            0.0
+        };
+        kanesumi_core::Size::new(w, h)
+    }
+
+    fn arrange(&mut self, ctx: &mut kanesumi_element::ArrangeCtx, rect: Rect) {
+        // 内容区随 Pane 宽度变化；子节点全部排进 content_rect。
+        let content = self.content_rect(rect);
+        for c in ctx.children() {
+            ctx.arrange_child(c, content);
+        }
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+    }
+
+    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, dt: f64) {
+        MetroNavigationView::update(self, dt);
+        if self.is_animating() {
+            // 动画期内容区平移 → 重排；导航栏外观随 Pane 宽度变化 → 重画。
+            ctx.invalidate_arrange();
+            ctx.invalidate_paint();
+            ctx.request_anim_frame();
+        }
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, PointerButton};
+        let rect = ctx.rect();
+        match event {
+            Event::PointerMove { pos } => {
+                self.hover(rect, *pos);
+                ctx.invalidate_paint();
+            }
+            Event::PointerLeave => {
+                self.toggle_hovered = false;
+                ctx.invalidate_paint();
+            }
+            Event::PointerUp {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                // 旧 `handle_click` 需要排版引擎量 Top 模式标签宽；首帧之前引擎为 None。
+                let action = match ctx.engine() {
+                    Some(engine) => self.handle_click(engine, rect, *pos),
+                    None => NavigationAction::None,
+                };
+                match action {
+                    NavigationAction::Select(path) => {
+                        if let Some(&i) = path.first() {
+                            ctx.emit(NavigationItemInvoked(i));
+                        }
+                        ctx.invalidate_paint();
+                        ctx.set_handled();
+                    }
+                    NavigationAction::Toggle => {
+                        // 仅 Left 模式真正翻转（Top 模式 handle_click 返回 Toggle 但不改状态）。
+                        if self.mode == NavigationPaneMode::Left {
+                            ctx.invalidate_arrange();
+                            ctx.invalidate_paint();
+                            ctx.request_anim_frame();
+                        }
+                        ctx.set_handled();
+                    }
+                    NavigationAction::None => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::Group,
+            name: self.header.clone(),
+            value: self
+                .selected
+                .as_ref()
+                .and_then(|p| p.first())
+                .and_then(|i| self.items.get(*i))
+                .map(|item| item.label.clone()),
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::widgets::Label;
+    use kanesumi_element::{Align, Insets, LayoutProps, WidgetId};
+
+    fn harness(width: f32, height: f32) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(width, height);
+        let nav = MetroNavigationView::new(vec![
+            NavigationViewItem::with_icon("设置", "⚙"),
+            NavigationViewItem::with_icon("外观", "◐"),
+            NavigationViewItem::new("关于"),
+        ]);
+        let id = h.tree.insert_with(
+            h.root(),
+            nav,
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    #[test]
+    fn label_child_fills_content_rect() {
+        let (mut h, id) = harness(800.0, 600.0);
+        let label = h.tree.insert(id, Label::new("页面内容"));
+        h.frame();
+        let cr = h
+            .tree
+            .get::<MetroNavigationView>(id)
+            .unwrap()
+            .content_rect(h.rect(id));
+        assert_eq!(h.rect(label), cr, "子节点应铺满 content_rect");
+    }
+
+    #[test]
+    fn toggle_moves_child_but_keeps_it_inside() {
+        let (mut h, id) = harness(800.0, 600.0);
+        let label = h.tree.insert(id, Label::new("页面内容"));
+        h.frame();
+        let before = h.rect(label);
+        let tr = h
+            .tree
+            .get::<MetroNavigationView>(id)
+            .unwrap()
+            .toggle_rect(h.rect(id));
+        h.click_at(tr.center());
+        h.settle();
+        let after = h.rect(label);
+        assert_ne!(before, after, "收起 Pane 后内容区应随之变化");
+        assert!(after.size.width > before.size.width, "Pane 收窄后内容区变宽");
+        let nr = h.rect(id);
+        assert!(
+            after.origin.x >= nr.origin.x && after.right() <= nr.right(),
+            "子节点始终在 NavigationView 内：{after:?} ⊄ {nr:?}"
+        );
+        h.assert_contained();
+    }
+
+    #[test]
+    fn click_item_invokes_with_index() {
+        let (mut h, id) = harness(800.0, 600.0);
+        let r = h.rect(id);
+        let items = h
+            .tree
+            .get::<MetroNavigationView>(id)
+            .unwrap()
+            .top_item_rects(&h.engine, r);
+        h.click_at(items[1].center());
+        assert_eq!(
+            h.take::<NavigationItemInvoked>(),
+            vec![(id, NavigationItemInvoked(1))]
+        );
+        assert_eq!(
+            h.tree.get::<MetroNavigationView>(id).unwrap().selected,
+            Some(vec![1])
+        );
+    }
+
+    #[test]
+    fn sizes_and_passes_insurance_checks() {
+        let (h, id) = harness(800.0, 600.0);
+        assert_eq!(h.rect(id).size.width, 800.0);
+        assert_eq!(h.rect(id).size.height, 600.0);
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn squeezed_with_child_still_passes_insurance_checks() {
+        let (mut h, id) = harness(200.0, 150.0);
+        let _label = h.tree.insert(id, Label::new("内容"));
+        h.frame();
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn disabled_ignores_input() {
+        let (mut h, id) = harness(800.0, 600.0);
+        h.tree.set_enabled(id, false);
+        h.frame();
+        let r = h.rect(id);
+        let items = h
+            .tree
+            .get::<MetroNavigationView>(id)
+            .unwrap()
+            .top_item_rects(&h.engine, r);
+        h.click_at(items[1].center());
+        assert!(h.take::<NavigationItemInvoked>().is_empty());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

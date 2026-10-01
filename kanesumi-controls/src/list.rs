@@ -1,6 +1,6 @@
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::{MetroTheme, Rect};
+use kanesumi_core::{MetroTheme, Point, Rect};
 
 use crate::repeater::{MetroRepeater, RepeaterOrientation};
 
@@ -133,6 +133,373 @@ impl MetroList {
         }
 
         scene.pop_clip();
+    }
+}
+
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 radio_buttons.rs）──────────
+//
+// 自绘虚拟化列表：行由控件按数据自画（旧 `render` 只画可见行），**不**把每行变成子节点。
+// 旧 API（`select` / `scroll_by` / `scroll_to` / `render`）原样保留给未迁移的 App。
+// `Click` 不带坐标 → 点击在 `PointerUp` 用 pos 映射到行；方向键 / Home / End 移动选中并用
+// 旧 `scroll_to` 保证选中行可见。滚轮由自身持有偏移，偏移未变（已到端 / 内容不足）时不截停，
+// 让外层容器接着滚（XAML ScrollChaining）。
+
+/// 元素树动作：列表选中行改变（点击 / 方向键 / Home / End）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListSelectionChanged(pub usize);
+
+impl MetroList {
+    /// 行命中：`pos` 在列表矩形内时按 `scroll` 映射到行索引。
+    fn row_at(&self, theme: &MetroTheme, rect: Rect, pos: Point) -> Option<usize> {
+        if !rect.contains(pos) {
+            return None;
+        }
+        let row_h = self.row_height(theme);
+        if row_h <= 0.0 {
+            return None;
+        }
+        let idx = ((pos.y - rect.origin.y + self.scroll) / row_h).floor();
+        if idx < 0.0 {
+            return None;
+        }
+        let i = idx as usize;
+        (i < self.rows.len()).then_some(i)
+    }
+
+    /// 把选中行滚进视口（视口高 = 控件矩形高）。已可见时不滚。
+    fn ensure_selected_visible(&mut self, theme: &MetroTheme, viewport_h: f32) {
+        let Some(i) = self.selected else { return };
+        let row_h = self.row_height(theme);
+        let top = i as f32 * row_h;
+        let bottom = top + row_h;
+        if top < self.scroll {
+            self.scroll_to(theme, viewport_h, top);
+        } else if bottom > self.scroll + viewport_h {
+            self.scroll_to(theme, viewport_h, bottom - viewport_h);
+        }
+    }
+}
+
+impl kanesumi_element::Widget for MetroList {
+    /// 宽取可用宽（无界则 0）；高 = min(内容高, 可用高)，可用高无界时取内容高。
+    fn measure(
+        &mut self,
+        ctx: &mut kanesumi_element::MeasureCtx,
+        available: kanesumi_core::Size,
+    ) -> kanesumi_core::Size {
+        let width = if available.width.is_finite() {
+            available.width.max(0.0)
+        } else {
+            0.0
+        };
+        let content_h = self.content_height(ctx.theme());
+        let height = if available.height.is_finite() {
+            content_h.min(available.height.max(0.0))
+        } else {
+            content_h
+        };
+        kanesumi_core::Size::new(width, height)
+    }
+
+    fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
+        // 禁用态由框架维护（框架不给禁用节点投事件）→ 映射进自绘字段后再恢复。
+        let saved = self.disabled;
+        self.disabled = ctx.state().disabled;
+        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+        self.disabled = saved;
+    }
+
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
+        use kanesumi_element::{Event, Key, PointerButton};
+        let rect = ctx.rect();
+        match event {
+            Event::PointerMove { pos } => {
+                self.hovered = self.row_at(ctx.theme(), rect, *pos);
+                ctx.invalidate_paint();
+            }
+            Event::PointerLeave => {
+                self.hovered = None;
+                ctx.invalidate_paint();
+            }
+            Event::PointerUp {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                let Some(i) = self.row_at(ctx.theme(), rect, *pos) else {
+                    return;
+                };
+                let before = self.selected;
+                self.select(Some(i));
+                if self.selected != before {
+                    ctx.emit(ListSelectionChanged(i));
+                    ctx.invalidate_paint();
+                }
+                ctx.set_handled();
+            }
+            Event::Scroll { dy, .. } => {
+                let viewport_h = rect.size.height;
+                let before = self.scroll;
+                self.scroll_by(ctx.theme(), viewport_h, *dy);
+                if self.scroll != before {
+                    ctx.invalidate_paint();
+                    ctx.set_handled();
+                }
+            }
+            Event::KeyDown { key, .. } => {
+                if self.rows.is_empty() {
+                    return;
+                }
+                let last = self.rows.len() - 1;
+                let next = match key {
+                    Key::Down => Some(self.selected.map_or(0, |i| (i + 1).min(last))),
+                    Key::Up => Some(self.selected.map_or(last, |i| i.saturating_sub(1))),
+                    Key::Home => Some(0),
+                    Key::End => Some(last),
+                    _ => None,
+                };
+                let Some(i) = next else { return };
+                let before = self.selected;
+                self.select(Some(i));
+                if self.selected != before {
+                    self.ensure_selected_visible(ctx.theme(), rect.size.height);
+                    ctx.emit(ListSelectionChanged(i));
+                    ctx.invalidate_paint();
+                }
+                ctx.set_handled();
+            }
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            role: kanesumi_element::AccessRole::List,
+            name: String::from("列表"),
+            value: self.selected.and_then(|i| self.rows.get(i).cloned()),
+            checked: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use crate::scroll_view::MetroScrollView;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::widgets::Stack;
+    use kanesumi_element::{Align, Insets, Key, LayoutProps, Modifiers, WidgetId};
+
+    fn harness(rows: usize, height: f32) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(400.0, 300.0);
+        let items = (0..rows).map(|i| format!("行 {i}")).collect();
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroList::new(items),
+            LayoutProps {
+                width: Some(200.0),
+                height: Some(height),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    fn row_center(h: &TestHarness, id: WidgetId, i: usize) -> Point {
+        let list = h.tree.get::<MetroList>(id).unwrap();
+        let row_h = list.row_height(h.tree.theme());
+        let r = h.rect(id);
+        Point::new(
+            r.origin.x + 10.0,
+            r.origin.y - list.scroll + i as f32 * row_h + row_h / 2.0,
+        )
+    }
+
+    #[test]
+    fn click_selects_row_and_reports() {
+        let (mut h, id) = harness(10, 100.0);
+        h.click_at(row_center(&h, id, 1));
+        assert_eq!(
+            h.take::<ListSelectionChanged>(),
+            vec![(id, ListSelectionChanged(1))]
+        );
+        assert_eq!(
+            h.tree.get::<MetroList>(id).unwrap().selected,
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn keyboard_moves_selection_and_scrolls_into_view() {
+        let (mut h, id) = harness(10, 100.0);
+        h.tab();
+        assert_eq!(h.tree.focused(), Some(id));
+        for _ in 0..5 {
+            assert!(h.key(Key::Down), "方向键应被列表消费");
+        }
+        let list = h.tree.get::<MetroList>(id).unwrap();
+        assert_eq!(list.selected, Some(4), "Down 五次从无选中到第 4 行");
+        let row_h = list.row_height(h.tree.theme());
+        let top = 4.0 * row_h;
+        let bottom = top + row_h;
+        assert!(
+            list.scroll <= top && bottom <= list.scroll + 100.0,
+            "选中行必须滚进视口：scroll={} row=({top},{bottom})",
+            list.scroll
+        );
+        assert!(list.scroll > 0.0, "第 4 行在视口外 → 应滚动");
+        h.key(Key::End);
+        assert_eq!(h.tree.get::<MetroList>(id).unwrap().selected, Some(9));
+        h.key(Key::Home);
+        assert_eq!(h.tree.get::<MetroList>(id).unwrap().selected, Some(0));
+        assert_eq!(h.take::<ListSelectionChanged>().len(), 7, "5 Down + End + Home");
+    }
+
+    #[test]
+    fn wheel_bubbles_to_outer_when_not_scrollable() {
+        // 列表内容不足一屏（不可滚）→ 滚轮不截停，外层 ScrollView 接着滚（ScrollChaining）。
+        let mut h = TestHarness::new(300.0, 300.0);
+        let sv = h.tree.insert_with(
+            h.root(),
+            MetroScrollView::default(),
+            LayoutProps {
+                width: Some(200.0),
+                height: Some(100.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        let col = h.tree.insert(sv, Stack::column());
+        let list = h.tree.insert_with(
+            col,
+            MetroList::new(vec!["A".into()]),
+            LayoutProps {
+                height: Some(40.0),
+                ..LayoutProps::default()
+            },
+        );
+        h.tree.insert_with(
+            col,
+            crate::button::MetroButton::new("高内容"),
+            LayoutProps {
+                height: Some(300.0),
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        h.tree.scroll(row_center(&h, list, 0), 0.0, 50.0, Modifiers::NONE);
+        h.frame();
+        assert_eq!(
+            h.tree.get::<MetroList>(list).unwrap().scroll,
+            0.0,
+            "不可滚的列表自身不滚"
+        );
+        assert!(
+            h.tree.get::<MetroScrollView>(sv).unwrap().offset > 0.0,
+            "滚动链应冒泡到外层 ScrollView"
+        );
+    }
+
+    #[test]
+    fn wheel_at_end_bubbles_to_outer() {
+        // 列表可滚但已到底 → 再向下滚轮不截停，外层接到。
+        let mut h = TestHarness::new(300.0, 300.0);
+        let sv = h.tree.insert_with(
+            h.root(),
+            MetroScrollView::default(),
+            LayoutProps {
+                width: Some(200.0),
+                height: Some(100.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        let col = h.tree.insert(sv, Stack::column());
+        let list = h.tree.insert_with(
+            col,
+            MetroList::new((0..10).map(|i| format!("行 {i}")).collect()),
+            LayoutProps {
+                height: Some(100.0),
+                ..LayoutProps::default()
+            },
+        );
+        // 兄弟高内容：让外层 ScrollView 可滚，列表到底后才能冒泡给它。
+        h.tree.insert_with(
+            col,
+            crate::button::MetroButton::new("高内容"),
+            LayoutProps {
+                height: Some(300.0),
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        let c = h.rect(list).center();
+        // 先滚到列表底部。
+        for _ in 0..20 {
+            h.tree.scroll(c, 0.0, 50.0, Modifiers::NONE);
+        }
+        h.frame();
+        let at_end = h.tree.get::<MetroList>(list).unwrap().scroll;
+        assert!(at_end > 0.0 && at_end >= h.tree.get::<MetroList>(list).unwrap().max_scroll(h.tree.theme(), 100.0) - 0.01);
+        // 到底后再滚：列表偏移不变，滚动链冒泡到外层。
+        h.tree.scroll(c, 0.0, 50.0, Modifiers::NONE);
+        h.frame();
+        assert_eq!(h.tree.get::<MetroList>(list).unwrap().scroll, at_end);
+        let off = h.tree.get::<MetroScrollView>(sv).unwrap().offset;
+        assert!(
+            off > 0.0,
+            "到底后滚动链应冒泡，列表 scroll={at_end} 外层 offset={off}"
+        );
+    }
+
+    #[test]
+    fn sizes_and_passes_insurance_checks() {
+        let (h, id) = harness(10, 100.0);
+        assert_eq!(h.rect(id).size.width, 200.0);
+        assert_eq!(h.rect(id).size.height, 100.0, "高 = min(内容高 400, 可用 100)");
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn squeezed_still_passes_insurance_checks() {
+        let mut h = TestHarness::new(400.0, 300.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroList::new(vec!["很长很长很长的一行文本".into(); 10]),
+            LayoutProps {
+                width: Some(40.0),
+                height: Some(100.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        assert_eq!(h.rect(id).size.width, 40.0);
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
+    fn disabled_ignores_input() {
+        let (mut h, id) = harness(10, 100.0);
+        h.tree.set_enabled(id, false);
+        h.frame();
+        h.click_at(row_center(&h, id, 1));
+        assert!(h.take::<ListSelectionChanged>().is_empty());
+        assert_eq!(h.tree.get::<MetroList>(id).unwrap().selected, None);
     }
 }
 
