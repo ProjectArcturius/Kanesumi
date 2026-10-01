@@ -830,7 +830,7 @@ mod tests {
             t.handle_click(area(), chevron.center()),
             TreeAction::Toggle(vec![0])
         );
-        assert_eq!(t.root.children[0].expanded, true);
+        assert!(t.root.children[0].expanded, "点箭头应展开");
         assert_eq!(t.visible_rows().len(), 4);
     }
 

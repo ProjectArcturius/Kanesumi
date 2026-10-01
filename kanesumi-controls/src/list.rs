@@ -314,7 +314,7 @@ mod tree_tests {
 
     fn row_center(h: &TestHarness, id: WidgetId, i: usize) -> Point {
         let list = h.tree.get::<MetroList>(id).unwrap();
-        let row_h = list.row_height(&h.tree.theme());
+        let row_h = list.row_height(h.tree.theme());
         let r = h.rect(id);
         Point::new(
             r.origin.x + 10.0,
@@ -346,7 +346,7 @@ mod tree_tests {
         }
         let list = h.tree.get::<MetroList>(id).unwrap();
         assert_eq!(list.selected, Some(4), "Down 五次从无选中到第 4 行");
-        let row_h = list.row_height(&h.tree.theme());
+        let row_h = list.row_height(h.tree.theme());
         let top = 4.0 * row_h;
         let bottom = top + row_h;
         assert!(
@@ -449,7 +449,7 @@ mod tree_tests {
         }
         h.frame();
         let at_end = h.tree.get::<MetroList>(list).unwrap().scroll;
-        assert!(at_end > 0.0 && at_end >= h.tree.get::<MetroList>(list).unwrap().max_scroll(&h.tree.theme(), 100.0) - 0.01);
+        assert!(at_end > 0.0 && at_end >= h.tree.get::<MetroList>(list).unwrap().max_scroll(h.tree.theme(), 100.0) - 0.01);
         // 到底后再滚：列表偏移不变，滚动链冒泡到外层。
         h.tree.scroll(c, 0.0, 50.0, Modifiers::NONE);
         h.frame();
