@@ -24,13 +24,18 @@ pub fn render_png(
     out: &Path,
 ) -> Result<(u32, u32), String> {
     let mut scene = Scene::default();
+    let mut cpu = CpuRenderer::new(size.width, size.height, scale);
+    let mut rgba = Vec::new();
+    // 逐帧按各帧 damage 增量光栅进同一缓冲：元素树 compose 会剔除与 damage 不相交的
+    // 节点（k-perf），故不能只把最后一帧的局部 Scene 当全量重绘 —— 会丢静态内容。
+    // 帧 1 全量、后续局部，累积得到最终完整图像（与线上「渲染后提交」语义同构）。
     for _ in 0..frames.max(1) {
         app.update(1.0 / 60.0);
         app.render_into(engine, size, &mut scene);
+        let damage = app.damage_hint();
+        rgba = cpu.render(engine, &scene, damage).to_vec();
     }
-    let mut cpu = CpuRenderer::new(size.width, size.height, scale);
     let (w, h) = cpu.physical_size();
-    let rgba = cpu.render(engine, &scene, None).to_vec();
     let pixmap = resvg::tiny_skia::Pixmap::from_vec(
         rgba,
         resvg::tiny_skia::IntSize::from_wh(w, h).ok_or("尺寸为零")?,

@@ -7,6 +7,8 @@
 pub mod app;
 pub mod appmenu;
 pub mod context_menu;
+pub mod idle;
+pub mod perf;
 pub mod role;
 pub mod system_theme;
 pub mod tree_host;

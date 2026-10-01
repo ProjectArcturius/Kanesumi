@@ -149,12 +149,13 @@ impl Shell {
     }
 
     /// 节流检测 `theme.toml` 变更（约每 0.5s 一次 stat），变化则重推主题。
+    /// 用挂钟节流（而非帧计数）：空闲唤醒变稀疏后仍保持稳定的检测间隔。
     fn maybe_reload_system_theme(&mut self) {
-        if self.theme_check_countdown > 0 {
-            self.theme_check_countdown -= 1;
+        let now = Instant::now();
+        if now < self.next_theme_check {
             return;
         }
-        self.theme_check_countdown = 30;
+        self.next_theme_check = now + crate::idle::THEME_POLL;
         if crate::system_theme::fingerprint() != self.theme_fingerprint {
             self.apply_system_theme();
             log::info!("系统主题已重载：accent/scheme 变更");
@@ -246,12 +247,15 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         if !shell.running {
             break;
         }
-        let busy = shell.dirty || shell.floating_dirty.iter().any(|d| *d);
-        let timeout = if busy {
-            std::time::Duration::from_millis(16)
-        } else {
-            std::time::Duration::from_millis(100)
-        };
+        // 空闲唤醒：仅在确有待渲染内容（脏 / 浮层脏 / 动画推进中）时保留 16ms 帧兜底
+        // （I-2 不冻结）；否则阻塞到「最近定时器」与「主题检测节流点」较早者，
+        // 两者皆无则交给 Wayland 事件唤醒。参 crate::idle。
+        let busy =
+            shell.dirty || shell.floating_dirty.iter().any(|d| *d) || shell.app.needs_redraw();
+        let theme_after = shell
+            .next_theme_check
+            .saturating_duration_since(Instant::now());
+        let timeout = crate::idle::next_wake(busy, shell.app.next_wake_hint(), Some(theme_after));
         event_loop
             .dispatch(timeout, &mut shell)
             .map_err(|e| format!("事件循环 dispatch 失败：{e}"))?;
@@ -272,6 +276,8 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         }
         shell.sync_popups(&qh);
         shell.render_popups(&qh);
+        // 帧耗时自记录：每 10s 且有新帧时追加一行持久日志（默认开启，零交互）。
+        shell.maybe_flush_perf();
     }
     Ok(())
 }
@@ -450,13 +456,23 @@ pub(crate) struct Shell {
     /// 渲染帧计数（诊断：验证静止唤醒是否重启渲染）。
     frame_count: u64,
 
+    // ── 帧耗时自记录（默认开启；每 10s 追加一行持久日志）参 crate::perf ─────
+    /// 主表面三段耗时（render_into / raster / commit）环形样本。
+    perf_main: crate::perf::SurfacePerf,
+    /// 各浮层表面三段耗时（与 `floating` 等长）。
+    perf_floating: Vec<crate::perf::SurfacePerf>,
+    /// 下次写 perf 日志的时刻（挂钟节流）。
+    perf_flush_at: Instant,
+    /// 进程名（日志行首）。
+    perf_proc: String,
+
     // ── 系统主题（Chorus）─────
     /// 当前生效的系统主题。外壳拥有并在启动 / 配置变更时推给 App（`App::set_theme`）。
     system_theme: MetroTheme,
     /// `theme.toml` 的 mtime 指纹 —— 变化才重载，避免每帧读盘。
     theme_fingerprint: Option<std::time::SystemTime>,
-    /// 主题变更检测的帧倒计时（节流 stat 调用）。
-    theme_check_countdown: u32,
+    /// 下次主题变更检测的时刻（节流 stat 调用；空闲唤醒的候选点之一）。
+    next_theme_check: Instant,
 
     // ── 输出缓冲（SHM 回退 + dmabuf 直通；主表面 / 各浮层 / IME 候选窗各一份）─────
     /// wl_shm 全局（dmabuf 不可用时的回退；合成器未提供 → None）。
@@ -958,6 +974,16 @@ impl Shell {
             None => (None, None),
         };
 
+        let floating_len = floating.len();
+        let perf_proc = std::env::args()
+            .next()
+            .and_then(|a| {
+                std::path::Path::new(&a)
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "ether-harness".into());
+
         Ok(Self {
             app,
             engine,
@@ -1022,9 +1048,13 @@ impl Shell {
             appmenu_rx,
             diag_logged: false,
             frame_count: 0,
+            perf_main: crate::perf::SurfacePerf::new(),
+            perf_floating: vec![crate::perf::SurfacePerf::new(); floating_len],
+            perf_flush_at: Instant::now(),
+            perf_proc,
             system_theme: MetroTheme::ether_dark(),
             theme_fingerprint: None,
-            theme_check_countdown: 0,
+            next_theme_check: Instant::now(),
             shm,
             main_out,
             floating_out,
@@ -1126,6 +1156,7 @@ impl Shell {
             f.cpu = Some(CpuRenderer::new(f.width, f.height, f.scale));
             log::info!("浮层 CPU 光栅化器已创建（{:.0}x{:.0}）", f.width, f.height);
         }
+        let t_render = Instant::now();
         let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             app.render_floating(&self.engine, idx, Size::new(f.width, f.height))
         }));
@@ -1138,16 +1169,22 @@ impl Shell {
                 return;
             }
         };
+        let render_ms = t_render.elapsed().as_secs_f32() * 1000.0;
         let s = f.surface.clone();
         // 按需重绘：浮层动画跑完即停（floating_needs_redraw false → 不请求下一帧）。
         if app.floating_needs_redraw(idx) {
             s.frame(qh, s.clone());
         }
+        let mut raster_ms = 0.0f32;
+        let mut commit_ms = 0.0f32;
         if let Some(cpu) = f.cpu.as_mut() {
             let (pw, ph) = cpu.physical_size();
+            let t = Instant::now();
             let rgba = cpu.render(&self.engine, &scene, None);
+            raster_ms = t.elapsed().as_secs_f32() * 1000.0;
             // 浮层同样走 dmabuf 直通（默认）—— 控制面板 / Launcher / 菜单等浮层一并受益。
             let scale = f.scale;
+            let t = Instant::now();
             self.floating_out[idx].commit(
                 qh,
                 self.shm.as_ref(),
@@ -1159,6 +1196,10 @@ impl Shell {
                 scale,
                 None,
             );
+            commit_ms = t.elapsed().as_secs_f32() * 1000.0;
+        }
+        if let Some(p) = self.perf_floating.get_mut(idx) {
+            p.record(render_ms, raster_ms, commit_ms);
         }
     }
 
@@ -1418,6 +1459,7 @@ impl Shell {
         // 复用 Vec 容量，不做每帧 `Scene::default()` + 逐 push 重分配。
         // `mem::take` 移动出旧缓冲（容量保留），渲染后再放回（绕过 &mut self 分裂借用）。
         let mut scene_buf = std::mem::take(&mut self.scene_buf);
+        let t_render = Instant::now();
         let scene_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.app.render_into(&self.engine, size, &mut scene_buf)
         }));
@@ -1433,6 +1475,7 @@ impl Shell {
             self.ctx_menu
                 .render(&self.app.theme(), &self.engine, &mut self.scene_buf);
         }
+        let render_ms = t_render.elapsed().as_secs_f32() * 1000.0;
 
         // 渲染后仍在动画 → 请求下一帧（vsync 提示，I-2）。App 在 render() 内清除
         // 自身脏标记（契约），此处的 needs_redraw = 动画推进中。
@@ -1443,10 +1486,15 @@ impl Shell {
         // 输出分派：layer-shell → CPU 光栅化 + SHM 提交；xdg-shell → wgpu 直出。
         // S4：本帧局部损坏矩形（CPU 光栅只重绘该区；GPU 直出全量，恒定消费）。
         let damage = self.take_damage();
+        let mut raster_ms = 0.0f32;
+        let mut commit_ms = 0.0f32;
         if let Some(cpu) = self.cpu.as_mut() {
             let (pw, ph) = cpu.physical_size();
+            let t = Instant::now();
             let rgba = cpu.render(&self.engine, &self.scene_buf, damage);
+            raster_ms = t.elapsed().as_secs_f32() * 1000.0;
             // dmabuf 直通优先（零 CPU 上传），不可用自动回退 SHM。参 LINUX_DMABUF_PLAN §1。
+            let t = Instant::now();
             self.main_out.commit(
                 qh,
                 self.shm.as_ref(),
@@ -1458,8 +1506,46 @@ impl Shell {
                 self.scale,
                 damage,
             );
+            commit_ms = t.elapsed().as_secs_f32() * 1000.0;
         } else if let Some(r) = self.renderer.as_mut() {
+            let t = Instant::now();
             r.render(&self.engine, &self.scene_buf);
+            raster_ms = t.elapsed().as_secs_f32() * 1000.0;
+        }
+        self.perf_main.record(render_ms, raster_ms, commit_ms);
+    }
+
+    /// 每 10s 且有新帧时把各表面三段耗时 p50/p95/max 追加到持久日志（默认开启）。
+    fn maybe_flush_perf(&mut self) {
+        let now = Instant::now();
+        if now.duration_since(self.perf_flush_at) < crate::perf::FLUSH_INTERVAL {
+            return;
+        }
+        self.perf_flush_at = now;
+        let role = format!("{:?}", self.role);
+        let proc = self.perf_proc.clone();
+        let mut out = String::new();
+        if !self.perf_main.is_empty() {
+            out.push_str(&crate::perf::format_line(&proc, &role, "main", &self.perf_main));
+            self.perf_main.reset();
+        }
+        for i in 0..self.perf_floating.len() {
+            if !self.perf_floating[i].is_empty() {
+                let name = format!("floating{i}");
+                out.push_str(&crate::perf::format_line(
+                    &proc,
+                    &role,
+                    &name,
+                    &self.perf_floating[i],
+                ));
+                self.perf_floating[i].reset();
+            }
+        }
+        if out.is_empty() {
+            return;
+        }
+        if let Some(path) = crate::perf::state_log_path("ether-harness-perf.log") {
+            crate::perf::write_log(&path, &out);
         }
     }
 

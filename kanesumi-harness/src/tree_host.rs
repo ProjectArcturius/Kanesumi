@@ -387,6 +387,17 @@ impl<A: TreeApp> App for TreeHost<A> {
         self.tree.needs_frame()
     }
 
+    /// 主表面与各浮层树中最近的定时器（元素树 `next_timer`）—— 空闲唤醒用。
+    fn next_wake_hint(&self) -> Option<f64> {
+        let mut next = self.tree.next_timer();
+        for f in &self.floating {
+            if let Some(t) = f.tree.next_timer() {
+                next = Some(next.map_or(t, |c| c.min(t)));
+            }
+        }
+        next
+    }
+
     fn focus_move(&mut self, backward: bool) -> bool {
         log::debug!("focus_move backward={backward} focus_before={:?}", self.tree.focused());
         let modifiers = Modifiers {
