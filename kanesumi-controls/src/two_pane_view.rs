@@ -6,7 +6,7 @@
 // - Kanesumi 为纯布局容器：`pane_rects(rect)` 返回两面板矩形，宿主渲染内容。
 // 多显示区域（折叠屏 hinge）逻辑不移植（Ether 桌面单屏）。
 
-use kanesumi_core::Rect;
+use kanesumi_core::{Rect, Size};
 
 /// 双面板优先级（SinglePane 模式显示哪个）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +54,8 @@ pub struct MetroTwoPaneView {
     pub pane_priority: TwoPanePriority,
     /// Pane1 占主轴向比例（0..1，默认 0.5）。
     pub pane1_ratio: f32,
+    /// 最近一次 `arrange` 时的模式（供 App 查询；`mode(rect)` 仍是纯函数）。
+    current: TwoPaneMode,
 }
 
 impl Default for MetroTwoPaneView {
@@ -65,6 +67,7 @@ impl Default for MetroTwoPaneView {
             tall_config: TwoPaneTallConfig::TopBottom,
             pane_priority: TwoPanePriority::Pane1,
             pane1_ratio: 0.5,
+            current: TwoPaneMode::SinglePane,
         }
     }
 }
@@ -72,6 +75,11 @@ impl Default for MetroTwoPaneView {
 impl MetroTwoPaneView {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 最近一次 `arrange` 记录的模式（等宽切换无需动作，App 据此按模式调整内容）。
+    pub fn current_mode(&self) -> TwoPaneMode {
+        self.current
     }
 
     /// 当前模式（UpdateMode 单区域判据）。
@@ -122,6 +130,111 @@ impl MetroTwoPaneView {
                 TwoPanePriority::Pane2 => (empty, rect),
             },
         }
+    }
+}
+
+// ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 navigation_view.rs）────────
+//
+// **纯布局容器**：前两个子节点分别排进 `pane_rects(rect)` 的两块；SinglePane 模式下被隐藏
+// 的那块排进零尺寸槽位（不可见、不可命中）。无自绘、`hit_test` 恒 false（空白穿透）。
+// 模式随尺寸变化不需要动作（下一次 arrange 自然按新尺寸重排），只在 arrange 里记下当前
+// 模式供 App 经 `current_mode()` 查询。
+
+impl kanesumi_element::Widget for MetroTwoPaneView {
+    /// 容器铺满可用尺寸。
+    fn measure(
+        &mut self,
+        _ctx: &mut kanesumi_element::MeasureCtx,
+        available: Size,
+    ) -> Size {
+        let w = if available.width.is_finite() {
+            available.width.max(0.0)
+        } else {
+            0.0
+        };
+        let h = if available.height.is_finite() {
+            available.height.max(0.0)
+        } else {
+            0.0
+        };
+        Size::new(w, h)
+    }
+
+    fn arrange(&mut self, ctx: &mut kanesumi_element::ArrangeCtx, rect: Rect) {
+        self.current = self.mode(rect);
+        let (pane1, pane2) = self.pane_rects(rect);
+        let children = ctx.children();
+        if let Some(&c) = children.first() {
+            // 先量测再排版：非拉伸面板要靠期望尺寸定位（未量测 → 期望为 0）。
+            ctx.measure_child(c, pane1.size);
+            ctx.arrange_child(c, pane1);
+        }
+        if let Some(&c) = children.get(1) {
+            ctx.measure_child(c, pane2.size);
+            ctx.arrange_child(c, pane2);
+        }
+    }
+
+    fn paint(&mut self, _ctx: &mut kanesumi_element::PaintCtx, _scene: &mut kanesumi_canvas::Scene) {}
+
+    /// 空白穿透：面板内容由子节点命中，容器本身不拦截。
+    fn hit_test(&self, _rect: Rect, _pos: kanesumi_core::Point) -> bool {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::widgets::Label;
+    use kanesumi_element::{Align, Insets, LayoutProps, WidgetId};
+
+    fn harness(width: f32, height: f32) -> (TestHarness, WidgetId, WidgetId, WidgetId) {
+        let mut h = TestHarness::new(width, height);
+        let props = LayoutProps {
+            h_align: Align::Start,
+            v_align: Align::Start,
+            ..LayoutProps::default()
+        };
+        let id = h.tree.insert_with(h.root(), MetroTwoPaneView::new(), props);
+        let pane1 = h.tree.insert(id, Label::new("左"));
+        let pane2 = h.tree.insert(id, Label::new("右"));
+        h.frame();
+        (h, id, pane1, pane2)
+    }
+
+    #[test]
+    fn wide_splits_two_panes_without_overlap() {
+        let (h, id, p1, p2) = harness(1000.0, 600.0);
+        assert_eq!(
+            h.tree.get::<MetroTwoPaneView>(id).unwrap().current_mode(),
+            TwoPaneMode::Wide
+        );
+        let a = h.rect(p1);
+        let b = h.rect(p2);
+        assert!(a.size.width > 0.0 && b.size.width > 0.0, "两块都有面积");
+        assert!(a.right() <= b.origin.x + 0.01, "左右不重叠");
+    }
+
+    #[test]
+    fn narrow_shows_priority_pane_only() {
+        let (h, id, p1, p2) = harness(500.0, 500.0);
+        assert_eq!(
+            h.tree.get::<MetroTwoPaneView>(id).unwrap().current_mode(),
+            TwoPaneMode::SinglePane
+        );
+        assert!(h.rect(p1).size.width > 0.0, "优先面板 Pane1 有面积");
+        assert_eq!(h.rect(p2), Rect::new(0.0, 0.0, 0.0, 0.0), "另一块零尺寸");
+    }
+
+    #[test]
+    fn sizes_and_passes_insurance_checks() {
+        let (h, id, _, _) = harness(1000.0, 600.0);
+        assert_eq!(h.rect(id).size, Size::new(1000.0, 600.0));
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
     }
 }
 
