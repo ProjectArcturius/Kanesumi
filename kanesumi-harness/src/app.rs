@@ -293,6 +293,15 @@ pub trait App {
     /// 每帧 tick。`dt` 单位为秒（外壳从 frame callback 计算，参 PLAN.md §4.2 合成器时钟）。
     fn update(&mut self, _dt: f64) {}
 
+    /// 下一次需要唤醒的时刻（秒，自现在起）—— 主循环据此安排事件循环超时（参 [`crate::idle`]）。
+    ///
+    /// 返回 `Some(secs)`：`secs` 秒后必须再跑一次 `step`（定时器 / 光标闪烁等低频唤醒）。
+    /// 默认 `None` = 无定时唤醒，空闲可阻塞到下一个输入 / frame 回调（动画仍由
+    /// `needs_redraw()` 走 16ms 帧兜底）。元素树实现（`TreeHost`）取树中最近的定时器。
+    fn next_wake_hint(&self) -> Option<f64> {
+        None
+    }
+
     /// 本帧是否有需要呈现的状态变化（「内容脏了吗」；TOPBAR_RENDER_REFACTOR §4.6 I-3）。
     ///
     /// 契约变更（2026-08-16）：语义从「恒 true / 每帧画」改为**脏标记消费前查询**：

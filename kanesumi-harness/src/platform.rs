@@ -149,12 +149,13 @@ impl Shell {
     }
 
     /// 节流检测 `theme.toml` 变更（约每 0.5s 一次 stat），变化则重推主题。
+    /// 用挂钟节流（而非帧计数）：空闲唤醒变稀疏后仍保持稳定的检测间隔。
     fn maybe_reload_system_theme(&mut self) {
-        if self.theme_check_countdown > 0 {
-            self.theme_check_countdown -= 1;
+        let now = Instant::now();
+        if now < self.next_theme_check {
             return;
         }
-        self.theme_check_countdown = 30;
+        self.next_theme_check = now + crate::idle::THEME_POLL;
         if crate::system_theme::fingerprint() != self.theme_fingerprint {
             self.apply_system_theme();
             log::info!("系统主题已重载：accent/scheme 变更");
@@ -246,12 +247,15 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         if !shell.running {
             break;
         }
-        let busy = shell.dirty || shell.floating_dirty.iter().any(|d| *d);
-        let timeout = if busy {
-            std::time::Duration::from_millis(16)
-        } else {
-            std::time::Duration::from_millis(100)
-        };
+        // 空闲唤醒：仅在确有待渲染内容（脏 / 浮层脏 / 动画推进中）时保留 16ms 帧兜底
+        // （I-2 不冻结）；否则阻塞到「最近定时器」与「主题检测节流点」较早者，
+        // 两者皆无则交给 Wayland 事件唤醒。参 crate::idle。
+        let busy =
+            shell.dirty || shell.floating_dirty.iter().any(|d| *d) || shell.app.needs_redraw();
+        let theme_after = shell
+            .next_theme_check
+            .saturating_duration_since(Instant::now());
+        let timeout = crate::idle::next_wake(busy, shell.app.next_wake_hint(), Some(theme_after));
         event_loop
             .dispatch(timeout, &mut shell)
             .map_err(|e| format!("事件循环 dispatch 失败：{e}"))?;
@@ -455,8 +459,8 @@ pub(crate) struct Shell {
     system_theme: MetroTheme,
     /// `theme.toml` 的 mtime 指纹 —— 变化才重载，避免每帧读盘。
     theme_fingerprint: Option<std::time::SystemTime>,
-    /// 主题变更检测的帧倒计时（节流 stat 调用）。
-    theme_check_countdown: u32,
+    /// 下次主题变更检测的时刻（节流 stat 调用；空闲唤醒的候选点之一）。
+    next_theme_check: Instant,
 
     // ── 输出缓冲（SHM 回退 + dmabuf 直通；主表面 / 各浮层 / IME 候选窗各一份）─────
     /// wl_shm 全局（dmabuf 不可用时的回退；合成器未提供 → None）。
@@ -1024,7 +1028,7 @@ impl Shell {
             frame_count: 0,
             system_theme: MetroTheme::ether_dark(),
             theme_fingerprint: None,
-            theme_check_countdown: 0,
+            next_theme_check: Instant::now(),
             shm,
             main_out,
             floating_out,
