@@ -122,8 +122,8 @@
 
 ### 交互（Kanesumi 扩展 A1）
 
-- **点动**：press → release，位移 <3px → toggle
-- **拖动**：press → drag_to（位移 ≥3px 触发）→ release：按 knob 中心过半判 on/off
+- **点动**：press → release，位移 <4px → toggle
+- **拖动**：press → drag_to（位移 ≥4px 触发）→ release：按 knob 中心过半判 on/off
 - **取消**：press 后指针移出轨道再 release → `cancel()`，knob 回原位不 commit
 - 命中区 = 整个 Track 矩形（不限于 Knob 圆内），方便触摸/鼠标
 
@@ -1188,7 +1188,7 @@ clamp 到 [−MaxShift, +MaxShift]，MaxShift = MaxShiftRatio × 视口主轴
 | Padding | `10,6,6,5`（TextControlThemePadding v1） |
 | 字号 | ControlContentThemeFontSize（14，Kanesumi 用主题 body） |
 | 删除按钮 | MinWidth **34**、glyph `E894`（×）→ Kanesumi 自绘 `✕` 字形 |
-| 光标 | 1px（V10：HiDPI 用 **2px**）；闪烁 on/off 各 0.5s |
+| 光标 | 1px（正典 §Ⅳ，2× 下 2 物理像素）；闪烁周期 530ms（on/off 各 265ms） |
 
 ### 视觉状态（CommonStates，全部瞬时）
 
@@ -1473,7 +1473,7 @@ Kanesumi 移植**纯状态 + 几何**：offset 夹紧、滚动条拇指/轨道�
 | 项 | 值 |
 |---|---|
 | `max_offset` | `ExtentHeight − ViewportHeight`（内容超视口才可滚，对齐 ScrollableHeight） |
-| 滚轮离散步 | **50px/格**（对齐合成器 Axis discrete） |
+| 滚轮离散步 | **48px/格**（正典 §Ⅴ：3 行 × 16px，对齐合成器 Axis discrete） |
 | 滚动条宽度 | **8px**（UWP ScrollBar 常规宽） |
 | 拇指最小长 | **24px**（避免内容极长时拇指缩为点） |
 
