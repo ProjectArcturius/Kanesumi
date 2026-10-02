@@ -377,6 +377,11 @@ struct LayoutKey {
 /// 故清空无正确性风险，只约束长会话内存（时钟每分钟、应用名/菜单项均在产生新 key）。
 /// 参 swash `FontCache` 的有界原则：缓存必须有界，否则长会话单调泄漏。
 const SHAPE_CACHE_MAX: usize = 4096;
+/// 容纳判定的容差（逻辑像素）。控件常以「量测宽 + 内边距」定容器、再以「容器 − 内边距」
+/// 反推可用宽，f32 往返会比量测宽少 1 ULP，恰好放得下的文字被判溢出而省略
+/// （2026-10-02 TopBar 全局菜单首项「F…」，Ether docs/research/topbar_t1/NOTES.md）。
+/// 0.01 px 远小于任何可见差异，只吸收舍入误差，不放过真实溢出。
+const FIT_EPSILON: f32 = 0.01;
 const LAYOUT_CACHE_MAX: usize = 4096;
 
 /// 文本引擎 —— OpenType shaping + Unicode BiDi + UAX #14 换行 + 字体回退。
@@ -468,9 +473,9 @@ impl TextEngine {
         self.fonts
             .iter()
             .position(|font| {
-                grapheme.chars().all(|c| {
-                    is_default_ignorable(c) || c.is_whitespace() || font.has_glyph(c)
-                })
+                grapheme
+                    .chars()
+                    .all(|c| is_default_ignorable(c) || c.is_whitespace() || font.has_glyph(c))
             })
             .unwrap_or(0)
     }
@@ -488,12 +493,7 @@ impl TextEngine {
             size_bits: size.to_bits(),
             spacing_bits: letter_spacing_em.to_bits(),
         };
-        if let Some(hit) = self
-            .shape_cache
-            .lock()
-            .expect("塑形缓存锁中毒")
-            .get(&key)
-        {
+        if let Some(hit) = self.shape_cache.lock().expect("塑形缓存锁中毒").get(&key) {
             return hit.as_ref().clone();
         }
         let bidi = ParagraphBidiInfo::new(text, None);
@@ -715,7 +715,9 @@ impl TextEngine {
                 segment
             };
             let candidate = format!("{current}{segment}");
-            if self.measure_with_spacing(&candidate, size, letter_spacing_em) <= max_width {
+            if self.measure_with_spacing(&candidate, size, letter_spacing_em)
+                <= max_width + FIT_EPSILON
+            {
                 current.push_str(segment);
             } else if current.is_empty() {
                 self.hard_break_graphemes(
@@ -728,7 +730,9 @@ impl TextEngine {
                 );
             } else {
                 self.push_line(&mut lines, &mut current, size, letter_spacing_em);
-                if self.measure_with_spacing(segment, size, letter_spacing_em) <= max_width {
+                if self.measure_with_spacing(segment, size, letter_spacing_em)
+                    <= max_width + FIT_EPSILON
+                {
                     current.push_str(segment);
                 } else {
                     self.hard_break_graphemes(
@@ -766,12 +770,7 @@ impl TextEngine {
             wrap: options.wrap,
             overflow: options.overflow,
         };
-        if let Some(hit) = self
-            .layout_cache
-            .lock()
-            .expect("排版缓存锁中毒")
-            .get(&key)
-        {
+        if let Some(hit) = self.layout_cache.lock().expect("排版缓存锁中毒").get(&key) {
             return hit.clone();
         }
         let layout = Arc::new(self.layout_box_uncached(text, size, options));
@@ -784,12 +783,7 @@ impl TextEngine {
     }
 
     /// `layout_box` 的实算路径（缓存 miss 时调用）。
-    fn layout_box_uncached(
-        &self,
-        text: &str,
-        size: f32,
-        options: TextLayoutOptions,
-    ) -> TextLayout {
+    fn layout_box_uncached(&self, text: &str, size: f32, options: TextLayoutOptions) -> TextLayout {
         let line_height = options.line_height.max(0.0);
         let mut lines = if options.wrap {
             self.layout_with_spacing(text, size, options.letter_spacing_em, options.max_width)
@@ -820,7 +814,7 @@ impl TextEngine {
         lines.truncate(line_limit);
         if let Some(last) = lines.last_mut()
             && options.overflow == TextOverflow::Ellipsis
-            && (truncated || last.width > options.max_width)
+            && (truncated || last.width > options.max_width + FIT_EPSILON)
         {
             *last = self.ellipsize(last, size, options.letter_spacing_em, options.max_width);
             truncated = true;
@@ -868,7 +862,7 @@ impl TextEngine {
         for grapheme in segment.graphemes(true) {
             let candidate = format!("{current}{grapheme}");
             if !current.is_empty()
-                && self.measure_with_spacing(&candidate, size, spacing) > max_width
+                && self.measure_with_spacing(&candidate, size, spacing) > max_width + FIT_EPSILON
             {
                 self.push_line(lines, current, size, spacing);
             }
@@ -999,6 +993,30 @@ mod tests {
         assert!(layout.truncated);
         assert!(layout.lines[0].content.ends_with('…'));
         assert!(layout.lines[0].width <= 80.0);
+    }
+
+    /// 回归（2026-10-02 TopBar「F…」）：可用宽因 f32 往返比量测宽少 1 ULP 时不得省略、不得折行。
+    #[test]
+    fn exact_fit_survives_one_ulp_rounding_loss() {
+        let Some(engine) = engine() else { return };
+        for label in ["File", "Edit", "Bookmarks", "文件", "设置"] {
+            let measured = engine.measure(label, 14.0);
+            let short = f32::from_bits(measured.to_bits() - 1);
+            let mut options = TextLayoutOptions::wrapped(short, 22.0, 22.0);
+            options.wrap = false;
+            options.max_lines = Some(1);
+            options.overflow = TextOverflow::Ellipsis;
+            let layout = engine.layout_box(label, 14.0, options);
+            assert!(
+                !layout.truncated,
+                "{label} 被省略（量测 {measured}，可用 {short}）"
+            );
+            assert_eq!(layout.lines[0].content, label);
+
+            let wrapped =
+                engine.layout_box(label, 14.0, TextLayoutOptions::wrapped(short, 44.0, 22.0));
+            assert_eq!(wrapped.lines.len(), 1, "{label} 不应因 1 ULP 折行");
+        }
     }
 
     #[test]
