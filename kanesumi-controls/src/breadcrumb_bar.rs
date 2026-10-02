@@ -41,13 +41,16 @@ pub enum BreadcrumbClick {
     Ellipsis,
 }
 
-/// 布局结果：可见起点 + 是否折叠。
+/// 布局结果：可见起点 + 是否折叠 + 末段截断宽。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BreadcrumbLayout {
     /// 首个可见项在 `items` 的索引。
     pub start: usize,
     /// 是否渲染 Ellipsis（start > 0）。
     pub ellipsis: bool,
+    /// 末段（当前项）可用宽：`Some(w)` = 前缀全部折叠后仍放不下，末段以省略号截断到 `w`；
+    /// `None` = 完整显示。参 CONTROL_SPEC §18「收窄优先折叠前缀，仍放不下则末段截断」。
+    pub last_width: Option<f32>,
 }
 
 /// MetroBreadcrumbBar —— 面包屑。参 CONTROL_SPEC §18。
@@ -106,6 +109,7 @@ impl MetroBreadcrumbBar {
             return BreadcrumbLayout {
                 start: 0,
                 ellipsis: false,
+                last_width: None,
             };
         }
         // 全展示所需宽度
@@ -114,28 +118,40 @@ impl MetroBreadcrumbBar {
             return BreadcrumbLayout {
                 start: 0,
                 ellipsis: false,
+                last_width: None,
             };
         }
-        // 折叠：从末项往前累积，至少保留末项；前缀让位 Ellipsis。
+        // 只有一项且放不下：无可折叠前缀，直接末段截断。
+        if n == 1 {
+            return BreadcrumbLayout {
+                start: 0,
+                ellipsis: false,
+                last_width: Some(avail.max(0.0)),
+            };
+        }
+        // 折叠：优先把前缀折进已有的 Ellipsis 溢出按钮，保留尽量多的后缀（start 最小）。
+        // 折叠后首项前让位 Ellipsis + 一个 chevron。
         let ellipsis_w = engine.measure("…", style.size) + ELLIPSIS_PAD;
-        let budget = (avail - ellipsis_w).max(0.0);
-        let mut used = 0.0f32;
-        let mut start = n; // 尚未保留任何项
-        for i in (0..n).rev() {
-            let w = widths[i];
-            let with_gap = if start < n { w + CHEVRON_GAP } else { w };
-            if start < n && used + with_gap > budget {
+        let prefix = ellipsis_w + CHEVRON_GAP;
+        let mut start = n - 1; // 至少保留末项
+        for candidate in 1..n {
+            let kept: f32 = widths[candidate..].iter().sum();
+            let gaps = (n - 1 - candidate) as f32 * CHEVRON_GAP;
+            if prefix + kept + gaps <= avail {
+                start = candidate;
                 break;
             }
-            used += with_gap;
-            start = i;
         }
-        if start == n {
-            start = n - 1; // 至少保留末项
-        }
+        // 末段可用宽 = 总宽减去它之前的全部占位；不足其完整宽度时以省略号截断。
+        let before_last = prefix
+            + widths[start..n - 1].iter().sum::<f32>()
+            + (n - 1 - start) as f32 * CHEVRON_GAP;
+        let last_avail = (avail - before_last).max(0.0);
+        let last_width = (last_avail + 0.01 < widths[n - 1]).then_some(last_avail);
         BreadcrumbLayout {
             start,
-            ellipsis: start > 0,
+            ellipsis: true,
+            last_width,
         }
     }
 
@@ -333,6 +349,12 @@ impl MetroBreadcrumbBar {
         for (i, label) in self.items.iter().enumerate().skip(layout.start) {
             let is_last = i == self.items.len() - 1;
             let w = engine.measure(label, style.size) + ITEM_PAD_X * 2.0;
+            // 末段截断：前缀折叠完仍放不下时，只给末段其可用宽（`scene.text` 以省略号收束）。
+            let draw_w = if is_last {
+                layout.last_width.unwrap_or(w)
+            } else {
+                w
+            };
             let hovered = self.hovered_item == Some(i);
             let bg = if hovered && !is_last {
                 theme.indication.hover_tint
@@ -342,7 +364,7 @@ impl MetroBreadcrumbBar {
             let item_rect = Rect::new(
                 x,
                 rect.origin.y + (rect.size.height - style.line_height) / 2.0 - ITEM_PAD_Y,
-                w,
+                draw_w,
                 style.line_height + ITEM_PAD_Y * 2.0,
             );
             if bg.a > 0.0 {
@@ -358,7 +380,7 @@ impl MetroBreadcrumbBar {
                 Rect::new(
                     x + ITEM_PAD_X,
                     rect.origin.y + (rect.size.height - style.line_height) / 2.0,
-                    w - ITEM_PAD_X * 2.0,
+                    (draw_w - ITEM_PAD_X * 2.0).max(0.0),
                     style.line_height,
                 ),
                 fg,
@@ -949,6 +971,47 @@ mod tests {
         let l = b.layout(&engine, r);
         assert!(l.ellipsis);
         assert_eq!(l.start, 3, "极窄也保留末项");
+    }
+
+    /// 前缀全折叠后仍放不下：末段以省略号截断（CONTROL_SPEC §18）。
+    #[test]
+    fn narrow_truncates_last_segment_with_ellipsis() {
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
+        let b = bar();
+        let r = Rect::new(0.0, 0.0, 60.0, 32.0);
+        let l = b.layout(&engine, r);
+        let last_w = l.last_width.expect("末段放不下应给截断宽");
+        let full = b.item_rect(&engine, r, 3).size.width;
+        assert!(last_w > 0.0 && last_w < full, "截断宽 {last_w} < 完整 {full}");
+        // 末段文本框宽 = 截断宽 − padding，省略号由 `Scene::text` 收束。
+        let mut scene = Scene::default();
+        b.render(
+            &theme,
+            &engine,
+            r,
+            Rect::new(0.0, 0.0, 400.0, 400.0),
+            &mut scene,
+        );
+        let last = scene
+            .commands
+            .iter()
+            .find_map(|c| match c {
+                SceneCommand::Text { content, rect, .. } if content.as_str() == "Ether" => {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("末段应渲染");
+        assert!(
+            (last.size.width - (last_w - ITEM_PAD_X * 2.0)).abs() < 0.5,
+            "末段文本框应被夹到截断宽（{} vs {}）",
+            last.size.width,
+            last_w - ITEM_PAD_X * 2.0
+        );
+        // 完整放得下时不得截断。
+        let wide = b.layout(&engine, Rect::new(0.0, 0.0, 800.0, 32.0));
+        assert!(wide.last_width.is_none());
     }
 
     #[test]
