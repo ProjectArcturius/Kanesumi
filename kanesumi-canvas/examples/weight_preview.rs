@@ -57,11 +57,13 @@ fn strip(engine: &TextEngine, text: &str, size: f32, weight: FontWeight) -> (usi
         let top = (-g.y_offset - m.ymin as f32 - m.height as f32).round();
         bottom_max = bottom_max.max(top + m.height as f32);
         width = width.max(x0 + m.width as f32);
-        placed.push((x0 as usize, top as usize, m, cover));
+        placed.push((x0 as usize, top as i32, m, cover));
         pen += g.x_advance;
     }
     let w = (width.ceil() as usize).max(1);
-    let h = (bottom_max.ceil() as usize).max(1);
+    // 字形顶可能为负（上伸部超出基线度量），先求最小顶再整体平移，避免裁掉上缘。
+    let min_top = placed.iter().map(|(_, top, ..)| *top).min().unwrap_or(0); // i32
+    let h = ((bottom_max - min_top as f32).ceil() as usize).max(1); // min_top 已是 i32
     let mut cover = vec![0u8; w * h];
     for (x0, top, m, c) in placed {
         for (i, &a) in c.iter().enumerate() {
@@ -71,7 +73,7 @@ fn strip(engine: &TextEngine, text: &str, size: f32, weight: FontWeight) -> (usi
             let gx = i % m.width;
             let gy = i / m.width;
             let px = x0 + gx;
-            let py = top + gy;
+            let py = (top - min_top) as usize + gy;
             if px < w && py < h {
                 let o = py * w + px;
                 cover[o] = cover[o].max(a);
@@ -112,13 +114,13 @@ fn render_rows(engine: &TextEngine, rows: &[Row], fg: [u8; 3], bg: [u8; 3], w: u
     (buf, tops)
 }
 
-/// 3× 最近邻放大（观察 AA 边缘）。输入行主序 RGBA。
-fn zoom3(buf: &[u8], w: usize, h: usize) -> (Vec<u8>, usize, usize) {
-    let (zw, zh) = (w * 3, h * 3);
+/// N× 最近邻放大（观察 AA 边缘）。输入行主序 RGBA。
+fn zoom(buf: &[u8], w: usize, h: usize, n: usize) -> (Vec<u8>, usize, usize) {
+    let (zw, zh) = (w * n, h * n);
     let mut out = vec![0u8; zw * zh * 4];
     for y in 0..zh {
         for x in 0..zw {
-            let src = ((y / 3) * w + x / 3) * 4;
+            let src = ((y / n) * w + x / n) * 4;
             let dst = (y * zw + x) * 4;
             out[dst..dst + 4].copy_from_slice(&buf[src..src + 4]);
         }
@@ -129,85 +131,79 @@ fn zoom3(buf: &[u8], w: usize, h: usize) -> (Vec<u8>, usize, usize) {
 fn main() {
     let engine = load_engine();
     let candidates: [(&str, FontWeight, FontWeight); 3] = [
-        ("C 基线：全部 Normal（T7 之前）", FontWeight::Normal, FontWeight::Normal),
+        ("C 基线：全部 Normal（T7 之前的观感）", FontWeight::Normal, FontWeight::Normal),
         ("A：正文 Normal / 标题 Bold（声明即所得）", FontWeight::Normal, FontWeight::Bold),
         ("B：正文 Medium / 标题 Bold（小字号加一档）", FontWeight::Medium, FontWeight::Bold),
     ];
-    let w = 900usize;
-    let block_h = 140usize;
-    let zoom_h = 26usize * 3;
-    let gap = 18usize;
-    let schemes: [(&str, [u8; 3], [u8; 3]); 2] = [
-        ("深色", [14, 14, 14], [230, 230, 230]),
-        ("浅色", [243, 243, 243], [26, 26, 26]),
-    ];
-    let mut blocks = Vec::new();
-    for (sname, bg, fg) in schemes {
+    // 每候选：标签 22px → 2× 渲染（HiDPI 形态，可读、判字重）→ 1× 真实尺寸行（参照）。
+    for (scheme, bg, fg) in [
+        ("dark", [14u8, 14, 14], [230u8, 230, 230]),
+        ("light", [243u8, 243, 243], [26, 26, 26]),
+    ] {
+        let w = 1080usize;
+        let mut parts: Vec<(Vec<u8>, usize, usize, bool)> = Vec::new(); // (rgba/cover, w, h, is_cover)
         for (label, body, heading) in candidates {
-            let rows = rows_for(body, heading);
-            let (buf, tops) = render_rows(&engine, &rows, fg, bg, w, block_h);
-            // 裁第一条正文行（用行位真值，26px 高、宽 360）放大观察。
-            let crop_y = tops[1];
-            let mut crop = vec![0u8; 360 * 26 * 4];
-            for r in 0..26 {
-                for c in 0..360 {
-                    let src = ((crop_y + r) * w + c) * 4;
-                    let dst = (r * 360 + c) * 4;
-                    crop[dst..dst + 4].copy_from_slice(&buf[src..src + 4]);
+            let (lw, lh, lcover) = strip(&engine, label, 22.0, FontWeight::Normal);
+            parts.push((lcover, lw, lh, true));
+            // 2× 渲染：同一样行按两倍字号重新光栅化（整数 2× HiDPI 同效）。
+            let rows2 = vec![
+                Row { text: rows_for(body, heading)[0].text, size: 40.0, weight: heading },
+                Row { text: rows_for(body, heading)[1].text, size: 30.0, weight: body },
+                Row { text: rows_for(body, heading)[3].text, size: 22.0, weight: body },
+            ];
+            let (b2, _t) = render_rows(&engine, &rows2, fg, bg, w, 220);
+            parts.push((b2, w, 220, false));
+            // 1× 真实尺寸：标题 + 正文 + 小字（20/15/11px）。
+            let rows1 = vec![
+                Row { text: rows_for(body, heading)[0].text, size: 20.0, weight: heading },
+                Row { text: rows_for(body, heading)[1].text, size: 15.0, weight: body },
+                Row { text: rows_for(body, heading)[3].text, size: 11.0, weight: body },
+            ];
+            let (b1, _t) = render_rows(&engine, &rows1, fg, bg, w, 105);
+            parts.push((b1, w, 105, false));
+        }
+        let block_h = [0usize; 0];
+        let _ = block_h;
+        let canvas_h = parts.len() / 3 * (22 + 10 + 220 + 10 + 105 + 26) + 12;
+        let mut img = vec![0u8; w * canvas_h * 4];
+        for px in img.chunks_exact_mut(4) {
+            px.copy_from_slice(&[bg[0], bg[1], bg[2], 255]);
+        }
+        let mut y = 6usize;
+        for (buf, bw, bh, is_cover) in &parts {
+            if *is_cover {
+                for (i, &a) in buf.iter().enumerate() {
+                    if a == 0 { continue; }
+                    let px = 6 + i % bw;
+                    let py = y + i / bw;
+                    if px < w && py < y + bh {
+                        let o = (py * w + px) * 4;
+                        let af = a as f32 / 255.0;
+                        for c in 0..3 {
+                            img[o + c] = (fg[c] as f32 * af + img[o + c] as f32 * (1.0 - af)).round() as u8;
+                        }
+                    }
+                }
+            } else {
+                for r in 0..*bh {
+                    let src = r * bw * 4;
+                    let dst = ((y + r) * w + 6) * 4;
+                    if dst + bw * 4 <= img.len() {
+                        img[dst..dst + bw * 4].copy_from_slice(&buf[src..src + bw * 4]);
+                    }
                 }
             }
-            let (zbuf, zw, zh) = zoom3(&crop, 360, 26);
-            blocks.push((format!("{sname} · {label}"), buf, zbuf, zw, zh));
+            y += *bh + 10;
         }
+        let pixmap = resvg::tiny_skia::Pixmap::from_vec(
+            img,
+            resvg::tiny_skia::IntSize::from_wh(w as u32, canvas_h as u32).unwrap(),
+        )
+        .unwrap();
+        let out = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../../../docs/research/t7_fontweight/candidates-{scheme}.png"));
+        std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+        pixmap.save_png(&out).unwrap();
+        println!("written: {}", out.display());
     }
-    let canvas_h = blocks.len() * (block_h + zoom_h + 34) + gap;
-    let canvas_w = w.max(360 * 3 + 12);
-    let mut img = vec![0u8; canvas_w * canvas_h * 4];
-    for px in img.chunks_exact_mut(4) {
-        px.copy_from_slice(&[40, 40, 40, 255]);
-    }
-    let mut y = 4usize;
-    let mut block_tops = Vec::new();
-    for (label, buf, zbuf, zw, zh) in &blocks {
-        // 标签行（11px Normal，随块内容同色）。
-        let (lw, lh, lcover) = strip(&engine, label, 11.0, FontWeight::Normal);
-        let label_fg: [u8; 3] = if label.starts_with("深色") { [230, 230, 230] } else { [26, 26, 26] };
-        for (i, &a) in lcover.iter().enumerate() {
-            if a == 0 { continue; }
-            let px = 6 + i % lw;
-            let py = y + i / lw;
-            if px < canvas_w && py < canvas_h {
-                let o = (py * canvas_w + px) * 4;
-                let af = a as f32 / 255.0;
-                for c in 0..3 {
-                    img[o + c] = (label_fg[c] as f32 * af + img[o + c] as f32 * (1.0 - af)).round() as u8;
-                }
-            }
-        }
-        y += lh + 4;
-        block_tops.push(y);
-        for r in 0..block_h {
-            let src = (r * w) * 4;
-            let dst = ((y + r) * canvas_w + 6) * 4;
-            img[dst..dst + w * 4].copy_from_slice(&buf[src..src + w * 4]);
-        }
-        let zy = y + block_h + 4;
-        for r in 0..*zh {
-            let src = (r * zw) * 4;
-            let dst = ((zy + r) * canvas_w + 6) * 4;
-            img[dst..dst + zw * 4].copy_from_slice(&zbuf[src..src + zw * 4]);
-        }
-        y += block_h + zoom_h + 34;
-    }
-    let pixmap = resvg::tiny_skia::Pixmap::from_vec(
-        img,
-        resvg::tiny_skia::IntSize::from_wh(canvas_w as u32, canvas_h as u32).unwrap(),
-    )
-    .unwrap();
-    let out = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../docs/research/t7_fontweight/candidates.png");
-    std::fs::create_dir_all(out.parent().unwrap()).unwrap();
-    pixmap.save_png(&out).unwrap();
-    println!("written: {}", out.display());
-    println!("layout: label_stride_sample={:?} block_tops={block_tops:?}", blocks.len());
 }
