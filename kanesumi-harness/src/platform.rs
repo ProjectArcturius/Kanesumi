@@ -2591,6 +2591,10 @@ impl KeyboardHandler for Shell {
 
 /// Keysym + utf8 → 逻辑键。控制键优先（Backspace 的 utf8 是控制字符，不能当 Char）；
 /// 其余可打印键走 utf8 字符（含 shift 符号 / 小键盘）。未分类透传原始 keysym。
+///
+/// 空格键**不**走具名变体：其 utf8 是 `" "`，必须落 `Char(' ')` 才能让 TextBox 与
+/// 所有「Space 激活」控件照旧工作（参 `Key::Space` 注释）。PageUp/PageDown/Insert/
+/// F1..F12 无 utf8，由本表语义化；F13+ 落 `Unknown`。
 fn map_key(keysym: Keysym, utf8: Option<String>) -> Key {
     use xkeysym::key;
     match keysym.raw() {
@@ -2598,13 +2602,28 @@ fn map_key(keysym: Keysym, utf8: Option<String>) -> Key {
         key::BackSpace => return Key::Backspace,
         key::Escape => return Key::Escape,
         key::Tab => return Key::Tab,
+        key::Insert => return Key::Insert,
+        key::Delete => return Key::Delete,
+        key::Home => return Key::Home,
+        key::End => return Key::End,
+        key::Page_Up => return Key::PageUp,
+        key::Page_Down => return Key::PageDown,
         key::Left => return Key::Left,
         key::Right => return Key::Right,
         key::Up => return Key::Up,
         key::Down => return Key::Down,
-        key::Home => return Key::Home,
-        key::End => return Key::End,
-        key::Delete => return Key::Delete,
+        key::F1 => return Key::F(1),
+        key::F2 => return Key::F(2),
+        key::F3 => return Key::F(3),
+        key::F4 => return Key::F(4),
+        key::F5 => return Key::F(5),
+        key::F6 => return Key::F(6),
+        key::F7 => return Key::F(7),
+        key::F8 => return Key::F(8),
+        key::F9 => return Key::F(9),
+        key::F10 => return Key::F(10),
+        key::F11 => return Key::F(11),
+        key::F12 => return Key::F(12),
         _ => {}
     }
     if let Some(c) = utf8.and_then(|s| s.chars().next()) {
@@ -3566,5 +3585,37 @@ mod tests {
     #[test]
     fn write_region_full_frame_is_full() {
         assert_eq!(compute_write_region(false, false, None, Some(r(0.0, 0.0, 8.0, 8.0))), None);
+    }
+
+    /// 具名键映射：PageUp/PageDown（含 Prior/Next 别名）、Insert、F1..F12。
+    #[test]
+    fn map_key_named_keys() {
+        use xkeysym::key;
+        assert_eq!(map_key(Keysym::new(key::Page_Up), None), Key::PageUp);
+        assert_eq!(map_key(Keysym::new(key::Prior), None), Key::PageUp);
+        assert_eq!(map_key(Keysym::new(key::Page_Down), None), Key::PageDown);
+        assert_eq!(map_key(Keysym::new(key::Next), None), Key::PageDown);
+        assert_eq!(map_key(Keysym::new(key::Insert), None), Key::Insert);
+        assert_eq!(map_key(Keysym::new(key::F1), None), Key::F(1));
+        assert_eq!(map_key(Keysym::new(key::F2), None), Key::F(2));
+        assert_eq!(map_key(Keysym::new(key::F5), None), Key::F(5));
+        assert_eq!(map_key(Keysym::new(key::F12), None), Key::F(12));
+        // F13+ 未纳入具名表 → 透传原始 keysym。
+        assert_eq!(map_key(Keysym::new(key::F13), None), Key::Unknown(key::F13));
+    }
+
+    /// 空格键保留可打印字符路径（TextBox 与所有 Space 激活控件按 `Char(' ')` 识别）。
+    #[test]
+    fn map_key_space_is_printable_char() {
+        use xkeysym::key;
+        assert_eq!(
+            map_key(Keysym::new(key::space), Some(" ".to_string())),
+            Key::Char(' ')
+        );
+        // 无 utf8（合成 / 特殊路径）时落 Unknown，不误发具名 Space 破坏文本输入。
+        assert_eq!(
+            map_key(Keysym::new(key::space), None),
+            Key::Unknown(key::space)
+        );
     }
 }

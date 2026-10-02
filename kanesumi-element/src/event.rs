@@ -17,6 +17,12 @@ pub enum PointerButton {
 }
 
 /// 逻辑键。可打印字符 → `Char`；控制键 → 具名变体；未分类 → `Unknown`（原始 keysym）。
+///
+/// 具名变体是应用与控件的稳定语义面：应用不应再比 X11 keysym 原始码
+/// （参 `Librarian` 的 F2 重命名 / F5 刷新 / Space 快速查看）。可打印空格仍走
+/// `Char(' ')`（外壳需保留文本输入语义，TextBox 与所有「Space 激活」控件都按
+/// `Char(' ')` 识别，参 `docs/ELEMENT_MIGRATION.md` §3）；`Space` 供合成事件或
+/// 无 IME 组字时的语义化按键使用。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     Char(char),
@@ -24,13 +30,21 @@ pub enum Key {
     Backspace,
     Escape,
     Tab,
+    /// 语义化空格。外壳对可打印空格仍投 `Char(' ')`，本变体供合成 / 特殊场景。
+    Space,
+    /// Insert（X11 `0xff63`）。
+    Insert,
+    Delete,
+    Home,
+    End,
+    PageUp,
+    PageDown,
     Left,
     Right,
     Up,
     Down,
-    Home,
-    End,
-    Delete,
+    /// 功能键 F1..F12；更高级 F13+ 落 `Unknown`。
+    F(u8),
     Unknown(u32),
 }
 
