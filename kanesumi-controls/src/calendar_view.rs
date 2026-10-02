@@ -442,12 +442,9 @@ impl MetroCalendarView {
         CalendarResponse::None
     }
 
-    /// 键盘。PageUp/PageDown 以 X11 keysym 原始码表示（`0xff55` / `0xff56`）——
-    /// 框架 `Key` 未定义具名变体，外壳对未分类键透传 `Key::Unknown(keysym)`。
+    /// 键盘。PageUp / PageDown 用框架具名变体（外壳把 keysym 语义化，控件不再比原始码）。
     pub fn key(&mut self, key: kanesumi_element::Key) -> CalendarResponse {
         use kanesumi_element::Key;
-        const PAGE_UP: u32 = 0xff55;
-        const PAGE_DOWN: u32 = 0xff56;
         match self.display_mode {
             CalendarDisplayMode::Month => match key {
                 Key::Left => {
@@ -466,12 +463,12 @@ impl MetroCalendarView {
                     self.move_cursor(7);
                     CalendarResponse::None
                 }
-                Key::Enter | Key::Char(' ') => self.select_day(self.cursor),
-                Key::Unknown(PAGE_UP) => {
+                Key::Enter | Key::Char(' ') | Key::Space => self.select_day(self.cursor),
+                Key::PageUp => {
                     self.shift_month(-1);
                     CalendarResponse::MonthChanged
                 }
-                Key::Unknown(PAGE_DOWN) => {
+                Key::PageDown => {
                     self.shift_month(1);
                     CalendarResponse::MonthChanged
                 }
@@ -494,15 +491,15 @@ impl MetroCalendarView {
                     self.displayed = self.displayed.add_months(4).with_day(1);
                     CalendarResponse::None
                 }
-                Key::Enter | Key::Char(' ') => {
+                Key::Enter | Key::Char(' ') | Key::Space => {
                     self.display_mode = CalendarDisplayMode::Month;
                     CalendarResponse::ViewChanged
                 }
-                Key::Unknown(PAGE_UP) => {
+                Key::PageUp => {
                     self.displayed = self.displayed.add_months(-12).with_day(1);
                     CalendarResponse::MonthChanged
                 }
-                Key::Unknown(PAGE_DOWN) => {
+                Key::PageDown => {
                     self.displayed = self.displayed.add_months(12).with_day(1);
                     CalendarResponse::MonthChanged
                 }
@@ -525,15 +522,15 @@ impl MetroCalendarView {
                     self.displayed = Date::new(self.displayed.year + 4, self.displayed.month, 1);
                     CalendarResponse::None
                 }
-                Key::Enter | Key::Char(' ') => {
+                Key::Enter | Key::Char(' ') | Key::Space => {
                     self.display_mode = CalendarDisplayMode::Year;
                     CalendarResponse::ViewChanged
                 }
-                Key::Unknown(PAGE_UP) => {
+                Key::PageUp => {
                     self.displayed = Date::new(self.displayed.year - 10, self.displayed.month, 1);
                     CalendarResponse::MonthChanged
                 }
-                Key::Unknown(PAGE_DOWN) => {
+                Key::PageDown => {
                     self.displayed = Date::new(self.displayed.year + 10, self.displayed.month, 1);
                     CalendarResponse::MonthChanged
                 }
@@ -821,8 +818,9 @@ impl kanesumi_element::Widget for MetroCalendarView {
                         | Key::Down
                         | Key::Enter
                         | Key::Char(' ')
-                        | Key::Unknown(0xff55)
-                        | Key::Unknown(0xff56)
+                        | Key::Space
+                        | Key::PageUp
+                        | Key::PageDown
                 );
                 if !relevant {
                     return;
@@ -989,13 +987,13 @@ mod tree_tests {
         let (mut h, id) = harness();
         h.tab();
         assert_eq!(h.tree.focused(), Some(id));
-        // PageDown / PageUp 在不同键盘布局下由外壳语义化为 keysym 原始码。
-        h.key(Key::Unknown(0xff56));
+        // 外壳把 PageUp / PageDown 语义化为具名变体，控件直接比较语义键。
+        h.key(Key::PageDown);
         assert_eq!(
             h.tree.get::<MetroCalendarView>(id).unwrap().displayed,
             Date::new(2026, 11, 1)
         );
-        h.key(Key::Unknown(0xff55));
+        h.key(Key::PageUp);
         assert_eq!(
             h.tree.get::<MetroCalendarView>(id).unwrap().displayed,
             Date::new(2026, 10, 1)

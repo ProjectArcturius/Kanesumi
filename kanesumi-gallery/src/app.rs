@@ -2102,6 +2102,7 @@ impl App for GalleryApp {
                 // 统一转 TextInputKey；Up/Down 保留给 suggest 导航，其余交给文本编辑。
                 let mapped = match key {
                     HarnessKey::Char(c) => Some(TextInputKey::Char(c)),
+                    HarnessKey::Space => Some(TextInputKey::Char(' ')),
                     HarnessKey::Enter => Some(TextInputKey::Enter),
                     HarnessKey::Backspace => Some(TextInputKey::Backspace),
                     HarnessKey::Escape => Some(TextInputKey::Escape),
@@ -2113,6 +2114,10 @@ impl App for GalleryApp {
                     HarnessKey::Home => Some(TextInputKey::Home),
                     HarnessKey::End => Some(TextInputKey::End),
                     HarnessKey::Delete => Some(TextInputKey::Delete),
+                    HarnessKey::Insert
+                    | HarnessKey::PageUp
+                    | HarnessKey::PageDown
+                    | HarnessKey::F(_) => None,
                     HarnessKey::Unknown(_) => None,
                 };
                 let Some(mapped) = mapped else {

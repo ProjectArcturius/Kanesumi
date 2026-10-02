@@ -609,6 +609,7 @@ fn edit_key(key: kanesumi_element::Key) -> Option<TextInputKey> {
     use kanesumi_element::Key;
     Some(match key {
         Key::Char(c) => TextInputKey::Char(c),
+        Key::Space => TextInputKey::Char(' '),
         Key::Enter => TextInputKey::Enter,
         Key::Backspace => TextInputKey::Backspace,
         Key::Delete => TextInputKey::Delete,
@@ -620,6 +621,7 @@ fn edit_key(key: kanesumi_element::Key) -> Option<TextInputKey> {
         Key::End => TextInputKey::End,
         Key::Escape => TextInputKey::Escape,
         Key::Tab => TextInputKey::Tab,
+        Key::Insert | Key::PageUp | Key::PageDown | Key::F(_) => return None,
         Key::Unknown(_) => return None,
     })
 }

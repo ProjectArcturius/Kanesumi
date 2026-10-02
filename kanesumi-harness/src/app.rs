@@ -494,6 +494,7 @@ pub fn key_to_text_input(key: Key) -> Option<kanesumi_controls::TextInputKey> {
     use kanesumi_controls::TextInputKey as K;
     match key {
         Key::Char(c) => Some(K::Char(c)),
+        Key::Space => Some(K::Char(' ')),
         Key::Enter => Some(K::Enter),
         Key::Backspace => Some(K::Backspace),
         Key::Escape => Some(K::Escape),
@@ -505,6 +506,7 @@ pub fn key_to_text_input(key: Key) -> Option<kanesumi_controls::TextInputKey> {
         Key::Home => Some(K::Home),
         Key::End => Some(K::End),
         Key::Delete => Some(K::Delete),
+        Key::Insert | Key::PageUp | Key::PageDown | Key::F(_) => None,
         Key::Unknown(_) => None,
     }
 }
