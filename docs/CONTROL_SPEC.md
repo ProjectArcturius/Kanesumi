@@ -70,6 +70,7 @@
 | 前景 | PointerOver 与 Pressed **同色**（不像 Button 区分） |
 | 焦点 | `AllowFocusOnInteraction = False`（点击不夺焦点） |
 | 标签塌缩 | Compact 态隐藏标签（`ApplicationViewStates`）——纯图标模式用 |
+| 紧凑尺寸 | `IconButtonSize::Compact`：纯图标 **32×32** / 带标签 **40×40**（UWP 紧凑模式确切值未取到，**临时项 T24**）；默认 `Normal` 不变 |
 
 ---
 
@@ -1828,6 +1829,63 @@ MetroTile {
     live: TileLive             // None | Badge(u32) | Preview(String) | Lines(Vec<String>)
     // Widget：emit TileClicked
 }
+```
+
+---
+
+## 48 · ToolTip（ToolTip 参考 · 框架行为）
+
+> 数据源：`microsoft-ui-xaml` ToolTip 模板（`A2:13245-13261`，`A1:101/722-726`），
+> 见 `docs/research/2026-09-22_controls.md` §5.1。计时数值取 Ether `INTERACTION_CANON` §Ⅲ
+> （`kanesumi-core/src/interaction.rs`：初始 500 ms、再现 100 ms、消失 5 s），**只引用常量**。
+> 实现：`kanesumi-element/src/widgets/tooltip.rs`（气泡）+ `Tree` 的提示计时 / 挂载。
+
+### 语义
+
+工具提示是**框架行为**，不是控件自持状态。应用给任意元素挂文字：
+
+```rust
+let id = tree.insert(col, MetroButton::new("全屏"));
+tree.set_tooltip(id, "全屏 (F11)");   // 空串 = 清除；clear_tooltip(id) 等价
+```
+
+之后由框架负责显隐，应用无需（也不应）自己开弹层。
+
+| 事 | 行为 |
+|---|---|
+| 触发 | 指针在元素上**静止**满初始延迟 500 ms；或**键盘焦点**停留在元素上满 500 ms（UWP 行为） |
+| 再现 | 已有提示显示时移到相邻目标，延迟降为 100 ms |
+| 消失 | 显示后 5 s 自动消失；指针离开、**任意按下**、键盘输入、失焦立即消失 |
+| 位置 | 锚点**下方**（`PopupSide::Bottom`，间隙 4 px）；下方放不下则上翻，仍夹进弹层放置区 |
+| 顶栏 / Dock | 矮表面由外壳放大 `popup_bounds` 并开 `xdg_popup`，现有弹层分离路径自动适用 |
+| 焦点 | **不抢焦点**（弹层非模态、目标不改变焦点） |
+| 输入 | **不吃输入**：`PopupSpec::passthrough = true`，命中测试恒假，点击穿透到下层；不参与轻触关闭 / Esc / 焦点陷阱 |
+
+### 视觉（UWP 模板）
+
+| 项 | 值 |
+|---|---|
+| 背景 | `ToolTipBackground` 暗 `#2B2B2B` / 亮 `#F2F2F2` → 主题 `surface_variant` |
+| 前景 | `SystemBaseHighColor` → `on_surface` |
+| 边框 | `SystemControlTransientBorderBrush` 黑 36%（暗）/ 14%（亮），粗细 **1** → 主题 `divider` |
+| 内边距 | **`8,5,8,7`** |
+| 字号 | **12**（`ToolTipContentThemeFontSize`）；行高 16 |
+| 最大宽 | **320**（硬编码 `MaxWidth`）；超出按字换行，宽度不足 320 时随可用宽收缩 |
+| 圆角 | `theme.tokens.corner_radius` |
+| 动画 | 仅 `FadeIn/FadeOutThemeAnimation`（时长未在快照中；本实现暂不做淡入淡出） |
+
+### API
+
+```rust
+// kanesumi-element（框架）
+Tree::set_tooltip(id, text) -> ()
+Tree::clear_tooltip(id) -> ()
+Tree::tooltip_text(id) -> Option<&str>
+Tree::tooltip_popup() -> Option<WidgetId>   // 正在显示的提示弹层（测试 / 外壳）
+
+// kanesumi-controls 以控件库命名暴露气泡与常量
+pub use tooltip::{MetroToolTip, TOOLTIP_GAP, TOOLTIP_MAX_WIDTH, tooltip_style};
+pub const TOOLTIP_DELAY_MS / TOOLTIP_RESHOW_MS / TOOLTIP_HIDE_MS;   // 引用 interaction 正典
 ```
 
 ---
