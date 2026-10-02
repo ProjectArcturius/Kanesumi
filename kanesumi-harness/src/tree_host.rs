@@ -76,8 +76,15 @@ pub trait TreeApp {
         Vec::new()
     }
 
-    /// 合成器回报图层动画完成 / 打断（或不支持合成图层）。
-    fn on_layer_event(&mut self, _tree: &mut Tree, _event: crate::layers::LayerEvent) {}
+    /// 合成器回报图层动画完成 / 打断（或不支持合成图层）。`tree` 为该图层所在的树
+    /// （主表面或浮层），`widget` = 树图层的节点（`Tree::set_layer` 标记的那个）；App 自建图层为 None。
+    fn on_layer_event(
+        &mut self,
+        _tree: &mut Tree,
+        _widget: Option<WidgetId>,
+        _event: crate::layers::LayerEvent,
+    ) {
+    }
 
     // ── 浮层表面（Launcher 全屏层、面板…）：每个浮层一棵独立的元素树 ─────────
 
@@ -177,7 +184,14 @@ pub struct TreeHost<A: TreeApp> {
     popup_dirty: std::collections::HashSet<u64>,
     /// 浮层表面的树（与 `TreeApp::floating_layers` 一一对应）。
     floating: Vec<FloatingTree>,
+    /// 元素树图层（G3-c）↔ 外壳图层 id。key = (表面序号：0 主表面 / i+1 第 i 浮层, 节点)。
+    layer_ids: std::collections::HashMap<(usize, WidgetId), crate::layers::LayerId>,
+    layer_rev: std::collections::HashMap<crate::layers::LayerId, (usize, WidgetId)>,
+    next_layer: u32,
 }
+
+/// 树图层的外壳 id 从高位段分配，避免与 App 自建图层（`TreeApp::take_layer_commands`）冲突。
+const TREE_LAYER_BASE: u32 = 0x8000_0000;
 
 impl<A: TreeApp> TreeHost<A> {
     pub fn new(mut app: A) -> Self {
@@ -200,6 +214,69 @@ impl<A: TreeApp> TreeHost<A> {
             pointer: Point::new(0.0, 0.0),
             popup_dirty: std::collections::HashSet::new(),
             floating,
+            layer_ids: std::collections::HashMap::new(),
+            layer_rev: std::collections::HashMap::new(),
+            next_layer: TREE_LAYER_BASE,
+        }
+    }
+
+    /// 取走各棵树的图层操作，翻译成外壳图层命令（G3-c）。参 kanesumi-element layer.rs。
+    fn drain_tree_layers(&mut self, out: &mut Vec<crate::layers::LayerCommand>) {
+        use crate::layers::{LayerAnim, LayerCommand, LayerParent};
+        use kanesumi_element::LayerOp;
+        let mut batches = vec![(0usize, self.tree.take_layer_ops())];
+        for (i, f) in self.floating.iter_mut().enumerate() {
+            batches.push((i + 1, f.tree.take_layer_ops()));
+        }
+        for (surf, ops) in batches {
+            let parent = if surf == 0 { LayerParent::Main } else { LayerParent::Floating(surf - 1) };
+            for op in ops {
+                match op {
+                    LayerOp::Create { id, rect } => {
+                        let lid = crate::layers::LayerId(self.next_layer);
+                        self.next_layer = self.next_layer.wrapping_add(1).max(TREE_LAYER_BASE);
+                        self.layer_ids.insert((surf, id), lid);
+                        self.layer_rev.insert(lid, (surf, id));
+                        out.push(LayerCommand::Create { id: lid, parent, rect });
+                    }
+                    LayerOp::Remove { id } => {
+                        if let Some(lid) = self.layer_ids.remove(&(surf, id)) {
+                            self.layer_rev.remove(&lid);
+                            out.push(LayerCommand::Destroy { id: lid });
+                        }
+                    }
+                    other => {
+                        let wid = match &other {
+                            LayerOp::Content { id, .. }
+                            | LayerOp::Rect { id, .. }
+                            | LayerOp::Offset { id, .. }
+                            | LayerOp::Opacity { id, .. }
+                            | LayerOp::Animate { id, .. } => *id,
+                            LayerOp::Create { .. } | LayerOp::Remove { .. } => unreachable!(),
+                        };
+                        let Some(&lid) = self.layer_ids.get(&(surf, wid)) else { continue };
+                        out.push(match other {
+                            LayerOp::Content { scene, .. } => LayerCommand::SetContent { id: lid, scene },
+                            LayerOp::Rect { rect, .. } => LayerCommand::SetRect { id: lid, rect },
+                            LayerOp::Offset { x, y, .. } => LayerCommand::SetOffset { id: lid, x, y },
+                            LayerOp::Opacity { opacity, .. } => LayerCommand::SetOpacity { id: lid, opacity },
+                            LayerOp::Animate { spec, .. } => LayerCommand::Animate {
+                                id: lid,
+                                anim: LayerAnim {
+                                    serial: spec.serial,
+                                    duration_ms: spec.duration_ms,
+                                    delay_ms: spec.delay_ms,
+                                    curve: spec.curve,
+                                    to_x: spec.to_x,
+                                    to_y: spec.to_y,
+                                    to_opacity: spec.to_opacity,
+                                },
+                            },
+                            LayerOp::Create { .. } | LayerOp::Remove { .. } => unreachable!(),
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -420,11 +497,26 @@ impl<A: TreeApp> App for TreeHost<A> {
     }
 
     fn take_layer_commands(&mut self) -> Vec<crate::layers::LayerCommand> {
-        self.app.take_layer_commands()
+        let mut out = self.app.take_layer_commands();
+        self.drain_tree_layers(&mut out);
+        out
     }
 
     fn on_layer_event(&mut self, event: crate::layers::LayerEvent) {
-        self.app.on_layer_event(&mut self.tree, event);
+        use crate::layers::LayerEvent;
+        // 树图层的事件交给所在那棵树、并带上节点 id；App 自建图层的事件 widget = None。
+        let owner = match event {
+            LayerEvent::Done { id, .. } | LayerEvent::Cancelled { id, .. } => self.layer_rev.get(&id).copied(),
+            LayerEvent::Unsupported => None,
+        };
+        match owner {
+            Some((0, wid)) => self.app.on_layer_event(&mut self.tree, Some(wid), event),
+            Some((s, wid)) => match self.floating.get_mut(s - 1) {
+                Some(f) => self.app.on_layer_event(&mut f.tree, Some(wid), event),
+                None => {}
+            },
+            None => self.app.on_layer_event(&mut self.tree, None, event),
+        }
     }
 
     /// 主表面与各浮层树中最近的定时器（元素树 `next_timer`）—— 空闲唤醒用。

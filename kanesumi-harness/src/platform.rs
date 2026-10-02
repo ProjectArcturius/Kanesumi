@@ -293,6 +293,8 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         }
         shell.sync_popups(&qh);
         shell.render_popups(&qh);
+        // 渲染期元素树产出的图层命令（G3-c：树图层的建层 / 内容在 frame 内才知道）同帧送出，不拖到下一帧。
+        shell.process_layer_commands(&qh);
         // 帧耗时自记录：每 10s 且有新帧时追加一行持久日志（默认开启，零交互）。
         shell.maybe_flush_perf();
     }

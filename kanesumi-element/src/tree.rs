@@ -13,6 +13,7 @@ use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
 use crate::event::{Event, Key, Modifiers, PointerButton};
 use crate::id::WidgetId;
+use crate::layer::{LayerAnimSpec, LayerOp, LayerState};
 use crate::ime::ImeContext;
 use crate::props::{Align, LayoutProps};
 use crate::widget::{
@@ -217,6 +218,12 @@ pub struct Tree {
     /// 按本帧 damage 剔除拼接（只拼与 damage 相交的节点）。**仅当消费方只重绘 damage 区**
     ///（CPU 局部光栅）才可开；整幅重画的消费方（wgpu 直出、快照）开了会丢内容。默认关。
     damage_cull: bool,
+    /// 图层（G3-c）：被标为图层的节点及其提交状态；BTreeMap 保证产出顺序稳定。参 layer.rs。
+    layers: std::collections::BTreeMap<WidgetId, LayerState>,
+    /// 待外壳取走的图层操作。
+    layer_ops: Vec<LayerOp>,
+    /// compose 时允许进入的图层根：拼某图层内容时 = 该图层；拼主场景时 = None（跳过所有图层子树）。
+    compose_layer: std::cell::Cell<Option<WidgetId>>,
 }
 
 impl Tree {
@@ -243,6 +250,9 @@ impl Tree {
             parked: Vec::new(),
             damage: None,
             damage_cull: false,
+            layers: std::collections::BTreeMap::new(),
+            layer_ops: Vec::new(),
+            compose_layer: std::cell::Cell::new(None),
             full_repaint: true,
             dirty: true,
             frame_dt: 0.0,
@@ -912,6 +922,9 @@ impl Tree {
             self.compose(self.overlay, &mut scene, cull);
         }
 
+        // 5b. 图层：逐个拼子树内容，变了才产出 Content（内容只在真变化时重新提交）。
+        self.sync_layers();
+
         // 6. 焦点控件的 IME 上下文（用本帧布局与排版）。
         self.ime = self.focus.and_then(|f| {
             let n = self.node(f)?;
@@ -1101,6 +1114,10 @@ impl Tree {
     fn compose(&self, id: WidgetId, scene: &mut Scene, cull: Option<Rect>) {
         let Some(n) = self.node(id) else { return };
         if !n.props.visible {
+            return;
+        }
+        // 图层子树由合成器子表面承载，不进入外层场景（拼该图层自身内容时除外）。参 layer.rs。
+        if self.layers.contains_key(&id) && self.compose_layer.get() != Some(id) {
             return;
         }
         // 自身绘制范围；从未绘制过的节点退化为其矩形（容器）以避免误裁子树。
@@ -1778,6 +1795,98 @@ impl Tree {
             }
         }
         out
+    }
+
+    // ── 图层（G3-c）。参 layer.rs ─────────────────────────────────────────────
+
+    /// 把节点标为 / 取消图层。图层子树改由独立的合成器子表面承载，主场景整幅重拼一次。
+    pub fn set_layer(&mut self, id: WidgetId, on: bool) {
+        if on {
+            self.layers.entry(id).or_default();
+        } else if let Some(st) = self.layers.remove(&id)
+            && st.created
+        {
+            self.layer_ops.push(LayerOp::Remove { id });
+        }
+        self.full_repaint = true;
+        self.invalidate_paint(id);
+    }
+
+    pub fn is_layer(&self, id: WidgetId) -> bool {
+        self.layers.contains_key(&id)
+    }
+
+    /// 请求合成器动画（位移 / 不透明度）。动画期间树不重画、不量测；完成经外壳回报。
+    pub fn animate_layer(&mut self, id: WidgetId, spec: LayerAnimSpec) {
+        if self.layers.contains_key(&id) {
+            self.layer_ops.push(LayerOp::Animate { id, spec });
+        }
+    }
+
+    /// 立即设图层视觉偏移（取消进行中的动画）。
+    pub fn set_layer_offset(&mut self, id: WidgetId, x: f32, y: f32) {
+        if self.layers.contains_key(&id) {
+            self.layer_ops.push(LayerOp::Offset { id, x, y });
+        }
+    }
+
+    /// 立即设图层不透明度（取消进行中的动画）。
+    pub fn set_layer_opacity(&mut self, id: WidgetId, opacity: f32) {
+        if self.layers.contains_key(&id) {
+            self.layer_ops.push(LayerOp::Opacity { id, opacity });
+        }
+    }
+
+    /// 外壳取走本帧（及帧间）累积的图层操作，保持产生顺序。
+    pub fn take_layer_ops(&mut self) -> Vec<LayerOp> {
+        std::mem::take(&mut self.layer_ops)
+    }
+
+    /// 同步全部图层：存在性、矩形、内容。每帧拼接之后调用。
+    fn sync_layers(&mut self) {
+        if self.layers.is_empty() {
+            return;
+        }
+        let ids: Vec<WidgetId> = self.layers.keys().copied().collect();
+        for id in ids {
+            let alive = self.contains(id);
+            if !alive || !self.effectively_visible(id) {
+                if let Some(st) = self.layers.get_mut(&id)
+                    && st.created
+                {
+                    *st = LayerState::default();
+                    self.layer_ops.push(LayerOp::Remove { id });
+                }
+                if !alive {
+                    self.layers.remove(&id);
+                }
+                continue;
+            }
+            let Some(rect) = self.node(id).map(|n| n.rect) else { continue };
+            self.compose_layer.set(Some(id));
+            let mut scene = Scene::default();
+            self.compose(id, &mut scene, None);
+            self.compose_layer.set(None);
+            scene.translate(Point::new(-rect.origin.x, -rect.origin.y));
+            let Some(st) = self.layers.get_mut(&id) else { continue };
+            if !st.created {
+                st.created = true;
+                st.rect = Some(rect);
+                st.scene = None;
+                self.layer_ops.push(LayerOp::Create { id, rect });
+            } else if st.rect != Some(rect) {
+                if st.rect.map(|r| r.size) != Some(rect.size) {
+                    // 尺寸变了：缓冲要按新尺寸重画。
+                    st.scene = None;
+                }
+                st.rect = Some(rect);
+                self.layer_ops.push(LayerOp::Rect { id, rect });
+            }
+            if st.scene.as_ref() != Some(&scene) {
+                st.scene = Some(scene.clone());
+                self.layer_ops.push(LayerOp::Content { id, scene });
+            }
+        }
     }
 
     /// 节点绘制缓存（测试断言用）。

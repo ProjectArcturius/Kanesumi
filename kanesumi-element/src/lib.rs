@@ -10,6 +10,7 @@
 pub mod event;
 pub mod id;
 pub mod ime;
+pub mod layer;
 pub mod props;
 pub mod testing;
 pub mod tree;
@@ -20,6 +21,7 @@ pub mod widgets;
 pub use event::{Event, Key, Modifiers, PointerButton};
 pub use id::WidgetId;
 pub use ime::{ImeContentHint, ImeContext};
+pub use layer::{LayerAnimSpec, LayerOp};
 pub use props::{Align, Insets, LayoutProps};
 pub use tree::{Action, EditCtx, FrameOutput, PopupDismissed, PopupSide, PopupSpec, Tree};
 pub use visual_state::VisualState;
