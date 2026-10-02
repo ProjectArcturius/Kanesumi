@@ -71,6 +71,14 @@ pub trait TreeApp {
 
     fn set_appmenu_handle(&mut self, _handle: AppMenuHandle) {}
 
+    /// 合成图层（G3-b）：外壳每帧取走图层命令。参 `crate::layers`。
+    fn take_layer_commands(&mut self) -> Vec<crate::layers::LayerCommand> {
+        Vec::new()
+    }
+
+    /// 合成器回报图层动画完成 / 打断（或不支持合成图层）。
+    fn on_layer_event(&mut self, _tree: &mut Tree, _event: crate::layers::LayerEvent) {}
+
     // ── 浮层表面（Launcher 全屏层、面板…）：每个浮层一棵独立的元素树 ─────────
 
     /// 浮层表面声明（启动时读一次，外壳据此建 layer 表面）。
@@ -409,6 +417,14 @@ impl<A: TreeApp> App for TreeHost<A> {
 
     fn needs_redraw(&self) -> bool {
         self.tree.needs_frame()
+    }
+
+    fn take_layer_commands(&mut self) -> Vec<crate::layers::LayerCommand> {
+        self.app.take_layer_commands()
+    }
+
+    fn on_layer_event(&mut self, event: crate::layers::LayerEvent) {
+        self.app.on_layer_event(&mut self.tree, event);
     }
 
     /// 主表面与各浮层树中最近的定时器（元素树 `next_timer`）—— 空闲唤醒用。

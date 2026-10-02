@@ -33,6 +33,8 @@ wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"] }
 # input-method-v2 引擎宿主协议（Ceyboard 作为 IME 引擎连接合成器）。参 CEYBOARD_SPEC §Ⅴ。
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
+# Ether 私有协议 ether_composition_v1（合成图层，G3-b）的客户端代码生成；工作区已有（kanesumi-appmenu 同款）。
+wayland-scanner = "0.31"
 xkbcommon = "0.7"
 xkeysym = "0.2"
 raw-window-handle = "0.6"

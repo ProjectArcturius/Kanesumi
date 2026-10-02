@@ -89,6 +89,7 @@ use crate::role::{EtherRole, SurfaceKind};
 /// **主路径必须持久**（`~/.local/state/ether/`）—— Debian 会话里崩溃/黑屏后无法开终端，
 /// 只能重启回主系统读盘；只写 tmpfs（`/tmp`）会随重启丢失（参 `AGENTS.md` 铁律）。
 /// 另外在 `$XDG_RUNTIME_DIR` 留一份便于会话内即时查看（无持久性要求）。
+mod layers;
 mod popups;
 
 fn write_diag(name: &str, content: &str) {
@@ -532,6 +533,8 @@ pub(crate) struct Shell {
     // ── 子弹层（xdg_popup）。参 platform/popups.rs ─────
     /// 已开出的子弹层（自底向上）。
     popups: Vec<popups::HostedPopup>,
+    /// 合成图层（G3-b）：子表面 + ether_visual_v1。参 platform/layers.rs。
+    comp: layers::Composition,
     /// App 接受了子弹层（enable_popups 返回 true）。
     popups_enabled: bool,
     /// 上次告知 App 的放置区（变化才重发）。
@@ -983,6 +986,16 @@ impl Shell {
         };
         // 进程共享 gbm device 句柄（惰性：首次 dmabuf 提交才真正打开）。
         let dmabuf_device = crate::dmabuf::DmabufDevice::default();
+        // 合成图层（G3-b）：wl_subcompositor + ether_composition_v1（Ether 私有，别的合成器没有 → None 回落）。
+        let comp = layers::Composition::new(
+            globals.bind::<layers::EtherCompositionManagerV1, Self, ()>(qh, 1..=1, ()).ok(),
+            smithay_client_toolkit::subcompositor::SubcompositorState::bind(
+                compositor_state.wl_compositor().clone(),
+                globals,
+                qh,
+            )
+            .ok(),
+        );
         let floating_out = std::iter::repeat_with(|| {
             SurfaceOutput::new(dmabuf_allowed, dmabuf_device.clone())
         })
@@ -1098,6 +1111,7 @@ impl Shell {
             dmabuf_feedback_obj,
             dmabuf_device,
             popups: Vec::new(),
+            comp,
             popups_enabled: false,
             popup_bounds_sent: None,
             seat: None,
@@ -1446,6 +1460,8 @@ impl Shell {
             log::error!("App::update panic，跳过本迭代");
             return;
         }
+        // 合成图层命令（G3-b）：App 本帧推的建层 / 内容 / 动画请求。
+        self.process_layer_commands(qh);
         // 右键菜单动画 tick（弹出/关闭轨道，与 App 状态解耦）。
         self.ctx_menu.update(dt);
 
@@ -2674,6 +2690,7 @@ delegate_xdg_window!(Shell);
 smithay_client_toolkit::delegate_xdg_popup!(Shell);
 delegate_layer!(Shell);
 delegate_dmabuf!(Shell);
+smithay_client_toolkit::delegate_subcompositor!(Shell);
 
 impl ProvidesRegistryState for Shell {
     fn registry(&mut self) -> &mut RegistryState {
@@ -3553,6 +3570,9 @@ impl Dispatch<wl_buffer::WlBuffer, ()> for Shell {
             // 主表面 / 各浮层 / IME 候选窗 —— 每份输出缓冲（SHM 或 dmabuf 槽）都要认领，
             // 否则双缓冲耗尽后该表面冻结（dmabuf 槽同样靠 release 复位 in_flight）。
             if state.main_out.mark_released(proxy) {
+                return;
+            }
+            if state.comp.mark_released(proxy) {
                 return;
             }
             for slot in &mut state.floating_out {

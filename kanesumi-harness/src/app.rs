@@ -338,6 +338,15 @@ pub trait App {
         false
     }
 
+    /// 合成图层（G3-b）：外壳每帧取走 App 积累的图层命令并执行。默认无图层。
+    /// 参 `crate::layers` 与 Ether docs/GPU_COMPOSITION_PLAN.md G3。
+    fn take_layer_commands(&mut self) -> Vec<crate::layers::LayerCommand> {
+        Vec::new()
+    }
+
+    /// 合成器回报图层动画完成 / 打断，或声明不支持合成图层。
+    fn on_layer_event(&mut self, _event: crate::layers::LayerEvent) {}
+
     /// Tab / Shift+Tab 焦点推进（框架统一路由）。
     ///
     /// 外壳在 Tab 按下、且 IME 未接管键盘时先调用本方法：

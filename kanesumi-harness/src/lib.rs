@@ -9,6 +9,7 @@ pub mod appmenu;
 pub mod context_menu;
 pub mod idle;
 pub mod input_config;
+pub mod layers;
 pub mod perf;
 pub mod role;
 pub mod system_theme;

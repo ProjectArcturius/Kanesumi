@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="ether_composition_v1">
+  <copyright>
+    Copyright 2026 Project Arcturius. Ether private protocol.
+  </copyright>
+
+  <description summary="compositor-side visuals and animations">
+    Lets a client hand a surface (a layer-shell surface or one of its subsurfaces) to the
+    compositor as a "visual" whose offset and opacity the compositor can animate on its own
+    clock. While an animation runs the client does not need to commit or redraw: the
+    compositor re-composites the already submitted buffers every frame. This is the
+    DirectComposition-style split: clients provide content once, the compositor owns motion.
+    See Ether docs/GPU_COMPOSITION_PLAN.md (G3).
+  </description>
+
+  <interface name="ether_composition_manager_v1" version="1">
+    <description summary="creates visuals for surfaces"/>
+
+    <request name="destroy" type="destructor"/>
+
+    <request name="get_visual">
+      <description summary="create a visual for a surface">
+        At most one visual may exist per surface; a second get_visual for the same surface
+        raises the visual_exists error.
+      </description>
+      <arg name="id" type="new_id" interface="ether_visual_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <enum name="error">
+      <entry name="visual_exists" value="0" summary="the surface already has a visual"/>
+    </enum>
+  </interface>
+
+  <interface name="ether_visual_v1" version="1">
+    <description summary="compositor-animated offset and opacity of a surface subtree">
+      All requests are double-buffered and applied on the next wl_surface.commit of the
+      associated surface (following subsurface synchronization rules). Offset and opacity are
+      purely visual: input hit-testing keeps using the surface's real position. Offsets are
+      in surface-local logical coordinates and accumulate down the subsurface tree; opacities
+      multiply down the tree.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="drop the visual; the surface returns to offset 0 and opacity 1"/>
+    </request>
+
+    <request name="set_offset">
+      <description summary="set the visual offset immediately (cancels a running animation)"/>
+      <arg name="x" type="fixed"/>
+      <arg name="y" type="fixed"/>
+    </request>
+
+    <request name="set_opacity">
+      <description summary="set the opacity immediately (cancels a running animation)"/>
+      <arg name="opacity" type="fixed" summary="0..1"/>
+    </request>
+
+    <request name="animate">
+      <description summary="animate offset and opacity from their presented values">
+        Starts from the currently presented offset and opacity (so a new animate continues
+        smoothly from wherever a previous one was interrupted; the interrupted one receives
+        the cancelled event). Timing starts at the first frame in which the commit is applied,
+        plus delay_ms. Progress follows the cubic Bezier (x1, y1, x2, y2) over duration_ms.
+      </description>
+      <arg name="serial" type="uint" summary="client-chosen id echoed in done / cancelled"/>
+      <arg name="duration_ms" type="uint"/>
+      <arg name="delay_ms" type="uint"/>
+      <arg name="x1" type="fixed"/>
+      <arg name="y1" type="fixed"/>
+      <arg name="x2" type="fixed"/>
+      <arg name="y2" type="fixed"/>
+      <arg name="to_x" type="fixed"/>
+      <arg name="to_y" type="fixed"/>
+      <arg name="to_opacity" type="fixed"/>
+    </request>
+
+    <event name="done">
+      <description summary="the animation with this serial reached its end values"/>
+      <arg name="serial" type="uint"/>
+    </event>
+
+    <event name="cancelled">
+      <description summary="the animation with this serial was replaced or cancelled"/>
+      <arg name="serial" type="uint"/>
+    </event>
+  </interface>
+</protocol>
