@@ -13,7 +13,9 @@
 `App trait`：应用只描述**状态与绘制命令**，外壳负责 Wayland 连接、输入、
 逐帧驱动与渲染。
 
-一个 Kanesumi 应用 = 一个实现 `App` trait 的 Rust 结构体 + 一行 `platform::run(app)`。
+一个 Kanesumi 应用 = 一个实现 **`TreeApp`** 的 Rust 结构体 + 一个 `TreeHost`。
+新应用与迁移应用**一律走元素树**（§二，推荐写法）；旧手写几何的 `App` 接口仅维护存量
+（见文末「附：旧 App 接口」）。
 
 ```
 ┌──────────────────────── 应用层（你的代码）────────────────────────┐
@@ -32,52 +34,245 @@
 
 ---
 
-## 二、快速上手：三分钟写一个应用
+## 二、元素树应用（推荐写法）
+
+Ether 已规定**新应用 / 迁移应用一律走元素树**（参 Ether `docs/SYSTEM_APPS_PLAN.md` §Ⅰ）。
+元素树是框架持有的保留树：应用只建树、挂控件、响应动作；命中 / 焦点 / 悬停 / 损伤 / IME
+上下文全部由树负责。参照实现（先读这三个，照抄结构）：
+`kanesumi-gallery/examples/tree_minimal.rs`（最小）、`tree_demo.rs`（表单 + 弹层对话）、
+`virtual_list.rs`（虚拟化长列表）。
+
+### 2.1 最小 TreeApp
+
+下面这段与 `kanesumi-gallery/examples/tree_minimal.rs` 的 `TreeApp` 实现逐行同源：
 
 ```rust
-// app.rs —— 最小 Kanesumi 应用
-use kanesumi_canvas::text::TextEngine;
-use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::{Color, MetroTheme, Rect};
-use kanesumi_harness::app::{App, AppConfig, InputEvent};
-use kanesumi_harness::role::EtherRole;
+use kanesumi_controls::{ButtonClicked, MetroButton};
+use kanesumi_core::{MetroTheme, ThemeColor};
+use kanesumi_harness::element::widgets::{Border, Label, Stack};
+use kanesumi_harness::element::{Action, Insets, Tree, WidgetId};
+use kanesumi_harness::{AppConfig, EtherRole, TreeApp};
 
-const CONFIG: AppConfig = AppConfig::new(
-    "org.ether.hello",      // app_id：合成器按此应用策略（桌面/Layer2/层位）
-    "Hello Kanesumi",
-    EtherRole::Browser,     // 角色决定表面类型与层策略
-    480.0, 320.0,
-);
-
-struct HelloApp { theme: MetroTheme }
-
-impl App for HelloApp {
-    fn config(&self) -> &AppConfig { &CONFIG }
-    fn theme(&self) -> MetroTheme { self.theme }
-
-    fn handle_input(&mut self, _event: InputEvent) {
-        // 指针/键盘事件（Moved/Pressed/Released/Scroll/DoubleClick/Key…）
-    }
-
-    fn render(&mut self, engine: &TextEngine, size: kanesumi_core::Size) -> Scene {
-        let mut scene = Scene::default();
-        scene.fill_rect(self.theme.colors.background, Rect::new(0.0, 0.0, size.width, size.height));
-        scene.text("你好，Kanesumi".to_string(),
-            Rect::new(40.0, 40.0, 400.0, 30.0),
-            self.theme.colors.on_surface, self.theme.typography.title,
-            TextAlign::Left);
-        scene
-    }
+struct Counter {
+    config: AppConfig,
+    theme: MetroTheme,
+    value: u32,
+    label: Option<WidgetId>,
 }
 
-pub fn run() -> ! {
-    let app = Box::leak(Box::new(HelloApp { theme: MetroTheme::ether_dark() }));
-    kanesumi_harness::platform::run(app)
+impl TreeApp for Counter {
+    fn config(&self) -> &AppConfig {
+        &self.config
+    }
+
+    fn theme(&self) -> MetroTheme {
+        self.theme
+    }
+
+    fn build(&mut self, tree: &mut Tree) {
+        let page = tree.insert(
+            tree.root(),
+            Border::new()
+                .background(ThemeColor::Background)
+                .padding(Insets::all(24.0)),
+        );
+        let col = tree.insert(page, Stack::column().with_spacing(12.0));
+        tree.insert(
+            col,
+            Label::new("最小元素树应用").style(self.theme.typography.title),
+        );
+        self.label = Some(tree.insert(
+            col,
+            Label::new(format!("计数：{}", self.value)).color(ThemeColor::OnSurfaceVariant),
+        ));
+        tree.insert(col, MetroButton::accent("加一"));
+    }
+
+    fn on_action(&mut self, tree: &mut Tree, _from: WidgetId, action: Action) {
+        if action.is::<ButtonClicked>() {
+            self.value += 1;
+            if let Some(id) = self.label {
+                tree.edit::<Label, _>(id, |l, _| l.text = format!("计数：{}", self.value));
+            }
+        }
+    }
 }
 ```
 
-运行：`cargo run -p <your-app>`（Ether 会话内），或在任意支持 layer-shell 的合成器
-（Plasma）上日常调试。
+外壳接线（完整含 `--snapshot` 见示例文件）：
+
+```rust
+fn main() {
+    let app = Counter { /* config / theme / value / label，见示例构造 */ };
+    let host = kanesumi_harness::TreeHost::new(app);
+    kanesumi_harness::platform::run(Box::leak(Box::new(host)));
+}
+```
+
+运行：`cargo run -p kanesumi-gallery --example tree_minimal`（Ether 会话内任意支持
+xdg-shell 的合成器），或 `-- --snapshot out.png 1` 出 PNG。
+
+### 2.2 TreeApp 钩子职责
+
+| 钩子 | 何时用 |
+|---|---|
+| `config()` | 必填：返回 `AppConfig`（app_id / 标题 / 角色 / 逻辑尺寸）。 |
+| `theme()` | 初始主题（默认 `MetroTheme::ether_dark()`）。之后系统主题由 `TreeHost` 直接推给树。 |
+| `build(tree)` | 启动时建树一次：把页面挂到 `tree.root()` 下。 |
+| `on_action(tree, from, action)` | 控件动作回调（`action.is::<T>()` / `downcast_ref`）；用 `tree.edit::<T>(id, ..)` 改控件。 |
+| `tick(tree, dt)` | 非控件状态（时钟 / 后台任务结果）每帧写回树。 |
+| `on_key(tree, key, mods)` | 应用级快捷键，**仅当没有任何控件**处理该键时到达（XAML `KeyboardAccelerator`）。 |
+| `on_theme(theme)` | 系统主题变更通知；树已自行重排重画，仅当 App 自持颜色时才需要处理。 |
+| `font_path()` | 指定字体路径（默认系统查找，不得静默回退）。 |
+| `app_menu()` / `on_menu_command()` | 全局应用菜单（§5.5）。 |
+| `floating_layers()` / `build_floating()` | 独立 layer 表面（Launcher / 面板），每层一棵独立树。 |
+
+**定时器与重绘**：控件在 `paint` / `event` 里经 `ctx.request_timer(secs)` 申请低频唤醒
+（光标闪烁、延时提示），`TreeHost` 驱动 `Tree::tick_timers`，等待期不占帧（`Tree::next_timer`
+供外壳安排唤醒）。`Widget::paint_after` 是控件绘制阶段，在本节点子内容之后追加命令
+（滚动条叠在内容上、焦点环等），由树统一拼接。动画经 `ctx.request_anim_frame()` 申请下帧，
+且只许 `invalidate_paint`（动画只动视觉属性）。参 `ELEMENT_TREE.md` §Ⅳ.1 / §Ⅴ.1。
+
+### 2.3 布局与容器
+
+- **`LayoutProps`**（框架级属性）：`margin / width / height / min / max / h_align / v_align /
+  grow / shrink / visible`。子矩形一律被框架夹紧进父槽位，「按钮飞出窗口」在结构上不可能
+  （参 `ELEMENT_TREE.md` §Ⅳ.2、§Ⅳ.3）。`grow` 只对 `Stack` 父有效（吃掉剩余主轴）。
+- **`Stack::row()` / `Stack::column()`**：唯一的一维布局容器，`with_spacing` 设间距。
+- **`MetroScrollView`**：放不下就有滚动。子节点以视口宽、无界高量测，框架的容器裁剪同时
+  约束绘制与命中（画不到、也点不到视口外的子节点）；滚轮与「焦点进入视口外后代时自动
+  bring-into-view」内建。
+
+  ```rust
+  let sv = tree.insert(col, MetroScrollView::default());
+  tree.insert(sv, Stack::column());   // 内容挂在滚动容器下
+  ```
+
+- **`ItemsRepeater`**：长列表虚拟化（Librarian 一个目录几千项、Launcher 全部应用几百项）。
+  容器在 `measure` 前经 `Widget::realize` 按有效视口向 `ItemFactory` 要行、回收离开视口的行——
+  **子节点是数据在视口内的投影，不是全量数据**（参 `ELEMENT_TREE.md` §Ⅳ-bis）。应用侧只需：
+
+  ```rust
+  let factory = SampleFactory { data };
+  tree.insert_with(
+      col,
+      ItemsRepeater::stack(56.0, factory),
+      LayoutProps { grow: 1.0, ..LayoutProps::default() },
+  );
+  ```
+
+  容器自己实现 realize 钩子；钩子签名如下（框架机制，应用一般不必直接实现）：
+
+  ```rust
+  pub trait Widget {
+      fn realize(&mut self, _ctx: &mut RealizeCtx) {}
+      fn wants_realize(&self) -> bool { false }
+  }
+  ```
+
+  完整示例见 `kanesumi-gallery/examples/virtual_list.rs`（一万行）。
+- **`Grid`**：等宽几何 `UniformGrid` 在 `kanesumi-structure::grid`；元素树 `Grid` 容器属 E4，
+  接入前用 `Stack` + `LayoutProps` 组合（参 `ELEMENT_TREE.md` §Ⅹ E4）。
+
+### 2.4 颜色只用 `ThemeColor` 令牌
+元素树页面**禁止写颜色字面量**：`Border::background` / `Label::color` 接受 `impl Into<Brush>`，
+主题色一律写 `ThemeColor::*`（`Brush` 在**绘制时**按当前主题解析，主题一换自然跟随）：
+
+```rust
+tree.insert(col, Label::new("标题").style(self.theme.typography.title));
+tree.insert(
+    col,
+    Label::new("副标题").color(ThemeColor::OnSurfaceVariant),
+);
+```
+
+只有真正不随主题变的颜色（品牌色、图片底板）才用字面量 `Color`。为什么：字面量会把
+「深 ↔ 浅、换 accent」切主题时的旧值冻进树里，出现「深字压深底」。参 `Brush` 文件头说明
+（`kanesumi-core/src/brush.rs`）。
+
+### 2.5 弹层（overlay / xdg_popup）
+
+下拉菜单、选择器浮层、TeachingTip、对话框都是**覆盖层**节点：`tree.open_popup` 把整棵子树挂到
+`overlay`（内容之后绘制、之前命中），位置按触发器 `rect` 用 `place_popup` 算；LightDismiss /
+模态由 `PopupSpec` 声明。关闭经 `tree.close_popup(id)`，锚点控件会收到 `PopupDismissed` 动作。
+
+```rust
+let panel = tree.open_popup(
+    Border::new()
+        .background(ThemeColor::Surface)
+        .stroke(ThemeColor::Divider, 1.0)
+        .padding(Insets::all(20.0)),
+    PopupSpec { modal: true, ..PopupSpec::default() },
+);
+// 在 panel 下挂内容；关闭：tree.close_popup(panel)
+```
+
+控件层 `MenuFlyout::open(ctx, items, keyboard)` / `open_at` 就是这样把菜单挂上覆盖层的
+（`kanesumi-controls/src/menu_flyout.rs`）。
+
+**顶栏 / Dock 上的菜单**（30px 矮表面放不下菜单）：由外壳在该表面之外开一个 `xdg_popup`
+（父 = layer 表面，经 `get_popup`）承载，点外部按合成器 `popup_done` 关闭。完整验收见
+`kanesumi-gallery/examples/popup_demo.rs`，协议细节参 Ether `docs/POPUP_PLAN.md`
+与 `ELEMENT_TREE.md` §Ⅴ.2。
+
+### 2.6 键盘
+
+外壳把 wl_keyboard 经 xkbcommon 语义化后的 keysym 映射为 `Key`（`platform::map_key`）。
+应用与控件匹配**语义键**，不再比原始码。全表：
+
+| `Key` | 来源 / 说明 |
+|---|---|
+| `Char(char)` | 可打印字符，含空格 `' '`、Shift 符号、小键盘。 |
+| `Enter` | Return / KP_Enter。 |
+| `Backspace` / `Delete` | 退格 / 删除。 |
+| `Escape` | Esc（弹层关闭也由框架处理）。 |
+| `Tab` | 框架级焦点遍历；控件**不要**消费（`ELEMENT_MIGRATION.md` §3）。 |
+| `Space` | 语义化空格（合成事件 / 无 IME 组字）；外壳对可打印空格仍投 `Char(' ')`，TextBox 与所有「Space 激活」控件按 `Char(' ')` 识别。 |
+| `Insert` | X11 `0xff63`。 |
+| `Home` / `End` | 行首 / 行尾。 |
+| `PageUp` / `PageDown` | 翻页（CalendarView 换月即用它）。 |
+| `Left` / `Right` / `Up` / `Down` | 方向键。 |
+| `F(1..=12)` | 功能键 F1..F12（重命名 F2 / 刷新 F5）；F13+ 落 `Unknown`。 |
+| `Unknown(u32)` | 未分类，透传原始 keysym。 |
+
+### 2.7 测试与验收
+
+控件与页面用 `kanesumi_element::testing::TestHarness` 做**无窗口**交互测试（注入指针 / 按键 /
+IME 提交，断言树状态与动作）：
+
+```rust
+use kanesumi_element::testing::TestHarness;
+
+let mut h = TestHarness::new(400.0, 300.0);
+let id = h.tree.insert_with(h.root(), MetroButton::new("确定"), /* LayoutProps */);
+h.frame();
+h.click(id);                       // 命中 / 按下 / 释放 / 出一帧
+assert!(h.take::<ButtonClicked>().iter().any(|(w, _)| *w == id));
+h.key(Key::F(5));                  // 语义键直接注入
+```
+
+视觉核对用 `kanesumi_harness::snapshot::render_png`（**跨平台**，不开窗，走真实 CPU
+光栅器，产 PNG）：
+
+```rust
+let (w, h) = kanesumi_harness::snapshot::render_png(
+    &mut host, &engine, Size::new(420.0, 300.0), 1.0 /* scale */, 3 /* frames */,
+    std::path::Path::new("out.png"),
+)?;
+```
+
+`tree_minimal.rs` / `tree_demo.rs` / `virtual_list.rs` 都带 `--snapshot` 子命令，照抄即可。
+
+### 2.8 禁止事项
+
+| 禁止 | 改用 |
+|---|---|
+| 手算 `Rect::new` 几何做命中测试 | 把控件挂进树，命中由框架按布局产物判定（`tree.hit` / 事件路由）。 |
+| 渲染期读指针坐标判悬停 | `ctx.state().hovered` / `Event::PointerEnter` / `PointerLeave`。 |
+| 写死颜色字面量 | `ThemeColor` 令牌（`Brush`），绘制时按当前主题解析。 |
+| 诊断写 `/tmp` 套接字 / tmpfs | 持久路径 `~/.local/state/`。 |
+| 每帧重建整棵树 / 重算布局 | `build` 建树一次，动作里 `tree.edit` 改状态；布局只算脏子树。 |
+| 控件消费 `Key::Tab` / `Key::Escape` | 留给框架焦点遍历与弹层关闭。 |
 
 ---
 
@@ -154,6 +349,9 @@ pub fn hit_test(&self, rect: Rect, pos: Point) -> bool;   // 或 track/thumb 命
 
 ### 3.7 声明式 DSL + 增量渲染（kanesumi-controls/decl.rs + retained.rs）
 
+> 这是元素树之前的声明式层（`Decl` + `RetainedScene`），仅存量 gallery 页面在用；
+> **新应用改用元素树**（§二），它的逐节点命令缓存已覆盖同样的增量渲染目标。
+
 - `view!` 宏：Rust 声明式语法糖 → `Decl` 元素树（编译期检查）。
 - `render_decl`：元素树 → 布局展开 → 现有控件渲染 → `Scene` + 命中表 `DeclHit`。
 - `diff_decl`：两帧树按路径 diff → `DeclChange`；`RetainedScene` 据此只重建变化
@@ -212,7 +410,8 @@ kanesumi-core        （无依赖）tokens/主题/MetroText/指示/几何原语
 
 - `InputEvent`：`PointerMoved/Pressed/Released/Left`、`Scroll{x,y}`、
   `DoubleClick`（250ms/5px）、`Key`/`Modifiers`。
-- 命中测试由**应用**负责（控件 `hit_test` + 消费布局产物）；外壳只转发事件。
+- 命中测试：元素树应用由**树**按布局产物判定（§二）；旧 `App` 才由应用自己
+  `hit_test`（控件 + 消费布局产物）。外壳只转发事件。
 - 文本输入：`key_to_text_input` 把键盘事件映射为 `TextInputKey`（Backspace/Enter/
   方向键等），TextBox/PasswordBox 消费。
 
@@ -308,6 +507,70 @@ set_address + 点击路由（`on_menu_command`）。独立 crate `kanesumi-appme
 5. **无隐藏控件**——reconciler 逻辑组件不产生额外原生控件。
 6. **纯色无渐变**——直角或极轻微圆角；`Capsule` 仅限全圆角形态（Switch 轨道等）。
 7. **字体不得静默回退**、**单一渲染权威**、**进度驱动不时间轴**。
+
+---
+
+## 附：旧 App 接口（仅维护存量）
+
+> 旧手写几何的 `App` trait：应用自己算坐标、自己做命中、自己 `render` 出 `Scene`。
+> **新代码不要用**；存量应用迁移到 §二 的元素树。保留的原因：`TreeHost` 正是把 `TreeApp`
+> 接成这个 `App` 接口，故外壳主循环零改动、新旧应用可并存。
+
+```rust
+// 最小旧式 Kanesumi 应用（仅存量维护参考）
+use kanesumi_canvas::text::TextEngine;
+use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::{MetroTheme, Rect};
+use kanesumi_harness::app::{App, AppConfig, InputEvent};
+use kanesumi_harness::role::EtherRole;
+
+const CONFIG: AppConfig = AppConfig::new(
+    "org.ether.hello",      // app_id：合成器按此应用策略（桌面/Layer2/层位）
+    "Hello Kanesumi",
+    EtherRole::Browser,     // 角色决定表面类型与层策略
+    480.0, 320.0,
+);
+
+struct HelloApp { theme: MetroTheme }
+
+impl App for HelloApp {
+    fn config(&self) -> &AppConfig { &CONFIG }
+    fn theme(&self) -> MetroTheme { self.theme }
+
+    fn handle_input(&mut self, _event: InputEvent) {
+        // 指针/键盘事件（Moved/Pressed/Released/Scroll/DoubleClick/Key…）
+    }
+
+    fn render(&mut self, engine: &TextEngine, size: kanesumi_core::Size) -> Scene {
+        let mut scene = Scene::default();
+        scene.fill_rect(self.theme.colors.background, Rect::new(0.0, 0.0, size.width, size.height));
+        scene.text("你好，Kanesumi".to_string(),
+            Rect::new(40.0, 40.0, 400.0, 30.0),
+            self.theme.colors.on_surface, self.theme.typography.title,
+            TextAlign::Left);
+        scene
+    }
+}
+
+pub fn run() -> ! {
+    let app = Box::leak(Box::new(HelloApp { theme: MetroTheme::ether_dark() }));
+    kanesumi_harness::platform::run(app)
+}
+```
+
+新旧对照：
+
+| 关注点 | 旧 `App` 接口 | 元素树（§二）|
+|---|---|---|
+| 布局 | 应用手算矩形 | `LayoutProps` + `Stack` |
+| 命中 | 应用 `hit_test` | 框架按布局产物 |
+| 焦点 | `FocusRing` / 手动登记 | 树序派生 |
+| 输入 | `handle_input` 自行分派 | `on_action` 动作回调 |
+| 损伤 | 应用 `damage_hint` | 树自动产出 |
+| 渲染 | `render` 每帧产 `Scene` | 树逐节点缓存 + 拼接 |
+
+控件仍可以 `render(theme, engine, rect, scene)` / `hit_test` 直驱（参 §3.6）；
+`InputEvent` / `Key` / `Modifiers` 由 `kanesumi_harness::app` 重导出。
 
 ---
 
