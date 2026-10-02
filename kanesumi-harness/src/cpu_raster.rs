@@ -244,13 +244,17 @@ impl CpuRenderer {
             None => self.buf.fill(0),
         }
         // 命令裁剪：全量 → 原样；局部 → 与 damage 求交（None 栈顶 = 视口即 damage）。
-        let clip_through_damage = |clip: Option<Rect>| -> Option<Rect> {
-            match damage {
-                Some(d) => match clip {
-                    Some(c) => intersect_logical(c, d),
-                    None => Some(d),
-                },
-                None => clip,
+        // 返回三态：None = 本命令完全被裁掉（跳过）；Some(None) = 不裁剪；Some(Some(r)) = 裁到 r。
+        // ⚠ 曾用两态 Option<Rect>：「裁剪 ∩ damage = 空」与「无裁剪」都表示成 None，
+        //   被裁掉的命令于是不受裁剪地整幅重画，盖掉 damage 外保留的上帧内容（k-tooltip 报告）。
+        let resolve_clip = |stack: &[Option<Rect>]| -> Option<Option<Rect>> {
+            if is_fully_clipped(stack) {
+                return None;
+            }
+            match (damage, effective_clip(stack)) {
+                (Some(d), Some(c)) => intersect_logical(c, d).map(Some),
+                (Some(d), None) => Some(Some(d)),
+                (None, c) => Some(c),
             }
         };
         let mut clip_stack: Vec<Option<Rect>> = Vec::new();
@@ -270,40 +274,39 @@ impl CpuRenderer {
                     }
                 }
                 SceneCommand::FillRect { color, rect, corner_radius } => {
-                    let clip = clip_through_damage(effective_clip(&clip_stack));
-                    if is_fully_clipped(&clip_stack) {
+                    let Some(clip) = resolve_clip(&clip_stack) else {
                         continue;
-                    }
+                    };
                     self.fill_rect(*rect, *corner_radius, *color, clip);
                 }
                 SceneCommand::StrokeRect { color, rect, thickness, corner_radius } => {
-                    if is_fully_clipped(&clip_stack) {
+                    let Some(clip) = resolve_clip(&clip_stack) else {
                         continue;
-                    }
+                    };
                     self.fill_triangles(
                         triangulate_stroke(*rect, *corner_radius, *thickness),
                         *color,
-                        clip_through_damage(effective_clip(&clip_stack)),
+                        clip,
                     );
                 }
                 SceneCommand::Arc { center, radius, thickness, color, start_deg, end_deg } => {
-                    if is_fully_clipped(&clip_stack) {
+                    let Some(clip) = resolve_clip(&clip_stack) else {
                         continue;
-                    }
+                    };
                     self.fill_triangles(
                         triangulate_arc(*center, *radius, *thickness, *start_deg, *end_deg),
                         *color,
-                        clip_through_damage(effective_clip(&clip_stack)),
+                        clip,
                     );
                 }
                 SceneCommand::Triangle { p0, p1, p2, color } => {
-                    if is_fully_clipped(&clip_stack) {
+                    let Some(clip) = resolve_clip(&clip_stack) else {
                         continue;
-                    }
+                    };
                     self.fill_triangles(
                         vec![Triangle::new(*p0, *p1, *p2)],
                         *color,
-                        clip_through_damage(effective_clip(&clip_stack)),
+                        clip,
                     );
                 }
                 SceneCommand::Text {
@@ -317,7 +320,10 @@ impl CpuRenderer {
                     overflow,
                 } => {
                     let Some(engine) = engine else { continue };
-                    if is_fully_clipped(&clip_stack) || rect.is_empty() {
+                    let Some(clip) = resolve_clip(&clip_stack) else {
+                        continue;
+                    };
+                    if rect.is_empty() {
                         continue;
                     }
                     // 文字裁剪 = (有效裁剪 ∩ damage) ∩ rect。None = 无裁剪上下文
@@ -325,7 +331,7 @@ impl CpuRenderer {
                     // 语义，参 render.rs emit_text）——⚠ 曾把 None 当「不相交」跳过：
                     // 全量帧无 clip 文本永不绘制，仅局部 damage 帧与损坏区相交才显示
                     // （静止时中文全部缺失、悬停一闪即出，S4 回归）。
-                    let text_clip = match clip_through_damage(effective_clip(&clip_stack)) {
+                    let text_clip = match clip {
                         Some(parent) => intersect_logical(parent, *rect),
                         None => intersect_logical(Rect::new(0.0, 0.0, self.lw, self.lh), *rect),
                     };
@@ -336,9 +342,9 @@ impl CpuRenderer {
                     );
                 }
                 SceneCommand::Image { rgba, width, height, rect, tint, opacity } => {
-                    if is_fully_clipped(&clip_stack) {
+                    let Some(clip) = resolve_clip(&clip_stack) else {
                         continue;
-                    }
+                    };
                     self.emit_image(
                         rgba.as_ref(),
                         *width,
@@ -346,7 +352,7 @@ impl CpuRenderer {
                         *rect,
                         *tint,
                         *opacity,
-                        clip_through_damage(effective_clip(&clip_stack)),
+                        clip,
                     );
                 }
             }
@@ -1189,6 +1195,23 @@ mod tests {
         assert!(px_at(&r, 0, 0)[3] < 255);
         assert_eq!(px_at(&r, 5, 5), [255, 255, 255, 255]);
         let _ = scene;
+    }
+
+    #[test]
+    fn clip_disjoint_from_damage_draws_nothing() {
+        // 回归：局部帧里裁剪矩形与 damage 不相交 → 命令完全跳过，damage 外的上帧内容保留。
+        let mut r = CpuRenderer::new(8.0, 8.0, 1.0);
+        let mut base = Scene::default();
+        base.fill_rect(Color::new(1.0, 0.0, 0.0, 1.0), Rect::new(0.0, 0.0, 8.0, 8.0));
+        r.render_inner(None, &base, None);
+        let mut scene = Scene::default();
+        scene.push_clip(Rect::new(0.0, 0.0, 4.0, 4.0));
+        scene.fill_rect(Color::WHITE, Rect::new(0.0, 0.0, 8.0, 8.0));
+        scene.pop_clip();
+        // damage 在右下角，与裁剪（左上角）不相交。
+        r.render_inner(None, &scene, Some(Rect::new(6.0, 6.0, 2.0, 2.0)));
+        assert_eq!(px_at(&r, 1, 1), [255, 0, 0, 255], "damage 外保留上帧");
+        assert_eq!(px_at(&r, 7, 7), [0, 0, 0, 0], "damage 内清空且被裁命令不画");
     }
 
     #[test]
