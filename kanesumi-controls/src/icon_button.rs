@@ -5,6 +5,20 @@ use kanesumi_core::{MetroTheme, Rect, Size};
 
 use crate::state::ControlState;
 
+/// 图标按钮尺寸档（`Normal` = UWP AppBarButton 默认；`Compact` = 紧凑工具栏档）。
+///
+/// ⚠ `Compact` 的固有尺寸无一手源（UWP `AppBarButton` 紧凑模式取不到确切值），
+/// 取 32 / 40 并登记为临时项 T24（`docs/CANON_VS_TEMPORARY.md`）。默认 [`Normal`]，
+/// 现有外观不变。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IconButtonSize {
+    /// 默认：纯图标 48×48 / 带标签 68×56（`AppBarThemeMinHeight`）。
+    #[default]
+    Normal,
+    /// 紧凑：纯图标 32×32 / 带标签 40×40（临时值 T24）。
+    Compact,
+}
+
 /// MetroIconButton —— 图标按钮（AppBarButton 参考）。参 CONTROL_SPEC §2：
 /// - 68 宽 × 56 最小高；图标 16px 上置 + 标签 12px 下置；
 /// - 常态背景 Transparent；PointerOver 白 10%、Pressed 白 20%；
@@ -19,6 +33,8 @@ pub struct MetroIconButton {
     pub icon_tint: Option<kanesumi_core::Color>,
     /// 标签（可空 → 纯图标模式，48×48）。
     pub label: String,
+    /// 尺寸档（默认 `Normal`，现有外观不变）。
+    pub size: IconButtonSize,
     pub state: ControlState,
 }
 
@@ -29,6 +45,7 @@ impl MetroIconButton {
             icon_bitmap: None,
             icon_tint: None,
             label: String::new(),
+            size: IconButtonSize::Normal,
             state: ControlState::Normal,
         }
     }
@@ -39,6 +56,7 @@ impl MetroIconButton {
             icon_bitmap: None,
             icon_tint: None,
             label: label.into(),
+            size: IconButtonSize::Normal,
             state: ControlState::Normal,
         }
     }
@@ -55,8 +73,15 @@ impl MetroIconButton {
             icon_bitmap: Some(icon),
             icon_tint: None,
             label: label.into(),
+            size: IconButtonSize::Normal,
             state: ControlState::Normal,
         })
+    }
+
+    /// 设尺寸档（链式）。
+    pub fn with_size(mut self, size: IconButtonSize) -> Self {
+        self.size = size;
+        self
     }
 
     /// 设置 SVG 位图与染色。
@@ -69,12 +94,13 @@ impl MetroIconButton {
         self.state = state;
     }
 
-    /// 固有尺寸：带标签 68×56，纯图标 48×48。
+    /// 固有尺寸：常规带标签 68×56 / 纯图标 48×48；紧凑带标签 40×40 / 纯图标 32×32。
     pub fn measure(&self) -> Size {
-        if self.label.is_empty() {
-            Size::new(48.0, 48.0)
-        } else {
-            Size::new(68.0, 56.0)
+        match (self.size, self.label.is_empty()) {
+            (IconButtonSize::Normal, true) => Size::new(48.0, 48.0),
+            (IconButtonSize::Normal, false) => Size::new(68.0, 56.0),
+            (IconButtonSize::Compact, true) => Size::new(32.0, 32.0),
+            (IconButtonSize::Compact, false) => Size::new(40.0, 40.0),
         }
     }
 
@@ -123,10 +149,14 @@ impl MetroIconButton {
             );
             self.draw_icon(fg, icon_rect, scene);
         } else {
-            // 图标上置（16px），标签下置（12px）
+            // 图标上置（16px），标签下置（12px）；紧凑档收窄上下留白。
+            let (icon_top, label_bottom) = match self.size {
+                IconButtonSize::Normal => (12.0, 8.0),
+                IconButtonSize::Compact => (4.0, 4.0),
+            };
             let icon_rect = Rect::new(
                 rect.origin.x + (rect.size.width - 16.0) / 2.0,
-                rect.origin.y + 12.0,
+                rect.origin.y + icon_top,
                 16.0,
                 16.0,
             );
@@ -134,7 +164,7 @@ impl MetroIconButton {
             let label_style = label_style();
             let label_rect = Rect::new(
                 rect.origin.x + 2.0,
-                rect.origin.y + rect.size.height - 8.0 - label_style.line_height,
+                rect.origin.y + rect.size.height - label_bottom - label_style.line_height,
                 rect.size.width - 4.0,
                 label_style.line_height,
             );
@@ -269,6 +299,25 @@ mod tree_tests {
     }
 
     #[test]
+    fn compact_size_measures_and_passes_insurance_checks() {
+        let mut h = TestHarness::new(320.0, 200.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroIconButton::new("\u{E72D}").with_size(IconButtonSize::Compact),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        assert_eq!(h.rect(id).size, kanesumi_core::Size::new(32.0, 32.0));
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, Insets::ZERO);
+    }
+
+    #[test]
     fn tab_focuses() {
         let (mut h, id) = harness();
         h.tab();
@@ -314,6 +363,49 @@ mod tests {
             MetroIconButton::with_label("x", "Share").measure(),
             Size::new(68.0, 56.0)
         );
+        // 紧凑档（T24：32 / 40）；默认档不受影响。
+        assert_eq!(
+            MetroIconButton::new("x")
+                .with_size(IconButtonSize::Compact)
+                .measure(),
+            Size::new(32.0, 32.0)
+        );
+        assert_eq!(
+            MetroIconButton::with_label("x", "Share")
+                .with_size(IconButtonSize::Compact)
+                .measure(),
+            Size::new(40.0, 40.0)
+        );
+    }
+
+    #[test]
+    fn compact_renders_within_bounds() {
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
+        let btn =
+            MetroIconButton::with_label("\u{E72D}", "分享").with_size(IconButtonSize::Compact);
+        assert_eq!(btn.measure(), Size::new(40.0, 40.0));
+        let mut scene = Scene::default();
+        btn.render(
+            &theme,
+            &engine,
+            Rect::new(0.0, 0.0, 40.0, 40.0),
+            &mut scene,
+        );
+        let texts = scene
+            .commands
+            .iter()
+            .filter(|c| matches!(c, SceneCommand::Text { .. }))
+            .count();
+        assert_eq!(texts, 2, "图标 + 标签");
+        for cmd in &scene.commands {
+            if let SceneCommand::Text { rect: r, .. } = cmd {
+                assert!(
+                    r.origin.y >= -0.5 && r.origin.y + r.size.height <= 40.5,
+                    "紧凑档文本不得越出 rect：{r:?}"
+                );
+            }
+        }
     }
 
     #[test]
