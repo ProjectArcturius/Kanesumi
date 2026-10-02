@@ -644,7 +644,7 @@ impl kanesumi_element::Widget for MetroTextBox {
         let engine = ctx.engine();
         let content_w = engine
             .measure(&self.placeholder, style.size)
-            .max(engine.measure(&self.header, style.size));
+            .max(engine.measure_with_spacing_weighted(&self.header, style.size, style.letter_spacing_em, style.weight));
         let width = (content_w + 16.0 + TEXTBOX_DELETE_BUTTON_W).max(64.0);
         let header_h = if self.header.is_empty() {
             0.0

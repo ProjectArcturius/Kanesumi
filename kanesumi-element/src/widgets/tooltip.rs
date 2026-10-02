@@ -51,7 +51,13 @@ impl Widget for Tooltip {
         let style = tooltip_style();
         // 文本换行宽 = min(320 − 内边距, 可用宽 − 内边距)。
         let wrap = (available.width - PAD_L - PAD_R).clamp(1.0, MAX_WIDTH - PAD_L - PAD_R);
-        let lines = ctx.engine().layout(&self.text, style.size, wrap);
+        let lines = ctx.engine().layout_with_spacing_weighted(
+            &self.text,
+            style.size,
+            style.letter_spacing_em,
+            wrap,
+            style.weight,
+        );
         let text_w = lines.iter().map(|l| l.width).fold(0.0, f32::max);
         let text_w = text_w.min(wrap);
         Size::new(

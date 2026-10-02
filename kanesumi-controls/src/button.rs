@@ -45,8 +45,11 @@ impl MetroButton {
     }
 
     /// 固有尺寸：文本宽度 + 左右 8px 内边距（UWP `8,5,8,6`），高 = 行高 + 上下 5/6px。
+    /// 量测随声明字重（T7）：窄量测会让加粗标签画出量得的矩形。
     pub fn measure(&self, engine: &TextEngine, style: TextStyle) -> Size {
-        let width = engine.measure(&self.label, style.size) + 16.0;
+        let width =
+            engine.measure_with_spacing_weighted(&self.label, style.size, style.letter_spacing_em, style.weight)
+                + 16.0;
         let height = style.line_height + 11.0;
         Size::new(width, height)
     }

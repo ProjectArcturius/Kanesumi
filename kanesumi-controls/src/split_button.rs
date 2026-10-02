@@ -72,7 +72,10 @@ impl MetroSplitButton {
     /// 固有尺寸：标签 + Primary/Secondary 区。
     pub fn measure(&self, engine: &TextEngine, style: TextStyle) -> Size {
         let width =
-            engine.measure(&self.label, style.size) + 16.0 + SECONDARY_WIDTH + SEPARATOR_WIDTH;
+            engine.measure_with_spacing_weighted(&self.label, style.size, style.letter_spacing_em, style.weight)
+                + 16.0
+                + SECONDARY_WIDTH
+                + SEPARATOR_WIDTH;
         let height = style.line_height + 11.0;
         Size::new(width, height)
     }

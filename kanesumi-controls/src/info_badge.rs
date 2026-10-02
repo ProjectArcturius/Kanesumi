@@ -131,7 +131,12 @@ impl MetroInfoBadge {
         } else {
             (4.0, 4.0, 4.0)
         };
-        let text_w = engine.measure(&text, style.size);
+        let text_w = engine.measure_with_spacing_weighted(
+            &text,
+            style.size,
+            style.letter_spacing_em,
+            style.weight,
+        );
         let w = text_w + pad_x * 2.0;
         let h = style.line_height + pad_top + pad_bottom;
         Size::new(w, h)

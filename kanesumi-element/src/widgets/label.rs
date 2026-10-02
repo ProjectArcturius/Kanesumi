@@ -60,7 +60,10 @@ impl Label {
         if !self.wrap {
             return 1;
         }
-        let n = engine.layout(&self.text, style.size, width).len().max(1);
+        let n = engine
+            .layout_with_spacing_weighted(&self.text, style.size, style.letter_spacing_em, width, style.weight)
+            .len()
+            .max(1);
         self.max_lines.map_or(n, |m| n.min(m.max(1)))
     }
 }
@@ -69,9 +72,22 @@ impl Widget for Label {
     fn measure(&mut self, ctx: &mut MeasureCtx, available: Size) -> Size {
         let style = self.style.unwrap_or(ctx.theme().typography.body);
         let engine = ctx.engine();
-        let natural = engine.measure_with_spacing(&self.text, style.size, style.letter_spacing_em);
+        // 量测与绘制必须同字面（T7）：字重影响字宽，窄量测会让绘制被省略号截断
+        // （2026-10-03 TopBar 应用名 "Librarian" → "Librar…" 实测）。
+        let natural = engine.measure_with_spacing_weighted(
+            &self.text,
+            style.size,
+            style.letter_spacing_em,
+            style.weight,
+        );
         let width = if self.wrap {
-            let lines = engine.layout(&self.text, style.size, available.width);
+            let lines = engine.layout_with_spacing_weighted(
+                &self.text,
+                style.size,
+                style.letter_spacing_em,
+                available.width,
+                style.weight,
+            );
             lines.iter().map(|l| l.width).fold(0.0, f32::max)
         } else {
             natural

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use ab_glyph_rasterizer::{Rasterizer, point};
+use kanesumi_core::typography::FontWeight;
 use rustybuzz::ttf_parser;
 use rustybuzz::{Direction, Face, UnicodeBuffer};
 use unicode_bidi::ParagraphBidiInfo;
@@ -27,6 +28,8 @@ pub struct TextLayoutOptions {
     pub max_lines: Option<usize>,
     pub wrap: bool,
     pub overflow: TextOverflow,
+    /// 字重：塑形与量测按它选字面（T7）。默认 Normal。
+    pub weight: FontWeight,
 }
 
 impl TextLayoutOptions {
@@ -39,6 +42,7 @@ impl TextLayoutOptions {
             max_lines: None,
             wrap: true,
             overflow: TextOverflow::Clip,
+            weight: FontWeight::Normal,
         }
     }
 }
@@ -176,11 +180,37 @@ impl std::fmt::Display for TextLoadError {
 
 impl std::error::Error for TextLoadError {}
 
+/// 字体来源：文件路径 + 可选 TTC 集合内语言标签（如 `"SC"`，按 name 表含该串选字面）。
+/// Noto CJK 的 TTC 每档字重含多语言字面，须选 SC（裁定 N-40）。
+#[derive(Debug, Clone)]
+pub struct FontSource {
+    pub path: PathBuf,
+    pub collection_tag: Option<&'static str>,
+}
+
+/// 在 TTC 集合里找族名（name ID 1 / 16）含 `tag` 的字面下标；非集合或未命中返回 None。
+/// 只匹配族名记录 —— 任意记录宽松匹配会在 JP 字面上误中（如版本串含 SC，2026-10-03 实测）。
+fn collection_index_matching(bytes: &[u8], tag: &str) -> Option<u32> {
+    let count = ttf_parser::fonts_in_collection(bytes).unwrap_or(1);
+    (0..count).find(|&i| {
+        ttf_parser::Face::parse(bytes, i).is_ok_and(|face| {
+            face.names().into_iter().any(|name| {
+                (name.name_id == 1 || name.name_id == 16)
+                    && name
+                        .to_string()
+                        .is_some_and(|text| text.to_ascii_uppercase().contains(tag))
+            })
+        })
+    })
+}
+
 #[derive(Clone)]
 struct FontFace {
     bytes: Arc<[u8]>,
     collection_index: u32,
     units_per_em: f32,
+    /// OS/2 `usWeightClass`（表缺失时 ttf_parser 回落 Regular=400）。字重选字面用（T7）。
+    weight: u16,
 }
 
 /// 字形度量（像素）。语义与原 fontdue `Metrics` 一致，外壳按它摆放位图：
@@ -195,6 +225,16 @@ pub struct GlyphMetrics {
 }
 
 impl FontFace {
+    /// 按 `FontSource` 加载：带 TTC 集合标签则选匹配字面，否则下标 0。
+    fn from_source(bytes: &[u8], src: &FontSource) -> Result<Self, TextLoadError> {
+        let bytes: Arc<[u8]> = Arc::from(bytes.to_vec());
+        let index = src
+            .collection_tag
+            .and_then(|tag| collection_index_matching(&bytes, tag))
+            .unwrap_or(0);
+        Self::from_bytes(bytes, index)
+    }
+
     /// 只校验、不预解析字形。
     ///
     /// 2026-09-30（KANESUMI_RUNTIME.md R1）：原先用 fontdue，加载时**预解析全部字形轮廓** ——
@@ -205,11 +245,13 @@ impl FontFace {
         let face = ttf_parser::Face::parse(&bytes, collection_index)
             .map_err(|_| TextLoadError::Parse("字体无法解析"))?;
         let units_per_em = f32::from(face.units_per_em().max(1));
+        let weight = face.weight().to_number();
         Face::from_slice(&bytes, collection_index).ok_or(TextLoadError::Parse("字体面无法塑形"))?;
         Ok(Self {
             bytes,
             collection_index,
             units_per_em,
+            weight,
         })
     }
 
@@ -224,6 +266,13 @@ impl FontFace {
 
     fn has_glyph(&self, c: char) -> bool {
         self.parser().glyph_index(c).is_some()
+    }
+
+    /// 字素（所有字符）是否都在本字面内。空白与缺省可忽略字符视为覆盖。
+    fn grapheme_covered(&self, grapheme: &str) -> bool {
+        grapheme
+            .chars()
+            .all(|c| is_default_ignorable(c) || c.is_whitespace() || self.has_glyph(c))
     }
 
     /// (ascent, descent)，像素；descent 为负。
@@ -348,16 +397,29 @@ impl ttf_parser::OutlineBuilder for OutlineSink {
     }
 }
 
-/// 塑形缓存键 —— 文本 + 字号 + 字距。运行期字体栈不变（加载期一次性），
+/// `FontWeight` → OS/2 `usWeightClass` 目标值（思源无 Semibold 字面，按 600 就重选 Bold）。
+fn weight_target(weight: FontWeight) -> u16 {
+    match weight {
+        FontWeight::Semilight => 350,
+        FontWeight::Normal => 400,
+        FontWeight::Medium => 500,
+        FontWeight::Semibold => 600,
+        FontWeight::Bold => 700,
+    }
+}
+
+/// 塑形缓存键 —— 文本 + 字号 + 字距 + 字重。运行期字体栈不变（加载期一次性），
 /// 故不含 `identity`；字体栈变化时 `load_with_fallbacks` 尚未被渲染消费，缓存为空。
 #[derive(Hash, Eq, PartialEq, Clone)]
 struct ShapeKey {
     text: String,
     size_bits: u32,
     spacing_bits: u32,
+    /// 请求字重（判别值即可，选字面在实算路径）。
+    weight: u8,
 }
 
-/// 排版缓存键 —— 覆盖 `layout_box` 全部输入（文本 + 字号 + 换行选项）。
+/// 排版缓存键 —— 覆盖 `layout_box` 全部输入（文本 + 字号 + 字重 + 换行选项）。
 /// 静态文本（时钟 / 应用名 / 菜单项）每帧重复 UAX #14 换行 + 逐段测量是仅次于
 /// 塑形与光栅化的 CPU 大头；命中直接返回缓存的 `Arc<TextLayout>`（参 egui GalleyCache）。
 #[derive(Hash, Eq, PartialEq, Clone)]
@@ -371,6 +433,7 @@ struct LayoutKey {
     max_lines: Option<usize>,
     wrap: bool,
     overflow: TextOverflow,
+    weight: u8,
 }
 
 /// 塑形/排版缓存容量上限。超出即整体清空 —— 纯加速缓存，命中与未命中结果等价，
@@ -418,9 +481,10 @@ impl TextEngine {
         let canonical_primary = primary
             .canonicalize()
             .unwrap_or_else(|_| primary.to_path_buf());
+        let mut seen = std::iter::once(canonical_primary).collect::<std::collections::HashSet<_>>();
         for path in fallbacks {
             let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
-            if canonical == canonical_primary || !path.exists() {
+            if !seen.insert(canonical) || !path.exists() {
                 continue;
             }
             let Ok(bytes) = std::fs::read(path) else {
@@ -433,6 +497,47 @@ impl TextEngine {
         }
         engine.refresh_identity();
         Ok(engine)
+    }
+
+    /// 加载字体栈（T7）：主字面 + 附加字面（字重变体 / 脚本回退）。
+    /// 每项可带 TTC 集合标签（如 `"SC"`，按 name 表选字面）；重复路径与缺失文件跳过。
+    pub fn load_stack(
+        primary: &FontSource,
+        extra: &[FontSource],
+    ) -> Result<Self, TextLoadError> {
+        let mut engine = Self::load_tagged(primary)?;
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(
+            primary
+                .path
+                .canonicalize()
+                .unwrap_or_else(|_| primary.path.clone()),
+        );
+        for src in extra {
+            let canonical = src.path.canonicalize().unwrap_or_else(|_| src.path.clone());
+            if !seen.insert(canonical) || !src.path.exists() {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&src.path) else {
+                continue;
+            };
+            if let Ok(face) = FontFace::from_source(&bytes, src) {
+                Arc::make_mut(&mut engine.fonts).push(face);
+            }
+        }
+        engine.refresh_identity();
+        Ok(engine)
+    }
+
+    fn load_tagged(src: &FontSource) -> Result<Self, TextLoadError> {
+        let bytes = std::fs::read(&src.path).map_err(TextLoadError::Io)?;
+        let face = FontFace::from_source(&bytes, src)?;
+        Ok(Self {
+            fonts: Arc::new(vec![face]),
+            identity: 0,
+            shape_cache: Arc::new(Mutex::new(HashMap::new())),
+            layout_cache: Arc::new(Mutex::new(HashMap::new())),
+        })
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, TextLoadError> {
@@ -472,17 +577,52 @@ impl TextEngine {
     fn font_for_grapheme(&self, grapheme: &str) -> usize {
         self.fonts
             .iter()
-            .position(|font| {
-                grapheme
-                    .chars()
-                    .all(|c| is_default_ignorable(c) || c.is_whitespace() || font.has_glyph(c))
-            })
+            .position(|font| font.grapheme_covered(grapheme))
+            .unwrap_or(0)
+    }
+
+    /// 按请求字重选字面下标（T7）：精确匹配 → 最近且不轻于 → 最近 → `fonts[0]`。
+    /// 请求字重的字面缺字时，调用方再走 `font_for_grapheme` 的覆盖回退。
+    fn face_for_weight(&self, weight: FontWeight) -> usize {
+        if self.fonts.len() <= 1 {
+            return 0;
+        }
+        let target = weight_target(weight);
+        let weights: Vec<u16> = self.fonts.iter().map(|f| f.weight).collect();
+        if let Some(i) = weights.iter().position(|&w| w == target) {
+            return i;
+        }
+        if let Some((i, _)) = weights
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| **w >= target)
+            .min_by_key(|(_, w)| **w)
+        {
+            return i;
+        }
+        weights
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| **w < target)
+            .max_by_key(|(_, w)| **w)
+            .map(|(i, _)| i)
             .unwrap_or(0)
     }
 
     /// 塑形一行，输出视觉顺序 glyph。BiDi run 由 UAX #9 决定，run 内由 rustybuzz 处理
-    /// 连字、组合附标、上下文形态与字偶距。
+    /// 连字、组合附标、上下文形态与字偶距。字重取 Normal。
     pub fn shape_line(&self, text: &str, size: f32, letter_spacing_em: f32) -> Vec<ShapedGlyph> {
+        self.shape_line_weighted(text, size, letter_spacing_em, FontWeight::Normal)
+    }
+
+    /// 同 `shape_line`，按请求字重选字面（T7）：字重字面缺字时回退覆盖链。
+    pub fn shape_line_weighted(
+        &self,
+        text: &str,
+        size: f32,
+        letter_spacing_em: f32,
+        weight: FontWeight,
+    ) -> Vec<ShapedGlyph> {
         if text.is_empty() || size <= 0.0 || !size.is_finite() {
             return Vec::new();
         }
@@ -492,10 +632,12 @@ impl TextEngine {
             text: text.to_string(),
             size_bits: size.to_bits(),
             spacing_bits: letter_spacing_em.to_bits(),
+            weight: weight as u8,
         };
         if let Some(hit) = self.shape_cache.lock().expect("塑形缓存锁中毒").get(&key) {
             return hit.as_ref().clone();
         }
+        let weight_face = self.face_for_weight(weight);
         let bidi = ParagraphBidiInfo::new(text, None);
         let (levels, runs) = bidi.visual_runs(0..text.len());
         let spacing = letter_spacing_em * size;
@@ -509,7 +651,12 @@ impl TextEngine {
             let run_text = &text[run.clone()];
             let mut font_runs = Vec::<(usize, usize, usize)>::new();
             for (local, grapheme) in run_text.grapheme_indices(true) {
-                let font_id = self.font_for_grapheme(grapheme);
+                // 优先请求字重的字面；缺字再走覆盖链（脚本回退 / 主字面）。
+                let font_id = if self.fonts[weight_face].grapheme_covered(grapheme) {
+                    weight_face
+                } else {
+                    self.font_for_grapheme(grapheme)
+                };
                 let start = run.start + local;
                 let end = start + grapheme.len();
                 match font_runs.last_mut() {
@@ -642,13 +789,24 @@ impl TextEngine {
         }
     }
 
-    /// 整段文本宽度（不换行，含 OpenType 塑形）。
+    /// 整段文本宽度（不换行，含 OpenType 塑形）。字重取 Normal。
     pub fn measure(&self, text: &str, size: f32) -> f32 {
         self.measure_with_spacing(text, size, 0.0)
     }
 
     pub fn measure_with_spacing(&self, text: &str, size: f32, letter_spacing_em: f32) -> f32 {
-        self.shape_line(text, size, letter_spacing_em)
+        self.measure_with_spacing_weighted(text, size, letter_spacing_em, FontWeight::Normal)
+    }
+
+    /// 同 `measure_with_spacing`，按请求字重选字面（T7）。
+    pub fn measure_with_spacing_weighted(
+        &self,
+        text: &str,
+        size: f32,
+        letter_spacing_em: f32,
+        weight: FontWeight,
+    ) -> f32 {
+        self.shape_line_weighted(text, size, letter_spacing_em, weight)
             .iter()
             .map(|glyph| glyph.x_advance)
             .sum::<f32>()
@@ -695,6 +853,18 @@ impl TextEngine {
         letter_spacing_em: f32,
         max_width: f32,
     ) -> Vec<Line> {
+        self.layout_with_spacing_weighted(text, size, letter_spacing_em, max_width, FontWeight::Normal)
+    }
+
+    /// 同 `layout_with_spacing`，按请求字重选字面（T7）。
+    pub fn layout_with_spacing_weighted(
+        &self,
+        text: &str,
+        size: f32,
+        letter_spacing_em: f32,
+        max_width: f32,
+        weight: FontWeight,
+    ) -> Vec<Line> {
         if text.is_empty() || max_width <= 0.0 || max_width.is_nan() {
             return Vec::new();
         }
@@ -715,7 +885,7 @@ impl TextEngine {
                 segment
             };
             let candidate = format!("{current}{segment}");
-            if self.measure_with_spacing(&candidate, size, letter_spacing_em)
+            if self.measure_with_spacing_weighted(&candidate, size, letter_spacing_em, weight)
                 <= max_width + FIT_EPSILON
             {
                 current.push_str(segment);
@@ -725,12 +895,13 @@ impl TextEngine {
                     size,
                     letter_spacing_em,
                     max_width,
+                    weight,
                     &mut lines,
                     &mut current,
                 );
             } else {
-                self.push_line(&mut lines, &mut current, size, letter_spacing_em);
-                if self.measure_with_spacing(segment, size, letter_spacing_em)
+                self.push_line(&mut lines, &mut current, size, letter_spacing_em, weight);
+                if self.measure_with_spacing_weighted(segment, size, letter_spacing_em, weight)
                     <= max_width + FIT_EPSILON
                 {
                     current.push_str(segment);
@@ -740,17 +911,18 @@ impl TextEngine {
                         size,
                         letter_spacing_em,
                         max_width,
+                        weight,
                         &mut lines,
                         &mut current,
                     );
                 }
             }
             if mandatory {
-                self.push_line(&mut lines, &mut current, size, letter_spacing_em);
+                self.push_line(&mut lines, &mut current, size, letter_spacing_em, weight);
             }
         }
         if !current.is_empty() {
-            self.push_line(&mut lines, &mut current, size, letter_spacing_em);
+            self.push_line(&mut lines, &mut current, size, letter_spacing_em, weight);
         }
         lines
     }
@@ -769,6 +941,7 @@ impl TextEngine {
             max_lines: options.max_lines,
             wrap: options.wrap,
             overflow: options.overflow,
+            weight: options.weight as u8,
         };
         if let Some(hit) = self.layout_cache.lock().expect("排版缓存锁中毒").get(&key) {
             return hit.clone();
@@ -784,15 +957,27 @@ impl TextEngine {
 
     /// `layout_box` 的实算路径（缓存 miss 时调用）。
     fn layout_box_uncached(&self, text: &str, size: f32, options: TextLayoutOptions) -> TextLayout {
+        let weight = options.weight;
         let line_height = options.line_height.max(0.0);
         let mut lines = if options.wrap {
-            self.layout_with_spacing(text, size, options.letter_spacing_em, options.max_width)
+            self.layout_with_spacing_weighted(
+                text,
+                size,
+                options.letter_spacing_em,
+                options.max_width,
+                weight,
+            )
         } else if text.is_empty() || options.max_width <= 0.0 {
             Vec::new()
         } else {
             vec![Line {
                 content: text.replace(['\n', '\r'], " "),
-                width: self.measure_with_spacing(text, size, options.letter_spacing_em),
+                width: self.measure_with_spacing_weighted(
+                    text,
+                    size,
+                    options.letter_spacing_em,
+                    weight,
+                ),
             }]
         };
         // 高度上限折算成行数。两条防「文字静默消失」的铁律（2026-09-22 溢出审计）：
@@ -816,7 +1001,13 @@ impl TextEngine {
             && options.overflow == TextOverflow::Ellipsis
             && (truncated || last.width > options.max_width + FIT_EPSILON)
         {
-            *last = self.ellipsize(last, size, options.letter_spacing_em, options.max_width);
+            *last = self.ellipsize(
+                last,
+                size,
+                options.letter_spacing_em,
+                options.max_width,
+                weight,
+            );
             truncated = true;
         }
         let width = lines
@@ -831,9 +1022,16 @@ impl TextEngine {
         }
     }
 
-    fn ellipsize(&self, line: &Line, size: f32, spacing: f32, max_width: f32) -> Line {
+    fn ellipsize(
+        &self,
+        line: &Line,
+        size: f32,
+        spacing: f32,
+        max_width: f32,
+        weight: FontWeight,
+    ) -> Line {
         let ellipsis = "…";
-        if self.measure_with_spacing(ellipsis, size, spacing) > max_width {
+        if self.measure_with_spacing_weighted(ellipsis, size, spacing, weight) > max_width {
             return Line {
                 content: String::new(),
                 width: 0.0,
@@ -842,7 +1040,7 @@ impl TextEngine {
         let mut graphemes: Vec<&str> = line.content.graphemes(true).collect();
         loop {
             let content = format!("{}{}", graphemes.concat().trim_end(), ellipsis);
-            let width = self.measure_with_spacing(&content, size, spacing);
+            let width = self.measure_with_spacing_weighted(&content, size, spacing, weight);
             if width <= max_width || graphemes.is_empty() {
                 return Line { content, width };
             }
@@ -850,31 +1048,41 @@ impl TextEngine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)] // 纯排版参数（字素 / 字号 / 字距 / 宽度 / 字重），拆结构体反而更绕。
     fn hard_break_graphemes(
         &self,
         segment: &str,
         size: f32,
         spacing: f32,
         max_width: f32,
+        weight: FontWeight,
         lines: &mut Vec<Line>,
         current: &mut String,
     ) {
         for grapheme in segment.graphemes(true) {
             let candidate = format!("{current}{grapheme}");
             if !current.is_empty()
-                && self.measure_with_spacing(&candidate, size, spacing) > max_width + FIT_EPSILON
+                && self.measure_with_spacing_weighted(&candidate, size, spacing, weight)
+                    > max_width + FIT_EPSILON
             {
-                self.push_line(lines, current, size, spacing);
+                self.push_line(lines, current, size, spacing, weight);
             }
             current.push_str(grapheme);
         }
     }
 
-    fn push_line(&self, lines: &mut Vec<Line>, current: &mut String, size: f32, spacing: f32) {
+    fn push_line(
+        &self,
+        lines: &mut Vec<Line>,
+        current: &mut String,
+        size: f32,
+        spacing: f32,
+        weight: FontWeight,
+    ) {
         let content = current.trim_end().to_string();
         if !content.is_empty() {
             lines.push(Line {
-                width: self.measure_with_spacing(&content, size, spacing),
+                width: self.measure_with_spacing_weighted(&content, size, spacing, weight),
                 content,
             });
         }
@@ -1083,4 +1291,59 @@ mod tests {
         let cloned = engine.clone();
         assert!(Arc::ptr_eq(&engine.fonts, &cloned.fonts));
     }
+/// T7 字重选择：精确 → 最近且不轻于 → 最近。用系统 Noto CJK TTC（与思源同源，
+/// Regular 400 / Medium 500 各一集合，SC 字面）；机器无 Noto CJK 时跳过。
+/// （reference/ 下的测试字体是 LFS 指针，瘦 checkout 无内容，不可依赖。）
+#[test]
+fn weight_selection_prefers_exact_then_nearest() {
+    use crate::text::FontSource;
+    let dir = std::path::PathBuf::from("/usr/share/fonts/noto-cjk");
+    let regular = dir.join("NotoSansCJK-Regular.ttc");
+    let medium = dir.join("NotoSansCJK-Medium.ttc");
+    if !regular.exists() || !medium.exists() {
+        return;
+    }
+    let engine = TextEngine::load_stack(
+        &FontSource { path: regular, collection_tag: Some("SC") },
+        &[FontSource { path: medium, collection_tag: Some("SC") }],
+    )
+    .unwrap();
+    let ids = |w: FontWeight| {
+        engine
+            .shape_line_weighted("以太 Ether", 16.0, 0.0, w)
+            .first()
+            .map(|g| g.font_id)
+            .unwrap()
+    };
+    assert_eq!(ids(FontWeight::Normal), 0, "Normal → 400 字面");
+    assert_eq!(ids(FontWeight::Semilight), 0, "Semilight(350) → 最近不轻于 400");
+    assert_eq!(ids(FontWeight::Medium), 1, "Medium(500) → 精确 500 字面");
+    assert_eq!(ids(FontWeight::Semibold), 1, "Semibold(600) 无 700 → 最近 500");
+    assert_eq!(ids(FontWeight::Bold), 1, "Bold(700) 无 700 → 最近 500");
+    // 塑形缓存按字重隔离：同文本同字号不同字重 → 不同字面来源。
+    assert_ne!(ids(FontWeight::Normal), ids(FontWeight::Medium));
+}
+
+/// TTC 集合按族名（name ID 1/16）选 SC 字面（N-40）。系统无 Noto CJK 时跳过。
+#[test]
+fn ttc_collection_selects_sc_face() {
+    let ttc = std::path::PathBuf::from("/usr/share/fonts/noto-cjk/NotoSansCJK-Medium.ttc");
+    if !ttc.exists() {
+        return;
+    }
+    let bytes = std::fs::read(&ttc).unwrap();
+    let idx = collection_index_matching(&bytes, "SC").expect("Noto TTC 应含 SC 族名字面");
+    let face = ttf_parser::Face::parse(&bytes, idx).unwrap();
+    let family = face
+        .names()
+        .into_iter()
+        .filter(|n| n.name_id == 1 || n.name_id == 16)
+        .find_map(|n| n.to_string())
+        .unwrap_or_default();
+    assert!(
+        family.to_ascii_uppercase().contains("CJK SC"),
+        "选中字面的族名应含 CJK SC，实际 {family}"
+    );
+    assert_eq!(face.weight().to_number(), 500, "Medium TTC 的 SC 字面应为 500");
+}
 }

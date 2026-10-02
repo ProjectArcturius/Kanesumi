@@ -256,7 +256,7 @@ impl MetroNavigationView {
         let label_w = if item.label.is_empty() {
             0.0
         } else {
-            engine.measure(&item.label, style.size)
+            engine.measure_with_spacing_weighted(&item.label, style.size, style.letter_spacing_em, style.weight)
         };
         let icon_w = if item.icon.is_some() {
             NAV_TOP_ICON_SLOT

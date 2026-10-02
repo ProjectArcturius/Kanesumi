@@ -102,7 +102,8 @@ impl MetroMenuBar {
             return 0.0;
         }
         let style = Self::header_style();
-        engine.measure(&self.items[index].label, style.size) + HEADER_PAD_X * 2.0
+        engine.measure_with_spacing_weighted(&self.items[index].label, style.size, style.letter_spacing_em, style.weight)
+            + HEADER_PAD_X * 2.0
     }
 
     /// 全部 header 累加总宽（不含 rect 起点）。

@@ -60,6 +60,8 @@ pub(crate) fn layout_text_glyphs(
     options.max_lines = max_lines;
     options.wrap = wrap;
     options.overflow = overflow;
+    // 字重随样式生效（T7）：排版与塑形同字面，字形缓存按 font_id 天然隔离。
+    options.weight = style.weight;
     let layout = engine.layout_box(content, style.size, options);
     let line_advance = style.line_height;
     let ascent_log = engine.ascent(size_phys) / scale;
@@ -76,7 +78,9 @@ pub(crate) fn layout_text_glyphs(
         };
         let baseline = line_y + ascent_log;
         let mut pen = x_log;
-        for glyph in engine.shape_line(&line.content, style.size, style.letter_spacing_em) {
+        for glyph in
+            engine.shape_line_weighted(&line.content, style.size, style.letter_spacing_em, style.weight)
+        {
             let key = glyph_key(engine.identity(), glyph.font_id, glyph.glyph_id, size_phys);
             let metrics = if let Some((m, _)) = glyph_bitmaps.get(&key) {
                 *m

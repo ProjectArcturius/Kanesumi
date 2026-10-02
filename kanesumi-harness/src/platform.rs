@@ -239,12 +239,20 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
     let role = EtherRole::from_env();
 
     // 字体：App 指定优先，否则环境变量 / 系统字体（SD §IX 禁止静默回退）。
-    let font_path = app
+    // 字体栈含字重字面（Light / Medium / Bold，T7）；TTC 集合选 SC 字面（N-40）。
+    let font_source = app
         .font_path()
-        .or_else(find_font)
+        .map(|p| kanesumi_canvas::text::FontSource {
+            path: p,
+            collection_tag: None,
+        })
+        .or_else(find_font_source)
         .ok_or_else(|| "未找到字体：设 KANESUMI_TEST_FONT 或提供 App::font_path()".to_string())?;
-    let engine = TextEngine::load_with_fallbacks(&font_path, fallback_fonts(&font_path))
-        .map_err(|e| format!("加载字体失败 {}：{e}", font_path.display()))?;
+    let engine = TextEngine::load_stack(
+        &font_source,
+        &extra_sources(&font_source.path),
+    )
+    .map_err(|e| format!("加载字体失败 {}：{e}", font_source.path.display()))?;
 
     let mut shell = Shell::new(app, engine, &conn, &globals, &qh, role)?;
     // 系统主题：读 Chorus 的 theme.toml 并推给 App（accent / scheme）。
@@ -301,51 +309,110 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
     Ok(())
 }
 
-/// 查找字体：KANESUMI_TEST_FONT → Ether 正体（思源黑体）→ CJK → 常见拉丁。
+/// TTC 集合内选 SC 字面的标签（Noto Sans CJK 每档字重含多语言字面；与思源黑体同源，裁定 N-40）。
+const SC_TAG: Option<&str> = Some("SC");
+
+/// 思源 SC OTF（在场优先）→ 系统 Noto CJK TTC（SC 字面）的某字重候选链。
+fn weight_candidates(weight: &str) -> Vec<kanesumi_canvas::text::FontSource> {
+    [
+        (
+            format!("/usr/local/share/fonts/s/SourceHanSansSC-{weight}.otf"),
+            None,
+        ),
+        (
+            format!("/usr/share/fonts/noto-cjk/NotoSansCJK-{weight}.ttc"),
+            SC_TAG,
+        ),
+        (
+            format!("/usr/share/fonts/opentype/noto/NotoSansCJK-{weight}.ttc"),
+            SC_TAG,
+        ),
+    ]
+    .into_iter()
+    .map(|(path, collection_tag)| kanesumi_canvas::text::FontSource {
+        path: std::path::PathBuf::from(path),
+        collection_tag,
+    })
+    .collect()
+}
+
+/// 查找字体来源：KANESUMI_TEST_FONT → Ether 正体（思源黑体 / Noto CJK SC）→ CJK → 常见拉丁。
 /// 中文/日文/韩文须 CJK 字体（DejaVu/Liberation 无 CJK 字形，会渲染为方框）。
-pub fn find_font() -> Option<std::path::PathBuf> {
+pub fn find_font_source() -> Option<kanesumi_canvas::text::FontSource> {
+    use kanesumi_canvas::text::FontSource;
     if let Ok(p) = std::env::var("KANESUMI_TEST_FONT") {
         let p = std::path::PathBuf::from(p);
         if p.exists() {
-            return Some(p);
+            return Some(FontSource { path: p, collection_tag: None });
         }
     }
-    for p in [
-        // Ether 正体字体：思源黑体 SC（合成器同款，SD §IX 唯一字体）。
-        "/usr/local/share/fonts/s/SourceHanSansSC-Regular.otf",
-        "/usr/local/share/fonts/s/SourceHanSansTC_Regular.otf",
-        "/usr/local/share/fonts/s/SourceHanSansSC_Bold.otf",
-        // 系统 CJK（含中文）。
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        // 回退：拉丁（无中文，仅保运行）。
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    ] {
-        let p = std::path::PathBuf::from(p);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    None
+    regular_candidates().into_iter().find(|s| s.path.exists())
 }
 
-fn fallback_fonts(primary: &std::path::Path) -> Vec<std::path::PathBuf> {
+fn regular_candidates() -> Vec<kanesumi_canvas::text::FontSource> {
     [
-        "/usr/local/share/fonts/s/SourceHanSansSC-Regular.otf",
-        "/usr/local/share/fonts/s/SourceHanSansTC_Regular.otf",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        // Ether 正体字体：思源黑体 SC（合成器同款，SD §IX 唯一字体）。
+        ("/usr/local/share/fonts/s/SourceHanSansSC-Regular.otf", None),
+        // 系统 Noto CJK（与思源黑体同源；TTC 集合须选 SC 字面，否则静默落到 JP）。
+        ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", SC_TAG),
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", SC_TAG),
+        // 旧部署遗留的 TC Regular（繁体字形，仅保运行）。
+        ("/usr/local/share/fonts/s/SourceHanSansTC_Regular.otf", None),
+        ("/usr/local/share/fonts/s/SourceHanSansSC_Bold.otf", None),
+        // 回退：拉丁（无中文，仅保运行）。
+        (
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            None,
+        ),
+        ("/usr/share/fonts/TTF/DejaVuSans.ttf", None),
+        (
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            None,
+        ),
+    ]
+    .into_iter()
+    .map(|(path, collection_tag)| kanesumi_canvas::text::FontSource {
+        path: std::path::PathBuf::from(path),
+        collection_tag,
+    })
+    .collect()
+}
+
+/// 主字面之外的附加字面：Light / Medium / Bold（T7 字重）+ 脚本回退（阿拉伯 / 希伯来 / 符号）。
+/// 缺整条候选链的字重记 warn（零交互诊断；该字重渲染时自动回落 Regular）。
+fn extra_sources(primary: &std::path::Path) -> Vec<kanesumi_canvas::text::FontSource> {
+    use kanesumi_canvas::text::FontSource;
+    let primary_canonical = primary.canonicalize().unwrap_or_else(|_| primary.to_path_buf());
+    let mut out = Vec::new();
+    for weight in ["Light", "Medium", "Bold"] {
+        let Some(src) = weight_candidates(weight).into_iter().find(|s| s.path.exists())
+        else {
+            log::warn!("字重 {weight} 字面缺失（思源 SC / Noto CJK 均不在场），该字重将渲染为 Regular");
+            continue;
+        };
+        out.push(src);
+    }
+    for path in [
         "/usr/share/fonts/noto/NotoSansArabic-Regular.ttf",
         "/usr/share/fonts/noto/NotoSansHebrew-Regular.ttf",
         "/usr/share/fonts/noto/NotoSansSymbols2-Regular.ttf",
         "/usr/share/fonts/TTF/NotoSansSymbols2-Regular.ttf",
         "/usr/share/fonts/TTF/DejaVuSans.ttf",
-    ]
-    .into_iter()
-    .map(std::path::PathBuf::from)
-    .filter(|path| path != primary && path.exists())
-    .collect()
+    ] {
+        let path = std::path::PathBuf::from(path);
+        if path.exists() {
+            out.push(FontSource { path, collection_tag: None });
+        }
+    }
+    out.retain(|s| {
+        s.path.canonicalize().unwrap_or_else(|_| s.path.clone()) != primary_canonical
+    });
+    out
+}
+
+/// 兼容包装：仅要主字面路径的调用方（ceyboard 等）。
+pub fn find_font() -> Option<std::path::PathBuf> {
+    find_font_source().map(|s| s.path)
 }
 
 /// 外壳状态：sctk 协议状态 + App + wgpu 渲染器。

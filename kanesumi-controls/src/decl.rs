@@ -211,7 +211,13 @@ impl LayoutLeaf for DeclLeaf {
                 MetroButton::new(label.clone()).measure(engine, *style)
             }
             DeclLeaf::Text { content, style } => {
-                let lines = engine.layout(content, style.size, available.width);
+                let lines = engine.layout_with_spacing_weighted(
+                    content,
+                    style.size,
+                    style.letter_spacing_em,
+                    available.width,
+                    style.weight,
+                );
                 let width = lines
                     .iter()
                     .map(|l| l.width)
