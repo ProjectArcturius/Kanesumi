@@ -18,6 +18,7 @@ use crate::props::{Align, LayoutProps};
 use crate::widget::{
     ArrangeCtx, ControlStates, EventCtx, MeasureCtx, PaintCtx, RealizeCtx, UpdateCtx, Widget,
 };
+use crate::widgets::{TOOLTIP_GAP, Tooltip};
 
 /// 控件发给 App 的动作（控件自定义类型，App downcast）。
 pub type Action = Box<dyn Any>;
@@ -62,6 +63,9 @@ pub struct PopupSpec {
     pub light_dismiss: bool,
     /// 在弹层之下、内容之上铺一层遮罩（主题 `overlay_color`）：对话框 / 需要压暗背景的面板。
     pub scrim: bool,
+    /// 输入穿透（工具提示）：框架不把它当作「顶层弹层」参与轻触关闭 / Esc / 焦点陷阱，
+    /// 落在它上面的点击继续投给下层内容。参见 `Tree::top_popup`。
+    pub passthrough: bool,
 }
 
 impl Default for PopupSpec {
@@ -75,6 +79,7 @@ impl Default for PopupSpec {
             modal: false,
             light_dismiss: true,
             scrim: false,
+            passthrough: false,
         }
     }
 }
@@ -119,6 +124,8 @@ struct Node {
     /// 上次绘制覆盖范围（空 = 从未绘制 / 已清除）。
     painted_bounds: Option<Rect>,
     state: ControlStates,
+    /// 挂在本节点上的工具提示文字（`Tree::set_tooltip`）。空 / `None` = 无提示。
+    tooltip: Option<String>,
 }
 
 impl Node {
@@ -143,6 +150,7 @@ impl Node {
             paint_after: Vec::new(),
             painted_bounds: None,
             state: ControlStates::default(),
+            tooltip: None,
         }
     }
 }
@@ -217,6 +225,18 @@ pub struct Tree {
     /// 按本帧 damage 剔除拼接（只拼与 damage 相交的节点）。**仅当消费方只重绘 damage 区**
     ///（CPU 局部光栅）才可开；整幅重画的消费方（wgpu 直出、快照）开了会丢内容。默认关。
     damage_cull: bool,
+
+    // ── 工具提示（`Tree::set_tooltip`；计时与挂载由框架负责）──────────────────
+    /// 已武装但尚未到期的提示目标（悬停 / 键盘焦点持有时累计延迟）。
+    tooltip_pending: Option<WidgetId>,
+    /// 距显示的剩余秒数（`tooltip_pending` 有效时）。
+    tooltip_delay: Option<f64>,
+    /// 正在显示的提示所锚定的元素（无提示显示时 None）。
+    tooltip_anchor: Option<WidgetId>,
+    /// 正在显示的提示弹层节点 id。
+    tooltip_popup: Option<WidgetId>,
+    /// 正在显示的提示距自动消失（5 s）的剩余秒数。
+    tooltip_hide: Option<f64>,
 }
 
 impl Tree {
@@ -252,6 +272,11 @@ impl Tree {
             pointer: None,
             popup_bounds: None,
             detached_popups: false,
+            tooltip_pending: None,
+            tooltip_delay: None,
+            tooltip_anchor: None,
+            tooltip_popup: None,
+            tooltip_hide: None,
         };
         tree.root = tree.alloc(Box::new(ZStack), None, LayoutProps::default());
         tree.overlay = tree.alloc(Box::new(OverlayRoot), None, LayoutProps::default());
@@ -402,6 +427,21 @@ impl Tree {
             self.nodes[slot] = None;
             self.gens[slot] = self.gens[slot].wrapping_add(1);
             self.free.push(slot);
+        }
+        // 提示目标 / 弹层随节点删除而失效：清状态并按需收起存活的提示弹层。
+        if self.tooltip_pending.is_some_and(|t| !self.contains(t)) {
+            self.tooltip_pending = None;
+            self.tooltip_delay = None;
+        }
+        if self.tooltip_popup.is_some_and(|p| !self.contains(p)) {
+            self.tooltip_popup = None;
+            self.tooltip_anchor = None;
+            self.tooltip_hide = None;
+        } else if self.tooltip_anchor.is_some_and(|a| !self.contains(a)) {
+            // 锚点已删而弹层尚在：收起弹层。
+            if let Some(p) = self.tooltip_popup.take() {
+                self.close_popup(p);
+            }
         }
         if let Some(p) = parent {
             if let Some(pn) = self.node_mut(p) {
@@ -709,7 +749,9 @@ impl Tree {
     }
 
     /// 推进定时器（外壳每次循环调用，含空闲兜底唤醒）。到期者转入动画 tick 并置脏。
+    /// 工具提示计时也在此推进（等待期不占帧，靠 `next_timer` 唤醒）。
     pub fn tick_timers(&mut self, dt: f64) {
+        self.tick_tooltip(dt);
         if self.timers.is_empty() {
             return;
         }
@@ -730,7 +772,15 @@ impl Tree {
 
     /// 最近一个定时器还剩多久（外壳可据此安排唤醒；无定时器为 None）。
     pub fn next_timer(&self) -> Option<f64> {
-        self.timers.iter().map(|(_, l)| *l).reduce(f64::min)
+        let widget = self.timers.iter().map(|(_, l)| *l).reduce(f64::min);
+        let tooltip = [self.tooltip_delay, self.tooltip_hide]
+            .into_iter()
+            .flatten()
+            .reduce(f64::min);
+        match (widget, tooltip) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     pub(crate) fn push_action(&mut self, from: WidgetId, action: Action) {
@@ -1269,7 +1319,9 @@ impl Tree {
         })
     }
 
-    fn update_hover(&mut self, pos: Option<Point>) {
+    /// 更新悬停链并刷新提示目标。`moved` = 指针位置较上次确有变化（提示要求指针静止
+    /// 满延迟，移动会重置计时）。
+    fn update_hover(&mut self, pos: Option<Point>, moved: bool) {
         let mut chain = pos
             .and_then(|p| self.hit(p))
             .map(|t| self.ancestors_inclusive(t))
@@ -1289,6 +1341,7 @@ impl Tree {
             }
         }
         self.hover_chain = chain;
+        self.refresh_tooltip(moved);
     }
 
     /// 最近一次指针位置（首次指针事件前为 None）。
@@ -1297,8 +1350,9 @@ impl Tree {
     }
 
     pub fn pointer_move(&mut self, pos: Point) {
+        let moved = self.pointer != Some(pos);
         self.pointer = Some(pos);
-        self.update_hover(Some(pos));
+        self.update_hover(Some(pos), moved);
         // 按下期间，「按下」外观跟随指针是否仍在交互目标上（UWP Button 移出即恢复）。
         if let Some(p) = self.press_target {
             let inside = self
@@ -1313,8 +1367,11 @@ impl Tree {
 
     pub fn pointer_down(&mut self, pos: Point, button: PointerButton, modifiers: Modifiers) {
         self.pointer = Some(pos);
+        // 按下即消失：提示在指针按下时立刻收起（正典 §Ⅲ，UWP 行为）。
+        self.hide_tooltip();
         // 覆盖层有弹层时：点在所有弹层之外 → LightDismiss（模态则只吞不关）。
-        if let Some(&(top, spec)) = self.popups.last() {
+        // 提示层是 passthrough 弹层，不参与顶层判定（否则会把点击吞掉）。
+        if let Some((top, spec)) = self.top_popup() {
             let inside = self.hit_rec(self.overlay, pos, None).is_some();
             if !inside {
                 if spec.light_dismiss && !spec.modal {
@@ -1386,12 +1443,12 @@ impl Tree {
                 self.deliver(p, &Event::Click);
             }
         }
-        self.update_hover(Some(pos));
+        self.update_hover(Some(pos), false);
     }
 
     pub fn pointer_leave(&mut self) {
         if self.captured.is_none() {
-            self.update_hover(None);
+            self.update_hover(None, false);
         }
     }
 
@@ -1403,6 +1460,8 @@ impl Tree {
 
     /// 键按下。返回是否被消费（未消费的键外壳可另作他用）。
     pub fn key_down(&mut self, key: Key, modifiers: Modifiers) -> bool {
+        // 键盘输入即收起提示（UWP：键盘交互优先于提示）。
+        self.hide_tooltip();
         let handled = match self.focus {
             Some(f) => self.deliver(f, &Event::KeyDown { key, modifiers }),
             None => false,
@@ -1413,7 +1472,7 @@ impl Tree {
         match key {
             Key::Tab => self.focus_next(modifiers.shift),
             Key::Escape => {
-                if let Some(&(top, spec)) = self.popups.last()
+                if let Some((top, spec)) = self.top_popup()
                     && spec.light_dismiss
                 {
                     self.dismiss_popup(top);
@@ -1556,6 +1615,7 @@ impl Tree {
                     self.set_state(id, |s| s.keyboard_focused = keyboard);
                     self.invalidate_paint(id);
                 }
+                self.refresh_tooltip(false);
             }
             return;
         }
@@ -1580,6 +1640,8 @@ impl Tree {
                 self.bring_into_view(n);
             }
         }
+        // 焦点变化会改变提示目标：指针悬停优先，其次键盘焦点（正典 §Ⅲ，UWP 行为）。
+        self.refresh_tooltip(false);
     }
 
     /// 请祖先滚动容器把 `id` 滚进视口（由近及远，嵌套滚动逐层处理）。
@@ -1610,9 +1672,9 @@ impl Tree {
 
     /// Tab 顺序：树先序中可聚焦的节点。顶层弹层为模态时限定在该弹层内（焦点陷阱）。
     pub fn focus_order(&self) -> Vec<WidgetId> {
-        let scope = match self.popups.last() {
-            Some(&(top, spec)) if spec.modal => vec![top],
-            Some(&(top, _)) => vec![top, self.root],
+        let scope = match self.top_popup() {
+            Some((top, spec)) if spec.modal => vec![top],
+            Some((top, _)) => vec![top, self.root],
             None => vec![self.root],
         };
         let mut out = Vec::new();
@@ -1682,6 +1744,12 @@ impl Tree {
     /// 关闭弹层。锚点收到 `Event::PopupClosed`；若焦点原在弹层内，交还锚点
     /// （XAML Flyout 关闭后焦点回到触发器，键盘用户不会「掉焦点」）。
     pub fn close_popup(&mut self, id: WidgetId) {
+        // 提示弹层被任意路径关闭：同步清掉提示状态，防止悬垂 id。
+        if self.tooltip_popup == Some(id) {
+            self.tooltip_popup = None;
+            self.tooltip_anchor = None;
+            self.tooltip_hide = None;
+        }
         let Some(pos) = self.popups.iter().position(|(p, _)| *p == id) else {
             return;
         };
@@ -1708,6 +1776,8 @@ impl Tree {
     /// 关闭全部可轻触关闭的弹层（表面失去键盘焦点时，避免「失焦残留」，
     /// 参 CONTEXT_MENU_SPEC §Ⅵ）。模态弹层保留。
     pub fn dismiss_popups(&mut self) {
+        // 表面失焦：提示一并收起（不随其他弹层的 light_dismiss 规则）。
+        self.hide_tooltip();
         let doomed: Vec<WidgetId> = self
             .popups
             .iter()
@@ -1721,6 +1791,189 @@ impl Tree {
 
     pub fn popups(&self) -> impl Iterator<Item = WidgetId> + '_ {
         self.popups.iter().map(|(p, _)| *p)
+    }
+
+    /// 最上层的**参与输入**的弹层（跳过提示这类 `passthrough` 弹层）。轻触关闭 / Esc /
+    /// 焦点陷阱 / Tab 范围都以它为准，提示因此不会吃掉点击或抢焦点。
+    fn top_popup(&self) -> Option<(WidgetId, PopupSpec)> {
+        self.popups
+            .iter()
+            .rev()
+            .find(|(_, s)| !s.passthrough)
+            .map(|(p, s)| (*p, *s))
+    }
+
+    // ── 工具提示（`set_tooltip`；计时 / 挂载由框架负责）──────────────────────
+
+    /// 给任意元素挂提示文字（空串 = 清除）。指针静止 / 键盘焦点停留满
+    /// `TOOLTIP_DELAY_MS` 后由框架在锚点下方（空间不足时上方）显示，再现延迟
+    /// `TOOLTIP_RESHOW_MS`、`TOOLTIP_HIDE_MS` 后自动消失，指针离开 / 按下即收起。
+    /// 提示不抢焦点、不吃输入（`PopupSpec::passthrough`）。参 INTERACTION_CANON §Ⅲ。
+    pub fn set_tooltip(&mut self, id: WidgetId, text: impl Into<String>) {
+        let text = text.into();
+        if let Some(n) = self.node_mut(id) {
+            if text.is_empty() {
+                n.tooltip = None;
+            } else {
+                n.tooltip = Some(text);
+            }
+        }
+        // 目标可能正在显示旧提示：立即按新文字刷新（重开弹层代价可接受，提示低频率）。
+        if self.tooltip_anchor == Some(id) {
+            self.hide_tooltip();
+        }
+        self.refresh_tooltip(false);
+    }
+
+    /// 清除某元素的提示文字。
+    pub fn clear_tooltip(&mut self, id: WidgetId) {
+        self.set_tooltip(id, String::new());
+    }
+
+    /// 某元素的提示文字。
+    pub fn tooltip_text(&self, id: WidgetId) -> Option<&str> {
+        self.node(id)?.tooltip.as_deref()
+    }
+
+    /// 正在显示的提示弹层节点 id（测试 / 外壳查询用）。
+    pub fn tooltip_popup(&self) -> Option<WidgetId> {
+        self.tooltip_popup
+    }
+
+    /// 提示文字非空且节点可见、未禁用 → 返回其文字。
+    fn has_tooltip(&self, id: WidgetId) -> bool {
+        self.node(id)
+            .and_then(|n| n.tooltip.as_deref())
+            .is_some_and(|t| !t.is_empty())
+            && self.effectively_visible(id)
+            && !self.effectively_disabled(id)
+    }
+
+    /// 当前提示目标：指针悬停链最深处有提示的节点优先，其次键盘焦点链（含自身）。
+    /// 模态弹层打开时不提示（提示画在覆盖层会盖住模态面板）。
+    fn tooltip_candidate(&self) -> Option<WidgetId> {
+        if self.popups.iter().any(|(_, s)| s.modal) {
+            return None;
+        }
+        if let Some(t) = self
+            .hover_chain
+            .iter()
+            .rev()
+            .find(|id| self.has_tooltip(**id))
+        {
+            return Some(*t);
+        }
+        let f = self.focus?;
+        self.ancestors_inclusive(f)
+            .into_iter()
+            .find(|id| self.has_tooltip(*id))
+    }
+
+    fn tooltip_delay_ms(reshow: bool) -> f64 {
+        let ms = if reshow {
+            kanesumi_core::interaction::TOOLTIP_RESHOW_MS
+        } else {
+            kanesumi_core::interaction::TOOLTIP_DELAY_MS
+        };
+        ms as f64 / 1000.0
+    }
+
+    fn arm_tooltip(&mut self, target: WidgetId, reshow: bool) {
+        self.tooltip_pending = Some(target);
+        self.tooltip_delay = Some(Self::tooltip_delay_ms(reshow));
+    }
+
+    /// 悬停 / 焦点变化后重算提示目标与计时。`moved` = 指针移动过（重置静止计时）。
+    fn refresh_tooltip(&mut self, moved: bool) {
+        // 指针按下期间不开始新提示（捕获中），避免「按下又冒出来」。
+        if self.captured.is_some() {
+            return;
+        }
+        let target = self.tooltip_candidate();
+        match (self.tooltip_anchor, target) {
+            (Some(a), Some(t)) if a == t => {}
+            // 已在显示、目标改变：收起旧提示，对相邻目标用再现延迟（100 ms）。
+            (Some(_), Some(t)) => {
+                self.hide_tooltip();
+                self.arm_tooltip(t, true);
+            }
+            (Some(_), None) => self.hide_tooltip(),
+            (None, Some(t)) => {
+                if self.tooltip_pending == Some(t) {
+                    if moved {
+                        // 指针又动了 —— 静止计时从头来（正典 §Ⅲ）。
+                        self.tooltip_delay = Some(Self::tooltip_delay_ms(false));
+                    }
+                } else {
+                    self.arm_tooltip(t, false);
+                }
+            }
+            (None, None) => {
+                self.tooltip_pending = None;
+                self.tooltip_delay = None;
+            }
+        }
+    }
+
+    /// 显示当前 `tooltip_pending` 的提示。计时到期时由 `tick_timers` 调用。
+    fn show_tooltip(&mut self) {
+        let Some(target) = self.tooltip_pending else {
+            return;
+        };
+        self.tooltip_pending = None;
+        self.tooltip_delay = None;
+        if !self.has_tooltip(target) {
+            return;
+        }
+        let text = self
+            .node(target)
+            .and_then(|n| n.tooltip.clone())
+            .unwrap_or_default();
+        // 顶栏 / Dock 等矮表面：外壳放大 `popup_bounds` 并开 xdg_popup，放置自动适用。
+        let spec = PopupSpec {
+            anchor: Some(target),
+            side: PopupSide::Bottom,
+            gap: TOOLTIP_GAP,
+            light_dismiss: false,
+            modal: false,
+            scrim: false,
+            passthrough: true,
+            ..PopupSpec::default()
+        };
+        let id = self.open_popup(Tooltip::new(text), spec);
+        self.tooltip_anchor = Some(target);
+        self.tooltip_popup = Some(id);
+        self.tooltip_hide = Some(kanesumi_core::interaction::TOOLTIP_HIDE_MS as f64 / 1000.0);
+    }
+
+    /// 立即收起提示（不影响其他弹层）。
+    fn hide_tooltip(&mut self) {
+        self.tooltip_pending = None;
+        self.tooltip_delay = None;
+        self.tooltip_hide = None;
+        self.tooltip_anchor = None;
+        if let Some(p) = self.tooltip_popup.take()
+            && self.contains(p)
+        {
+            self.close_popup(p);
+        }
+    }
+
+    /// 推进提示计时（与控件定时器一同在 `tick_timers` 里走，等待期不占帧）。
+    fn tick_tooltip(&mut self, dt: f64) {
+        if let Some(d) = self.tooltip_delay.as_mut() {
+            *d -= dt;
+            if *d <= 0.0 {
+                self.show_tooltip();
+            }
+            return;
+        }
+        if let Some(h) = self.tooltip_hide.as_mut() {
+            *h -= dt;
+            if *h <= 0.0 {
+                self.hide_tooltip();
+            }
+        }
     }
 
     pub(crate) fn popup_slot(&self, popup: WidgetId, desired: Size, bounds: Rect) -> Rect {
@@ -1935,5 +2188,129 @@ impl Widget for OverlayRoot {
     }
     fn clips_children(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tooltip_tests {
+    use super::*;
+    use crate::testing::TestHarness;
+
+    /// 可命中的最小目标（元素树测试不依赖 controls）。
+    struct HitBox;
+    impl Widget for HitBox {
+        fn measure(&mut self, _: &mut MeasureCtx, _: Size) -> Size {
+            Size::new(80.0, 24.0)
+        }
+        fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
+            scene.fill_rect(kanesumi_core::Color::WHITE, ctx.rect());
+        }
+        fn focusable(&self) -> bool {
+            true
+        }
+    }
+
+    fn harness() -> (TestHarness, WidgetId, WidgetId) {
+        let mut h = TestHarness::new(400.0, 300.0);
+        let start = LayoutProps {
+            h_align: Align::Start,
+            v_align: Align::Start,
+            margin: crate::props::Insets::new(20.0, 20.0, 0.0, 0.0),
+            ..LayoutProps::default()
+        };
+        let a = h.tree.insert_with(h.root(), HitBox, start);
+        let b = h.tree.insert_with(
+            h.root(),
+            HitBox,
+            LayoutProps {
+                margin: crate::props::Insets::new(20.0, 80.0, 0.0, 0.0),
+                ..start
+            },
+        );
+        h.tree.set_tooltip(a, "第一个提示");
+        h.tree.set_tooltip(b, "第二个提示");
+        h.frame();
+        (h, a, b)
+    }
+
+    #[test]
+    fn shows_after_delay_and_hides_after_five_seconds() {
+        let (mut h, a, _) = harness();
+        h.move_to(h.center(a));
+        assert!(h.tree.tooltip_popup().is_none(), "延迟未满不显示");
+        h.idle(0.3);
+        assert!(h.tree.tooltip_popup().is_none(), "0.3s 仍不显示");
+        h.idle(0.3);
+        let popup = h.tree.tooltip_popup().expect("满 500ms 应显示提示");
+        assert!(h.rect(popup).size.width > 0.0, "提示弹层已排版");
+        h.idle(6.0);
+        assert!(h.tree.tooltip_popup().is_none(), "5s 后自动消失");
+    }
+
+    #[test]
+    fn reshow_between_targets_uses_100ms() {
+        let (mut h, a, b) = harness();
+        h.move_to(h.center(a));
+        h.idle(0.6);
+        let first = h.tree.tooltip_popup().expect("首提示显示");
+        h.move_to(h.center(b));
+        assert!(h.tree.tooltip_popup().is_none(), "移动即收起旧提示");
+        h.idle(0.05);
+        assert!(h.tree.tooltip_popup().is_none(), "再现延迟未满不显示");
+        h.idle(0.1);
+        let second = h.tree.tooltip_popup().expect("再现延迟 100ms 后显示");
+        assert_ne!(first, second, "新的提示弹层");
+    }
+
+    #[test]
+    fn pointer_down_hides_immediately() {
+        let (mut h, a, _) = harness();
+        h.move_to(h.center(a));
+        h.idle(0.6);
+        assert!(h.tree.tooltip_popup().is_some());
+        h.press_at(h.center(a), PointerButton::Left);
+        assert!(h.tree.tooltip_popup().is_none(), "按下即消失");
+    }
+
+    #[test]
+    fn keyboard_focus_triggers_tooltip() {
+        let (mut h, a, _) = harness();
+        h.key(Key::Tab);
+        assert_eq!(h.tree.focused(), Some(a), "Tab 落到首个可聚焦目标");
+        assert!(h.tree.tooltip_popup().is_none());
+        h.idle(0.6);
+        assert!(h.tree.tooltip_popup().is_some(), "键盘焦点停留满延迟也显示");
+    }
+
+    #[test]
+    fn tooltip_paints_bubble_and_text() {
+        let (mut h, a, _) = harness();
+        h.move_to(h.center(a));
+        h.idle(0.6);
+        let popup = h.tree.tooltip_popup().unwrap();
+        let cmds = h.tree.painted(popup);
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, SceneCommand::FillRect { .. })),
+            "气泡底"
+        );
+        assert!(
+            cmds.iter().any(|c| matches!(c, SceneCommand::Text { .. })),
+            "提示文字"
+        );
+    }
+
+    #[test]
+    fn tooltip_passthrough_does_not_steal_focus_or_hit() {
+        let (mut h, a, _) = harness();
+        h.move_to(h.center(a));
+        h.idle(0.6);
+        let popup = h.tree.tooltip_popup().unwrap();
+        let spec = h.tree.popup_spec(popup).unwrap();
+        assert!(spec.passthrough, "提示弹层声明输入穿透");
+        assert!(!spec.light_dismiss, "提示不参与轻触关闭");
+        assert_eq!(h.tree.focused(), None, "提示不抢焦点");
+        // 提示显示中，命中仍落在锚点内容上而非提示弹层。
+        assert_eq!(h.tree.hit(h.center(a)), Some(a));
     }
 }
