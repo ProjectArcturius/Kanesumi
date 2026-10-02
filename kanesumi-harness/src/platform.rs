@@ -1365,6 +1365,19 @@ impl Shell {
                 }
             }
         } else {
+            // G0 实验开关（默认关）：layer-shell 主表面改走 wgpu 直出，取证 2026-08 的
+            // 「layer-shell 上 wgpu 不可见」是否仍存在。失败回落 CPU，不退出。
+            // 参 Ether docs/GPU_COMPOSITION_PLAN.md §Ⅲ G0-a。浮层仍走 CPU。
+            if std::env::var_os("KANESUMI_LAYER_GPU").is_some_and(|v| v == "1") {
+                match Renderer::new(&self.conn, &self.surface, self.width, self.height, self.scale, false) {
+                    Ok(r) => {
+                        log::info!("G0：layer-shell 主表面使用 wgpu 渲染器（{}）", r.diagnostics());
+                        self.renderer = Some(r);
+                        return;
+                    }
+                    Err(e) => log::warn!("G0：layer-shell wgpu 初始化失败（{e:?}），回落 CPU 光栅"),
+                }
+            }
             // layer-shell → CPU 光栅化。无失败模式：Vec 分配即就绪（I-1）。
             let cpu = CpuRenderer::new(self.width, self.height, self.scale);
             log::info!(
