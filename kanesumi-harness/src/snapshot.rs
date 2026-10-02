@@ -35,6 +35,12 @@ pub fn render_png(
         app.update(1.0 / 60.0);
         app.render_into(engine, size, &mut scene);
         let damage = app.damage_hint();
+        // 本帧无变化（0 面积 damage）：保留上一帧缓冲。
+        // CPU 光栅把「裁剪 ∩ 空 damage = 空」误当作「无裁剪」，会让被裁剪的内容整幅重绘、
+        // 盖掉无裁剪的覆盖层（如工具提示弹层）—— 线上主循环已跳过，这里补齐同款守卫。
+        if damage.is_some_and(|d| d.size.width <= 0.0 || d.size.height <= 0.0) {
+            continue;
+        }
         rgba = cpu.render(engine, &scene, damage).to_vec();
     }
     let (w, h) = cpu.physical_size();
