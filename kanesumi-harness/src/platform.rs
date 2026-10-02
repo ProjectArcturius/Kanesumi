@@ -148,7 +148,17 @@ impl Shell {
         self.dirty = true;
     }
 
-    /// 节流检测 `theme.toml` 变更（约每 0.5s 一次 stat），变化则重推主题。
+    /// 读取交互数值（`~/.config/ether/input.toml`，正典 §Ⅰ.2）并应用到双击检测器。
+    ///
+    /// 启动时一次；此后由 [`maybe_reload_system_theme`](Self::maybe_reload_system_theme)
+    /// 在同一节流点检测变更。滚轮步长在事件处理时实时读 `self.interaction`。
+    fn apply_input_settings(&mut self) {
+        self.interaction = crate::input_config::load();
+        self.interaction_fingerprint = crate::input_config::fingerprint();
+        self.click_tracker.set_settings(self.interaction);
+    }
+
+    /// 节流检测 `theme.toml` / `input.toml` 变更（约每 0.5s 一次 stat），变化则重推。
     /// 用挂钟节流（而非帧计数）：空闲唤醒变稀疏后仍保持稳定的检测间隔。
     fn maybe_reload_system_theme(&mut self) {
         let now = Instant::now();
@@ -159,6 +169,10 @@ impl Shell {
         if crate::system_theme::fingerprint() != self.theme_fingerprint {
             self.apply_system_theme();
             log::info!("系统主题已重载：accent/scheme 变更");
+        }
+        if crate::input_config::fingerprint() != self.interaction_fingerprint {
+            self.apply_input_settings();
+            log::info!("交互数值已重载：input.toml 变更");
         }
     }
 }
@@ -235,6 +249,8 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
     // 系统主题：读 Chorus 的 theme.toml 并推给 App（accent / scheme）。
     // 这是「用户在 Chorus 改 accent、应用却仍是写死橙色」那条断链的接回点。
     shell.apply_system_theme();
+    // 交互数值：读 `~/.config/ether/input.toml`（正典 §Ⅰ.2；缺失 / 非法 → 默认）。
+    shell.apply_input_settings();
     // 引擎宿主兜底：主循环内幂等绑定（每帧，seat 异步 announce 后自动创建）。
     // 绕过 new_capability 竞态——ceyboard 连接时 seat keyboard 能力可能已就绪，
     // 能力事件不触发 → grab 未建立 → 合成器转发的键收不到。
@@ -477,6 +493,12 @@ pub(crate) struct Shell {
     theme_fingerprint: Option<std::time::SystemTime>,
     /// 下次主题变更检测的时刻（节流 stat 调用；空闲唤醒的候选点之一）。
     next_theme_check: Instant,
+
+    // ── 交互数值（`~/.config/ether/input.toml`，正典 §Ⅰ.2）─────
+    /// 当前生效的交互设置（双击时长 / 滚轮行数 / 提示延迟）。
+    interaction: kanesumi_core::InteractionSettings,
+    /// `input.toml` 的 mtime 指纹 —— 变化才重载（与主题同一节流点）。
+    interaction_fingerprint: Option<std::time::SystemTime>,
 
     // ── 输出缓冲（SHM 回退 + dmabuf 直通；主表面 / 各浮层 / IME 候选窗各一份）─────
     /// wl_shm 全局（dmabuf 不可用时的回退；合成器未提供 → None）。
@@ -1063,6 +1085,8 @@ impl Shell {
             system_theme: MetroTheme::ether_dark(),
             theme_fingerprint: None,
             next_theme_check: Instant::now(),
+            interaction: kanesumi_core::InteractionSettings::default(),
+            interaction_fingerprint: None,
             shm,
             main_out,
             floating_out,
@@ -2286,8 +2310,9 @@ impl PointerHandler for Shell {
                         modifiers: self.modifiers,
                     }),
                     PointerEventKind::Axis { vertical, horizontal, .. } => {
-                        let dy = if vertical.discrete != 0 { vertical.discrete as f32 * 50.0 } else { vertical.absolute as f32 };
-                        let dx = if horizontal.discrete != 0 { horizontal.discrete as f32 * 50.0 } else { horizontal.absolute as f32 };
+                        let step = self.interaction.wheel_step_px();
+                        let dy = if vertical.discrete != 0 { vertical.discrete as f32 * step } else { vertical.absolute as f32 };
+                        let dx = if horizontal.discrete != 0 { horizontal.discrete as f32 * step } else { horizontal.absolute as f32 };
                         Some(InputEvent::Scroll { x: dx, y: dy, modifiers: self.modifiers })
                     }
                 };
@@ -2356,16 +2381,17 @@ impl PointerHandler for Shell {
                     vertical,
                     ..
                 } => {
-                    // 滚轮：优先离散步（每格 ~50px），触摸板用连续像素。
+                    // 滚轮：优先离散步（每格 = wheel_lines × 16，正典默认 3 行 = 48px；
+                    // `input.toml` 可覆盖），触摸板用连续像素。
                     // 正方向 = +y（表面坐标，下为正，与 motion 一致）；向下滚为正。
-                    const WHEEL_STEP_PX: f32 = 50.0;
+                    let step = self.interaction.wheel_step_px();
                     let dy = if vertical.discrete != 0 {
-                        vertical.discrete as f32 * WHEEL_STEP_PX
+                        vertical.discrete as f32 * step
                     } else {
                         vertical.absolute as f32
                     };
                     let dx = if horizontal.discrete != 0 {
-                        horizontal.discrete as f32 * WHEEL_STEP_PX
+                        horizontal.discrete as f32 * step
                     } else {
                         horizontal.absolute as f32
                     };
