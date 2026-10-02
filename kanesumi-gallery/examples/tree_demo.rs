@@ -147,6 +147,14 @@ impl TreeApp for Demo {
             col,
             Label::new("状态：就绪").color(ThemeColor::OnSurfaceVariant),
         ));
+
+        // 工具提示（框架行为，CONTROL_SPEC §48）：指针静止 / 键盘焦点停留满延迟即显示。
+        if let Some(id) = self.ids.cancel {
+            tree.set_tooltip(id, "把名称恢复为默认值");
+        }
+        if let Some(id) = self.ids.apply {
+            tree.set_tooltip(id, "应用设置并打开确认对话框 (Enter)");
+        }
     }
 
     fn on_action(&mut self, tree: &mut Tree, from: WidgetId, action: Action) {
