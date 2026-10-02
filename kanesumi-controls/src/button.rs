@@ -83,12 +83,12 @@ impl MetroButton {
         }
 
         if self.state == ControlState::Focused {
-            // 2px 描边 —— 1px 在 HiDPI (2× buffer × 分数缩放) 下退化到亚像素几乎不可见。
-            // 参 docs/VISUAL_ISSUES.md V10。
-            scene.stroke_rounded_rect(
+            // 正典 §Ⅳ 双层焦点视觉：外 2px 焦点色 + 内 1px 对比色。
+            crate::focus::draw_focus_ring(
+                scene,
                 indication.focus_stroke,
+                theme.scheme,
                 rect,
-                2.0,
                 theme.tokens.corner_radius,
             );
         }

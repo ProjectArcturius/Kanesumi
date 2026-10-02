@@ -3,7 +3,7 @@
 // 数据源：`reference/microsoft-ui-xaml/dev/ScrollView/`（ScrollView.idl + ScrollPresenter.cpp）：
 // - ScrollableHeight = ExtentHeight − ViewportHeight（内容超视口才可滚）；
 // - ScrollMode（Auto/Enabled/Disabled）、ScrollBarVisibility（Auto/Visible/Hidden）；
-// - 滚轮 = 逻辑滚动（Kanesumi 离散步 50px，对齐合成器 Axis discrete）；
+// - 滚轮 = 逻辑滚动（正典 §Ⅴ：3 行 = 48px，对齐合成器 Axis discrete）；
 // - 平滑滚动 = Kanesumi 以 sokuou SpringAnim 实现（UWP 用 Composition 惯性）。
 //
 // Kanesumi 移植：**纯状态 + 几何**（不持视觉树）。offset 夹紧、scrollbar 拇指/轨道几何、
@@ -13,8 +13,8 @@ use kanesumi_anim::{MetroPresets, SpringAnim};
 use kanesumi_canvas::Scene;
 use kanesumi_core::{Rect, Size};
 
-/// 滚轮离散步（合成器 Axis discrete ≈ 50px/格）。
-pub const SCROLL_WHEEL_STEP: f32 = 50.0;
+/// 滚轮离散步（正典 §Ⅴ：3 行 × 16px = 48px）。
+pub const SCROLL_WHEEL_STEP: f32 = kanesumi_core::interaction::WHEEL_STEP_PX;
 /// 滚动条宽度（UWP ScrollBar 常规 8px，桌面 hover 展开 16px；Kanesumi 取 8）。
 pub const SCROLLBAR_THICKNESS: f32 = 8.0;
 /// 滚动条拇指最小长度（避免内容极长时拇指缩为点）。
@@ -112,7 +112,7 @@ impl MetroScrollView {
         }
     }
 
-    /// 滚轮滚动（主轴；正 = 向下）。离散步 50px。Disabled 模式不滚。
+    /// 滚轮滚动（主轴；正 = 向下）。离散步 48px（正典 §Ⅴ）。Disabled 模式不滚。
     pub fn scroll_wheel(&mut self, dy: f32) {
         if self.mode == ScrollMode::Disabled {
             return;
@@ -455,7 +455,12 @@ mod tests {
     }
 
     #[test]
-    fn scroll_wheel_steps_by_50() {
+    fn wheel_step_matches_canon() {
+        assert_eq!(SCROLL_WHEEL_STEP, 48.0, "正典 §Ⅴ：3 行 × 16px");
+    }
+
+    #[test]
+    fn scroll_wheel_accumulates_and_clamps() {
         let mut sv = MetroScrollView::new(Size::new(200.0, 300.0), Size::new(200.0, 100.0));
         sv.smooth_scroll = false;
         sv.scroll_wheel(50.0);

@@ -6,7 +6,7 @@
 // - 状态色硬切换（Normal/PointerOver/Focused/Disabled）；无颜色过渡动画。
 // - 编辑核心在 `text_field.rs`（纯逻辑）：光标 / 选区 / 撤销 / 掩码。
 //
-// Kanesumi 适配：深色桌面底色 `surface`；选区强调色 35%；光标 2px（V10 HiDPI）。
+// Kanesumi 适配：深色桌面底色 `surface`；选区强调色 35%；光标 1px（正典 §Ⅳ）。
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
@@ -18,10 +18,11 @@ use crate::text_field::{TextField, TextInputKey};
 
 /// 删除按钮列宽（TextBox 右上角 × 按钮，MinWidth 34）。参 themeresources_v1。
 pub const TEXTBOX_DELETE_BUTTON_W: f32 = 34.0;
-/// 光标宽度（V10：1px 在 HiDPI 亚像素退化 → 2px）。
-pub const TEXTBOX_CARET_W: f32 = 2.0;
-/// 光标闪烁半周期（on/off 各 0.5s，对齐 UWP 光标闪烁率）。
-pub const CARET_BLINK_HALF_PERIOD: f32 = 0.5;
+/// 光标宽度（正典 §Ⅳ：1px；2× 下 2 物理像素）。
+pub const TEXTBOX_CARET_W: f32 = kanesumi_core::interaction::CARET_WIDTH_PX;
+/// 光标闪烁半周期（正典 §Ⅳ：周期 530ms，on/off 各 265ms）。
+pub const CARET_BLINK_HALF_PERIOD: f32 =
+    kanesumi_core::interaction::CARET_BLINK_PERIOD_MS as f32 / 2000.0;
 
 /// MetroTextBox —— 单行文本输入。
 #[derive(Debug, Clone, PartialEq)]
@@ -462,22 +463,30 @@ impl MetroTextBox {
             let _ = t;
         }
 
-        // 边框（Focused 2px + focus 色；其余 divider 1px）
-        let (stroke, stroke_w) = if self.focused {
-            (colors.focus_stroke.with_alpha(alpha), 2.0)
-        } else if self.state == ControlState::Hovered {
-            // 悬停边框 = UWP `TextControlBorderBrushPointerOver`
-            // → `SystemControlHighlightBaseMediumBrush` → `SystemBaseMediumColor`
-            // （themeresources L855 → L298 → L212）= 60% 基色、**不透明**。
-            // 本库 `on_surface_variant` 即该档的实色对应物；旧实现再乘 0.9 无依据。
-            (colors.on_surface_variant.with_alpha(alpha), 1.0)
+        // 边框：聚焦时正典 §Ⅳ 双层（外 2px 焦点色 + 内 1px 对比色）；其余态单层。
+        if self.focused {
+            crate::focus::draw_focus_ring(
+                scene,
+                colors.focus_stroke.with_alpha(alpha),
+                theme.scheme,
+                inner,
+                theme.tokens.corner_radius,
+            );
         } else {
-            // 静止边框 = UWP `TextControlBorderBrush` = BaseMediumLow 40%（亮 #66000000）。
-            // 令牌本身带 alpha，必须**乘**衰减而非覆盖（`with_alpha(alpha)` 会把 40% 冲成不透明黑）。
-            let cs = colors.control_stroke;
-            (cs.with_alpha(cs.a * alpha), 1.0)
-        };
-        scene.stroke_rounded_rect(stroke, inner, stroke_w, theme.tokens.corner_radius);
+            let (stroke, stroke_w) = if self.state == ControlState::Hovered {
+                // 悬停边框 = UWP `TextControlBorderBrushPointerOver`
+                // → `SystemControlHighlightBaseMediumBrush` → `SystemBaseMediumColor`
+                // （themeresources L855 → L298 → L212）= 60% 基色、**不透明**。
+                // 本库 `on_surface_variant` 即该档的实色对应物；旧实现再乘 0.9 无依据。
+                (colors.on_surface_variant.with_alpha(alpha), 1.0)
+            } else {
+                // 静止边框 = UWP `TextControlBorderBrush` = BaseMediumLow 40%（亮 #66000000）。
+                // 令牌本身带 alpha，必须**乘**衰减而非覆盖（`with_alpha(alpha)` 会把 40% 冲成不透明黑）。
+                let cs = colors.control_stroke;
+                (cs.with_alpha(cs.a * alpha), 1.0)
+            };
+            scene.stroke_rounded_rect(stroke, inner, stroke_w, theme.tokens.corner_radius);
+        }
     }
 
     /// 组合态显示流整行塑形；preedit 下划线按同一视觉 cluster 几何绘制。
@@ -906,7 +915,7 @@ mod tree_tests {
         h.frame();
         assert!(!h.tree.needs_frame(), "聚焦静止时不逐帧重画");
         let lit = h.tree.painted(_id).to_vec();
-        h.idle(0.6); // 越过半周期 → 光标熄灭，重画一次
+        h.idle(CARET_BLINK_HALF_PERIOD as f64 + 0.05); // 越过半周期 → 光标熄灭，重画一次
         assert_ne!(h.tree.painted(_id), lit.as_slice());
         assert!(h.tree.next_timer().is_some(), "下一次翻转已排定");
     }
@@ -1106,7 +1115,7 @@ mod tests {
         }
         let mut tb = MetroTextBox::new();
         tb.focus();
-        tb.update(0.1); // 闪烁相位 < 0.5 → 可见
+        tb.update(0.1); // 闪烁相位 < 半周期 → 可见
         let theme = theme();
         let mut scene = Scene::default();
         tb.render(&theme, &engine(), Rect::new(0.0, 0.0, 200.0, 32.0), &mut scene);

@@ -4,6 +4,9 @@
 // 为什么需要它：全仓每个控件各持一个 `pub focused: bool`，既无单实例保证、也无 Tab 顺序、
 // 更无跨控件协调 —— 结果是「同时两个控件显示焦点环」与「纯键盘无法操作任何屏幕」。
 
+use kanesumi_canvas::Scene;
+use kanesumi_core::{Color, ColorScheme, CornerRadius, Rect};
+
 /// 焦点身份。由 App 决定，须**跨帧稳定**（如 `hash(page, index)`）。
 ///
 /// 不用引用/指针：焦点环不持有视觉树（参 `PLAN.md §4.1` 状态驱动渲染不变量）。
@@ -145,6 +148,29 @@ impl FocusRing {
             let _ = self.focus_next(false);
         }
     }
+}
+
+/// 绘制正典双层焦点视觉（正典 §Ⅳ）：外 2px 焦点色 + 内 1px 对比色。
+///
+/// 内圈在焦点环内侧外缩 2px；`corner` 为控件圆角语义（直角传 `CornerRadius::Square`）。
+/// 只在键盘焦点时调用（指针点击不画 —— UWP `FocusState` 语义；框架侧见 `tree.rs`）。
+pub fn draw_focus_ring(
+    scene: &mut Scene,
+    focus_stroke: Color,
+    scheme: ColorScheme,
+    rect: Rect,
+    corner: CornerRadius,
+) {
+    use kanesumi_core::interaction;
+    scene.stroke_rounded_rect(focus_stroke, rect, interaction::FOCUS_OUTER_PX, corner);
+    let inset = interaction::FOCUS_OUTER_PX;
+    let inner = rect.inset(inset, inset, inset, inset);
+    scene.stroke_rounded_rect(
+        interaction::focus_inner_color(scheme),
+        inner,
+        interaction::FOCUS_INNER_PX,
+        corner,
+    );
 }
 
 #[cfg(test)]
