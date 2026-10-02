@@ -132,6 +132,11 @@ xdg-shell 的合成器），或 `-- --snapshot out.png 1` 出 PNG。
 供外壳安排唤醒）。`Widget::paint_after` 是控件绘制阶段，在本节点子内容之后追加命令
 （滚动条叠在内容上、焦点环等），由树统一拼接。
 
+**工具提示**：给任意元素挂一行提示文字即可，显隐与计时由框架负责（不抢焦点、不吃输入）：
+`tree.set_tooltip(id, "全屏 (F11)")`（空串 / `clear_tooltip` 清除）。指针静止或键盘焦点
+停留满 500 ms 显示（再现 100 ms、5 s 消失、离开 / 按下即消失，常量在
+`kanesumi_core::interaction`；参 `CONTROL_SPEC.md` §48）——应用不要自己开提示弹层。
+
 **动画写法（新入口）**：用 `UpdateCtx::animate(&mut anim)`（`anim: kanesumi_anim::Animation`，
 即 `Progress` / `MetroAnim` / `SpringAnim`）推进 —— 框架按**真实时钟**求值、未到稳态**自动登记
 下一帧**，因此**不再需要手动 `ctx.request_anim_frame()`**；推进后调 `ctx.invalidate_paint()`

@@ -62,6 +62,7 @@ pub mod text;
 pub mod text_box;
 pub mod text_field;
 pub mod title_bar;
+pub mod tooltip;
 pub mod tree_view;
 pub mod two_pane_view;
 
@@ -147,6 +148,10 @@ pub use text::MetroText;
 pub use text_box::{MetroTextBox, TextChanged, TextSubmitted};
 pub use text_field::{TextInputKey, TextField};
 pub use title_bar::{MetroTitleBar, TitleBarAction, TitleBarClick};
+pub use tooltip::{
+    MetroToolTip, TOOLTIP_DELAY_MS, TOOLTIP_GAP, TOOLTIP_HIDE_MS, TOOLTIP_MAX_WIDTH,
+    TOOLTIP_RESHOW_MS, tooltip_style,
+};
 pub use tree_view::{MetroTreeView, TreeAction, TreeItemInvoked, TreeRow, TreeViewNode};
 pub use two_pane_view::{
     MetroTwoPaneView, TwoPaneMode, TwoPanePriority, TwoPaneTallConfig, TwoPaneWideConfig,

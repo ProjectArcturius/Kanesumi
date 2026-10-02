@@ -905,6 +905,68 @@ mod tests {
         assert!(!h.needs_redraw(), "空白处移动不触发重画");
     }
 
+    /// 工具提示：悬停满延迟后由框架开 passthrough 弹层，并经 `render_png` 真正光栅进像素。
+    /// 复刻 `snapshot::render_png` 的逐帧累积路径（含「0 面积 damage 跳过」守卫）。
+    #[test]
+    fn tooltip_popup_is_composed_and_rasterized() {
+        struct TipApp {
+            config: AppConfig,
+            id: Option<WidgetId>,
+        }
+        impl TreeApp for TipApp {
+            fn config(&self) -> &AppConfig {
+                &self.config
+            }
+            fn build(&mut self, tree: &mut Tree) {
+                let page = tree.insert(
+                    tree.root(),
+                    kanesumi_element::widgets::Border::new()
+                        .background(kanesumi_core::ThemeColor::Background)
+                        .padding(kanesumi_element::Insets::all(24.0)),
+                );
+                let col = tree.insert(
+                    page,
+                    kanesumi_element::widgets::Stack::column().with_spacing(12.0),
+                );
+                tree.insert(col, kanesumi_element::widgets::Label::new("工具提示"));
+                let btn = tree.insert(col, MetroButton::new("应用"));
+                tree.set_tooltip(
+                    btn,
+                    "应用设置并打开确认对话框：这段文字较长，用来演示最大宽度 320 与自动换行。",
+                );
+                self.id = Some(btn);
+            }
+            fn on_action(&mut self, _: &mut Tree, _: WidgetId, _: Action) {}
+        }
+        let mut h = TreeHost::new(TipApp {
+            config: AppConfig::new("org.ether.test", "tip", EtherRole::Browser, 360.0, 200.0),
+            id: None,
+        });
+        let e = test_engine();
+        let size = Size::new(360.0, 200.0);
+        {
+            let mut scene = Scene::default();
+            h.advance_clock(1.0 / 60.0);
+            h.update(1.0 / 60.0);
+            h.render_into(&e, size, &mut scene);
+        }
+        let c = h.tree().rect(h.app().id.unwrap()).unwrap().center();
+        h.handle_input(InputEvent::PointerMoved { x: c.x, y: c.y });
+        let out = std::env::temp_dir().join("kanesumi_tooltip_raster.png");
+        crate::snapshot::render_png(&mut h, &e, size, 1.0, 60, &out).expect("快照失败");
+        let popup = h.tree().tooltip_popup().expect("延迟满应显示提示");
+        let r = h.tree().rect(popup).unwrap();
+        let pixmap = resvg::tiny_skia::Pixmap::decode_png(&std::fs::read(&out).unwrap()).unwrap();
+        let p = pixmap
+            .pixel(r.center().x.floor() as u32, r.center().y.floor() as u32)
+            .expect("像素在界内");
+        assert_ne!(
+            [p.red(), p.green(), p.blue()],
+            [0x1A, 0x1A, 0x1A],
+            "提示气泡区不应还是背景色（说明未光栅化）"
+        );
+    }
+
     /// 动画期间 `needs_redraw()` 恒真（外壳据此不进入 50ms 空闲档），跑完转假。
     #[test]
     fn animation_keeps_host_busy_until_complete() {
