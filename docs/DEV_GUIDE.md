@@ -409,7 +409,7 @@ kanesumi-core        （无依赖）tokens/主题/MetroText/指示/几何原语
 ### 5.3 输入
 
 - `InputEvent`：`PointerMoved/Pressed/Released/Left`、`Scroll{x,y}`、
-  `DoubleClick`（250ms/5px）、`Key`/`Modifiers`。
+  `DoubleClick`（现 500ms / ±5px；正典 500ms / 4×4 px 容差框，参 Ether docs/INTERACTION_CANON.md §Ⅱ）、`Key`/`Modifiers`。
 - 命中测试：元素树应用由**树**按布局产物判定（§二）；旧 `App` 才由应用自己
   `hit_test`（控件 + 消费布局产物）。外壳只转发事件。
 - 文本输入：`key_to_text_input` 把键盘事件映射为 `TextInputKey`（Backspace/Enter/
