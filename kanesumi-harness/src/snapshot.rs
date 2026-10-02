@@ -30,6 +30,8 @@ pub fn render_png(
     // 节点（k-perf），故不能只把最后一帧的局部 Scene 当全量重绘 —— 会丢静态内容。
     // 帧 1 全量、后续局部，累积得到最终完整图像（与线上「渲染后提交」语义同构）。
     for _ in 0..frames.max(1) {
+        // 与线上主循环同构：真实时钟给动画，限幅 dt 给逻辑。
+        app.advance_clock(1.0 / 60.0);
         app.update(1.0 / 60.0);
         app.render_into(engine, size, &mut scene);
         let damage = app.damage_hint();

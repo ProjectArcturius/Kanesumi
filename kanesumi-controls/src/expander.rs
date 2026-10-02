@@ -400,14 +400,19 @@ impl kanesumi_element::Widget for MetroExpander {
         ctx.set_handled();
     }
 
-    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, dt: f64) {
+    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, _dt: f64) {
         let was_animating = self.is_animating();
-        MetroExpander::update(self, dt);
+        if !self.content.is_steady() {
+            // 统一动画入口：真实时钟推进 + 未稳态自动续帧（参 ELEMENT_TREE §帧调度）。
+            ctx.animate(&mut self.content);
+        }
+        if !self.chevron.is_steady() {
+            ctx.animate(&mut self.chevron);
+        }
         if self.is_animating() {
             // 动画期内容可见窗变化 → 重排槽位；内容底/chevron 重画。
             ctx.invalidate_arrange();
             ctx.invalidate_paint();
-            ctx.request_anim_frame();
         } else if was_animating {
             // 动画刚结束：按完整内容区重排一次，避免稳态槽位停在动画末帧的近似值。
             ctx.invalidate_arrange();

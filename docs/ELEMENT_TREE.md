@@ -217,6 +217,50 @@ pub trait Widget {
   第二期把 overlay 的顶层节点映射到 harness 的 `floating_layers` / 真 `xdg_popup`（`ROADMAP` M1-6 / P1-6）。
   **本期不改 `place_popup` 签名**（`ROADMAP` §Ⅴ-2）。
 
+## §Ⅴ-bis 帧调度（时钟 / 失效 / 空闲）
+
+一帧的顺序仍是「动画 tick → realize → 布局 → 绘制 → 拼接」；本节规定帧与帧之间的
+**时钟、失效与空闲**契约（k-frameclock 根治，来源：Launcher 动效审计 §Ⅱ）。
+
+### Ⅴ-bis.1 真实时钟
+
+- `Tree::frame(engine, size, dt)` 的 `dt` 是**真实经过时间**（秒），外壳**不限幅**。
+  动画据此按墙钟推进（`elapsed += dt` 等价于 `(now - start)`），一次卡顿 120ms 会一次走完，
+  **总时长不因掉帧被拉长**。
+- 非动画逻辑（`tick_timers`、`TreeApp::tick`、`App::update`）仍用外壳**限幅**的 dt（≤50ms），
+  防止挂起恢复后的巨大步长打爆弹簧 / 定时器。外壳经 `App::advance_clock(real_dt)` 把真实时间
+  交给动画时钟，经 `App::update(dt)` 把限幅时间交给逻辑（`TreeHost` 据此分流）。
+
+### Ⅴ-bis.2 帧内失效不被吞
+
+- `frame` 只清「**帧开始前**就存在」的 `dirty`；帧内（measure / arrange / paint / realize /
+  动画 tick）新产生的失效**留到下一帧**。实现为代数计数器 `invalidate_epoch`：`mark_dirty`
+  每次自增，`frame` 起始记录、末尾比对，变化则保持 `dirty`。
+- 各阶段在调用控件回调**之前**先清自身的 `needs_*` 标记（measure 清 `needs_measure`、paint 清
+  `needs_paint`/`paint_queued`），因此回调期内的再失效会重新置位，不会被阶段末尾吞掉。
+- 框架自身在本帧就会被消费的失效用 **quiet** 变体（不置脏、不计代数）：尺寸变化的重排、
+  arrange 改矩形后的重画、有弹层时每帧强制重排覆盖层。它们让「首帧 / 改尺寸 / 开弹层」不会
+  多出空转帧。
+- 这条契约是 `ItemsRepeater` 收敛的关键：它在 `arrange` 里因视口变化 `invalidate_realize`，
+  过去被帧末 `dirty = false` 吞掉导致空闲时网格列数不收敛；现在保证下一帧继续 realize。
+
+### Ⅴ-bis.3 统一动画入口
+
+- 控件用 `UpdateCtx::animate(&mut anim)` / `PaintCtx::animate(&mut anim)` 推进动画，其中
+  `anim: kanesumi_anim::Animation`（`Progress` / `MetroAnim` / `SpringAnim` 均实现）。
+- `animate` 做两件事：按本帧真实 `dt` 推进；未到稳态时**自动登记下一帧**（等价于
+  `request_anim_frame`）。控件不再需要手动请求帧，也不会漏请求。
+- 仍需在推进后 `invalidate_paint()`（重画是自己的事）。`VisualState::tick` 已迁移到该入口。
+- 动画**只动视觉**：`UpdateCtx` 仍只提供 `invalidate_paint` / `invalidate_arrange`（平移类），
+  不提供量测失效。
+
+### Ⅴ-bis.4 空闲档
+
+- `Tree::needs_frame() = dirty || !anim.is_empty()`：存在**待处理失效**或**进行中动画**即为真。
+- 外壳据此置 `busy`，`idle::next_wake(busy, ..)` 给出 `FRAME_FALLBACK`（16ms ≈60fps）而非
+  `IDLE_MAX`（50ms）。修复前「只 `invalidate_paint`、不登记动画帧」的驱动在渲染后 `busy`
+  转假 → 退到 50ms 档 → 动画只跑约 20fps，现由 Ⅴ-bis.2 + Ⅴ-bis.3 共同消除。
+
 ## §Ⅵ 输入
 
 框架把外壳的 `InputEvent` 翻译为元素级 `Event` 并路由；App 不再写命中函数。
@@ -243,7 +287,8 @@ pub trait Widget {
 - 框架维护 `ControlStates { hovered, pressed, focused, disabled }`，变化时自动 `invalidate_paint`。
 - 过渡动画用 **`VisualState` 辅助结构**（element crate 提供，内部是 Sokuou `Progress`）：
   控件持有 `hover: VisualState, press: VisualState`，在 `paint` 里读 `ctx.state()` 设定目标、
-  读当前进度画插值色；未到稳态时自动 `request_anim_frame`。时长/缓动取 `kanesumi-anim` 预设。
+  读当前进度画插值色；`tick` 经 `UpdateCtx::animate` 按真实时钟推进并自动续帧（参 §Ⅴ-bis.3）。
+  时长/缓动取 `kanesumi-anim` 预设。
 - 这给 `ROADMAP` M6-1（按下反馈）提供了**统一挂载点**：先裁定语义，再在 `VisualState` 一处接线，
   17 个交互控件自动获得，不需逐个改。
 

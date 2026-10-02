@@ -1423,9 +1423,11 @@ impl Shell {
         if !self.configured {
             return;
         }
-        // 合成器时钟（PLAN §4.2）：dt 限幅防卡顿后跳变。§4.1 不变量 2。
+        // 合成器时钟（PLAN §4.2）：真实经过时间给动画（advance_clock），限幅 dt 给非动画逻辑
+        //（防卡顿后跳变，§4.1 不变量 2）。参 ELEMENT_TREE §帧调度。
         let now = Instant::now();
-        let dt = now.duration_since(self.last_update).as_secs_f64().min(0.05);
+        let real_dt = now.duration_since(self.last_update).as_secs_f64();
+        let dt = real_dt.min(0.05);
         self.last_update = now;
 
         // 全局菜单命令（App::on_menu_command）：在 App::update 之前派发，
@@ -1434,6 +1436,7 @@ impl Shell {
 
         // 错误边界：App update panic 不杀进程（§4.1 鲁棒性）。
         let update_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.app.advance_clock(real_dt);
             self.app.update(dt);
             // 主题变更检测（节流）：Chorus 改了 accent / scheme 后自动跟随。
             self.maybe_reload_system_theme();

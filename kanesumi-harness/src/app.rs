@@ -301,7 +301,17 @@ pub trait App {
     fn popup_dismissed(&mut self, _key: u64) {}
 
     /// 每帧 tick。`dt` 单位为秒（外壳从 frame callback 计算，参 PLAN.md §4.2 合成器时钟）。
+    ///
+    /// `dt` 已由外壳**限幅**（≤50ms，防挂起恢复后的巨大步长打爆非动画逻辑）。需要按真实
+    /// 墙钟推进动画的实现应改用 [`App::advance_clock`]（元素树 `TreeHost` 即如此）。
     fn update(&mut self, _dt: f64) {}
+
+    /// 把本迭代**真实经过时间**（秒，**未限幅**）交给动画时钟（参 ELEMENT_TREE §帧调度）。
+    ///
+    /// 外壳在 `update` 之前调用。元素树实现用它累积 `Tree::frame` 的动画 dt —— 动画按
+    /// `(now - start) / duration` 求值，一次卡顿 120ms 也会一次走完，不被 50ms 限幅拖长。
+    /// 非动画逻辑仍走 `update` 的限幅 dt。默认空实现（旧 App 行为不变）。
+    fn advance_clock(&mut self, _dt: f64) {}
 
     /// 下一次需要唤醒的时刻（秒，自现在起）—— 主循环据此安排事件循环超时（参 [`crate::idle`]）。
     ///

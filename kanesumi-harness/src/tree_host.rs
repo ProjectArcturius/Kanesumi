@@ -386,15 +386,23 @@ impl<A: TreeApp> App for TreeHost<A> {
         }
     }
 
-    fn update(&mut self, dt: f64) {
+    /// 真实（未限幅）经过时间 → 各树的动画时钟。`frame` 据此推进动画，掉帧不拉长总时长。
+    fn advance_clock(&mut self, dt: f64) {
         self.pending_dt += dt;
-        // 定时器在 update 里推进：外壳空闲时也有兜底唤醒（~100ms），到期者置脏出帧。
-        self.tree.tick_timers(dt);
-        self.app.tick(&mut self.tree, dt);
-        for (i, f) in self.floating.iter_mut().enumerate() {
+        for f in &mut self.floating {
             f.pending_dt += dt;
-            f.tree.tick_timers(dt);
-            self.app.tick_floating(i, &mut f.tree, dt);
+        }
+    }
+
+    fn update(&mut self, dt: f64) {
+        // 非动画逻辑（定时器 / App tick）仍用限幅 dt（防挂起恢复后的巨大步长）。
+        let logic = dt.min(0.05);
+        // 定时器在 update 里推进：外壳空闲时也有兜底唤醒，到期者置脏出帧。
+        self.tree.tick_timers(logic);
+        self.app.tick(&mut self.tree, logic);
+        for (i, f) in self.floating.iter_mut().enumerate() {
+            f.tree.tick_timers(logic);
+            self.app.tick_floating(i, &mut f.tree, logic);
         }
         self.drain_actions();
     }
@@ -544,7 +552,56 @@ mod tests {
     use kanesumi_controls::{ButtonClicked, MetroButton, MetroTextBox, TextChanged};
     use kanesumi_element::testing::test_engine;
     use kanesumi_element::widgets::Stack;
-    use kanesumi_element::{Align, LayoutProps, PointerButton};
+    use kanesumi_element::{
+        Align, LayoutProps, MeasureCtx, PaintCtx, PointerButton, UpdateCtx, Widget,
+    };
+
+    /// 用统一入口驱动的动画控件：`update` 推进，未稳态自动续帧；`paint` 仅在启动帧登记一次。
+    struct TreeAnim {
+        anim: kanesumi_anim::Progress,
+        kicked: bool,
+    }
+
+    impl Widget for TreeAnim {
+        fn measure(&mut self, _: &mut MeasureCtx, _: Size) -> Size {
+            Size::new(40.0, 20.0)
+        }
+        fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut kanesumi_canvas::Scene) {
+            if !self.kicked && !self.anim.is_steady() {
+                self.kicked = true;
+                ctx.request_anim_frame();
+            }
+            scene.fill_rect(
+                kanesumi_core::Color::rgb(self.anim.value() as f32, 0.0, 0.0),
+                ctx.rect(),
+            );
+        }
+        fn update(&mut self, ctx: &mut UpdateCtx, _dt: f64) {
+            if self.anim.is_steady() {
+                return;
+            }
+            ctx.animate(&mut self.anim);
+            ctx.invalidate_paint();
+        }
+    }
+
+    /// 只有一个动画控件的 App。
+    struct AnimApp {
+        config: AppConfig,
+        id: Option<WidgetId>,
+    }
+
+    impl TreeApp for AnimApp {
+        fn config(&self) -> &AppConfig {
+            &self.config
+        }
+        fn build(&mut self, tree: &mut Tree) {
+            let mut anim = kanesumi_anim::Progress::new(0.1);
+            anim.set_target(1.0);
+            self.id = Some(tree.insert(tree.root(), TreeAnim { anim, kicked: false }));
+        }
+        fn on_action(&mut self, _: &mut Tree, _: WidgetId, _: Action) {}
+    }
 
     struct Demo {
         config: AppConfig,
@@ -594,7 +651,8 @@ mod tests {
         (host, test_engine())
     }
 
-    fn frame(h: &mut TreeHost<Demo>, e: &TextEngine) -> Scene {
+    fn frame<A: TreeApp>(h: &mut TreeHost<A>, e: &TextEngine) -> Scene {
+        h.advance_clock(1.0 / 60.0);
         h.update(1.0 / 60.0);
         let mut s = Scene::default();
         h.render_into(e, Size::new(400.0, 300.0), &mut s);
@@ -737,5 +795,24 @@ mod tests {
         assert!(!h.needs_redraw(), "静止零重绘");
         h.handle_input(InputEvent::PointerMoved { x: 390.0, y: 290.0 });
         assert!(!h.needs_redraw(), "空白处移动不触发重画");
+    }
+
+    /// 动画期间 `needs_redraw()` 恒真（外壳据此不进入 50ms 空闲档），跑完转假。
+    #[test]
+    fn animation_keeps_host_busy_until_complete() {
+        let mut h = TreeHost::new(AnimApp {
+            config: AppConfig::new("org.ether.test", "anim", EtherRole::Browser, 200.0, 100.0),
+            id: None,
+        });
+        let e = test_engine();
+        frame(&mut h, &e);
+        assert!(h.needs_redraw(), "动画启动后外壳应保持 busy");
+        for _ in 0..600 {
+            if !h.needs_redraw() {
+                break;
+            }
+            frame(&mut h, &e);
+        }
+        assert!(!h.needs_redraw(), "动画完成后外壳转空闲");
     }
 }

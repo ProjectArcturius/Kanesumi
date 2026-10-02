@@ -444,11 +444,12 @@ impl kanesumi_element::Widget for MetroSwitch {
         self.state = saved;
     }
 
-    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, dt: f64) {
-        MetroSwitch::update(self, dt);
-        if self.is_animating() {
+    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, _dt: f64) {
+        // 拖动进行中 knob 由指针直接决定，不推进（同 `MetroSwitch::update`）。
+        if self.drag.is_none() && !self.knob.is_steady() {
+            // 统一动画入口：真实时钟推进 + 未稳态自动续帧（参 ELEMENT_TREE §帧调度）。
+            ctx.animate(&mut self.knob);
             ctx.invalidate_paint();
-            ctx.request_anim_frame();
         }
     }
 

@@ -48,16 +48,13 @@ impl VisualState {
         self.progress.value() as f32
     }
 
-    /// 推进进度；有变化就重画，未到稳态就续帧。
-    pub fn tick(&mut self, ctx: &mut UpdateCtx, dt: f64) {
+    /// 推进进度；有变化就重画，未到稳态自动续帧（框架统一入口，按真实时钟）。
+    pub fn tick(&mut self, ctx: &mut UpdateCtx, _dt: f64) {
         if self.progress.is_steady() {
             return;
         }
-        self.progress.update(dt);
+        ctx.animate(&mut self.progress);
         ctx.invalidate_paint();
-        if !self.progress.is_steady() {
-            ctx.request_anim_frame();
-        }
     }
 
     /// 直接跳到稳态（无动画偏好 / 首帧）。

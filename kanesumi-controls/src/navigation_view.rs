@@ -586,13 +586,13 @@ impl kanesumi_element::Widget for MetroNavigationView {
         self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
     }
 
-    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, dt: f64) {
-        MetroNavigationView::update(self, dt);
-        if self.is_animating() {
+    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, _dt: f64) {
+        if !self.pane.is_steady() {
+            // 统一动画入口：真实时钟推进 + 未稳态自动续帧（参 ELEMENT_TREE §帧调度）。
+            ctx.animate(&mut self.pane);
             // 动画期内容区平移 → 重排；导航栏外观随 Pane 宽度变化 → 重画。
             ctx.invalidate_arrange();
             ctx.invalidate_paint();
-            ctx.request_anim_frame();
         }
     }
 
