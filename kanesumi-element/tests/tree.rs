@@ -292,14 +292,25 @@ fn focus_visual_only_for_keyboard_focus() {
             .scene
             .commands
             .iter()
-            .filter(|c| matches!(c, SceneCommand::StrokeRect { .. }))
-            .count()
+            .filter_map(|c| match c {
+                SceneCommand::StrokeRect { rect, thickness, .. } => Some((*rect, *thickness)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
     };
     h.click(btn);
     assert_eq!(h.tree.focused(), Some(btn));
-    assert_eq!(strokes(&h), 0, "指针聚焦不画焦点视觉");
+    assert_eq!(strokes(&h).len(), 0, "指针聚焦不画焦点视觉");
     h.tab(); // 唯一可聚焦项 → 环绕回自身，转为键盘焦点
-    assert_eq!(strokes(&h), 1);
+    // 正典 §Ⅳ 双层焦点视觉：外 2px + 内 1px（内矩形外缩 2px）。
+    let s = strokes(&h);
+    assert_eq!(s.len(), 2, "键盘焦点画外 + 内两条描边");
+    assert_eq!(s[0].1, 2.0, "外圈 2px");
+    assert_eq!(s[1].1, 1.0, "内圈 1px");
+    let outer = s[0].0;
+    let inner = s[1].0;
+    assert_eq!(inner.origin.x, outer.origin.x + 2.0, "内圈外缩 2px");
+    assert_eq!(inner.size.width, outer.size.width - 4.0);
 }
 
 #[test]

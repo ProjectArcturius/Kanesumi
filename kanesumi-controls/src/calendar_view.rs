@@ -689,9 +689,15 @@ impl MetroCalendarView {
             if is_today && !selected {
                 scene.stroke_rect(colors.primary, inner, 2.0);
             }
-            // 键盘游标：焦点描边（仅聚焦时画）。
+            // 键盘游标：焦点描边（仅聚焦时画；正典 §Ⅳ 外 2px + 内 1px）。
             if self.focused && self.cursor == *date && in_month && !selected {
-                scene.stroke_rect(colors.focus_stroke, inner, 2.0);
+                crate::focus::draw_focus_ring(
+                    scene,
+                    colors.focus_stroke,
+                    theme.scheme,
+                    inner,
+                    kanesumi_core::CornerRadius::Square,
+                );
             }
 
             let fg = if selected {

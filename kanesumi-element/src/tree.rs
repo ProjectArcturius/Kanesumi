@@ -1059,7 +1059,8 @@ impl Tree {
             }
         }
         scene.commands.extend(n.paint_after.iter().cloned());
-        // 键盘焦点视觉：框架统一绘制（直角描边），画在子树之上。
+        // 键盘焦点视觉：框架统一绘制（外 2px 焦点色 + 内 1px 对比色，正典 §Ⅳ），
+        // 画在子树之上。只在键盘交互后显示（指针点击不画，`focus_keyboard`）。
         if self.focus == Some(id)
             && self.focus_keyboard
             && n.widget.as_ref().is_some_and(|w| w.focus_visual())
@@ -1067,7 +1068,18 @@ impl Tree {
             scene.stroke_rect(
                 self.theme.colors.focus_stroke,
                 n.rect,
-                FOCUS_VISUAL_THICKNESS,
+                kanesumi_core::interaction::FOCUS_OUTER_PX,
+            );
+            let inner = n.rect.inset(
+                kanesumi_core::interaction::FOCUS_OUTER_PX,
+                kanesumi_core::interaction::FOCUS_OUTER_PX,
+                kanesumi_core::interaction::FOCUS_OUTER_PX,
+                kanesumi_core::interaction::FOCUS_OUTER_PX,
+            );
+            scene.stroke_rect(
+                kanesumi_core::interaction::focus_inner_color(self.theme.scheme),
+                inner,
+                kanesumi_core::interaction::FOCUS_INNER_PX,
             );
         }
     }
@@ -1752,8 +1764,8 @@ fn place_on_side(a: Rect, w: f32, h: f32, spec: PopupSpec, bounds: Rect) -> (f32
     }
 }
 
-/// 框架焦点视觉描边粗细（Ncrust KANESUMI_XAML「键盘焦点」：粗细 2、直角、FocusVisualMargin 0）。
-const FOCUS_VISUAL_THICKNESS: f32 = 2.0;
+/// 焦点视觉绘制范围外扩量（描边内绘，此处为抗锯齿外溢留余量；正典 §Ⅳ 外圈 2px）。
+const FOCUS_VISUAL_THICKNESS: f32 = kanesumi_core::interaction::FOCUS_OUTER_PX;
 
 /// 单轴解析：在槽位内按固定尺寸 / min / max / 对齐求位置与长度，**结果夹进槽位**。
 fn resolve_axis(

@@ -112,10 +112,11 @@ impl MetroCalendarDatePicker {
             theme.tokens.corner_radius,
         );
         if self.state == ControlState::Focused {
-            scene.stroke_rounded_rect(
+            crate::focus::draw_focus_ring(
+                scene,
                 indication.focus_stroke,
+                theme.scheme,
                 rect,
-                2.0,
                 theme.tokens.corner_radius,
             );
         }

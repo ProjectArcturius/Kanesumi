@@ -82,7 +82,7 @@ struct DragState {
     start_progress: f32,
     /// 按下瞬间的**语义**状态（释放决策用 —— 位移要与 0/1 端点比较，而非动画中位）。
     start_checked: bool,
-    /// 是否已越过 3px 阈值（越过后 knob 跟手）。
+    /// 是否已越过 4px 阈值（正典 §Ⅱ；越过后 knob 跟手）。
     moved: bool,
 }
 
@@ -248,7 +248,7 @@ impl MetroSwitch {
             return;
         };
         let dx = pos.x - drag.start_pointer_x;
-        if dx.abs() > 3.0 {
+        if dx.abs() > kanesumi_core::interaction::DRAG_THRESHOLD_PX {
             drag.moved = true;
         }
         if drag.moved && travel > 0.0 {
@@ -258,7 +258,7 @@ impl MetroSwitch {
     }
 
     /// 指针释放 —— 两档决策（参 [`TAP_INTENT_MAX_DISPLACEMENT`]）：
-    /// - 位移小于 15% 行程（含未越过 3px 阈值、以及拖出去又拖回起点）→ 当**点动**，翻转状态；
+    /// - 位移小于 15% 行程（含未越过 4px 阈值、以及拖出去又拖回起点）→ 当**点动**，翻转状态；
     /// - 否则按 knob 当前位置**就近吸附**（≥ 0.5 = on）。
     ///
     /// 返回 true 表示 `checked` 变化。
@@ -757,7 +757,7 @@ mod tests {
             &theme,
             Point::new(track.origin.x + 5.0, track.origin.y + 10.0),
         );
-        // 1.5px 位移 < 3px 阈值 → 视为点动
+        // 1.5px 位移 < 4px 阈值 → 视为点动
         s.drag_to(Point::new(
             track.origin.x + 6.5,
             track.origin.y + 10.0,
@@ -765,6 +765,21 @@ mod tests {
         let changed = s.release();
         assert!(changed);
         assert!(s.checked, "微小位移视为点动，翻转");
+    }
+
+    /// 正典 §Ⅱ 拖拽阈值边界：位移恰 4px 不算拖动（判据 `>`），4.1px 进入拖动。
+    #[test]
+    fn drag_threshold_boundary_at_4px() {
+        for (dx, expect_moved) in [(4.0_f32, false), (4.1_f32, true)] {
+            let mut s = MetroSwitch::new();
+            let theme = MetroTheme::ether_dark();
+            let rect = Rect::new(0.0, 0.0, 200.0, 60.0);
+            let track = s.track_rect(rect, &theme);
+            let x0 = track.origin.x + 5.0;
+            s.press(rect, &theme, Point::new(x0, track.origin.y + 10.0));
+            s.drag_to(Point::new(x0 + dx, track.origin.y + 10.0));
+            assert_eq!(s.drag.unwrap().moved, expect_moved, "dx={dx}");
+        }
     }
 
     /// **回流自 sec-a 的两档释放决策**（`MetroSwitch.kt` L118-125，2026-09-22）：
@@ -780,7 +795,7 @@ mod tests {
         s.press(rect, &theme, Point::new(x0, track.origin.y + 10.0));
         // 先拖出 8px（越阈值 → moved=true，knob 跟手到 ~0.4）
         s.drag_to(Point::new(x0 + 8.0, track.origin.y + 10.0));
-        assert!(s.drag.unwrap().moved, "越 3px 后应进入跟手");
+        assert!(s.drag.unwrap().moved, "越 4px 后应进入跟手");
         assert!(s.progress() > 0.0, "拖动期间 knob 跟手");
         // 再拖回起点（位移≈0 < 15% 行程）
         s.drag_to(Point::new(x0, track.origin.y + 10.0));

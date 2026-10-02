@@ -348,16 +348,24 @@ impl MetroAutoSuggestBox {
         }
         scene.pop_clip();
 
-        // 边框
-        let (stroke, stroke_w) = if self.focused {
-            (colors.focus_stroke, 2.0)
-        } else if self.state == ControlState::Hovered {
-            // 悬停边框 = BaseMedium 实色（一手源 themeresources L855 → L212），同 TextBox。
-            (colors.on_surface_variant, 1.0)
+        // 边框：聚焦时正典 §Ⅳ 双层（外 2px 焦点色 + 内 1px 对比色）；其余态单层。
+        if self.focused {
+            crate::focus::draw_focus_ring(
+                scene,
+                colors.focus_stroke,
+                theme.scheme,
+                inner,
+                theme.tokens.corner_radius,
+            );
         } else {
-            (colors.divider, 1.0)
-        };
-        scene.stroke_rounded_rect(stroke, inner, stroke_w, theme.tokens.corner_radius);
+            let (stroke, stroke_w) = if self.state == ControlState::Hovered {
+                // 悬停边框 = BaseMedium 实色（一手源 themeresources L855 → L212），同 TextBox。
+                (colors.on_surface_variant, 1.0)
+            } else {
+                (colors.divider, 1.0)
+            };
+            scene.stroke_rounded_rect(stroke, inner, stroke_w, theme.tokens.corner_radius);
+        }
 
         // 建议弹层
         if self.popup_open && !self.shown.is_empty() {

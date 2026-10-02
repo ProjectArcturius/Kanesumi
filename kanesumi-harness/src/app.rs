@@ -1,6 +1,6 @@
 use kanesumi_canvas::Scene;
 use kanesumi_canvas::text::TextEngine;
-use kanesumi_core::{MetroTheme, Rect, Size};
+use kanesumi_core::{InteractionSettings, MetroTheme, Rect, Size};
 
 use crate::appmenu::{AppMenuHandle, MenuTree};
 use crate::role::EtherRole;
@@ -142,7 +142,8 @@ pub enum InputEvent {
         modifiers: Modifiers,
     },
     /// 双击 —— 与第二次 `PointerPressed` **同时**下发（后者照常投递，App 的单击
-    /// 语义不丢）。外壳按 [`ClickTracker`] 判定：同按钮、间隔 ≤500ms、位移 ≤5px。
+    /// 语义不丢）。外壳按 [`ClickTracker`] 判定：同按钮、间隔 ≤ 双击时长、位移在
+    /// 4 × 4 px 框内（正典参 Ether docs/INTERACTION_CANON.md §Ⅱ）。
     /// App 需「单击选中 / 双击打开」类语义时匹配本变体（不可见双击 = 新单击序列）。
     DoubleClick {
         x: f32,
@@ -151,8 +152,8 @@ pub enum InputEvent {
         modifiers: Modifiers,
     },
     /// 滚轮 / 触摸板滚动。`dx`/`dy` 为逻辑像素增量；**正方向 = 表面坐标 +y（下）**，
-    /// 即向下滚为正。外壳把 Wayland Axis 的 `discrete`（整格 ~50px）或 `absolute`
-    /// （触摸板连续）转换为像素增量。
+    /// 即向下滚为正。外壳把 Wayland Axis 的 `discrete`（整格 3 行 = 48px，正典 §Ⅴ）
+    /// 或 `absolute`（触摸板连续）转换为像素增量。
     Scroll {
         x: f32,
         y: f32,
@@ -591,13 +592,10 @@ impl PendingImeBatch {
     }
 }
 
-/// 双击判定参数。取 UWP `GetDoubleClickTime` 默认 500ms（GNOME 400、macOS 约 500）、位移 5px 容差。
-/// 曾取 250ms「对齐轻盈短促」—— 那是动画铁律，不适用于输入判定：常速双击被拆成两次单击，
-/// 桌面 / 文件夹「双击打不开」（2026-10-01 桌面审计）。
-const DOUBLE_CLICK_MS: u32 = 500;
-const DOUBLE_CLICK_TOLERANCE_PX: f32 = 5.0;
-
-/// 双击检测器 —— 记录每次指针按下，判定「同按钮、间隔 ≤500ms、位移 ≤5px」为双击。
+/// 双击检测器 —— 记录每次指针按下，判定「同按钮、间隔 ≤ 双击时长、位移在 4×4 px 框内」为双击。
+///
+/// 数值取自交互正典（参 Ether docs/INTERACTION_CANON.md §Ⅱ）：500 ms / 4×4 px 容差框；
+/// 时长可由 `input.toml` 覆盖（[`InteractionSettings`]）。
 ///
 /// 语义：第二次按下判定为双击（外壳随后下发 `InputEvent::DoubleClick`）；判定后复位，
 /// 故三次快速点击 = 单击 + 双击 + 单击（第三次重新开始计数，Windows 惯例）。
@@ -607,16 +605,24 @@ pub struct ClickTracker {
     last_time_ms: u32,
     last_x: f32,
     last_y: f32,
+    /// 可覆盖的双击时长（`input.toml`）。
+    settings: InteractionSettings,
 }
 
 impl ClickTracker {
+    /// 应用用户覆盖（`input.toml` 变更时由外壳调用）。
+    pub fn set_settings(&mut self, settings: InteractionSettings) {
+        self.settings = settings;
+    }
+
     /// 记录一次按下（`time_ms` 为事件时间戳，同序单调）。返回 true = 构成双击。
     pub fn record(&mut self, button: PointerButton, x: f32, y: f32, time_ms: u32) -> bool {
+        let tolerance = kanesumi_core::interaction::DOUBLE_CLICK_TOLERANCE_PX;
         let double = self.last_button == Some(button)
             && time_ms >= self.last_time_ms
-            && time_ms.saturating_sub(self.last_time_ms) <= DOUBLE_CLICK_MS
-            && (x - self.last_x).abs() <= DOUBLE_CLICK_TOLERANCE_PX
-            && (y - self.last_y).abs() <= DOUBLE_CLICK_TOLERANCE_PX;
+            && time_ms.saturating_sub(self.last_time_ms) <= self.settings.double_click_ms
+            && (x - self.last_x).abs() <= tolerance
+            && (y - self.last_y).abs() <= tolerance;
         if double {
             // 判定后复位：第三次快速点击视为新单击（Windows 双击语义）。
             self.last_button = None;
@@ -810,7 +816,46 @@ mod tests {
     fn click_tracker_move_resets_interval() {
         let mut t = ClickTracker::default();
         assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1000));
-        assert!(!t.record(PointerButton::Left, 30.0, 10.0, 1100), "位移 >5px 不算双击");
+        assert!(!t.record(PointerButton::Left, 30.0, 10.0, 1100), "位移 >4px 框不算双击");
+    }
+
+    /// 正典边界（参 INTERACTION_CANON §Ⅱ）：间隔 500 ms 内 / 外、位移 ±2 px 内 / 外。
+    #[test]
+    fn click_tracker_double_click_boundaries() {
+        // 恰好 500 ms = 双击；501 ms = 单击。
+        let mut t = ClickTracker::default();
+        assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1000));
+        assert!(t.record(PointerButton::Left, 10.0, 10.0, 1500), "500ms 边界内");
+        let mut t = ClickTracker::default();
+        assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1000));
+        assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1501), "500ms 边界外");
+
+        // 恰好 ±2 px = 双击；2.5 px = 单击。
+        let mut t = ClickTracker::default();
+        assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1000));
+        assert!(t.record(PointerButton::Left, 12.0, 12.0, 1100), "±2px 边界内");
+        let mut t = ClickTracker::default();
+        assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1000));
+        assert!(!t.record(PointerButton::Left, 12.5, 10.0, 1100), "±2px 边界外");
+    }
+
+    /// `input.toml` 覆盖双击时长后，旧边界随之改变。
+    #[test]
+    fn click_tracker_honours_settings_override() {
+        let mut t = ClickTracker::default();
+        t.set_settings(InteractionSettings {
+            double_click_ms: 300,
+            ..Default::default()
+        });
+        assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1000));
+        assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1400), "400ms > 覆盖的 300ms");
+        let mut t = ClickTracker::default();
+        t.set_settings(InteractionSettings {
+            double_click_ms: 300,
+            ..Default::default()
+        });
+        assert!(!t.record(PointerButton::Left, 10.0, 10.0, 1000));
+        assert!(t.record(PointerButton::Left, 10.0, 10.0, 1300), "300ms 边界内");
     }
 
     #[test]

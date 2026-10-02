@@ -30,8 +30,8 @@ impl MetroTab {
 const PIPE_DURATION: f64 = 0.25;
 /// 溢出时左右翻页按钮边长（UWP Pivot 页签条翻页键）。
 const OVERFLOW_BTN_W: f32 = 40.0;
-/// 拖动判定阈值（小于此视为点击，避免拖动误触选中）。
-const DRAG_THRESHOLD: f32 = 4.0;
+/// 拖动判定阈值（正典 §Ⅱ：4px；小于此视为点击，避免拖动误触选中）。
+const DRAG_THRESHOLD: f32 = kanesumi_core::interaction::DRAG_THRESHOLD_PX;
 
 /// 拖动状态（页签条横向滚动）。
 #[derive(Debug, Clone, Copy, PartialEq)]
