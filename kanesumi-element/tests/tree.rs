@@ -3,6 +3,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use kanesumi_anim::Progress;
 use kanesumi_canvas::{Scene, SceneCommand};
 use kanesumi_core::{Color, Point, Rect, Size};
 use kanesumi_element::testing::TestHarness;
@@ -1190,4 +1191,231 @@ fn removed_child_releases_focus() {
     h.frame();
     assert!(h.tree.children(id).is_empty(), "realize 移除了子节点");
     assert_eq!(h.tree.focused(), None, "被移除的焦点子节点已从焦点表清理");
+}
+
+// ── 帧调度：帧内失效不被吞（k-frameclock）─────────────────────────────────────
+//
+// `frame` 只清「帧开始前就存在」的 dirty；帧内（measure / arrange / paint）新产生的失效
+// 必须留到下一帧，否则 ItemsRepeater 这类在 arrange 里 invalidate_realize 的容器会不收敛。
+
+/// 首次 measure 时调 `invalidate_measure`。
+struct MeasureInvalidator {
+    fired: Rc<Cell<bool>>,
+}
+
+impl Widget for MeasureInvalidator {
+    fn measure(&mut self, ctx: &mut MeasureCtx, _: Size) -> Size {
+        if !self.fired.get() {
+            self.fired.set(true);
+            ctx.invalidate_measure();
+        }
+        Size::new(30.0, 20.0)
+    }
+    fn paint(&mut self, _ctx: &mut PaintCtx, _scene: &mut Scene) {}
+}
+
+/// 首次 arrange 时调 `invalidate_realize`（ItemsRepeater 场景）。
+struct ArrangeRealizeInvalidator {
+    fired: Rc<Cell<bool>>,
+}
+
+impl Widget for ArrangeRealizeInvalidator {
+    fn measure(&mut self, _: &mut MeasureCtx, _: Size) -> Size {
+        Size::new(30.0, 20.0)
+    }
+    fn arrange(&mut self, ctx: &mut ArrangeCtx, _rect: Rect) {
+        if !self.fired.get() {
+            self.fired.set(true);
+            ctx.invalidate_realize();
+        }
+    }
+    fn paint(&mut self, _ctx: &mut PaintCtx, _scene: &mut Scene) {}
+    fn wants_realize(&self) -> bool {
+        true
+    }
+}
+
+/// 首次 paint 时调 `invalidate_paint`。
+struct PaintInvalidator {
+    fired: Rc<Cell<bool>>,
+}
+
+impl Widget for PaintInvalidator {
+    fn measure(&mut self, _: &mut MeasureCtx, _: Size) -> Size {
+        Size::new(30.0, 20.0)
+    }
+    fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
+        if !self.fired.get() {
+            self.fired.set(true);
+            ctx.invalidate_paint();
+        }
+        scene.fill_rect(Color::rgb(1.0, 0.0, 0.0), ctx.rect());
+    }
+}
+
+#[test]
+fn measure_phase_invalidation_survives_the_frame() {
+    let mut h = TestHarness::new(100.0, 100.0);
+    h.tree.insert(
+        h.root(),
+        MeasureInvalidator {
+            fired: Rc::new(Cell::new(false)),
+        },
+    );
+    h.frame();
+    assert!(h.tree.needs_frame(), "帧内 measure 失效应留下下一帧");
+    h.frame();
+    assert!(!h.tree.needs_frame(), "失效被消费后进入空闲");
+}
+
+#[test]
+fn arrange_phase_invalidation_survives_the_frame() {
+    let mut h = TestHarness::new(100.0, 100.0);
+    h.tree.insert(
+        h.root(),
+        ArrangeRealizeInvalidator {
+            fired: Rc::new(Cell::new(false)),
+        },
+    );
+    h.frame();
+    assert!(h.tree.needs_frame(), "帧内 arrange 的 invalidate_realize 应留下下一帧");
+    h.frame();
+    assert!(!h.tree.needs_frame(), "realize 消费后进入空闲");
+}
+
+#[test]
+fn paint_phase_invalidation_survives_the_frame() {
+    let mut h = TestHarness::new(100.0, 100.0);
+    h.tree.insert(
+        h.root(),
+        PaintInvalidator {
+            fired: Rc::new(Cell::new(false)),
+        },
+    );
+    h.frame();
+    assert!(h.tree.needs_frame(), "帧内 paint 失效应留下下一帧");
+    h.frame();
+    assert!(!h.tree.needs_frame(), "失效被消费后进入空闲");
+}
+
+/// 用统一入口 `ctx.animate` 驱动的动画控件（`update` 推进；`paint` 仅在启动帧登记一次）。
+struct SampleAnim {
+    anim: Progress,
+    kicked: bool,
+}
+
+impl Widget for SampleAnim {
+    fn measure(&mut self, _: &mut MeasureCtx, _: Size) -> Size {
+        Size::new(40.0, 20.0)
+    }
+    fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
+        if !self.kicked && !self.anim.is_steady() {
+            self.kicked = true;
+            ctx.request_anim_frame();
+        }
+        let t = self.anim.value() as f32;
+        scene.fill_rect(Color::rgb(t, t, t), ctx.rect());
+    }
+    fn update(&mut self, ctx: &mut UpdateCtx, _dt: f64) {
+        if self.anim.is_steady() {
+            return;
+        }
+        // 统一入口：真实时钟推进 + 未稳态自动续帧（无需手动 request_anim_frame）。
+        ctx.animate(&mut self.anim);
+        ctx.invalidate_paint();
+    }
+}
+
+fn sample_anim<'a>(id: &kanesumi_element::WidgetId, h: &'a TestHarness) -> &'a SampleAnim {
+    h.tree.get::<SampleAnim>(*id).expect("SampleAnim")
+}
+
+#[test]
+fn dropped_frames_do_not_extend_animation_duration() {
+    let mut h = TestHarness::new(100.0, 100.0);
+    let mut anim = Progress::new(0.25);
+    anim.set_target(1.0);
+    let id = h.tree.insert(
+        h.root(),
+        SampleAnim {
+            anim,
+            kicked: false,
+        },
+    );
+    h.frame(); // 启动帧：paint 登记动画（尚不推进）
+    assert!(!sample_anim(&id, &h).anim.is_steady(), "启动帧后动画应仍在进行");
+
+    // 模拟掉帧：真实时钟一次跳 120ms，再一次 130ms（外壳会把逻辑 dt 限幅到 50ms，
+    // 但动画用真实 dt）—— 0.25s 必须在两次内走完，总时长不因掉帧被拉长。
+    h.tree.frame(&h.engine, h.size, 0.12);
+    h.tree.frame(&h.engine, h.size, 0.13);
+    let s = sample_anim(&id, &h);
+    assert!(s.anim.is_steady(), "两次掉帧内应完成 0.25s 动画");
+    assert!((s.anim.value() - 1.0).abs() < 1e-9, "终点精确到 1.0");
+}
+
+#[test]
+fn needs_frame_is_true_while_animating_and_false_after() {
+    let mut h = TestHarness::new(100.0, 100.0);
+    let mut anim = Progress::new(0.1);
+    anim.set_target(1.0);
+    let id = h.tree.insert(
+        h.root(),
+        SampleAnim {
+            anim,
+            kicked: false,
+        },
+    );
+    h.frame();
+    assert!(h.tree.needs_frame(), "动画进行中 needs_frame 恒真");
+    // 步进到稳态（最多 600 帧，防死循环）。
+    for _ in 0..600 {
+        if sample_anim(&id, &h).anim.is_steady() && !h.tree.needs_frame() {
+            break;
+        }
+        h.frame();
+    }
+    assert!(sample_anim(&id, &h).anim.is_steady(), "动画应到稳态");
+    assert!(!h.tree.needs_frame(), "稳态后 needs_frame 转假");
+}
+
+/// 只用新入口、**从不** `request_anim_frame` 的示例控件：在 `paint` 里 `animate` 推进
+/// 并 `invalidate_paint`，靠「帧内失效不被吞」+ 自动登记续帧直到完成。
+struct PaintDrivenAnim {
+    anim: Progress,
+}
+
+impl Widget for PaintDrivenAnim {
+    fn measure(&mut self, _: &mut MeasureCtx, _: Size) -> Size {
+        Size::new(20.0, 20.0)
+    }
+    fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
+        if !self.anim.is_steady() {
+            ctx.animate(&mut self.anim);
+            ctx.invalidate_paint();
+        }
+        let t = self.anim.value() as f32;
+        scene.fill_rect(Color::rgb(t, 0.0, 0.0), ctx.rect());
+    }
+}
+
+#[test]
+fn entry_only_control_plays_full_animation_without_manual_frame_requests() {
+    let mut h = TestHarness::new(100.0, 100.0);
+    let mut anim = Progress::new(0.1);
+    anim.set_target(1.0);
+    let id = h.tree.insert(h.root(), PaintDrivenAnim { anim });
+    h.frame();
+    for _ in 0..600 {
+        if h.tree.get::<PaintDrivenAnim>(id).unwrap().anim.is_steady() {
+            break;
+        }
+        h.frame();
+    }
+    assert!(
+        h.tree.get::<PaintDrivenAnim>(id).unwrap().anim.is_steady(),
+        "仅用新入口也应播完动画"
+    );
+    h.frame();
+    assert!(!h.tree.needs_frame(), "完成后进入空闲");
 }

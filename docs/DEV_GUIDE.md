@@ -130,8 +130,14 @@ xdg-shell 的合成器），或 `-- --snapshot out.png 1` 出 PNG。
 **定时器与重绘**：控件在 `paint` / `event` 里经 `ctx.request_timer(secs)` 申请低频唤醒
 （光标闪烁、延时提示），`TreeHost` 驱动 `Tree::tick_timers`，等待期不占帧（`Tree::next_timer`
 供外壳安排唤醒）。`Widget::paint_after` 是控件绘制阶段，在本节点子内容之后追加命令
-（滚动条叠在内容上、焦点环等），由树统一拼接。动画经 `ctx.request_anim_frame()` 申请下帧，
-且只许 `invalidate_paint`（动画只动视觉属性）。参 `ELEMENT_TREE.md` §Ⅳ.1 / §Ⅴ.1。
+（滚动条叠在内容上、焦点环等），由树统一拼接。
+
+**动画写法（新入口）**：用 `UpdateCtx::animate(&mut anim)`（`anim: kanesumi_anim::Animation`，
+即 `Progress` / `MetroAnim` / `SpringAnim`）推进 —— 框架按**真实时钟**求值、未到稳态**自动登记
+下一帧**，因此**不再需要手动 `ctx.request_anim_frame()`**；推进后调 `ctx.invalidate_paint()`
+重画（动画只动视觉属性，不得触发量测）。`VisualState::tick` 已迁移到该入口，交互控件的
+hover/press 过渡无需各自处理。低频唤醒仍用 `ctx.request_timer(secs)`（等待期不占帧）。
+参 `ELEMENT_TREE.md` §Ⅴ-bis（帧调度）/ §Ⅴ.1。
 
 ### 2.3 布局与容器
 
@@ -285,9 +291,12 @@ state → progress → resolved spatial state → render → Scene
 ```
 
 - **无保留视觉树、无 timeline**：每帧 `App::render` 从当前状态产出完整 `Scene`。
-- 动画由 **Sokuou** 的 `Progress`/`SpringAnim` 驱动，只动**视觉属性**
-  （位移/缩放/透明），绝不触发布局（`docs/COMPOSITION.md`）。
-- 合成器时钟（frame callback）驱动 `App::update(dt)` → 重渲染。
+- 动画由 **Sokuou** 的 `Progress`/`MetroAnim`/`SpringAnim` 驱动，只动**视觉属性**
+  （位移/缩放/透明），绝不触发布局（`docs/COMPOSITION.md`）。元素树控件经
+  `ctx.animate(&mut anim)` 统一入口推进（真实时钟 + 自动续帧，参 `ELEMENT_TREE.md` §Ⅴ-bis）。
+- 合成器时钟（frame callback）驱动 `App::advance_clock(real_dt)`（动画真实时钟，未限幅）+
+  `App::update(dt)`（非动画逻辑，限幅 ≤50ms）→ 重渲染；待处理失效或进行中动画时，
+  外壳走 16ms 快档而非 50ms 空闲档。
 
 ### 3.2 Scene 命令模型（kanesumi-canvas）
 

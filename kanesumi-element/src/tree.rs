@@ -6,6 +6,7 @@
 
 use std::any::Any;
 
+use kanesumi_anim::Animation;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, SceneCommand};
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
@@ -194,6 +195,12 @@ pub struct Tree {
     damage: Option<Rect>,
     full_repaint: bool,
     dirty: bool,
+    /// 本帧的真实经过时间（秒，**未限幅**）—— `animate` 用它推进动画，故掉帧不会拉长总时长。
+    /// 由外壳经 `frame` 注入（参 ELEMENT_TREE §帧调度）。
+    frame_dt: f64,
+    /// 失效代数：每次 `mark_dirty` 自增。`frame` 记录起始值，帧末若已变化说明帧内产生了新失效
+    /// （布局 / 绘制 / 动画推进中），`dirty` 必须留给下一帧，不得被清掉（参 ELEMENT_TREE §帧调度）。
+    invalidate_epoch: u64,
     /// 最近一次指针位置（`Click` 等不带坐标的事件里，控件经 `EventCtx::pointer` 取用）。
     pointer: Option<Point>,
     /// 焦点控件本帧的 IME 上下文（`frame` 末尾计算，外壳查询时直接返回）。
@@ -238,6 +245,8 @@ impl Tree {
             damage_cull: false,
             full_repaint: true,
             dirty: true,
+            frame_dt: 0.0,
+            invalidate_epoch: 0,
             ime: None,
             engine: None,
             pointer: None,
@@ -260,7 +269,7 @@ impl Tree {
     /// 下一帧整幅重画（外壳的缓冲失效：表面重新显示 / 尺寸变化 / 光栅器新建）。
     pub fn request_full_repaint(&mut self) {
         self.full_repaint = true;
-        self.dirty = true;
+        self.mark_dirty();
     }
 
     pub fn root(&self) -> WidgetId {
@@ -400,7 +409,7 @@ impl Tree {
             }
             self.invalidate_measure(p);
         }
-        self.dirty = true;
+        self.mark_dirty();
     }
 
     /// 删除某节点的全部子节点（页面切换用）。
@@ -476,7 +485,7 @@ impl Tree {
         }
         self.paint_queue = self.all_ids();
         self.full_repaint = true;
-        self.dirty = true;
+        self.mark_dirty();
     }
 
     /// 以具体类型读取控件。
@@ -593,6 +602,13 @@ impl Tree {
 
     // ── 失效 ────────────────────────────────────────────────────────────────
 
+    /// 置脏并推进失效代数。所有「下一帧必须再出帧」的来源都应经此，而非直接写 `dirty`，
+    /// 以便 `frame` 分辨「帧内新产生的失效」（参 `invalidate_epoch`）。
+    fn mark_dirty(&mut self) {
+        self.dirty = true;
+        self.invalidate_epoch = self.invalidate_epoch.wrapping_add(1);
+    }
+
     pub fn invalidate_measure(&mut self, id: WidgetId) {
         let mut cur = Some(id);
         while let Some(c) = cur {
@@ -604,14 +620,14 @@ impl Tree {
             n.flags.needs_realize = true;
             cur = n.parent;
         }
-        self.dirty = true;
+        self.mark_dirty();
     }
 
     /// 只标记本节点需要 realize（滚动偏移变化 / 数据变化这类不动量测缓存的来源）。
     pub fn invalidate_realize(&mut self, id: WidgetId) {
         if let Some(n) = self.node_mut(id) {
             n.flags.needs_realize = true;
-            self.dirty = true;
+            self.mark_dirty();
         }
     }
 
@@ -622,22 +638,64 @@ impl Tree {
             n.flags.needs_arrange = true;
             cur = n.parent;
         }
-        self.dirty = true;
+        self.mark_dirty();
     }
 
     pub fn invalidate_paint(&mut self, id: WidgetId) {
         if let Some(n) = self.node_mut(id) {
             n.flags.needs_paint = true;
-            self.dirty = true;
+            self.mark_dirty();
         }
         self.queue_paint(id);
+    }
+
+    /// 只标记 arrange 失效、不置脏。帧内强制重排（弹层位置跟随锚点）用：结果被本帧
+    /// arrange 消费，不应触发额外帧。参 `frame` 第 3 步。
+    fn invalidate_arrange_quiet(&mut self, id: WidgetId) {
+        let mut cur = Some(id);
+        while let Some(c) = cur {
+            let Some(n) = self.node_mut(c) else { break };
+            n.flags.needs_arrange = true;
+            cur = n.parent;
+        }
+    }
+
+    /// 只标记量测失效、不置脏。帧内框架自身产生且会被本帧 measure 消费的失效用
+    /// （尺寸变化 / 重排时改矩形的重画），不应触发额外帧。
+    fn invalidate_measure_quiet(&mut self, id: WidgetId) {
+        let mut cur = Some(id);
+        while let Some(c) = cur {
+            let Some(n) = self.node_mut(c) else { break };
+            n.flags.needs_measure = true;
+            n.flags.needs_arrange = true;
+            n.flags.needs_realize = true;
+            cur = n.parent;
+        }
+    }
+
+    /// 只要求重画、不置脏。帧内框架自身改矩形后的重画用（本帧 paint 步会消费）。
+    fn invalidate_paint_quiet(&mut self, id: WidgetId) {
+        if let Some(n) = self.node_mut(id) {
+            n.flags.needs_paint = true;
+        }
+        self.queue_paint(id);
+    }
+
+    /// 框架统一动画推进入口（`UpdateCtx::animate` / `PaintCtx::animate` 的底层）：
+    /// 按本帧真实经过时间推进 `anim`，未到稳态自动登记动画帧（控件无需再手动请求）。
+    pub(crate) fn animate<A: Animation>(&mut self, id: WidgetId, anim: &mut A) -> f64 {
+        anim.advance(self.frame_dt);
+        if !anim.is_steady() {
+            self.request_anim(id);
+        }
+        anim.value()
     }
 
     pub(crate) fn request_anim(&mut self, id: WidgetId) {
         if !self.anim.contains(&id) {
             self.anim.push(id);
         }
-        self.dirty = true;
+        self.mark_dirty();
     }
 
     /// 请求 `secs` 秒后调用该节点的 `update`（光标闪烁、延时提示这类低频唤醒）。
@@ -714,7 +772,7 @@ impl Tree {
                 self.add_damage(b);
             }
         }
-        self.dirty = true;
+        self.mark_dirty();
     }
 
     // ── 实现钩子（参 §Ⅳ-bis）───────────────────────────────────────────────
@@ -768,15 +826,22 @@ impl Tree {
     // ── 帧 ──────────────────────────────────────────────────────────────────
 
     /// 出一帧：动画 tick → 布局 → 绘制 → 拼接 + 损伤。
+    ///
+    /// `dt` 为**真实经过时间**（秒，外壳未限幅）—— 动画据此按墙钟推进，掉帧不拉长总时长。
+    /// 帧末只清「帧开始前就存在」的 `dirty`；帧内新产生的失效（布局 / 绘制 / 动画推进中）
+    /// 经 `invalidate_epoch` 识别并留到下一帧（参 ELEMENT_TREE §帧调度）。
     pub fn frame(&mut self, engine: &TextEngine, size: Size, dt: f64) -> FrameOutput {
+        let epoch0 = self.invalidate_epoch;
+        self.frame_dt = dt;
         if self.engine.is_none() {
             self.engine = Some(engine.clone());
         }
         let size = size.normalized();
         if size != self.size {
             self.size = size;
-            self.invalidate_measure(self.root);
-            self.invalidate_measure(self.overlay);
+            // 本帧即重排重画，quiet 版避免多出一帧（参 ELEMENT_TREE §帧调度）。
+            self.invalidate_measure_quiet(self.root);
+            self.invalidate_measure_quiet(self.overlay);
             self.full_repaint = true;
         }
 
@@ -803,8 +868,9 @@ impl Tree {
         self.realize_dirty(engine);
 
         // 3. 布局。弹层位置依赖锚点矩形 —— 有弹层时每帧重排覆盖层（弹层子树本身有缓存，代价只是重算槽位）。
+        // 用 quiet 版：结果在本帧 arrange 中被消费，不应计为「帧内新失效」而多出一帧。
         if !self.popups.is_empty() {
-            self.invalidate_arrange(self.overlay);
+            self.invalidate_arrange_quiet(self.overlay);
         }
         let full = Rect::new(0.0, 0.0, size.width, size.height);
         self.measure_node(self.root, size, engine);
@@ -855,7 +921,9 @@ impl Tree {
         let full = self.full_repaint;
         self.full_repaint = false;
         self.damage = None;
-        self.dirty = false;
+        // 帧内产生过失效（布局改矩形 / 实现钩子增删 / 绘制期登记动画等）→ 留给下一帧；
+        // 否则本帧工作已消费干净，可以进入空闲。
+        self.dirty = self.invalidate_epoch != epoch0;
         FrameOutput {
             scene,
             damage: frame_damage,
@@ -882,6 +950,12 @@ impl Tree {
         }
         let props = n.props;
         let inner = props.inner_available(available);
+        // 先清 needs_measure（并记录约束）：measure 期内控件若再 `invalidate_measure`，
+        // 标记会保留到下一帧，不会被本帧末尾清掉（参 ELEMENT_TREE §帧调度）。
+        if let Some(n) = self.node_mut(id) {
+            n.flags.needs_measure = false;
+            n.last_available = Some(available);
+        }
         let Some(mut w) = self.node_mut(id).and_then(|n| n.widget.take()) else {
             return Size::ZERO;
         };
@@ -903,8 +977,6 @@ impl Tree {
         if let Some(n) = self.node_mut(id) {
             n.widget = Some(w);
             n.desired = desired;
-            n.last_available = Some(available);
-            n.flags.needs_measure = false;
         }
         desired
     }
@@ -949,9 +1021,9 @@ impl Tree {
             n.rect = rect;
             n.flags.needs_arrange = false;
         }
-        // 矩形变化 → 内容位置变，需重画（入待绘集合；原先直接在节点上置位）。
+        // 矩形变化 → 内容位置变，需重画。quiet：本帧 paint 步会消费，不应多出一帧。
         if rect_changed {
-            self.invalidate_paint(id);
+            self.invalidate_paint_quiet(id);
         }
         let Some(mut wdg) = self.node_mut(id).and_then(|n| n.widget.take()) else {
             return;
@@ -982,11 +1054,14 @@ impl Tree {
         }
         let rect = n.rect;
         let state = self.states(id);
+        // 先清 needs_paint / 去重位：绘制期内控件若再 `invalidate_paint`（如动画推进），
+        // 会重新入队并留到下一帧，不会被本帧末尾吞掉（参 ELEMENT_TREE §帧调度）。
+        if let Some(n) = self.node_mut(id) {
+            n.flags.needs_paint = false;
+            n.flags.paint_queued = false;
+        }
         let Some(mut w) = self.node_mut(id).and_then(|n| n.widget.take()) else {
-            // 控件正被回调持有（理论上不会出现在此）：释放队列位，留下次再画。
-            if let Some(n) = self.node_mut(id) {
-                n.flags.paint_queued = false;
-            }
+            // 控件正被回调持有（理论上不会出现在此）：留下次再画。
             return;
         };
         let mut scene = Scene::default();
@@ -1015,8 +1090,7 @@ impl Tree {
             n.paint = scene.commands;
             n.paint_after = after.commands;
             n.painted_bounds = Some(bounds);
-            n.flags.needs_paint = false;
-            n.flags.paint_queued = false;
+            // 不在此清 needs_paint / paint_queued —— 绘制期新产生的失效已在上面入队。
         }
     }
 
@@ -1246,7 +1320,7 @@ impl Tree {
                 if spec.light_dismiss && !spec.modal {
                     self.dismiss_popup(top);
                 }
-                self.dirty = true;
+                self.mark_dirty();
                 return;
             }
         }
@@ -1390,7 +1464,7 @@ impl Tree {
             self.popup_bounds = bounds;
             self.invalidate_measure(self.overlay);
             self.full_repaint = true;
-            self.dirty = true;
+            self.mark_dirty();
         }
     }
 
@@ -1399,7 +1473,7 @@ impl Tree {
         if self.detached_popups != on {
             self.detached_popups = on;
             self.full_repaint = true;
-            self.dirty = true;
+            self.mark_dirty();
         }
     }
 

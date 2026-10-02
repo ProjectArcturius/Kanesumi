@@ -6,6 +6,7 @@
 
 use std::any::Any;
 
+use kanesumi_anim::Animation;
 use kanesumi_canvas::Scene;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
@@ -76,8 +77,10 @@ pub trait Widget: Any {
     /// 路由事件。`ctx.set_handled()` 截停冒泡。
     fn event(&mut self, _ctx: &mut EventCtx, _event: &Event) {}
 
-    /// 动画 tick —— 仅在请求过 `request_anim_frame` 后被调用。
-    /// 结构保证「动画只动视觉」：`UpdateCtx` 只提供 `invalidate_paint`，不提供量测失效。
+    /// 动画 tick —— 在 `request_anim_frame` 或 `UpdateCtx::animate` 登记后被调用。
+    /// 用 `ctx.animate(&mut anim)` 推进动画：按真实时钟求值、未稳态自动续帧（参 ELEMENT_TREE §Ⅴ-bis）。
+    /// 结构保证「动画只动视觉」：`UpdateCtx` 只提供 `invalidate_paint` / `invalidate_arrange`，
+    /// 不提供量测失效。
     fn update(&mut self, _ctx: &mut UpdateCtx, _dt: f64) {}
 
     /// 布局前的子节点实现钩子（虚拟化容器用）。默认不做事。
@@ -181,6 +184,19 @@ impl MeasureCtx<'_> {
     pub fn measure_child(&mut self, child: WidgetId, available: Size) -> Size {
         self.tree.measure_node(child, available, self.engine)
     }
+    /// measure 期内再次失效量测：标记保留到下一帧（本帧末尾不清，参 ELEMENT_TREE §帧调度）。
+    pub fn invalidate_measure(&mut self) {
+        self.tree.invalidate_measure(self.id);
+    }
+    pub fn invalidate_arrange(&mut self) {
+        self.tree.invalidate_arrange(self.id);
+    }
+    pub fn invalidate_paint(&mut self) {
+        self.tree.invalidate_paint(self.id);
+    }
+    pub fn invalidate_realize(&mut self) {
+        self.tree.invalidate_realize(self.id);
+    }
 }
 
 pub struct ArrangeCtx<'a> {
@@ -218,6 +234,16 @@ impl ArrangeCtx<'_> {
     /// 视口 / 可用尺寸变化后要求本节点重新 `realize`（下一帧 measure 之前）。
     pub fn invalidate_realize(&mut self) {
         self.tree.invalidate_realize(self.id);
+    }
+    /// arrange 期内再失效：标记保留到下一帧。
+    pub fn invalidate_measure(&mut self) {
+        self.tree.invalidate_measure(self.id);
+    }
+    pub fn invalidate_arrange(&mut self) {
+        self.tree.invalidate_arrange(self.id);
+    }
+    pub fn invalidate_paint(&mut self) {
+        self.tree.invalidate_paint(self.id);
     }
 }
 
@@ -257,6 +283,18 @@ impl PaintCtx<'_> {
     /// `secs` 秒后调用本节点 `update`（等待期间不占帧）。
     pub fn request_timer(&mut self, secs: f64) {
         self.tree.request_timer(self.id, secs);
+    }
+    /// 按本帧真实经过时间推进动画，未到稳态自动登记下一帧（无需再手动请求）。
+    /// 返回动画当前值；调用方仍需 `invalidate_paint()` 以触发重画。
+    pub fn animate<A: Animation>(&mut self, anim: &mut A) -> f64 {
+        self.tree.animate(self.id, anim)
+    }
+    /// 绘制期内再失效（重画自己）：标记保留到下一帧。
+    pub fn invalidate_paint(&mut self) {
+        self.tree.invalidate_paint(self.id);
+    }
+    pub fn invalidate_realize(&mut self) {
+        self.tree.invalidate_realize(self.id);
     }
 }
 
@@ -377,6 +415,11 @@ impl UpdateCtx<'_> {
     /// `secs` 秒后再调用本节点 `update`（等待期间不占帧）。
     pub fn request_timer(&mut self, secs: f64) {
         self.tree.request_timer(self.id, secs);
+    }
+    /// 按本帧真实经过时间推进动画，未到稳态自动登记下一帧（无需再手动请求）。
+    /// 返回动画当前值；调用方仍需 `invalidate_paint()` 以触发重画。
+    pub fn animate<A: Animation>(&mut self, anim: &mut A) -> f64 {
+        self.tree.animate(self.id, anim)
     }
 }
 

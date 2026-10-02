@@ -210,11 +210,11 @@ impl kanesumi_element::Widget for MetroAnimatedIcon {
         }
     }
 
-    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, dt: f64) {
-        MetroAnimatedIcon::update(self, dt);
-        if self.is_animating() {
+    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, _dt: f64) {
+        // 统一动画入口：真实时钟推进 + 未稳态自动续帧（参 ELEMENT_TREE §帧调度）。
+        if !self.anim.is_steady() {
+            ctx.animate(&mut self.anim);
             ctx.invalidate_paint();
-            ctx.request_anim_frame();
         }
     }
 

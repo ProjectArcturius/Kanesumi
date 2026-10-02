@@ -252,6 +252,9 @@ pub struct GalleryApp {
     /// 动画驱动截止时刻：交互后一段时间内强制逐帧渲染（开关/滑行/弹出等
     /// 0.25~0.38s 动画），到期自动停（配合门控后静止零提交）。
     animate_until: Option<std::time::Instant>,
+    /// 外壳注入的真实经过时间（`App::advance_clock`，未限幅）—— 动画按真实时钟推进，
+    /// 掉帧不拉长总时长。测试直接调 `update(dt)` 时为 `None`，回退用传入 dt。
+    anim_dt: Option<f64>,
 
     // 输入状态
     hovered: Option<Target>,
@@ -450,6 +453,7 @@ impl GalleryApp {
             ctx_result: None,
             dirty: true,
             animate_until: None,
+            anim_dt: None,
         }
         .apply_visual_audit_state()
     }
@@ -1985,7 +1989,14 @@ impl App for GalleryApp {
         log::info!("context menu: {name}（path {path:?}）");
     }
 
+    fn advance_clock(&mut self, dt: f64) {
+        // 真实（未限幅）经过时间：动画据此按墙钟推进（参 ELEMENT_TREE §帧调度）。
+        self.anim_dt = Some(dt);
+    }
+
     fn update(&mut self, dt: f64) {
+        // 动画用外壳注入的真实 dt；测试 / 旧路径无注入时回退到传入 dt。
+        let dt = self.anim_dt.take().unwrap_or(dt);
         // 右键菜单动画由 harness 推进（`Shell::ctx_menu.update`），App 无需自持。
         self.switch.update(dt);
         self.bar.update(dt);

@@ -291,15 +291,17 @@ impl kanesumi_element::Widget for MetroScrollView {
         }
     }
 
-    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, dt: f64) {
+    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, _dt: f64) {
+        if !self.smooth_scroll || self.spring.is_steady() {
+            return;
+        }
         let before = self.offset;
-        MetroScrollView::update(self, dt);
+        // 统一动画入口：真实时钟推进 + 未稳态自动续帧（参 ELEMENT_TREE §帧调度）。
+        ctx.animate(&mut self.spring);
+        self.offset = self.spring.value() as f32;
         if self.offset != before {
             ctx.invalidate_arrange();
             ctx.invalidate_paint();
-        }
-        if self.is_animating() {
-            ctx.request_anim_frame();
         }
     }
 
