@@ -2639,6 +2639,11 @@ impl KeyboardHandler for Shell {
 /// Keysym + utf8 → 逻辑键。控制键优先（Backspace 的 utf8 是控制字符，不能当 Char）；
 /// 其余可打印键走 utf8 字符（含 shift 符号 / 小键盘）。未分类透传原始 keysym。
 ///
+/// Ctrl 组合的 utf8 是控制字符（Ctrl+F → `\u{6}`、Ctrl+Space → `\u{0}`），而 `Char`
+/// 变体语义是可打印字符（参 DEV_GUIDE.md §2.6）：此时回退 keysym 的可打印字符，
+/// 修饰键状态由 `Modifiers` 另行携带；不回退会使全部 Ctrl+字母 加速键（以及
+/// ceyboard 的 Ctrl+Space 切换）失配（2026-10-02 l3 报告）。
+///
 /// 空格键**不**走具名变体：其 utf8 是 `" "`，必须落 `Char(' ')` 才能让 TextBox 与
 /// 所有「Space 激活」控件照旧工作（参 `Key::Space` 注释）。PageUp/PageDown/Insert/
 /// F1..F12 无 utf8，由本表语义化；F13+ 落 `Unknown`。
@@ -2674,6 +2679,12 @@ fn map_key(keysym: Keysym, utf8: Option<String>) -> Key {
         _ => {}
     }
     if let Some(c) = utf8.and_then(|s| s.chars().next()) {
+        if c.is_control()
+            && let Some(printable) = keysym.key_char()
+            && !printable.is_control()
+        {
+            return Key::Char(printable);
+        }
         return Key::Char(c);
     }
     Key::Unknown(keysym.raw())
@@ -3667,6 +3678,35 @@ mod tests {
         assert_eq!(
             map_key(Keysym::new(key::space), None),
             Key::Unknown(key::space)
+        );
+    }
+
+    /// Ctrl 组合：xkb 的 utf8 是控制字符（Ctrl+F → `\u{6}`、Ctrl+Space → `\u{0}`），
+    /// 不得进 `Char`（其语义是可打印字符，参 DEV_GUIDE.md §2.6）——回退 keysym 的
+    /// 可打印字符，ctrl 由 `Modifiers` 携带（2026-10-02 l3 报告：全部 Ctrl+字母
+    /// 加速键因此失配）。
+    #[test]
+    fn map_key_ctrl_combo_falls_back_to_printable_keysym() {
+        use xkeysym::key;
+        // Ctrl+F：utf8 \u{6}（ACK）→ 加速键按 Char('f') + ctrl 匹配。
+        assert_eq!(
+            map_key(Keysym::new(key::f), Some("\u{6}".to_string())),
+            Key::Char('f')
+        );
+        // Ctrl+Space（ceyboard 切中英）：utf8 \u{0} → Char(' ')。
+        assert_eq!(
+            map_key(Keysym::new(key::space), Some("\u{0}".to_string())),
+            Key::Char(' ')
+        );
+        // 无 Ctrl 的可打印 utf8 照旧原样，不走回退。
+        assert_eq!(
+            map_key(Keysym::new(key::f), Some("f".to_string())),
+            Key::Char('f')
+        );
+        // Backspace 仍由具名表接住（utf8 \u{8} 是控制字符），不受回退影响。
+        assert_eq!(
+            map_key(Keysym::new(key::BackSpace), Some("\u{8}".to_string())),
+            Key::Backspace
         );
     }
 }
