@@ -45,15 +45,28 @@ harness 侧同一结论：改 O_RDWR 前三种 recipe 的探测面包屑末行�
 
 - `cargo test --offline -p kanesumi-harness`：101 passed / 0 failed（基线 93）。
 - `cargo clippy --offline -p kanesumi-harness --all-targets`：dmabuf.rs 仅余改动前既有告警。
-- 真机原始探测（Arch/i915，子进程直跑）：O_RDWR 后 recipe 0/2/3 全部 `exit=0`、末行
-  `stage=ok`，持久面包屑文件完整。
-- 故障注入单测：`ETHER_DMABUF_PROBE_FAULT=entry` → 子进程 SIGSEGV，面包屑末行
+- 快速单测故障注入：`ETHER_DMABUF_PROBE_FAULT=entry` → 子进程 SIGSEGV，面包屑末行
   `stage=entry`，父侧解码 `fail:sig11:SIGSEGV@entry`；`=abort` → `fail:sig6:SIGABRT@entry`。
+- **真实端口（Arch/i915，无头合成器 + 本仓 harness 构建的 `kanesumi-calculator`，
+  `ETHER_ROLE=launcher` → layer/CPU 光栅 → dmabuf 直通路径）**：
+  - 正常：面包屑完整（头含时间 / exe / pid / 内核 / libgbm / 环境变量，逐阶段
+    `entry→open-node→gbm-device→bo→map→fd→ok`），父侧 `result=ok:0`，缓存 `ok:0`；
+    客户端日志 `dmabuf gbm 探测：可用（组合 any-node+linear-flag+ARGB）`、
+    `dmabuf 直通启用`、`dmabuf 输出格式：DrmFourcc(AB24)`、
+    `dmabuf gbm device 就绪：/dev/dri/renderD128`。截图
+    `2026-10-04_headless-dmabuf-enabled.png`。
+  - 故障注入（`ETHER_DMABUF_PROBE_FAULT=gbm-device`）：三种 recipe 全部死在
+    `stage=gbm-device`，父侧 `result=fail:sig11:SIGSEGV@gbm-device`，缓存同串；客户端逐
+    recipe 记 WARN 后「全部表面走 SHM」，走 `SHM 提交路径`，界面照常显示（截图
+    `2026-10-04_headless-fault-sig11-shm.png`，与 dmabuf 截图同款界面 —— 回退不改外观，
+    正是「不丢帧」契约）。
 
 ## 遗留
 
-- 合成器侧 headless 全链路截图（Launcher 走 dmabuf / 回落 SHM）需 Ether 主仓插入
-  `dmabuf_probe_entry()` 并以本仓 harness 构建，不在本任务范围；本机 i915 在 O_RDWR
-  修复后已证明 harness 侧探测可用。
+- Ether 主仓各应用 `main` 第一行的插桩点（本任务未改主仓）：`settings/src/main.rs:31`、
+  `launcher/src/main.rs:18` 前、`librarian/src/main.rs:33` 前、`ceyboard/src/main.rs:18` 前、
+  `shared/kanesumi/kanesumi-calculator/src/main.rs:11` 前、
+  `shared/kanesumi/kanesumi-gallery/src/main.rs:33` 前，均插入
+  `kanesumi_harness::dmabuf_probe_entry();`。
 - 「主设备节点」备选在构造时 feedback dev_t 尚未到达（异步），当前传 `None` 跳过；待有
   调用点能在 probe 前得知 dev_t 时再启用。
