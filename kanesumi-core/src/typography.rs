@@ -68,20 +68,27 @@ pub struct MetroTypography {
 }
 
 impl MetroTypography {
+    /// 默认样式阶梯。参 `docs/DECISIONS_2026-10-04.md` §G-67（修订 N-41）：
+    /// **标题类 Bold、正文类 Medium**。T7（2026-10-03）裁定「声明即所得」后，
+    /// 2026-10-04 用户据 tx2 1:1 样张把正文由 Normal 提到 Medium —— 真字重是唯一在
+    /// 实际尺寸下可见地「强劲」而不产生灰晕的提浓方式（参 Kanesumi
+    /// `docs/research/tx2/REPORT.md`）。
     pub const fn metro() -> Self {
         use FontWeight::*;
         Self {
-            page_heading: TextStyle::new(34.0, 42.0, Normal),
-            title: TextStyle::new(22.0, 28.0, Normal),
-            body: TextStyle::new(15.0, 22.0, Normal),
-            caption: TextStyle::new(13.0, 18.0, Normal),
-            label: TextStyle::new(11.0, 14.0, Normal),
-            headline_medium: TextStyle::new(28.0, 36.0, Normal),
-            title_large: TextStyle::new(22.0, 28.0, Normal),
-            title_medium: TextStyle::new(16.0, 24.0, Medium),
-            body_large: TextStyle::new(16.0, 24.0, Normal),
-            body_medium: TextStyle::new(14.0, 20.0, Normal),
-            body_small: TextStyle::new(12.0, 16.0, Normal),
+            // 标题类：Bold。
+            page_heading: TextStyle::new(34.0, 42.0, Bold),
+            title: TextStyle::new(22.0, 28.0, Bold),
+            headline_medium: TextStyle::new(28.0, 36.0, Bold),
+            title_large: TextStyle::new(22.0, 28.0, Bold),
+            title_medium: TextStyle::new(16.0, 24.0, Bold),
+            // 正文类：Medium。
+            body: TextStyle::new(15.0, 22.0, Medium),
+            caption: TextStyle::new(13.0, 18.0, Medium),
+            label: TextStyle::new(11.0, 14.0, Medium),
+            body_large: TextStyle::new(16.0, 24.0, Medium),
+            body_medium: TextStyle::new(14.0, 20.0, Medium),
+            body_small: TextStyle::new(12.0, 16.0, Medium),
         }
     }
 }
@@ -110,5 +117,31 @@ mod tests {
         let t = MetroTypography::metro();
         // 中文需紧凑行距：行距/字号 < 1.5
         assert!(t.body.line_height / t.body.size < 1.5);
+    }
+
+    /// G-67（修订 N-41）：标题类 Bold、正文类 Medium。
+    /// 回归守卫：旧映射正文 Normal / 标题 Normal 会让本测试失败，防止回退。
+    #[test]
+    fn g67_body_medium_heading_bold() {
+        let t = MetroTypography::metro();
+        for (name, style) in [
+            ("page_heading", t.page_heading),
+            ("title", t.title),
+            ("headline_medium", t.headline_medium),
+            ("title_large", t.title_large),
+            ("title_medium", t.title_medium),
+        ] {
+            assert_eq!(style.weight, FontWeight::Bold, "{name} 应为 Bold");
+        }
+        for (name, style) in [
+            ("body", t.body),
+            ("caption", t.caption),
+            ("label", t.label),
+            ("body_large", t.body_large),
+            ("body_medium", t.body_medium),
+            ("body_small", t.body_small),
+        ] {
+            assert_eq!(style.weight, FontWeight::Medium, "{name} 应为 Medium");
+        }
     }
 }
