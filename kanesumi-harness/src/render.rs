@@ -803,7 +803,7 @@ impl Renderer {
             mapped_at_creation: false,
         });
         let text_tuning = TextRenderTuning::default();
-        queue.write_buffer(
+        ctx.queue.write_buffer(
             &tuning_buf,
             0,
             bytemuck::cast_slice(&[text_tuning.contrast, text_tuning.gamma, 0.0f32, 0.0f32]),
@@ -861,7 +861,7 @@ impl Renderer {
             return;
         }
         self.text_tuning = tuning;
-        self.queue.write_buffer(
+        self.ctx.queue.write_buffer(
             &self.tuning_buf,
             0,
             bytemuck::cast_slice(&[tuning.contrast, tuning.gamma, 0.0f32, 0.0f32]),
