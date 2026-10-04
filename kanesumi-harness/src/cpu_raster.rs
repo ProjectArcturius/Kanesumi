@@ -1839,13 +1839,53 @@ mod tests {
         let on = render(TextRenderTuning {
             contrast: 1.0,
             gamma: 1.8,
-            stem_darken_px: 0.0,
+            ..TextRenderTuning::default()
         });
         assert!(
             ink_sum(&on) > ink_sum(&off),
             "对比度增强应增加墨量：on={} off={}",
             ink_sum(&on),
             ink_sum(&off)
+        );
+    }
+
+    /// 轮廓外扩旋钮开启后墨量（非零像素 + 亮度）必须增加；关闭时与现状一致。
+    /// 与 `stem_darken_increases_ink` 并列，但走的是轮廓路径（`rasterize_glyph_emboldened`）。
+    #[test]
+    fn outline_embolden_increases_ink() {
+        let Some(path) = test_font_path() else {
+            return;
+        };
+        let engine = TextEngine::load(path).unwrap();
+        let style = TextStyle::new(20.0, 24.0, FontWeight::Normal);
+        let mut scene = Scene::default();
+        scene.text(
+            "轮廓外扩 outline".to_string(),
+            Rect::new(2.0, 4.0, 190.0, 32.0),
+            Color::WHITE,
+            style,
+            TextAlign::Left,
+        );
+        let render = |tuning: TextRenderTuning| {
+            let mut r = CpuRenderer::new(192.0, 40.0, 2.0);
+            r.set_text_tuning(tuning);
+            r.render(&engine, &scene, None);
+            r
+        };
+        let off = render(TextRenderTuning::default());
+        let on = render(TextRenderTuning {
+            outline_embolden_px: 0.5,
+            ..TextRenderTuning::default()
+        });
+        assert!(
+            ink_sum(&on) > ink_sum(&off),
+            "轮廓外扩应增加墨量：on={} off={}",
+            ink_sum(&on),
+            ink_sum(&off)
+        );
+        assert!(
+            painted_count(&on) > painted_count(&off),
+            "轮廓外扩应增加覆盖像素"
         );
     }
 }

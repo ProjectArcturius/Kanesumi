@@ -13,9 +13,12 @@ use kanesumi_core::{Rect, TextStyle};
 ///
 /// 默认值 = 现状（全关），生产路径不受影响。仅 CPU 快照路径消费；参 Ether
 /// `docs/TYPE_ENGINE_PLAN.md` §一·五 与 `docs/DECISIONS_2026-10-04.md` §E-63。
-/// 两个旋钮都作用于字形覆盖率「进入混合之前」：
+/// 三个旋钮都作用于字形「进入混合之前」：
 /// - `contrast` / `gamma`：覆盖率 → 覆盖率的预混合查表（`coverage_lut`）。
-/// - `stem_darken_px`：覆盖率掩码的亚像素膨胀（横 / 纵最大值滤波按比例混合）。
+/// - `stem_darken_px`：覆盖率掩码的亚像素膨胀（横 / 纵最大值滤波按比例混合）—— tx1
+///   的旧途径，产生灰色光晕、边缘发虚，调度者审阅判定**不可用**，仅留作反例对照。
+/// - `outline_embolden_px`：轮廓沿法线外扩（tx2 新增）—— 在轮廓进光栅器前加粗，
+///   边缘仍是干净反走样阶梯，是推荐的加粗途径。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextRenderTuning {
     /// 对比度增强强度（0 = 关）。以 0.5 为轴做 S 形拉伸。
@@ -24,6 +27,8 @@ pub struct TextRenderTuning {
     pub gamma: f32,
     /// 笔画加粗基准量（物理像素，2× 下的档位 0 / 0.25 / 0.5）。实际量按字号递减。
     pub stem_darken_px: f32,
+    /// 轮廓外扩基准量（物理像素，2× 下的档位 0 / 0.15 / 0.30）。实际量按字号递减。
+    pub outline_embolden_px: f32,
 }
 
 impl Default for TextRenderTuning {
@@ -32,6 +37,7 @@ impl Default for TextRenderTuning {
             contrast: 0.0,
             gamma: 1.0,
             stem_darken_px: 0.0,
+            outline_embolden_px: 0.0,
         }
     }
 }
@@ -39,7 +45,10 @@ impl Default for TextRenderTuning {
 impl TextRenderTuning {
     /// 全默认 → 现行为。混合路径据此短路，保证默认逐像素不变。
     pub const fn is_default(&self) -> bool {
-        self.contrast == 0.0 && self.gamma == 1.0 && self.stem_darken_px == 0.0
+        self.contrast == 0.0
+            && self.gamma == 1.0
+            && self.stem_darken_px == 0.0
+            && self.outline_embolden_px == 0.0
     }
 
     /// 该物理字号下的实际加粗量（物理像素）。
@@ -48,12 +57,12 @@ impl TextRenderTuning {
     /// （逻辑 15 @2×）为基准，量随物理字号反比缩放，并夹在 [0.5, 2.0] 倍之间
     /// 防止极端字号发散。这是形状近似，非 Adobe 逐值复刻。
     pub fn stem_darken_for_size(&self, size_px: f32) -> f32 {
-        if self.stem_darken_px <= 0.0 || size_px <= 0.0 || !size_px.is_finite() {
-            return 0.0;
-        }
-        const REFERENCE_PX: f32 = 30.0;
-        let factor = (REFERENCE_PX / size_px).clamp(0.5, 2.0);
-        self.stem_darken_px * factor
+        darken_amount_for_size(self.stem_darken_px, size_px)
+    }
+
+    /// 该物理字号下的实际轮廓外扩量（物理像素）。曲线与 `stem_darken_for_size` 同款。
+    pub fn outline_embolden_for_size(&self, size_px: f32) -> f32 {
+        darken_amount_for_size(self.outline_embolden_px, size_px)
     }
 
     /// 前景色（sRGB 直通 rgba）→ 覆盖率映射表；全默认时返回 `None`（保持原样）。
@@ -79,6 +88,17 @@ impl TextRenderTuning {
         }
         Some(lut)
     }
+}
+
+/// 加粗 / 外扩量随物理字号递减的公共曲线（tx1 沿用）：以 30 px 为基准反比缩放，
+/// 夹在 [0.5, 2.0] 倍之间防极端字号发散。
+fn darken_amount_for_size(base_px: f32, size_px: f32) -> f32 {
+    if base_px <= 0.0 || size_px <= 0.0 || !size_px.is_finite() {
+        return 0.0;
+    }
+    const REFERENCE_PX: f32 = 30.0;
+    let factor = (REFERENCE_PX / size_px).clamp(0.5, 2.0);
+    base_px * factor
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -193,7 +213,15 @@ pub(crate) fn layout_text_glyphs_tuned(
             let metrics = if let Some((m, _)) = glyph_bitmaps.get(&key) {
                 *m
             } else {
-                let (m, b) = engine.rasterize_glyph(glyph.font_id, glyph.glyph_id, size_phys);
+                // 轮廓外扩在光栅化之前施加（`embolden == 0` 时内部短路回原路径）；
+                // 掩码膨胀（stem_darken）仍在位图上做，二者可独立开关。
+                let embolden = tuning.outline_embolden_for_size(size_phys);
+                let (m, b) = engine.rasterize_glyph_emboldened(
+                    glyph.font_id,
+                    glyph.glyph_id,
+                    size_phys,
+                    embolden,
+                );
                 let (m, b) = tune_glyph_bitmap(m, b, size_phys, tuning);
                 if m.width > 0 && m.height > 0 {
                     glyph_bitmaps.insert(key, (m, b));
@@ -359,7 +387,7 @@ mod tests {
         let t = TextRenderTuning {
             contrast: 1.0,
             gamma: 1.4,
-            stem_darken_px: 0.0,
+            ..TextRenderTuning::default()
         };
         let lut = t.coverage_lut([1.0, 1.0, 1.0, 1.0]).expect("非默认应有表");
         assert_eq!(lut[0], 0);
@@ -377,7 +405,7 @@ mod tests {
         let t = TextRenderTuning {
             contrast: 0.0,
             gamma: 1.4,
-            stem_darken_px: 0.0,
+            ..TextRenderTuning::default()
         };
         let dark_fg = t.coverage_lut([0.0, 0.0, 0.0, 1.0]).unwrap();
         let light_fg = t.coverage_lut([1.0, 1.0, 1.0, 1.0]).unwrap();
