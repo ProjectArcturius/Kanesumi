@@ -11,6 +11,7 @@ pub mod idle;
 pub mod input_config;
 pub mod layers;
 pub mod perf;
+pub mod renderer_policy;
 pub mod role;
 pub mod system_theme;
 pub mod tree_host;
@@ -48,6 +49,7 @@ pub use app::{
 pub use appmenu::install;
 pub use appmenu::{AppMenuHandle, MenuItem, MenuTree, MenuUpdate, ToggleType};
 pub use context_menu::{ContextMenuAction, ContextMenuState};
+pub use renderer_policy::{RendererKind, SurfaceClass, choose_renderer};
 pub use role::{EtherRole, RoleParseError, SurfaceKind};
 pub use tree_host::{TreeApp, TreeHost};
 

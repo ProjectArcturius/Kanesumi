@@ -181,6 +181,15 @@ enum Step {
     },
 }
 
+impl Step {
+    /// 该步的裁剪矩形（逻辑像素）；None = 无裁剪。
+    fn clip(&self) -> Option<Rect> {
+        match self {
+            Step::Solid { clip, .. } | Step::Text { clip, .. } | Step::Image { clip, .. } => *clip,
+        }
+    }
+}
+
 // 追加或延长同类型末尾 Step。类型不同或裁剪不同 → 结算旧 Step、开新 Step。
 fn push_solid(steps: &mut Vec<Step>, before: u32, after: u32, clip: Option<Rect>) {
     if after == before {
@@ -265,10 +274,26 @@ fn scissor_rect(
 /// 参 A1（本次会话新增）：40×20 胶囊在 2× 缩放下每角 6 段 tessellation 产生的边缘锯齿。
 const MSAA_SAMPLES: u32 = 4;
 
-pub struct Renderer {
-    surface: wgpu::Surface<'static>,
+/// 进程共享的 wgpu 上下文（G1）：instance / adapter / device / queue 与选定的表面格式。
+///
+/// 主表面与各浮层共用一份 —— G0 实测「每个用 wgpu 的进程 RSS +55~75 MB」，共享设备
+/// 把这份开销从「每表面一份」降为「每进程一份」。参
+/// Ether docs/GPU_COMPOSITION_PLAN.md §Ⅲ「G1 壳层 GPU 光栅」与 §Ⅳ「内存」。
+/// 惰性创建、初始化失败永久回落 CPU（platform 侧持有）。
+pub struct GpuContext {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// 共享管线与配置统一使用的表面格式（sRGB 优先）。
+    format: wgpu::TextureFormat,
+}
+
+/// 单个表面的 wgpu 光栅化器（present 直出）。持有自己的一份表面/顶点缓冲/字形缓存，
+/// 但 device / queue 来自进程共享的 [`GpuContext`]。
+pub struct Renderer {
+    ctx: Arc<GpuContext>,
+    surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     solid_pipeline: wgpu::RenderPipeline,
     text_pipeline: wgpu::RenderPipeline,
@@ -321,68 +346,56 @@ fn create_msaa_view(
     tex.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
+/// 从 wl_display / wl_surface 原始指针创建 wgpu 表面（同 launcher render.rs 模式）。
+/// 供 `GpuContext` 选适配器与 `Renderer` 建各自表面共用。
+fn create_wl_surface(
+    instance: &wgpu::Instance,
+    conn: &Connection,
+    wl_surface: &WlSurface,
+) -> Result<wgpu::Surface<'static>, wgpu::CreateSurfaceError> {
+    use raw_window_handle::{
+        RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
+    };
+    use std::ptr::NonNull;
+
+    let backend = conn.backend();
+    let display_ptr = backend.display_ptr() as *mut std::ffi::c_void;
+    let raw_display_handle = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(
+        NonNull::new(display_ptr).expect("wl_display 指针为空"),
+    ));
+    let surface_ptr = wl_surface.id().as_ptr() as *mut std::ffi::c_void;
+    let raw_window_handle = RawWindowHandle::Wayland(WaylandWindowHandle::new(
+        NonNull::new(surface_ptr).expect("wl_surface 指针为空"),
+    ));
+    unsafe {
+        instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+            raw_display_handle,
+            raw_window_handle,
+        })
+    }
+}
+
 /// 渲染器初始化错误。
 #[derive(Debug)]
 pub enum RendererError {
     Surface(wgpu::CreateSurfaceError),
     Adapter,
     Device(wgpu::RequestDeviceError),
+    /// 共享上下文的表面格式不被目标表面支持（同一合成器下不应发生）。
+    IncompatibleFormat { wanted: wgpu::TextureFormat },
 }
 
-impl Renderer {
-    /// 从 wl_surface 建 wgpu 表面与管线。`conn` 用于取 wl_display 指针。
-    ///
-    /// 后端选择：优先 Vulkan；`request_adapter` 失败（含 `SURFACE_LOST_KHR`，常见于
-    /// GLES 合成器下）时回退 GL（Mesa llvmpipe/lavapipe 软件路径），仍失败再试
-    /// `force_fallback_adapter`。参 Known Issue #8 —— Ether DRM 合成器（GlesRenderer）
-    /// 下 Vulkan 客户端 surface 可能失效，GL 软件回退保证 TopBar/Dock 可渲染。
-    /// 新建渲染器。`transparent` = 表面需透明底（浮层）：alpha_mode 选 PreMultiplied，
-    /// clear 为透明，画布上只画半透明面板/控件（参 Ether 合成器对 alpha 表面的混合）。
-    /// `false` = 不透明表面（Kanesumi 主表面，背景实体）。
-    /// ⚠ 本渲染器只服务 xdg-shell 直出（present）。layer-shell 角色走 CpuRenderer
-    ///   （cpu_raster.rs）→ wl_shm，不再有离屏读回路径。参 TOPBAR_RENDER_REFACTOR。
+impl GpuContext {
+    /// 进程共享上下文：挨个后端候选（主→备）建 instance/device/queue 与选定格式。
+    /// `wl_surface` 仅用于挑一个与该表面兼容的适配器，函数返回后临时表面即丢弃。
     pub fn new(
         conn: &Connection,
         wl_surface: &WlSurface,
-        width: f32,
-        height: f32,
-        scale: f32,
-        transparent: bool,
-    ) -> Result<Self, RendererError> {
-        Self::new_with_backends(
-            conn,
-            wl_surface,
-            width,
-            height,
-            scale,
-            transparent,
-            // ⚠ 实验：Vulkan 优先（支持 PreMultiplied alpha，主表面可透明）。
-            // 之前 Vulkan 在 Ether 下 SURFACE_LOST，故 GL 优先；GL 复位实验后重试 Vulkan。
-            &[wgpu::Backends::VULKAN, wgpu::Backends::GL],
-        )
-    }
-
-    /// 显式指定后端候选（主→备）。遍历首个能成功创建 adapter 的后端。
-    pub fn new_with_backends(
-        conn: &Connection,
-        wl_surface: &WlSurface,
-        width: f32,
-        height: f32,
-        scale: f32,
-        transparent: bool,
         backends: &[wgpu::Backends],
-    ) -> Result<Self, RendererError> {
+    ) -> Result<Arc<Self>, RendererError> {
         for (i, backend) in backends.iter().enumerate() {
-            match Self::new_with_backend(
-                conn,
-                wl_surface,
-                width,
-                height,
-                scale,
-                transparent,
-                *backend,
-            ) {
-                Ok(r) => return Ok(r),
+            match Self::new_with_backend(conn, wl_surface, *backend) {
+                Ok(c) => return Ok(c),
                 Err(e) if i + 1 < backends.len() => {
                     log::warn!("wgpu 后端 {:?} 初始化失败（{e:?}），尝试下一候选", backend);
                 }
@@ -395,40 +408,14 @@ impl Renderer {
     fn new_with_backend(
         conn: &Connection,
         wl_surface: &WlSurface,
-        width: f32,
-        height: f32,
-        scale: f32,
-        _transparent: bool,
         backend: wgpu::Backends,
-    ) -> Result<Self, RendererError> {
+    ) -> Result<Arc<Self>, RendererError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: backend,
             ..Default::default()
         });
-
-        // 提取 wl_display / wl_surface 原始指针（同 launcher render.rs 模式）。
-        use raw_window_handle::{
-            RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
-        };
-        use std::ptr::NonNull;
-
-        let backend = conn.backend();
-        let display_ptr = backend.display_ptr() as *mut std::ffi::c_void;
-        let raw_display_handle = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(
-            NonNull::new(display_ptr).expect("wl_display 指针为空"),
-        ));
-        let surface_ptr = wl_surface.id().as_ptr() as *mut std::ffi::c_void;
-        let raw_window_handle = RawWindowHandle::Wayland(WaylandWindowHandle::new(
-            NonNull::new(surface_ptr).expect("wl_surface 指针为空"),
-        ));
-        let surface = unsafe {
-            instance
-                .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                    raw_display_handle,
-                    raw_window_handle,
-                })
-                .map_err(RendererError::Surface)?
-        };
+        let surface =
+            create_wl_surface(&instance, conn, wl_surface).map_err(RendererError::Surface)?;
 
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
@@ -467,6 +454,89 @@ impl Renderer {
             .find(|f| f.is_srgb())
             .copied()
             .unwrap_or(caps.formats[0]);
+        // 临时表面仅用于挑适配器；真实表面由各 Renderer 自建（`with_context`）。
+        drop(surface);
+
+        Ok(Arc::new(Self {
+            instance,
+            adapter,
+            device,
+            queue,
+            format,
+        }))
+    }
+
+    /// 共享管线/配置使用的表面格式。
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
+}
+
+impl Renderer {
+    /// 从 wl_surface 建 wgpu 表面与管线。`conn` 用于取 wl_display 指针。
+    ///
+    /// 后端选择：优先 Vulkan；`request_adapter` 失败（含 `SURFACE_LOST_KHR`，常见于
+    /// GLES 合成器下）时回退 GL（Mesa llvmpipe/lavapipe 软件路径），仍失败再试
+    /// `force_fallback_adapter`。参 Known Issue #8 —— Ether DRM 合成器（GlesRenderer）
+    /// 下 Vulkan 客户端 surface 可能失效，GL 软件回退保证 TopBar/Dock 可渲染。
+    /// 新建渲染器。`transparent` = 表面需透明底（浮层）：alpha_mode 选 PreMultiplied，
+    /// clear 为透明，画布上只画半透明面板/控件（参 Ether 合成器对 alpha 表面的混合）。
+    /// `false` = 不透明表面（Kanesumi 主表面，背景实体）。
+    /// ⚠ 本渲染器只服务 xdg-shell 直出（present）。layer-shell 角色走 CpuRenderer
+    ///   （cpu_raster.rs）→ wl_shm，不再有离屏读回路径。参 TOPBAR_RENDER_REFACTOR。
+    pub fn new(
+        conn: &Connection,
+        wl_surface: &WlSurface,
+        width: f32,
+        height: f32,
+        scale: f32,
+        transparent: bool,
+    ) -> Result<Self, RendererError> {
+        Self::new_with_backends(
+            conn,
+            wl_surface,
+            width,
+            height,
+            scale,
+            transparent,
+            // ⚠ 实验：Vulkan 优先（支持 PreMultiplied alpha，主表面可透明）。
+            // 之前 Vulkan 在 Ether 下 SURFACE_LOST，故 GL 优先；GL 复位实验后重试 Vulkan。
+            &[wgpu::Backends::VULKAN, wgpu::Backends::GL],
+        )
+    }
+
+    /// 显式指定后端候选（主→备）。建进程共享上下文，再为本表面建表面/管线。
+    pub fn new_with_backends(
+        conn: &Connection,
+        wl_surface: &WlSurface,
+        width: f32,
+        height: f32,
+        scale: f32,
+        transparent: bool,
+        backends: &[wgpu::Backends],
+    ) -> Result<Self, RendererError> {
+        let ctx = GpuContext::new(conn, wl_surface, backends)?;
+        Self::with_context(ctx, conn, wl_surface, width, height, scale, transparent)
+    }
+
+    /// 用进程共享的 [`GpuContext`] 为单个 wl_surface 建表面 / 管线 / 顶点缓冲。
+    /// 共享 device/queue 与选定格式 —— 每进程一份 wgpu 设备而非每表面一份（G1 RSS）。
+    pub fn with_context(
+        ctx: Arc<GpuContext>,
+        conn: &Connection,
+        wl_surface: &WlSurface,
+        width: f32,
+        height: f32,
+        scale: f32,
+        _transparent: bool,
+    ) -> Result<Self, RendererError> {
+        let surface =
+            create_wl_surface(&ctx.instance, conn, wl_surface).map_err(RendererError::Surface)?;
+        let caps = surface.get_capabilities(&ctx.adapter);
+        let format = ctx.format;
+        if !caps.formats.contains(&format) {
+            return Err(RendererError::IncompatibleFormat { wanted: format });
+        }
         // alpha_mode：优先 PreMultiplied —— 保留 alpha 通道（背景不透明像素 a=1 完全
         // 覆盖，浮层透明区 a=0 透出桌面）。⚠ Opaque 时 wgpu 可能把 alpha 通道写 0
         // （或选无 alpha 格式），合成器 GLES 用 (ONE, ONE_MINUS_SRC_ALPHA) 预乘混合
@@ -483,6 +553,8 @@ impl Renderer {
                     .copied()
                     .unwrap_or(wgpu::CompositeAlphaMode::Auto)
             });
+        // device 借用共享上下文（wgpu 22 的 Device 非 Clone，用引用即可）。
+        let device = &ctx.device;
 
         let (pw, ph) = (width * scale, height * scale);
         let config = wgpu::SurfaceConfiguration {
@@ -495,7 +567,7 @@ impl Renderer {
             desired_maximum_frame_latency: 2,
             present_mode: wgpu::PresentMode::Fifo,
         };
-        surface.configure(&device, &config);
+        surface.configure(device, &config);
 
         // 形状管线（预乘混合）
         let solid_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -673,12 +745,11 @@ impl Renderer {
         let text_buf = mk_vert_buf("kanesumi-text-buf", 1024);
         let image_buf = mk_vert_buf("kanesumi-image-buf", 128);
 
-        let msaa_view = create_msaa_view(&device, &config);
+        let msaa_view = create_msaa_view(device, &config);
 
         Ok(Self {
+            ctx,
             surface,
-            device,
-            queue,
             config,
             solid_pipeline,
             text_pipeline,
@@ -709,8 +780,8 @@ impl Renderer {
         let (pw, ph) = (width * scale, height * scale);
         self.config.width = pw.round().max(1.0) as u32;
         self.config.height = ph.round().max(1.0) as u32;
-        self.surface.configure(&self.device, &self.config);
-        self.msaa_view = create_msaa_view(&self.device, &self.config);
+        self.surface.configure(&self.ctx.device, &self.config);
+        self.msaa_view = create_msaa_view(&self.ctx.device, &self.config);
     }
 
     /// 诊断：当前表面格式 / alpha_mode / buffer 物理尺寸（排查合成器下显示透明）。
@@ -732,10 +803,23 @@ impl Renderer {
         (self.config.width, self.config.height)
     }
 
-    /// 把一帧 Scene 光栅化到当前表面并提交（present 模式）。
+    /// 把一帧 Scene 光栅化到当前表面并提交（present 模式，全幅）。
     pub fn render(&mut self, engine: &TextEngine, scene: &Scene) {
+        self.render_with_damage(engine, scene, None);
+    }
+
+    /// 损伤感知绘制（G1）：`damage = None` 全幅重画（clear）；
+    /// `Some(rect)`（逻辑像素）只重画该矩形 —— scissor 与各绘制步裁剪求交，
+    /// MSAA 纹理以 `Load` 保留上一帧其余内容。零面积损伤 = 无变化，完全不提交。
+    ///
+    /// 参 Ether docs/GPU_COMPOSITION_PLAN.md §Ⅲ「GPU 路径损伤感知」。
+    pub fn render_with_damage(&mut self, engine: &TextEngine, scene: &Scene, damage: Option<Rect>) {
         let (pw, ph) = (self.config.width as f32, self.config.height as f32);
         if pw < 1.0 || ph < 1.0 {
+            return;
+        }
+        // 零面积 = 本帧无变化：不取帧纹理、不提交。
+        if damage.is_some_and(|d| d.size.width <= 0.0 || d.size.height <= 0.0) {
             return;
         }
         let frame = self.build_frame(engine, scene);
@@ -749,7 +833,7 @@ impl Renderer {
         let view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.draw_frame(&frame, &view);
+        self.draw_frame(&frame, &view, damage);
         surface_texture.present();
     }
 
@@ -977,8 +1061,14 @@ impl Renderer {
     }
 
     /// 绘制已构建帧：MSAA pass → resolve 到 `resolve` 视图 → submit。
-    /// `resolve` = swapchain 视图（present 模式）或离屏纹理视图（SHM 模式）。
-    fn draw_frame(&mut self, frame: &FrameData, resolve: &wgpu::TextureView) {
+    /// `resolve` = swapchain 视图（present 模式）。`damage = Some(rect)` 时只重画该矩形
+    /// （scissor），MSAA 纹理 `Load` 上一帧内容 → 其余像素保留；`None` 全幅 clear。
+    fn draw_frame(
+        &mut self,
+        frame: &FrameData,
+        resolve: &wgpu::TextureView,
+        damage: Option<Rect>,
+    ) {
         // 先建字形纹理（借用分离）
         for key in &frame.pending_glyphs {
             self.ensure_glyph(*key);
@@ -989,24 +1079,27 @@ impl Renderer {
         }
 
         let mut encoder = self
+            .ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("kanesumi-frame"),
             });
 
         {
+            // 全幅 clear；损伤帧 Load 保留 MSAA 上一帧内容（store=Store 使其跨帧存活）。
+            let load = match damage {
+                Some(_) => wgpu::LoadOp::Load,
+                None => wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+            };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("kanesumi-pass"),
                 // MSAA：多重采样纹理作 attachment，resolve 视图作 resolve_target。
-                // pass 结束时硬件自动 4→1 downsample 到 resolve（swapchain 或离屏）。
-                // store=Discard 因为 MSAA 中间纹理不再使用（resolve 已完成）。
+                // pass 结束时硬件自动 4→1 downsample 到 resolve（swapchain）。
+                // store=Store（非 Discard）是为损伤帧 Load 保留上一帧内容服务。
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.msaa_view,
                     resolve_target: Some(resolve),
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Discard,
-                    },
+                    ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -1019,8 +1112,8 @@ impl Renderer {
             // 之后的命令不再被之前控件的文本盖住。
             let solid_buf = if !frame.solid.is_empty() {
                 Some(upload_vertices_solid(
-                    &self.device,
-                    &self.queue,
+                    &self.ctx.device,
+                    &self.ctx.queue,
                     &mut self.solid_buf,
                     &mut self.solid_cap,
                     &frame.solid,
@@ -1030,8 +1123,8 @@ impl Renderer {
             };
             let text_buf = if !frame.text.is_empty() {
                 Some(upload_vertices(
-                    &self.device,
-                    &self.queue,
+                    &self.ctx.device,
+                    &self.ctx.queue,
                     &mut self.text_buf,
                     &mut self.text_cap,
                     &frame.text,
@@ -1041,8 +1134,8 @@ impl Renderer {
             };
             let image_buf = if !frame.image.is_empty() {
                 Some(upload_vertices(
-                    &self.device,
-                    &self.queue,
+                    &self.ctx.device,
+                    &self.ctx.queue,
                     &mut self.image_buf,
                     &mut self.image_cap,
                     &frame.image,
@@ -1061,27 +1154,34 @@ impl Renderer {
             };
 
             for step in &frame.steps {
+                // 损伤裁剪（G1）：与步骤自身裁剪求交；空交集 → 整步跳过（不动颜色）。
+                let clip = match (damage, step.clip()) {
+                    (Some(d), Some(c)) => match intersect(c, d) {
+                        Some(x) => Some(x),
+                        None => continue,
+                    },
+                    (Some(d), None) => Some(d),
+                    (None, c) => c,
+                };
                 match step {
-                    Step::Solid { start, count, clip } => {
+                    Step::Solid { start, count, .. } => {
                         let Some(buf) = solid_buf.as_ref() else {
                             continue;
                         };
                         pass.set_pipeline(&self.solid_pipeline);
                         pass.set_vertex_buffer(0, buf.slice(..));
-                        set_scissor(&mut pass, *clip);
+                        set_scissor(&mut pass, clip);
                         pass.draw(*start..*start + *count, 0..1);
                     }
                     Step::Text {
-                        run_start,
-                        run_end,
-                        clip,
+                        run_start, run_end, ..
                     } => {
                         let Some(buf) = text_buf.as_ref() else {
                             continue;
                         };
                         pass.set_pipeline(&self.text_pipeline);
                         pass.set_vertex_buffer(0, buf.slice(..));
-                        set_scissor(&mut pass, *clip);
+                        set_scissor(&mut pass, clip);
                         for run in &frame.text_runs[*run_start as usize..*run_end as usize] {
                             let Some(glyph) = self.glyphs.get(&run.glyph_key) else {
                                 continue;
@@ -1091,16 +1191,14 @@ impl Renderer {
                         }
                     }
                     Step::Image {
-                        run_start,
-                        run_end,
-                        clip,
+                        run_start, run_end, ..
                     } => {
                         let Some(buf) = image_buf.as_ref() else {
                             continue;
                         };
                         pass.set_pipeline(&self.image_pipeline);
                         pass.set_vertex_buffer(0, buf.slice(..));
-                        set_scissor(&mut pass, *clip);
+                        set_scissor(&mut pass, clip);
                         for run in &frame.image_runs[*run_start as usize..*run_end as usize] {
                             let Some(tex) = self.images.get(&run.image_key) else {
                                 continue;
@@ -1116,7 +1214,7 @@ impl Renderer {
             pass.set_scissor_rect(0, 0, self.config.width, self.config.height);
         }
 
-        self.queue.submit(Some(encoder.finish()));
+        self.ctx.queue.submit(Some(encoder.finish()));
     }
 
     /// 排版一段文本并产出字形 quad。placement 与 CPU 光栅器共用
@@ -1184,7 +1282,7 @@ impl Renderer {
         if w == 0 || h == 0 {
             return;
         }
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+        let texture = self.ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("kanesumi-glyph"),
             size: wgpu::Extent3d {
                 width: w,
@@ -1198,7 +1296,7 @@ impl Renderer {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        self.queue.write_texture(
+        self.ctx.queue.write_texture(
             wgpu::ImageCopyTexture {
                 texture: &texture,
                 mip_level: 0,
@@ -1218,7 +1316,7 @@ impl Renderer {
             },
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("kanesumi-glyph-bg"),
             layout: &self.text_bgl,
             entries: &[
@@ -1249,7 +1347,7 @@ impl Renderer {
         if width == 0 || height == 0 {
             return;
         }
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+        let texture = self.ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("kanesumi-image"),
             size: wgpu::Extent3d {
                 width,
@@ -1263,7 +1361,7 @@ impl Renderer {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        self.queue.write_texture(
+        self.ctx.queue.write_texture(
             wgpu::ImageCopyTexture {
                 texture: &texture,
                 mip_level: 0,
@@ -1283,7 +1381,7 @@ impl Renderer {
             },
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("kanesumi-image-bg"),
             layout: &self.text_bgl,
             entries: &[
