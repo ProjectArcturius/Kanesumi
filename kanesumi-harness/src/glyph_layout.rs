@@ -9,16 +9,18 @@ use kanesumi_canvas::TextAlign;
 use kanesumi_canvas::text::{TextEngine, TextLayoutOptions};
 use kanesumi_core::{Rect, TextStyle};
 
-/// 文字浓度实验旋钮（tx1 spike，2026-10-04）。
+/// 文字浓度旋钮（tx1/tx2 spike → G-67 进生产）。
 ///
-/// 默认值 = 现状（全关），生产路径不受影响。仅 CPU 快照路径消费；参 Ether
-/// `docs/TYPE_ENGINE_PLAN.md` §一·五 与 `docs/DECISIONS_2026-10-04.md` §E-63。
+/// 默认值 = 生产默认：contrast 0.5 / gamma 1.4（恒等档见 `identity`）。CPU 与 GPU
+/// 两条光栅路径都要消费：CPU 在 `cpu_raster::blit_coverage` 处过 `coverage_lut`；
+/// GPU 在 `render.rs` 的 `TEXT_SHADER` 里对采样覆盖率套 `tune_coverage` 同一条公式。
+/// 参 Ether `docs/DECISIONS_2026-10-04.md` §G-67 与 `docs/TYPE_ENGINE_PLAN.md` §一·五。
 /// 三个旋钮都作用于字形「进入混合之前」：
-/// - `contrast` / `gamma`：覆盖率 → 覆盖率的预混合查表（`coverage_lut`）。
+/// - `contrast` / `gamma`：覆盖率 → 覆盖率的预混合查表（`coverage_lut` / `tune_coverage`）。
 /// - `stem_darken_px`：覆盖率掩码的亚像素膨胀（横 / 纵最大值滤波按比例混合）—— tx1
 ///   的旧途径，产生灰色光晕、边缘发虚，调度者审阅判定**不可用**，仅留作反例对照。
 /// - `outline_embolden_px`：轮廓沿法线外扩（tx2 新增）—— 在轮廓进光栅器前加粗，
-///   边缘仍是干净反走样阶梯，是推荐的加粗途径。
+///   边缘仍是干净反走样阶梯，是推荐的加粗途径（G-67 生产默认仍关）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextRenderTuning {
     /// 对比度增强强度（0 = 关）。以 0.5 为轴做 S 形拉伸。
@@ -32,10 +34,11 @@ pub struct TextRenderTuning {
 }
 
 impl Default for TextRenderTuning {
+    /// 生产默认（裁定 G-67）：正文 contrast 0.5 / gamma 1.4；轮廓加粗与掩码膨胀仍关。
     fn default() -> Self {
         Self {
-            contrast: 0.0,
-            gamma: 1.0,
+            contrast: 0.5,
+            gamma: 1.4,
             stem_darken_px: 0.0,
             outline_embolden_px: 0.0,
         }
@@ -43,12 +46,28 @@ impl Default for TextRenderTuning {
 }
 
 impl TextRenderTuning {
-    /// 全默认 → 现行为。混合路径据此短路，保证默认逐像素不变。
-    pub const fn is_default(&self) -> bool {
+    /// 恒等档（改动前行为）：不查表、不加粗。用于「显式关闭」与旧样张复现。
+    pub const fn identity() -> Self {
+        Self {
+            contrast: 0.0,
+            gamma: 1.0,
+            stem_darken_px: 0.0,
+            outline_embolden_px: 0.0,
+        }
+    }
+
+    /// 是否恒等档（对比度/gamma 不作用、字形几何不变）。参 `identity`。
+    pub const fn is_identity(&self) -> bool {
         self.contrast == 0.0
             && self.gamma == 1.0
             && self.stem_darken_px == 0.0
             && self.outline_embolden_px == 0.0
+    }
+
+    /// 字形几何是否需要走 tuned 路径（掩码膨胀或轮廓加粗开启）。
+    /// 对比度 / gamma 只作用于覆盖率进混合之前，不改字形位图与放置，故不计入。
+    pub const fn needs_glyph_tuning(&self) -> bool {
+        self.stem_darken_px > 0.0 || self.outline_embolden_px > 0.0
     }
 
     /// 该物理字号下的实际加粗量（物理像素）。
@@ -65,28 +84,38 @@ impl TextRenderTuning {
         darken_amount_for_size(self.outline_embolden_px, size_px)
     }
 
-    /// 前景色（sRGB 直通 rgba）→ 覆盖率映射表；全默认时返回 `None`（保持原样）。
+    /// 前景色（sRGB 直通 rgba）→ 覆盖率映射表；恒等档时返回 `None`（保持原样）。
     ///
-    /// 公式（参 Skia `SkScalerContext` luminance preblend / DirectWrite 增强对比度思路）：
-    /// 1. 按前景亮度选择 gamma：`gamma_eff = gamma × (1 + 0.3·(luma − 0.5))` —— 亮字
-    ///    （深底）最多 ×1.15，暗字（浅底）最多 ×0.85。
-    /// 2. gamma：`c₁ = c^(1/gamma_eff)`（gamma>1 提亮中间调）。
-    /// 3. contrast：`c₂ = 0.5 + (c₁ − 0.5)·(1 + contrast)`（以 0.5 为轴拉伸后再夹取）。
+    /// 表由 `tune_coverage` 逐档生成，保证 CPU 与 GPU 片元着色器是同一条公式。
     pub fn coverage_lut(&self, color: [f32; 4]) -> Option<[u8; 256]> {
         if self.contrast == 0.0 && self.gamma == 1.0 {
             return None;
         }
-        let luma = 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2];
-        let gamma_eff = (self.gamma * (1.0 + 0.30 * (luma.clamp(0.0, 1.0) - 0.5))).max(0.05);
-        let gain = 1.0 + self.contrast;
         let mut lut = [0u8; 256];
         for (i, slot) in lut.iter_mut().enumerate() {
-            let c = i as f32 / 255.0;
-            let g = c.powf(1.0 / gamma_eff);
-            let s = (0.5 + (g - 0.5) * gain).clamp(0.0, 1.0);
-            *slot = (s * 255.0).round() as u8;
+            *slot = (self.tune_coverage(i as f32 / 255.0, color) * 255.0).round() as u8;
         }
         Some(lut)
+    }
+
+    /// 单点覆盖率补偿 —— CPU 查表与 GPU 片元着色器的唯一真源。
+    ///
+    /// 公式（参 Skia `SkScalerContext` luminance preblend / DirectWrite 增强对比度思路）：
+    /// 1. 按前景亮度选择 gamma：`gamma_eff = gamma × (1 + 0.3·(luma − 0.5))` —— 亮字
+    ///    （深底）最多 ×1.15，暗字（浅底）最多 ×0.85。
+    /// 2. gamma：`g = cov^(1/gamma_eff)`（gamma>1 提亮中间调）。
+    /// 3. contrast：`out = clamp(0.5 + (g − 0.5)·(1 + contrast), 0, 1)`。
+    ///
+    /// ⚠ GPU 端 `render.rs` 的 `TEXT_SHADER` 有同一公式的 WGSL 版本；改动此处必须同步，
+    /// 由 `gpu_formula_matches_cpu_lut` 测试守住逐值一致。
+    pub fn tune_coverage(&self, cov: f32, color: [f32; 4]) -> f32 {
+        if self.contrast == 0.0 && self.gamma == 1.0 {
+            return cov;
+        }
+        let luma = (0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]).clamp(0.0, 1.0);
+        let gamma_eff = (self.gamma * (1.0 + 0.30 * (luma - 0.5))).max(0.05);
+        let g = cov.powf(1.0 / gamma_eff);
+        (0.5 + (g - 0.5) * (1.0 + self.contrast)).clamp(0.0, 1.0)
     }
 }
 
@@ -353,11 +382,13 @@ mod tests {
         }
     }
 
-    /// 默认旋钮：覆盖率查表为 None；加粗量为 0；位图原样返回。
+    /// 恒等档：覆盖率查表为 None；加粗量为 0；位图原样返回。
+    /// 这是「显式关闭 = 改动前行为」的守卫（默认档已改为 G-67 生产补偿）。
     #[test]
-    fn default_tuning_is_identity() {
-        let t = TextRenderTuning::default();
-        assert!(t.is_default());
+    fn identity_tuning_is_noop() {
+        let t = TextRenderTuning::identity();
+        assert!(t.is_identity());
+        assert!(!t.needs_glyph_tuning());
         assert!(t.coverage_lut([1.0, 1.0, 1.0, 1.0]).is_none());
         assert_eq!(t.stem_darken_for_size(30.0), 0.0);
         let src = vec![0u8, 255, 128, 0];
@@ -365,12 +396,23 @@ mod tests {
         assert_eq!(out, src);
     }
 
+    /// 生产默认（G-67）= contrast 0.5 / gamma 1.4，且非恒等。
+    #[test]
+    fn default_is_g67_production_tuning() {
+        let t = TextRenderTuning::default();
+        assert_eq!(t.contrast, 0.5);
+        assert_eq!(t.gamma, 1.4);
+        assert!(!t.is_identity());
+        assert!(!t.needs_glyph_tuning(), "G-67 默认不加粗字形几何");
+        assert!(t.coverage_lut([1.0, 1.0, 1.0, 1.0]).is_some());
+    }
+
     /// 加粗量随字号递减，基准 30 px 处等于旋钮值。
     #[test]
     fn stem_darken_decreases_with_size() {
         let t = TextRenderTuning {
             stem_darken_px: 0.5,
-            ..TextRenderTuning::default()
+            ..TextRenderTuning::identity()
         };
         assert!((t.stem_darken_for_size(30.0) - 0.5).abs() < 1e-6, "基准");
         assert!(
@@ -387,7 +429,7 @@ mod tests {
         let t = TextRenderTuning {
             contrast: 1.0,
             gamma: 1.4,
-            ..TextRenderTuning::default()
+            ..TextRenderTuning::identity()
         };
         let lut = t.coverage_lut([1.0, 1.0, 1.0, 1.0]).expect("非默认应有表");
         assert_eq!(lut[0], 0);
@@ -405,7 +447,7 @@ mod tests {
         let t = TextRenderTuning {
             contrast: 0.0,
             gamma: 1.4,
-            ..TextRenderTuning::default()
+            ..TextRenderTuning::identity()
         };
         let dark_fg = t.coverage_lut([0.0, 0.0, 0.0, 1.0]).unwrap();
         let light_fg = t.coverage_lut([1.0, 1.0, 1.0, 1.0]).unwrap();
@@ -438,5 +480,57 @@ mod tests {
         let far = 4 + 2 * 5; // 距中心 2：半径 1 够不到。
         assert_eq!(half[far], 0);
         assert_eq!(full[far], 0);
+    }
+
+    /// `render.rs` `TEXT_SHADER` 片元着色器公式的逐行转写。
+    /// 与 `TextRenderTuning::tune_coverage` 必须逐值一致；WGSL 侧改动此处同步。
+    fn wgsl_formula(cov: f32, color: [f32; 4], contrast: f32, gamma: f32) -> f32 {
+        if contrast == 0.0 && gamma == 1.0 {
+            return cov;
+        }
+        let luma =
+            (0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]).clamp(0.0, 1.0);
+        let gamma_eff = (gamma * (1.0 + 0.30 * (luma - 0.5))).max(0.05);
+        let g = cov.powf(1.0 / gamma_eff);
+        (0.5 + (g - 0.5) * (1.0 + contrast)).clamp(0.0, 1.0)
+    }
+
+    /// CPU 查表与 GPU 片元公式对同输入覆盖率 / 同前景色逐值相等（G-67 要求）。
+    // 覆盖生产默认档与实验档，以及深浅底的亮 / 暗前景。
+    #[test]
+    fn gpu_formula_matches_cpu_lut() {
+        let colors = [
+            [1.0, 1.0, 1.0, 1.0], // 深底纯白字
+            [0.0, 0.0, 0.0, 1.0], // 浅底纯黑字
+            [0.90, 0.90, 0.90, 1.0],
+            [0.10, 0.10, 0.10, 1.0],
+            [0.40, 0.45, 0.50, 1.0], // 中性主题色
+        ];
+        let tunings = [
+            TextRenderTuning::default(),
+            TextRenderTuning {
+                contrast: 1.0,
+                gamma: 1.8,
+                ..TextRenderTuning::identity()
+            },
+            TextRenderTuning {
+                contrast: 0.0,
+                gamma: 1.4,
+                ..TextRenderTuning::identity()
+            },
+        ];
+        for t in tunings {
+            for color in colors {
+                let lut = t.coverage_lut(color).expect("非恒等档应有表");
+                for (i, &entry) in lut.iter().enumerate() {
+                    let gpu = wgsl_formula(i as f32 / 255.0, color, t.contrast, t.gamma);
+                    assert_eq!(
+                        entry,
+                        (gpu * 255.0).round() as u8,
+                        "覆盖率 {i} 前景 {color:?} 两路公式输出不一致"
+                    );
+                }
+            }
+        }
     }
 }
