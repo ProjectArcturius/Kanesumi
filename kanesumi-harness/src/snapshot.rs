@@ -23,6 +23,8 @@ pub fn render_png(
     frames: u32,
     out: &Path,
 ) -> Result<(u32, u32), String> {
+    // 快照缩放即被测表面的缩放：注入全局，应用侧图标光栅按它出物理像素。
+    kanesumi_canvas::set_surface_scale(scale);
     let mut scene = Scene::default();
     let mut cpu = CpuRenderer::new(size.width, size.height, scale);
     let mut rgba = Vec::new();

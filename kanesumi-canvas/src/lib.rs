@@ -10,6 +10,7 @@ pub mod geometry;
 pub mod glyph;
 pub mod icon;
 pub mod layout;
+pub mod scale;
 pub mod scene;
 pub mod text;
 
@@ -19,6 +20,7 @@ pub use geometry::{
 };
 pub use acrylic::{Acrylic, backdrop};
 pub use icon::{Icon, rasterize_image, rasterize_png, rasterize_svg};
+pub use scale::{set_surface_scale, surface_scale};
 pub use layout::{
     Constraints, CrossAlign, LaidKind, LaidNode, LaidTree, LayoutLeaf, LayoutNode, layout,
 };
