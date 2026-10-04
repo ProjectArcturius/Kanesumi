@@ -1144,17 +1144,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kanesumi-calculator"
-version = "0.1.0"
-dependencies = [
- "kanesumi-anim",
- "kanesumi-canvas",
- "kanesumi-controls",
- "kanesumi-core",
- "kanesumi-harness",
-]
-
-[[package]]
 name = "kanesumi-canvas"
 version = "0.1.0"
 dependencies = [
