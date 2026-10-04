@@ -5,6 +5,7 @@
 // 职责：连 Wayland → 按 `EtherRole::surface_kind()` 建表面（xdg-shell / layer-shell）→
 // wgpu 附着 → frame callback 驱动 `App::update(dt)` / `App::render(engine, size)` → 光栅化 Scene。
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use kanesumi_canvas::text::TextEngine;
@@ -76,7 +77,10 @@ use crate::app::{
 use crate::appmenu::AppMenuHandle;
 use crate::context_menu::ContextMenuAction;
 use crate::cpu_raster::CpuRenderer;
-use crate::render::Renderer;
+use crate::render::{GpuContext, Renderer};
+use crate::renderer_policy::{
+    RendererKind, SurfaceClass, choose_renderer, default_expected_hz, gpu_kill_switch,
+};
 use crate::role::{EtherRole, SurfaceKind};
 use kanesumi_canvas::set_surface_scale;
 
@@ -445,6 +449,14 @@ pub(crate) struct Shell {
     /// 参 TOPBAR_RENDER_REFACTOR §4.1 / cpu_raster.rs。
     cpu: Option<CpuRenderer>,
 
+    // ── GPU 上下文（G1：进程内共享一份 wgpu device/queue）─────
+    /// 进程共享 wgpu 上下文（主表面 / 各浮层共用）。惰性创建；`gpu_failed` 后不再尝试。
+    gpu: Option<Arc<GpuContext>>,
+    /// wgpu 初始化是否已永久失败（不再重试，一律回落 CPU）。
+    gpu_failed: bool,
+    /// kill-switch 快照（`~/.config/ether/gpu-off` 或 `KANESUMI_GPU=0`）→ 一律 CPU。
+    gpu_kill: bool,
+
     /// 主表面脏标记（I-3：输入 / 定时器 / 动画 / 尺寸变化显式置位，commit 后清除）。
     /// frame 回调仅作 vsync 提示（置位 dirty），不驱动渲染（I-2）。
     dirty: bool,
@@ -797,8 +809,10 @@ impl Default for ShmBuffers {
 struct FloatingSurface {
     surface: wl_surface::WlSurface,
     layer_surface: LayerSurface,
-    /// CPU 光栅化器（浮层恒为 layer-shell → SHM 提交）。
+    /// CPU 光栅化器（浮层走 layer-shell → SHM/dmabuf 提交）。与 `renderer` 二选一。
     cpu: Option<CpuRenderer>,
+    /// wgpu 光栅化器（G1：大面积 / 高刷新浮层走 GPU 直出）。与 `cpu` 二选一。
+    renderer: Option<Renderer>,
     width: f32,
     height: f32,
     configured: bool,
@@ -1124,6 +1138,9 @@ impl Shell {
             keyboard: None,
             renderer,
             cpu: None,
+            gpu: None,
+            gpu_failed: false,
+            gpu_kill: gpu_kill_switch(),
             dirty: true,
             floating_dirty: vec![false; floating.len()],
             floating_full: vec![true; floating.len()],
@@ -1239,6 +1256,9 @@ impl Shell {
             if let Some(cpu) = f.cpu.as_mut() {
                 cpu.resize(f.width, h, f.scale);
             }
+            if let Some(r) = f.renderer.as_mut() {
+                r.resize(f.width, h, f.scale);
+            }
             self.floating_dirty[i] = true; // 尺寸变化 → 呈现新高度（I-3）。
             if let Some(viewport) = f.viewport.as_ref()
                 && h > 1.0
@@ -1249,19 +1269,60 @@ impl Shell {
         }
     }
 
-    /// 渲染浮层帧：ensure CPU 光栅器（透明底）→ App::render_floating → 光栅化 → SHM 提交。
+    /// 浮层渲染器惰性创建（G1）：按策略选 GPU / CPU；GPU 不可用或创建失败 → CPU。
+    fn ensure_floating_renderer(&mut self, idx: usize) {
+        let Some((fw, fh, fscale, surf)) = self.floating.get(idx).and_then(|f| {
+            (f.cpu.is_none() && f.renderer.is_none())
+                .then(|| (f.width, f.height, f.scale, f.surface.clone()))
+        }) else {
+            return;
+        };
+        let class = SurfaceClass::Floating;
+        let area = ((fw * fscale).max(0.0) * (fh * fscale).max(0.0)) as u64;
+        let hz = default_expected_hz(class);
+        let gpu_ok = self.gpu_available();
+        let kind = choose_renderer(class, area, hz, gpu_ok);
+        log::info!(
+            "渲染器选择：浮层 #{}（{:.0}x{:.0}，scale {}）area={}px² hz={:.1} → {:?}（{}）",
+            idx,
+            fw,
+            fh,
+            fscale,
+            area,
+            hz,
+            kind,
+            crate::renderer_policy::decision_reason(class, area, hz, gpu_ok),
+        );
+        if kind == RendererKind::Gpu
+            && let Some(ctx) = self.ensure_gpu_context(&surf)
+            && let Ok(mut r) = Renderer::with_context(ctx, &self.conn, &surf, fw, fh, fscale, true)
+        {
+            // 预热：空场景提交一次，强制管线/着色器编译（消除 G0 测得的首帧 20~40 ms 尖峰）。
+            r.render(&self.engine, &Scene::default());
+            log::info!("浮层 wgpu 渲染器已创建（{}）", r.diagnostics());
+            self.floating[idx].renderer = Some(r);
+            return;
+        }
+        let cpu = CpuRenderer::new(fw, fh, fscale);
+        log::info!("浮层 CPU 光栅化器已创建（{:.0}x{:.0}）", fw, fh);
+        self.floating[idx].cpu = Some(cpu);
+    }
+
+    /// 渲染浮层帧：ensure 渲染器（透明底）→ App::render_floating → 光栅化 → 提交。
+    /// GPU 路径消费损伤（只重画损伤矩形；无损伤不提交）；CPU 路径走 cpu_raster。
     fn render_floating_frame(&mut self, idx: usize, qh: &QueueHandle<Self>) {
         if !self.app.floating_visible(idx) {
             // 浮层隐藏：不请求下一帧 → 表面空闲（零成本）。
             return;
         }
+        if self.floating.get(idx).map(|f| !f.configured).unwrap_or(true) {
+            return;
+        }
+        self.ensure_floating_renderer(idx);
         let (app, floating) = (&mut self.app, &mut self.floating);
         let Some(f) = floating.get_mut(idx) else {
             return;
         };
-        if !f.configured {
-            return;
-        }
         // ⚠ 光栅器惰性创建前先同步当前 App 请求高度：面板打开时 floating_height 返回
         //   面板高，f.height 可能仍是收起值 → 光栅器用 0 高度创建 → 浮层永远不可见。
         //   全屏浮层（四边锚定）不参与：高度 0 = 铺满，按 0 同步会把它压成 1px（R1 Launcher 不出图）。
@@ -1273,6 +1334,9 @@ impl Shell {
             if let Some(cpu) = f.cpu.as_mut() {
                 cpu.resize(f.width, h, f.scale);
             }
+            if let Some(r) = f.renderer.as_mut() {
+                r.resize(f.width, h, f.scale);
+            }
             if let Some(viewport) = f.viewport.as_ref()
                 && h > 1.0
             {
@@ -1280,12 +1344,12 @@ impl Shell {
                     .set_destination(f.width.round().max(1.0) as i32, h.round().max(1.0) as i32);
             }
         }
-        if f.cpu.is_none() {
-            f.cpu = Some(CpuRenderer::new(f.width, f.height, f.scale));
-            log::info!("浮层 CPU 光栅化器已创建（{:.0}x{:.0}）", f.width, f.height);
-        }
         // 局部光栅：新建 / 重新显示 / 尺寸变了 → 整幅（先通知 App 整幅拼接）；否则按 App 帧损伤。
-        let phys_now = f.cpu.as_ref().map(|c| c.physical_size());
+        let phys_now = if let Some(cpu) = f.cpu.as_ref() {
+            Some(cpu.physical_size())
+        } else {
+            f.renderer.as_ref().map(|r| r.physical_size())
+        };
         let full = self.floating_full[idx] || self.floating_raster_size[idx] != phys_now;
         if full {
             app.floating_full_repaint(idx);
@@ -1338,6 +1402,19 @@ impl Shell {
                 damage,
             );
             commit_ms = t.elapsed().as_secs_f32() * 1000.0;
+            self.floating_full[idx] = false;
+            self.floating_raster_size[idx] = phys_now;
+        } else if let Some(r) = f.renderer.as_mut() {
+            // GPU（G1）：消费损伤 —— 全幅或只重画损伤矩形（scissor + MSAA Load 保留
+            // 上一帧其余像素）；零面积 = 本帧无变化 → 不提交。
+            let damage = if full { None } else { app.floating_damage(idx) };
+            if damage.is_some_and(|d| d.size.width <= 0.0 || d.size.height <= 0.0) {
+                self.floating_full[idx] = false;
+                return;
+            }
+            let t = Instant::now();
+            r.render_with_damage(&self.engine, &scene, damage);
+            raster_ms = t.elapsed().as_secs_f32() * 1000.0;
             self.floating_full[idx] = false;
             self.floating_raster_size[idx] = phys_now;
         }
@@ -1455,27 +1532,91 @@ impl Shell {
         }
     }
 
+    /// GPU 是否可用：kill-switch 未命中且共享上下文尚未永久失败。
+    fn gpu_available(&self) -> bool {
+        !self.gpu_kill && !self.gpu_failed
+    }
+
+    /// 惰性创建进程共享 wgpu 上下文；已建则复用。失败 → `gpu_failed` 永久回落 CPU 并记日志。
+    /// 不检查 kill-switch（xdg 窗口没有 CPU 路径，必须 GPU；kill-switch 只门控 layer 表面）。
+    fn ensure_gpu_context(
+        &mut self,
+        wl_surface: &wl_surface::WlSurface,
+    ) -> Option<Arc<GpuContext>> {
+        if self.gpu_failed {
+            return None;
+        }
+        // 故障注入：KANESUMI_GPU_INIT_FAIL=1 模拟 wgpu 初始化失败，验证「初始化失败 →
+        // 永久回落 CPU」路径（参任务书验证第 4 条）。
+        if std::env::var_os("KANESUMI_GPU_INIT_FAIL").is_some_and(|v| v == "1") {
+            log::error!("KANESUMI_GPU_INIT_FAIL=1：模拟 wgpu 初始化失败，永久回落 CPU 光栅");
+            self.gpu_failed = true;
+            return None;
+        }
+        if let Some(ctx) = &self.gpu {
+            return Some(ctx.clone());
+        }
+        // 后端候选与 `Renderer::new` 一致：Vulkan 优先，GL 回退（Known Issue #8）。
+        match GpuContext::new(
+            &self.conn,
+            wl_surface,
+            &[wgpu::Backends::VULKAN, wgpu::Backends::GL],
+        ) {
+            Ok(ctx) => {
+                log::info!(
+                    "wgpu 共享上下文已创建（format={:?}）—— 主表面/浮层共用一份 device",
+                    ctx.format()
+                );
+                self.gpu = Some(ctx.clone());
+                Some(ctx)
+            }
+            Err(e) => {
+                log::error!("wgpu 共享上下文初始化失败（{e:?}），本进程永久回落 CPU 光栅");
+                self.gpu_failed = true;
+                None
+            }
+        }
+    }
+
     /// 确保渲染器已创建（首个 configure 后调用；surface 已配置、尺寸已知）。
-    /// 失败记日志并置 running=false（App 退出）。
     ///
-    /// 按表面类型分派（TOPBAR_RENDER_REFACTOR §3.2）：
-    /// - xdg-shell（Settings 窗口等）→ wgpu `Renderer`（直出 present）。
-    /// - layer-shell（TopBar/Dock/Launcher/Ceyboard）→ `CpuRenderer`（Scene 直接
-    ///   光栅化进 SHM；零 GPU 同步点、零读回）。
+    /// 按表面类型分派（G1，参 Ether docs/GPU_COMPOSITION_PLAN.md §Ⅲ）：
+    /// - xdg-shell（Settings 窗口等）→ wgpu `Renderer`（直出 present，恒 GPU）。
+    /// - layer-shell 主表面 → `choose_renderer` 按面积 × 刷新频率选 GPU 或 CPU；
+    ///   `KANESUMI_LAYER_GPU=1` 为遗留调试开关（强制该主表面走 GPU）。
+    ///
+    /// wgpu 初始化失败 → 回落 CPU（layer）或退出（xdg）。
     fn ensure_renderer(&mut self) {
         if self.renderer.is_some() || self.cpu.is_some() {
             return;
         }
         if matches!(self.role.surface_kind(), SurfaceKind::XdgShell) {
             let wl_surface = if let Some(w) = &self.window {
-                w.wl_surface()
+                w.wl_surface().clone()
             } else {
-                &self.surface
+                self.surface.clone()
             };
-            match Renderer::new(&self.conn, wl_surface, self.width, self.height, self.scale, false) {
+            let Some(ctx) = self.ensure_gpu_context(&wl_surface) else {
+                log::error!("wgpu 共享上下文不可用，xdg 窗口退出");
+                write_diag(
+                    "ether-renderer-error.log",
+                    "wgpu 共享上下文初始化失败（xdg 窗口）\n",
+                );
+                self.running = false;
+                return;
+            };
+            match Renderer::with_context(
+                ctx,
+                &self.conn,
+                &wl_surface,
+                self.width,
+                self.height,
+                self.scale,
+                false,
+            ) {
                 Ok(r) => {
-                    self.renderer = Some(r);
                     log::info!("wgpu 渲染器已创建（{:.0}x{:.0}）", self.width, self.height);
+                    self.renderer = Some(r);
                 }
                 Err(e) => {
                     log::error!("wgpu 渲染器初始化失败（{e:?}），退出");
@@ -1486,32 +1627,56 @@ impl Shell {
                     self.running = false;
                 }
             }
-        } else {
-            // G0 实验开关（默认关）：layer-shell 主表面改走 wgpu 直出，取证 2026-08 的
-            // 「layer-shell 上 wgpu 不可见」是否仍存在。失败回落 CPU，不退出。
-            // 参 Ether docs/GPU_COMPOSITION_PLAN.md §Ⅲ G0-a。浮层仍走 CPU。
-            if std::env::var_os("KANESUMI_LAYER_GPU").is_some_and(|v| v == "1") {
-                match Renderer::new(&self.conn, &self.surface, self.width, self.height, self.scale, false) {
-                    Ok(r) => {
-                        log::info!("G0：layer-shell 主表面使用 wgpu 渲染器（{}）", r.diagnostics());
-                        self.renderer = Some(r);
-                        return;
-                    }
-                    Err(e) => log::warn!("G0：layer-shell wgpu 初始化失败（{e:?}），回落 CPU 光栅"),
-                }
-            }
-            // layer-shell → CPU 光栅化。无失败模式：Vec 分配即就绪（I-1）。
-            let cpu = CpuRenderer::new(self.width, self.height, self.scale);
-            log::info!(
-                "CPU 光栅化器已创建（{:.0}x{:.0}，scale {}）",
-                self.width,
-                self.height,
-                self.scale,
-            );
-            self.cpu = Some(cpu);
-            // CPU 局部光栅只重画 damage 区 → App 可按 damage 剔除拼接（wgpu 整幅直出不开）。
-            self.app.set_damage_cull(true);
+            return;
         }
+
+        // layer-shell 主表面：按「面积 × 预期刷新频率」选渲染器。
+        let class = SurfaceClass::LayerMain;
+        let area = ((self.width * self.scale).max(0.0) * (self.height * self.scale).max(0.0)) as u64;
+        let hz = default_expected_hz(class);
+        let gpu_ok = self.gpu_available();
+        let force = std::env::var_os("KANESUMI_LAYER_GPU").is_some_and(|v| v == "1");
+        let mut kind = choose_renderer(class, area, hz, gpu_ok);
+        if force && gpu_ok {
+            kind = RendererKind::Gpu;
+        }
+        log::info!(
+            "渲染器选择：主表面（{:?}）area={}px² hz={:.1} → {:?}（{}）",
+            self.role,
+            area,
+            hz,
+            kind,
+            crate::renderer_policy::decision_reason(class, area, hz, gpu_ok),
+        );
+        if kind == RendererKind::Gpu {
+            let surf = self.surface.clone();
+            if let Some(ctx) = self.ensure_gpu_context(&surf)
+                && let Ok(r) = Renderer::with_context(
+                    ctx,
+                    &self.conn,
+                    &surf,
+                    self.width,
+                    self.height,
+                    self.scale,
+                    false,
+                )
+            {
+                log::info!("主表面 wgpu 渲染器已创建（{}）", r.diagnostics());
+                self.renderer = Some(r);
+                return;
+            }
+        }
+        // CPU 光栅化。无失败模式：Vec 分配即就绪（I-1）。
+        let cpu = CpuRenderer::new(self.width, self.height, self.scale);
+        log::info!(
+            "CPU 光栅化器已创建（{:.0}x{:.0}，scale {}）",
+            self.width,
+            self.height,
+            self.scale,
+        );
+        self.cpu = Some(cpu);
+        // CPU 局部光栅只重画 damage 区 → App 可按 damage 剔除拼接（wgpu 整幅直出不开）。
+        self.app.set_damage_cull(true);
     }
 
     /// 推进步（每循环迭代；与渲染解耦，TOPBAR_RENDER_REFACTOR I-4）：
@@ -1984,6 +2149,9 @@ impl Shell {
         if let Some(cpu) = floating.cpu.as_mut() {
             cpu.resize(floating.width, floating.height, scale);
         }
+        if let Some(r) = floating.renderer.as_mut() {
+            r.resize(floating.width, floating.height, scale);
+        }
     }
 
     /// 应用新逻辑尺寸。
@@ -2239,6 +2407,9 @@ impl LayerShellHandler for Shell {
             }
             if let Some(cpu) = f.cpu.as_mut() {
                 cpu.resize(f.width, f.height, f.scale);
+            }
+            if let Some(r) = f.renderer.as_mut() {
+                r.resize(f.width, f.height, f.scale);
             }
             if let Some(viewport) = f.viewport.as_ref()
                 && f.width > 0.0
@@ -2585,6 +2756,7 @@ fn create_floating_surface(
         surface,
         layer_surface: ls,
         cpu: None,
+        renderer: None,
         width: spec.width,
         height: spec.height,
         configured: false,
