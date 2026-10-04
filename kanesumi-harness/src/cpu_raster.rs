@@ -167,7 +167,8 @@ pub struct CpuRenderer {
     scaled_prev_used: HashSet<(usize, usize, u64, u32, u32)>,
     /// 布局 miss 计数（诊断/测试：静态文本重复渲染应不增长）。
     layout_misses: u64,
-    /// 文字浓度实验旋钮（tx1 spike）。默认全关 = 现行为逐像素不变。
+    /// 文字浓度旋钮（G-67 生产默认 contrast 0.5 / gamma 1.4；恒等档见
+    /// `TextRenderTuning::identity`）。
     text_tuning: TextRenderTuning,
 }
 
@@ -201,9 +202,9 @@ impl CpuRenderer {
         r
     }
 
-    /// 设定文字浓度旋钮（实验路径）。变化时清空字形位图与布局缓存 —— 加粗会改变
+    /// 设定文字浓度旋钮。变化时清空字形位图与布局缓存 —— 加粗会改变
     /// 字形位图尺寸（四周补 pad）与放置几何，旧缓存对新旋钮不再有效。
-    /// 默认值下与设置前逐像素一致（`is_default` 时混合/光栅路径短路）。
+    /// 设为 `TextRenderTuning::identity()` 即恢复改动前行为（覆盖率不过表、字形原样）。
     pub fn set_text_tuning(&mut self, tuning: TextRenderTuning) {
         if self.text_tuning == tuning {
             return;
@@ -815,7 +816,7 @@ impl CpuRenderer {
         if !hit {
             // miss：layout + 光栅化字形 + 入缓存。默认旋钮走原路径（零额外开销）。
             self.layout_misses += 1;
-            let placed = if tuning.is_default() {
+            let placed = if !tuning.needs_glyph_tuning() {
                 layout_text_glyphs(
                     engine,
                     &mut glyphs,
@@ -1745,9 +1746,10 @@ mod tests {
         assert_eq!(r.layout_misses, 3, "淘汰后的 A 重排一次后入缓存");
     }
 
-    /// tx1 旋钮默认关 = 现状逐像素不变：显式 `set_text_tuning(default)` 与不设置一致。
+    /// 显式恒等档 = 改动前行为（覆盖率不过表、字形走原光栅路径）。
+    /// 生产默认（G-67）对同一场景必须产生不同像素，证明默认补偿确实生效。
     #[test]
-    fn text_tuning_default_keeps_pixels_identical() {
+    fn text_tuning_identity_is_legacy_and_default_applies() {
         let Some(path) = test_font_path() else {
             return;
         };
@@ -1765,13 +1767,23 @@ mod tests {
             style,
             TextAlign::Left,
         );
-        let mut base = CpuRenderer::new(200.0, 40.0, 2.0);
-        base.render(&engine, &scene, None);
-        let mut tuned = CpuRenderer::new(200.0, 40.0, 2.0);
-        tuned.set_text_tuning(TextRenderTuning::default());
-        tuned.render(&engine, &scene, None);
-        assert_eq!(base.buf, tuned.buf, "默认旋钮必须逐像素一致");
-        assert!(base.text_tuning().is_default());
+        // 显式恒等 = 旧行为；查表返回 None，字形不加粗。
+        let mut legacy = CpuRenderer::new(200.0, 40.0, 2.0);
+        legacy.set_text_tuning(TextRenderTuning::identity());
+        legacy.render(&engine, &scene, None);
+        assert!(legacy.text_tuning().is_identity());
+        assert!(
+            legacy
+                .text_tuning()
+                .coverage_lut([1.0, 1.0, 1.0, 1.0])
+                .is_none(),
+            "恒等档覆盖率不得过表"
+        );
+        // 生产默认（不显式设置）= G-67；像素必须与恒等档不同。
+        let mut prod = CpuRenderer::new(200.0, 40.0, 2.0);
+        prod.render(&engine, &scene, None);
+        assert_eq!(prod.text_tuning(), TextRenderTuning::default());
+        assert_ne!(legacy.buf, prod.buf, "G-67 默认应对覆盖率生效");
     }
 
     /// 加粗旋钮开启后墨量（非零像素 + 亮度）必须增加；关闭时与现状一致。
@@ -1796,10 +1808,10 @@ mod tests {
             r.render(&engine, &scene, None);
             r
         };
-        let off = render(TextRenderTuning::default());
+        let off = render(TextRenderTuning::identity());
         let on = render(TextRenderTuning {
             stem_darken_px: 0.5,
-            ..TextRenderTuning::default()
+            ..TextRenderTuning::identity()
         });
         assert!(
             ink_sum(&on) > ink_sum(&off),
@@ -1835,11 +1847,11 @@ mod tests {
             r.render(&engine, &scene, None);
             r
         };
-        let off = render(TextRenderTuning::default());
+        let off = render(TextRenderTuning::identity());
         let on = render(TextRenderTuning {
             contrast: 1.0,
             gamma: 1.8,
-            ..TextRenderTuning::default()
+            ..TextRenderTuning::identity()
         });
         assert!(
             ink_sum(&on) > ink_sum(&off),
@@ -1872,10 +1884,10 @@ mod tests {
             r.render(&engine, &scene, None);
             r
         };
-        let off = render(TextRenderTuning::default());
+        let off = render(TextRenderTuning::identity());
         let on = render(TextRenderTuning {
             outline_embolden_px: 0.5,
-            ..TextRenderTuning::default()
+            ..TextRenderTuning::identity()
         });
         assert!(
             ink_sum(&on) > ink_sum(&off),
