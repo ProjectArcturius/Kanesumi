@@ -78,6 +78,7 @@ use crate::context_menu::ContextMenuAction;
 use crate::cpu_raster::CpuRenderer;
 use crate::render::Renderer;
 use crate::role::{EtherRole, SurfaceKind};
+use kanesumi_canvas::set_surface_scale;
 
 /// 启动 harness 主循环（Linux）。阻塞运行，不返回。
 ///
@@ -1290,6 +1291,8 @@ impl Shell {
             app.floating_full_repaint(idx);
         }
         let t_render = Instant::now();
+        // 本表面缩放注入全局：应用在 paint 期光栅图标时读它出物理像素。
+        set_surface_scale(f.scale);
         let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             app.render_floating(&self.engine, idx, Size::new(f.width, f.height))
         }));
@@ -1634,6 +1637,8 @@ impl Shell {
         // 复用 Vec 容量，不做每帧 `Scene::default()` + 逐 push 重分配。
         // `mem::take` 移动出旧缓冲（容量保留），渲染后再放回（绕过 &mut self 分裂借用）。
         let mut scene_buf = std::mem::take(&mut self.scene_buf);
+        // 本表面缩放注入全局：应用在 paint 期光栅图标时读它出物理像素。
+        set_surface_scale(self.scale);
         let t_render = Instant::now();
         let scene_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.app.render_into(&self.engine, size, &mut scene_buf)
@@ -1934,6 +1939,8 @@ impl Shell {
             return;
         }
         self.scale = scale;
+        // 图标等应用侧预光栅资产按此缩放出物理像素（参 kanesumi-canvas scale 模块）。
+        set_surface_scale(scale);
         if let Some(r) = self.renderer.as_mut() {
             r.resize(self.width, self.height, scale);
         }
@@ -1962,6 +1969,7 @@ impl Shell {
         };
         let floating = &mut self.floating[index];
         floating.scale = scale;
+        set_surface_scale(scale);
         if let Some(viewport) = floating.viewport.as_ref() {
             viewport.set_destination(
                 floating.width.round().max(1.0) as i32,
