@@ -346,6 +346,90 @@ impl FontFace {
         });
         (m, out)
     }
+
+    /// 光栅化一个字形，先在**轮廓**上沿法线外扩 `embolden_px`（物理像素）再进光栅器。
+    ///
+    /// 与 `rasterize` 的区别：加粗发生在轮廓进入覆盖率光栅器之前，边缘仍是干净的反走样
+    /// 阶梯，不产生掩码膨胀的灰色光晕。`embolden_px <= 0` 时直接走原路径，逐像素不变。
+    /// 加粗后的字形包围盒由外扩后的轮廓实算，故 `GlyphMetrics` 已含四周溢出，调用方
+    /// 无需再补 pad。参 Ether `docs/research/tx1/review/REVIEW.md`（掩码膨胀不可用）。
+    fn rasterize_emboldened(
+        &self,
+        glyph_id: u16,
+        size: f32,
+        embolden_px: f32,
+    ) -> (GlyphMetrics, Vec<u8>) {
+        if embolden_px <= 0.0 || !embolden_px.is_finite() || size <= 0.0 || !size.is_finite() {
+            return self.rasterize(glyph_id, size);
+        }
+        let face = self.parser();
+        let gid = ttf_parser::GlyphId(glyph_id);
+        let scale = size / self.units_per_em;
+        // 曲线细分容差 0.1 物理像素，换算到字体单位；夹取防极小字号下失控。
+        let tol = (0.1 / scale).clamp(0.5, 16.0);
+        let mut collector = OutlineCollector::new(tol);
+        if face.outline_glyph(gid, &mut collector).is_none() {
+            let m = self.metrics_for(&face, gid, size);
+            return (m, vec![0; m.width * m.height]);
+        }
+        collector.finish_contour();
+        // 物理像素 → 字体单位。
+        embolden_contours(&mut collector.contours, embolden_px / scale);
+        // 外扩后轮廓的实算包围盒 → 像素 metrics（floor / ceil，与 metrics_for 同规则）。
+        let (mut min_x, mut min_y) = (f32::INFINITY, f32::INFINITY);
+        let (mut max_x, mut max_y) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+        for contour in &collector.contours {
+            for p in contour {
+                min_x = min_x.min(p[0]);
+                min_y = min_y.min(p[1]);
+                max_x = max_x.max(p[0]);
+                max_y = max_y.max(p[1]);
+            }
+        }
+        if !min_x.is_finite() || !max_x.is_finite() {
+            return self.rasterize(glyph_id, size);
+        }
+        let x0 = (min_x * scale).floor();
+        let y0 = (min_y * scale).floor();
+        let x1 = (max_x * scale).ceil();
+        let y1 = (max_y * scale).ceil();
+        let m = GlyphMetrics {
+            xmin: x0 as i32,
+            ymin: y0 as i32,
+            width: (x1 - x0).max(0.0) as usize,
+            height: (y1 - y0).max(0.0) as usize,
+            advance_width: face
+                .glyph_hor_advance(gid)
+                .map_or(0.0, |a| f32::from(a) * scale),
+        };
+        if m.width == 0 || m.height == 0 {
+            return (m, Vec::new());
+        }
+        let mut raster = Rasterizer::new(m.width, m.height);
+        let origin_x = m.xmin as f32;
+        let top = (m.ymin + m.height as i32) as f32;
+        let map = |x: f32, y: f32| point(x * scale - origin_x, top - y * scale);
+        for contour in &collector.contours {
+            if contour.len() < 3 {
+                continue;
+            }
+            let first = map(contour[0][0], contour[0][1]);
+            let mut last = first;
+            for p in &contour[1..] {
+                let q = map(p[0], p[1]);
+                raster.draw_line(last, q);
+                last = q;
+            }
+            if last != first {
+                raster.draw_line(last, first);
+            }
+        }
+        let mut out = vec![0u8; m.width * m.height];
+        raster.for_each_pixel(|i, a| {
+            out[i] = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+        });
+        (m, out)
+    }
 }
 
 /// ttf-parser 轮廓 → 覆盖率光栅器。字体单位（Y+ 向上）→ 位图像素（Y+ 向下）。
@@ -394,6 +478,211 @@ impl ttf_parser::OutlineBuilder for OutlineSink {
             self.raster.draw_line(self.last, self.start);
         }
         self.last = self.start;
+    }
+}
+
+// ── 轮廓加粗（tx2 spike）───────────────────────────────────────────────────
+//
+// 与 `OutlineSink`（直接喂光栅器）并列：本采集器把 ttf-parser 的段收集成闭合折线，
+// 以便在进光栅器前对轮廓做几何外扩。曲线按物理像素容差递归细分。
+
+/// 采集字形轮廓为闭合折线（字体单位，Y+ 向上）。直线原样收点；二次 / 三次曲线按
+/// `tol`（字体单位）细分。
+struct OutlineCollector {
+    contours: Vec<Vec<[f32; 2]>>,
+    current: Vec<[f32; 2]>,
+    start: [f32; 2],
+    last: [f32; 2],
+    tol: f32,
+}
+
+impl OutlineCollector {
+    fn new(tol: f32) -> Self {
+        Self {
+            contours: Vec::new(),
+            current: Vec::new(),
+            start: [0.0, 0.0],
+            last: [0.0, 0.0],
+            tol: tol.max(1e-4),
+        }
+    }
+
+    /// 收尾当前轮廓；点数不足 3（围不出面积）则丢弃。
+    fn finish_contour(&mut self) {
+        if self.current.len() >= 3 {
+            self.contours.push(std::mem::take(&mut self.current));
+        } else {
+            self.current.clear();
+        }
+    }
+}
+
+fn mid_point(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+    [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
+}
+
+/// 控制点到弦的垂距是否小于容差（细分终止判据）。
+fn control_is_flat(p0: [f32; 2], c: [f32; 2], p1: [f32; 2], tol: f32) -> bool {
+    let dx = p1[0] - p0[0];
+    let dy = p1[1] - p0[1];
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-6 {
+        return true;
+    }
+    ((c[0] - p0[0]) * dy - (c[1] - p0[1]) * dx).abs() / len <= tol
+}
+
+/// 二次贝塞尔递归细分：`p0` 已在 `out` 中，只在叶子压入终点。
+fn flatten_quad(
+    out: &mut Vec<[f32; 2]>,
+    p0: [f32; 2],
+    c: [f32; 2],
+    p1: [f32; 2],
+    tol: f32,
+    depth: u32,
+) {
+    if depth >= 16 || control_is_flat(p0, c, p1, tol) {
+        out.push(p1);
+        return;
+    }
+    let a = mid_point(p0, c);
+    let b = mid_point(c, p1);
+    let m = mid_point(a, b);
+    flatten_quad(out, p0, a, m, tol, depth + 1);
+    flatten_quad(out, m, b, p1, tol, depth + 1);
+}
+
+/// 三次贝塞尔递归细分（de Casteljau 中点拆分）。
+fn flatten_cubic(
+    out: &mut Vec<[f32; 2]>,
+    p0: [f32; 2],
+    c1: [f32; 2],
+    c2: [f32; 2],
+    p1: [f32; 2],
+    tol: f32,
+    depth: u32,
+) {
+    if depth >= 18 || (control_is_flat(p0, c1, p1, tol) && control_is_flat(p1, c2, p0, tol)) {
+        out.push(p1);
+        return;
+    }
+    let a = mid_point(p0, c1);
+    let b = mid_point(c1, c2);
+    let d = mid_point(c2, p1);
+    let m0 = mid_point(a, b);
+    let m1 = mid_point(b, d);
+    let m = mid_point(m0, m1);
+    flatten_cubic(out, p0, a, m0, m, tol, depth + 1);
+    flatten_cubic(out, m, m1, d, p1, tol, depth + 1);
+}
+
+impl ttf_parser::OutlineBuilder for OutlineCollector {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.finish_contour();
+        self.start = [x, y];
+        self.last = [x, y];
+        self.current.push([x, y]);
+    }
+
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.current.push([x, y]);
+        self.last = [x, y];
+    }
+
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        let last = self.last;
+        flatten_quad(&mut self.current, last, [x1, y1], [x, y], self.tol, 0);
+        self.last = [x, y];
+    }
+
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        let last = self.last;
+        flatten_cubic(
+            &mut self.current,
+            last,
+            [x1, y1],
+            [x2, y2],
+            [x, y],
+            self.tol,
+            0,
+        );
+        self.last = [x, y];
+    }
+
+    fn close(&mut self) {
+        self.finish_contour();
+        self.last = self.start;
+    }
+}
+
+/// 闭合轮廓的有符号面积（鞋带公式，字体单位）。Y+ 向上时逆时针为正。
+fn signed_area(contour: &[[f32; 2]]) -> f32 {
+    let mut sum = 0.0;
+    for i in 0..contour.len() {
+        let a = contour[i];
+        let b = contour[(i + 1) % contour.len()];
+        sum += a[0] * b[1] - b[0] * a[1];
+    }
+    sum * 0.5
+}
+
+/// 边 `a → b` 的单位法线，`orient` 为全局环绕符号。`orient > 0`（外环逆时针）
+/// 时法线取 `(dy, -dx)`，指向外环外侧；`orient < 0` 时取反向。
+fn edge_normal(a: [f32; 2], b: [f32; 2], orient: f32) -> Option<[f32; 2]> {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-9 {
+        return None;
+    }
+    Some([orient * dy / len, -orient * dx / len])
+}
+
+/// 把闭合轮廓沿法线外扩 `d`（调用方坐标系单位）。外环向外、内环向内：
+/// 环绕方向由面积最大的轮廓（外环）统一决定，故非零环绕结构（含「口」等内框）保持。
+///
+/// 顶点位移取相邻两边法线的斜接解 `d·(n1+n2)/(1+n1·n2)`；`n1·n2 → -1` 的尖角 /
+/// 回头角退化为单位角平分方向，避免斜接长度发散（尖角因此被削平，已知局限）。
+pub(crate) fn embolden_contours(contours: &mut [Vec<[f32; 2]>], d: f32) {
+    if d <= 0.0 || !d.is_finite() {
+        return;
+    }
+    let orient = contours
+        .iter()
+        .map(|c| signed_area(c))
+        .reduce(|a, b| if b.abs() > a.abs() { b } else { a })
+        .map(|a| if a < 0.0 { -1.0 } else { 1.0 })
+        .unwrap_or(1.0);
+    for contour in contours.iter_mut() {
+        let n = contour.len();
+        if n < 3 {
+            continue;
+        }
+        let orig = contour.clone();
+        for i in 0..n {
+            let prev = orig[(i + n - 1) % n];
+            let cur = orig[i];
+            let next = orig[(i + 1) % n];
+            let (Some(n1), Some(n2)) = (
+                edge_normal(prev, cur, orient),
+                edge_normal(cur, next, orient),
+            ) else {
+                continue;
+            };
+            let denom = 1.0 + n1[0] * n2[0] + n1[1] * n2[1];
+            let (ox, oy) = if denom >= 0.25 {
+                let k = d / denom;
+                ((n1[0] + n2[0]) * k, (n1[1] + n2[1]) * k)
+            } else {
+                let (ax, ay) = (n1[0] + n2[0], n1[1] + n2[1]);
+                let len = (ax * ax + ay * ay).sqrt();
+                if len < 1e-6 {
+                    (0.0, 0.0)
+                } else {
+                    (ax / len * d, ay / len * d)
+                }
+            };
+            contour[i] = [cur[0] + ox, cur[1] + oy];
+        }
     }
 }
 
@@ -840,6 +1129,21 @@ impl TextEngine {
             .get(font_id as usize)
             .unwrap_or(&self.fonts[0])
             .rasterize(glyph_id, size)
+    }
+
+    /// 轮廓加粗版光栅化（tx2 spike）：先在轮廓上沿法线外扩 `embolden_px` 物理像素。
+    /// `embolden_px <= 0` 时与 `rasterize_glyph` 逐像素一致（生产路径不受影响）。
+    pub fn rasterize_glyph_emboldened(
+        &self,
+        font_id: u32,
+        glyph_id: u16,
+        size: f32,
+        embolden_px: f32,
+    ) -> (GlyphMetrics, Vec<u8>) {
+        self.fonts
+            .get(font_id as usize)
+            .unwrap_or(&self.fonts[0])
+            .rasterize_emboldened(glyph_id, size, embolden_px)
     }
 
     pub fn layout(&self, text: &str, size: f32, max_width: f32) -> Vec<Line> {
@@ -1345,5 +1649,76 @@ fn ttc_collection_selects_sc_face() {
         "选中字面的族名应含 CJK SC，实际 {family}"
     );
     assert_eq!(face.weight().to_number(), 500, "Medium TTC 的 SC 字面应为 500");
+}
+
+/// 轮廓加粗量为 0 时必须与原光栅化逐像素一致（生产路径不受影响的守卫）。
+/// 用系统 Noto CJK「口」字（含内框），同时覆盖外环 + 内环。无字体时跳过。
+#[test]
+fn outline_embolden_zero_matches_plain_raster() {
+    let dir = std::path::PathBuf::from("/usr/share/fonts/noto-cjk");
+    let regular = dir.join("NotoSansCJK-Regular.ttc");
+    if !regular.exists() {
+        return;
+    }
+    let engine = TextEngine::load_stack(
+        &FontSource {
+            path: regular,
+            collection_tag: Some("SC"),
+        },
+        &[],
+    )
+    .unwrap();
+    let glyphs = engine.shape_line("口", 30.0, 0.0);
+    let Some(g) = glyphs.first() else { return };
+    let plain = engine.rasterize_glyph(g.font_id, g.glyph_id, 30.0);
+    let zero = engine.rasterize_glyph_emboldened(g.font_id, g.glyph_id, 30.0, 0.0);
+    assert_eq!(plain.0, zero.0, "加粗 0 的 metrics 必须一致");
+    assert_eq!(plain.1, zero.1, "加粗 0 的位图必须逐像素一致");
+}
+
+/// 正方形轮廓外扩 d：四边各外移 d，边长 +2d（容差）。
+#[test]
+fn embolden_square_grows_by_two_d() {
+    let mut contours = vec![vec![
+        [0.0f32, 0.0],
+        [100.0, 0.0],
+        [100.0, 100.0],
+        [0.0, 100.0],
+    ]];
+    embolden_contours(&mut contours, 5.0);
+    let xs = contours[0].iter().map(|p| p[0]);
+    let ys = contours[0].iter().map(|p| p[1]);
+    let min_x = xs.clone().fold(f32::INFINITY, f32::min);
+    let max_x = xs.fold(f32::NEG_INFINITY, f32::max);
+    let min_y = ys.clone().fold(f32::INFINITY, f32::min);
+    let max_y = ys.fold(f32::NEG_INFINITY, f32::max);
+    assert!((min_x + 5.0).abs() < 1e-3, "左边应外移 d：{min_x}");
+    assert!((max_x - 105.0).abs() < 1e-3, "右边应外移 d：{max_x}");
+    assert!((min_y + 5.0).abs() < 1e-3, "下边应外移 d：{min_y}");
+    assert!((max_y - 105.0).abs() < 1e-3, "上边应外移 d：{max_y}");
+}
+
+/// 内环（与外环反环绕）在整体外扩时向内收：孔洞缩小而非扩大。
+#[test]
+fn embolden_hole_shrinks_inward() {
+    let outer = vec![
+        [0.0f32, 0.0],
+        [300.0, 0.0],
+        [300.0, 300.0],
+        [0.0, 300.0],
+    ]; // 逆时针外环。
+    let hole = vec![
+        [100.0f32, 100.0],
+        [100.0, 200.0],
+        [200.0, 200.0],
+        [200.0, 100.0],
+    ]; // 顺时针内环。
+    let mut contours = vec![outer, hole];
+    embolden_contours(&mut contours, 5.0);
+    let h = &contours[1];
+    let min_x = h.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
+    let max_x = h.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, f32::max);
+    assert!((min_x - 105.0).abs() < 1e-3, "内环左边应内收：{min_x}");
+    assert!((max_x - 195.0).abs() < 1e-3, "内环右边应内收：{max_x}");
 }
 }
