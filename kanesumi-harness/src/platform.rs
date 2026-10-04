@@ -3052,6 +3052,16 @@ impl Dispatch<ZwpInputMethodV2, ()> for Shell {
     }
 }
 
+/// 抓取按键是否原样放行（不经引擎）。纯函数，便于回归测试。
+///
+/// `im_active == false`（焦点表面 text-input 未启用）或 keymap 未建立时必须放行：
+/// 合成器在 grab 有效期内可能仍转发按键（防御：门控未生效 / 旧合成器），若吞掉则整个
+/// 键盘静默失效（参 docs/CEYBOARD_FIX_2026-09-18.md）。放行路径走虚拟键盘重放，
+/// **绝不进入 `ime_engine_key`**，故不会触发 Shift 点按判定等引擎逻辑。
+fn grab_key_passthrough(im_active: bool, has_keymap: bool) -> bool {
+    !im_active || !has_keymap
+}
+
 impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
     fn event(
         state: &mut Self,
@@ -3106,7 +3116,10 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                 // 把按键转发给 IME（smithay `active_text_input_serial_or_default` 恒回调）→
                 // IME 一失活整个键盘静默失效（2026-09-18 Ceyboard 故障复盘发现）。
                 // 安全性：本事件只可能来自 grab（客户端此时收不到原始按键），故重放不会重复投递。
-                if !state.im_active || state.im_xkb.is_none() {
+                if grab_key_passthrough(state.im_active, state.im_xkb.is_some()) {
+                    // 零交互排障留痕：非激活期按键只应来自「门控未生效 / 旧合成器」，
+                    // 记录证明放行而非吞键（参 docs/IME_PLAN.md §Ⅲ IME1）。
+                    log::debug!("IME 抓取按键 key={key} im_active={} → 放行", state.im_active);
                     if let Some(vk) = state.virtual_keyboard.clone() {
                         vk.key(state.im_key_time, key, 1); // 按下
                         vk.key(state.im_key_time, key, 0); // 释放（透传完整按键）
@@ -3119,6 +3132,7 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                 };
                 let (sym, utf8) = xkb.keycode_to_sym(key);
                 let logical = map_key(xkeysym::Keysym::new(sym), utf8);
+                log::debug!("IME 抓取按键 key={key} im_active=true → 引擎");
                 // 引擎处理按键 → 更新 preedit/commit，随即 flush 上屏。
                 // 返回 false = 引擎未消费 → 经虚拟键盘重放给焦点客户端（fcitx5 同款
                 // 透传：arrow/backspace/Home 等导航键须到焦点应用）。
@@ -3796,5 +3810,25 @@ mod tests {
             map_key(Keysym::new(key::BackSpace), Some("\u{8}".to_string())),
             Key::Backspace
         );
+    }
+
+    /// IME 未激活（文本字段未聚焦）时，抓取按键一律原样放行——不进引擎，
+    /// 因此不会触发 Shift 点按判定等引擎逻辑。参 docs/IME_PLAN.md §Ⅲ IME1。
+    #[test]
+    fn grab_key_passthrough_when_ime_inactive() {
+        assert!(grab_key_passthrough(false, true));
+        assert!(grab_key_passthrough(false, false));
+    }
+
+    /// IME 激活且 keymap 就绪 → 交引擎处理。
+    #[test]
+    fn grab_key_goes_to_engine_when_ime_active() {
+        assert!(!grab_key_passthrough(true, true));
+    }
+
+    /// keymap 未建立（无 xkb 可用）→ 无论激活与否都放行，绝不吞键。
+    #[test]
+    fn grab_key_passthrough_without_keymap() {
+        assert!(grab_key_passthrough(true, false));
     }
 }
