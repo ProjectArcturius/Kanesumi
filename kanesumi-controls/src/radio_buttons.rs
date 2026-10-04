@@ -7,6 +7,7 @@
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::typography::TextVAlign;
 use kanesumi_core::{CornerRadius, MetroTheme, Point, Rect, Size};
 
 /// 单选圆直径（20）。
@@ -198,17 +199,18 @@ impl MetroRadioButtons {
 
             // 标签：可用宽 = 行宽 − 圆钮 − 间距（非量测宽），单行省略号。
             // 2026-09-22 审计 P0-1。
+            // 纵向交给 TextVAlign::Center（与手算 (h−lh)/2 逐位同值）。参 o4 纵向对齐。
             let text_rect = Rect::new(
                 r.origin.x + RADIO_CIRCLE + RADIO_LABEL_GAP,
-                r.origin.y + (r.size.height - body.line_height) / 2.0,
+                r.origin.y,
                 (r.size.width - RADIO_CIRCLE - RADIO_LABEL_GAP).max(0.0),
-                body.line_height,
+                r.size.height,
             );
             scene.label(
                 item.clone(),
                 text_rect,
                 colors.on_surface,
-                body,
+                body.with_v_align(TextVAlign::Center),
                 TextAlign::Left,
             );
         }

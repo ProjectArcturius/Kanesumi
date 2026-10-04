@@ -8,6 +8,7 @@
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::typography::TextVAlign;
 use kanesumi_core::MetroTypography;
 use kanesumi_core::{Color, MetroTheme, Point, Rect};
 
@@ -264,14 +265,15 @@ impl MetroTabView {
             };
             scene.label(
                 self.tabs[k].clone(),
+                // 纵向交给 TextVAlign::Center（与手算 (h−lh)/2 逐位同值）。参 o4 纵向对齐。
                 Rect::new(
                     tr.origin.x + pad,
-                    tr.origin.y + (tr.size.height - style.line_height) / 2.0,
+                    tr.origin.y,
                     title_w.max(0.0),
-                    style.line_height,
+                    tr.size.height,
                 ),
                 fg,
-                style,
+                style.with_v_align(TextVAlign::Center),
                 TextAlign::Left,
             );
 

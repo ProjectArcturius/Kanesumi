@@ -16,6 +16,7 @@
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::typography::TextVAlign;
 use kanesumi_core::{MetroTheme, MetroTypography, Point, Rect, TextStyle};
 
 use crate::dropdown_menu::{MenuItem, MetroDropdownMenu};
@@ -378,17 +379,18 @@ impl MetroMenuBar {
 
             // Label —— 竖直居中，靠左（padding 10）。可用宽取自 header 矩形（非量测宽），
             // 单行省略号：2026-09-22 审计 P0-1（旧实现量测宽当 rect 宽 → 长菜单名画出 header）。
+            // 纵向交给 TextVAlign::Center（与手算 (header_height−lh)/2 逐位同值）。参 o4 纵向对齐。
             let text_rect = Rect::new(
                 hrect.origin.x + HEADER_PAD_X,
-                rect.origin.y + (self.header_height - style.line_height) / 2.0,
+                rect.origin.y,
                 (hrect.size.width - HEADER_PAD_X * 2.0).max(0.0),
-                style.line_height,
+                self.header_height,
             );
             scene.label(
                 self.items[i].label.clone(),
                 text_rect,
                 colors.on_surface,
-                style,
+                style.with_v_align(TextVAlign::Center),
                 TextAlign::Left,
             );
         }

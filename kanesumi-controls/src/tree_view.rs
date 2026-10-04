@@ -10,6 +10,7 @@ use kanesumi_anim::{EasingMode, MetroAnim, UwpEasing};
 use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::typography::TextVAlign;
 use kanesumi_core::MetroTypography;
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
@@ -301,14 +302,10 @@ impl MetroTreeView {
             };
             scene.label(
                 row.label.clone(),
-                Rect::new(
-                    label_x,
-                    r.origin.y + (r.size.height - style.line_height) / 2.0,
-                    label_w,
-                    style.line_height,
-                ),
+                // 纵向交给 TextVAlign::Center（与手算 (h−lh)/2 逐位同值）。参 o4 纵向对齐。
+                Rect::new(label_x, r.origin.y, label_w, r.size.height),
                 fg,
-                style,
+                style.with_v_align(TextVAlign::Center),
                 TextAlign::Left,
             );
         }

@@ -9,7 +9,7 @@
 use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::TextStyle;
+use kanesumi_core::typography::{TextVAlign, TextStyle};
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
 use crate::dropdown_menu::{MenuItem, MetroDropdownMenu};
@@ -248,16 +248,17 @@ impl MetroSplitButton {
 
         // Primary 标签：可用宽取自 primary 区（非量测宽度），单行省略号。
         // 2026-09-22 审计 P0-1：量测宽度只用于固有尺寸，绘制矩形必须由布局矩形派生。
+        // 纵向交给 TextVAlign::Center（与手算 (h−lh)/2 逐位同值）。参 o4 纵向对齐。
         scene.label(
             self.label.clone(),
             Rect::new(
                 primary.origin.x + 8.0,
-                primary.origin.y + (primary.size.height - style.line_height) / 2.0,
+                primary.origin.y,
                 (primary.size.width - 16.0).max(0.0),
-                style.line_height,
+                primary.size.height,
             ),
             colors.on_surface,
-            style,
+            style.with_v_align(TextVAlign::Center),
             TextAlign::Left,
         );
 

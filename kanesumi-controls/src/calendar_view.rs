@@ -12,6 +12,7 @@
 use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::typography::TextVAlign;
 use kanesumi_core::{CornerRadius, MetroTheme, Point, Rect, Size};
 
 /// 日格边长（UWP `CalendarViewDayItem` MinWidth/MinHeight 40）。
@@ -588,17 +589,17 @@ impl MetroCalendarView {
         let colors = &theme.colors;
         let body = theme.typography.body;
         let (title, prev, next) = self.nav_rects(rect);
-        let title_y = title.origin.y + (HEADER_H - body.line_height) / 2.0;
+        // 纵向交给 TextVAlign::Center（与手算 (HEADER_H−lh)/2 逐位同值）。参 o4 纵向对齐。
         scene.label(
             self.header_text(),
             Rect::new(
                 title.origin.x + 12.0,
-                title_y,
+                title.origin.y,
                 (title.size.width - 12.0).max(0.0),
-                body.line_height,
+                HEADER_H,
             ),
             colors.on_surface,
-            body,
+            body.with_v_align(TextVAlign::Center),
             TextAlign::Left,
         );
         let nav_fg = |hovered: bool| {
@@ -650,12 +651,12 @@ impl MetroCalendarView {
                 DAY_SIZE,
                 WEEKDAY_H,
             );
-            let y = cell.origin.y + (WEEKDAY_H - caption.line_height) / 2.0;
+            // 纵向交给 TextVAlign::Center（与手算 (WEEKDAY_H−lh)/2 逐位同值）。参 o4 纵向对齐。
             scene.label(
                 name.to_string(),
-                Rect::new(cell.origin.x, y, cell.size.width, caption.line_height),
+                Rect::new(cell.origin.x, cell.origin.y, cell.size.width, WEEKDAY_H),
                 colors.on_surface,
-                caption,
+                caption.with_v_align(TextVAlign::Center),
                 TextAlign::Center,
             );
         }
@@ -709,12 +710,12 @@ impl MetroCalendarView {
             } else {
                 colors.on_surface
             };
-            let y = inner.origin.y + (inner.size.height - body.line_height) / 2.0;
+            // 纵向交给 TextVAlign::Center（与手算 (inner.h−lh)/2 逐位同值）。参 o4 纵向对齐。
             scene.label(
                 date.day.to_string(),
-                Rect::new(inner.origin.x, y, inner.size.width, body.line_height),
+                Rect::new(inner.origin.x, inner.origin.y, inner.size.width, inner.size.height),
                 fg,
-                body,
+                body.with_v_align(TextVAlign::Center),
                 TextAlign::Center,
             );
         }
@@ -750,12 +751,12 @@ impl MetroCalendarView {
             } else {
                 colors.on_surface
             };
-            let y = inner.origin.y + (inner.size.height - body.line_height) / 2.0;
+            // 纵向交给 TextVAlign::Center（与手算 (inner.h−lh)/2 逐位同值）。参 o4 纵向对齐。
             scene.label(
                 label,
-                Rect::new(inner.origin.x, y, inner.size.width, body.line_height),
+                Rect::new(inner.origin.x, inner.origin.y, inner.size.width, inner.size.height),
                 fg,
-                body,
+                body.with_v_align(TextVAlign::Center),
                 TextAlign::Center,
             );
         }
