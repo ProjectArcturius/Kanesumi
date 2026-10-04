@@ -49,6 +49,7 @@ const ARMS: [Arm; 7] = [
             contrast: 0.0,
             gamma: 1.0,
             stem_darken_px: 0.0,
+            outline_embolden_px: 0.0,
         },
     },
     Arm {
@@ -57,6 +58,7 @@ const ARMS: [Arm; 7] = [
             contrast: 1.0,
             gamma: 1.0,
             stem_darken_px: 0.0,
+            outline_embolden_px: 0.0,
         },
     },
     Arm {
@@ -65,6 +67,7 @@ const ARMS: [Arm; 7] = [
             contrast: 0.0,
             gamma: 1.8,
             stem_darken_px: 0.0,
+            outline_embolden_px: 0.0,
         },
     },
     Arm {
@@ -73,6 +76,7 @@ const ARMS: [Arm; 7] = [
             contrast: 0.0,
             gamma: 1.0,
             stem_darken_px: 0.25,
+            outline_embolden_px: 0.0,
         },
     },
     Arm {
@@ -81,6 +85,7 @@ const ARMS: [Arm; 7] = [
             contrast: 0.0,
             gamma: 1.0,
             stem_darken_px: 0.5,
+            outline_embolden_px: 0.0,
         },
     },
     Arm {
@@ -89,6 +94,7 @@ const ARMS: [Arm; 7] = [
             contrast: 0.5,
             gamma: 1.4,
             stem_darken_px: 0.25,
+            outline_embolden_px: 0.0,
         },
     },
     Arm {
@@ -97,6 +103,7 @@ const ARMS: [Arm; 7] = [
             contrast: 1.0,
             gamma: 1.8,
             stem_darken_px: 0.5,
+            outline_embolden_px: 0.0,
         },
     },
 ];
