@@ -18,6 +18,9 @@ pub mod tree_host;
 pub mod cpu_raster;
 pub(crate) mod glyph_layout;
 
+/// 文字浓度实验旋钮（tx1 spike）。经 `CpuRenderer::set_text_tuning` 传入。
+pub use glyph_layout::TextRenderTuning;
+
 #[cfg(target_os = "linux")]
 pub mod dmabuf;
 
@@ -38,13 +41,13 @@ pub mod snapshot;
 pub use cpu_raster::CpuRenderer;
 
 pub use app::{
-    AnchorKind, App, AppConfig, FloatingLayer, ImeAction, ImeContentHint, ImeContext, InputEvent, Key,
-    LayerKind, Modifiers, PendingImeBatch, PointerButton, PopupRequest, compute_ime_action,
+    AnchorKind, App, AppConfig, FloatingLayer, ImeAction, ImeContentHint, ImeContext, InputEvent,
+    Key, LayerKind, Modifiers, PendingImeBatch, PointerButton, PopupRequest, compute_ime_action,
 };
-pub use context_menu::{ContextMenuAction, ContextMenuState};
-pub use appmenu::{AppMenuHandle, MenuItem, MenuTree, MenuUpdate, ToggleType};
 #[cfg(target_os = "linux")]
 pub use appmenu::install;
+pub use appmenu::{AppMenuHandle, MenuItem, MenuTree, MenuUpdate, ToggleType};
+pub use context_menu::{ContextMenuAction, ContextMenuState};
 pub use role::{EtherRole, RoleParseError, SurfaceKind};
 pub use tree_host::{TreeApp, TreeHost};
 
