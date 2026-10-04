@@ -424,6 +424,14 @@ pub trait App {
         false
     }
 
+    /// 引擎宿主：处理一个按键**松开**（来自 `zwp_input_method_keyboard_grab_v2` 的 key
+    /// release 事件，已语义化）。默认空实现。仅「Shift 点按在松开时判定」需要它
+    /// （按住期间无其它键、且按住 < 300 ms 才切中英，参 docs/IME_PLAN.md §Ⅱ-2）。
+    /// 返回值当前被外壳忽略；默认 `false` = 未消费。松开事件一律不重放。
+    fn ime_engine_key_release(&mut self, _key: Key, _modifiers: Modifiers) -> bool {
+        false
+    }
+
     /// 引擎宿主：当前组合态 preedit（拼音串）及光标字节偏移。
     /// 返回 `(preedit, cursor_byte)`；空串 = 无组合态。
     fn ime_engine_preedit(&self) -> (String, Option<usize>) {
