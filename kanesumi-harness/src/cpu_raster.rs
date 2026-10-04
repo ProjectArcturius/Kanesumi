@@ -14,12 +14,16 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
-use kanesumi_canvas::geometry::{Triangle, rounded_rect_polygon, triangulate_arc, triangulate_stroke};
+use kanesumi_canvas::geometry::{
+    Triangle, rounded_rect_polygon, triangulate_arc, triangulate_stroke,
+};
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, SceneCommand, TextAlign};
 use kanesumi_core::{Color, Point, Rect, TextStyle};
 
-use crate::glyph_layout::{GlyphKey, PlacedGlyph, layout_text_glyphs};
+use crate::glyph_layout::{
+    GlyphKey, PlacedGlyph, TextRenderTuning, layout_text_glyphs, layout_text_glyphs_tuned,
+};
 
 /// 每像素超采样数（与 GPU 路径 MSAA 4× 同构；样本位 (0.25,0.25)…(0.75,0.75)）。
 const SAMPLES: f32 = 4.0;
@@ -46,7 +50,11 @@ fn srgb_decode_lut() -> &'static [f32; 256] {
 
 #[inline]
 fn srgb_decode_f32(c: f32) -> f32 {
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 #[inline]
@@ -159,6 +167,8 @@ pub struct CpuRenderer {
     scaled_prev_used: HashSet<(usize, usize, u64, u32, u32)>,
     /// 布局 miss 计数（诊断/测试：静态文本重复渲染应不增长）。
     layout_misses: u64,
+    /// 文字浓度实验旋钮（tx1 spike）。默认全关 = 现行为逐像素不变。
+    text_tuning: TextRenderTuning,
 }
 
 /// 布局缓存条目：内容（精确比较防 hash 碰撞误用）+ 放置结果。
@@ -185,9 +195,29 @@ impl CpuRenderer {
             scaled_used: HashSet::new(),
             scaled_prev_used: HashSet::new(),
             layout_misses: 0,
+            text_tuning: TextRenderTuning::default(),
         };
         r.resize(width, height, scale);
         r
+    }
+
+    /// 设定文字浓度旋钮（实验路径）。变化时清空字形位图与布局缓存 —— 加粗会改变
+    /// 字形位图尺寸（四周补 pad）与放置几何，旧缓存对新旋钮不再有效。
+    /// 默认值下与设置前逐像素一致（`is_default` 时混合/光栅路径短路）。
+    pub fn set_text_tuning(&mut self, tuning: TextRenderTuning) {
+        if self.text_tuning == tuning {
+            return;
+        }
+        self.text_tuning = tuning;
+        self.glyph_bitmaps.clear();
+        self.layout_cache.clear();
+        self.layout_used.clear();
+        self.layout_prev_used.clear();
+    }
+
+    /// 当前文字浓度旋钮（诊断/测试用）。
+    pub fn text_tuning(&self) -> TextRenderTuning {
+        self.text_tuning
     }
 
     /// 重配尺寸：零填充重建，无 map/unmap/warmup 任何状态（§4.1）。
@@ -273,13 +303,22 @@ impl CpuRenderer {
                         log::warn!("Kanesumi CPU 光栅：未配对的 PopClip");
                     }
                 }
-                SceneCommand::FillRect { color, rect, corner_radius } => {
+                SceneCommand::FillRect {
+                    color,
+                    rect,
+                    corner_radius,
+                } => {
                     let Some(clip) = resolve_clip(&clip_stack) else {
                         continue;
                     };
                     self.fill_rect(*rect, *corner_radius, *color, clip);
                 }
-                SceneCommand::StrokeRect { color, rect, thickness, corner_radius } => {
+                SceneCommand::StrokeRect {
+                    color,
+                    rect,
+                    thickness,
+                    corner_radius,
+                } => {
                     let Some(clip) = resolve_clip(&clip_stack) else {
                         continue;
                     };
@@ -289,7 +328,14 @@ impl CpuRenderer {
                         clip,
                     );
                 }
-                SceneCommand::Arc { center, radius, thickness, color, start_deg, end_deg } => {
+                SceneCommand::Arc {
+                    center,
+                    radius,
+                    thickness,
+                    color,
+                    start_deg,
+                    end_deg,
+                } => {
                     let Some(clip) = resolve_clip(&clip_stack) else {
                         continue;
                     };
@@ -303,11 +349,7 @@ impl CpuRenderer {
                     let Some(clip) = resolve_clip(&clip_stack) else {
                         continue;
                     };
-                    self.fill_triangles(
-                        vec![Triangle::new(*p0, *p1, *p2)],
-                        *color,
-                        clip,
-                    );
+                    self.fill_triangles(vec![Triangle::new(*p0, *p1, *p2)], *color, clip);
                 }
                 SceneCommand::Text {
                     content,
@@ -337,23 +379,30 @@ impl CpuRenderer {
                     };
                     let Some(text_clip) = text_clip else { continue };
                     self.emit_text(
-                        engine, content, *rect, *color, *style, *align, *wrap, *max_lines,
-                        *overflow, Some(text_clip),
+                        engine,
+                        content,
+                        *rect,
+                        *color,
+                        *style,
+                        *align,
+                        *wrap,
+                        *max_lines,
+                        *overflow,
+                        Some(text_clip),
                     );
                 }
-                SceneCommand::Image { rgba, width, height, rect, tint, opacity } => {
+                SceneCommand::Image {
+                    rgba,
+                    width,
+                    height,
+                    rect,
+                    tint,
+                    opacity,
+                } => {
                     let Some(clip) = resolve_clip(&clip_stack) else {
                         continue;
                     };
-                    self.emit_image(
-                        rgba.as_ref(),
-                        *width,
-                        *height,
-                        *rect,
-                        *tint,
-                        *opacity,
-                        clip,
-                    );
+                    self.emit_image(rgba.as_ref(), *width, *height, *rect, *tint, *opacity, clip);
                 }
             }
         }
@@ -367,7 +416,11 @@ impl CpuRenderer {
             .collect();
         self.layout_cache.retain(|k, _| keep.contains(k));
         self.layout_prev_used = std::mem::take(&mut self.layout_used);
-        let keep_scaled: HashSet<_> = self.scaled_used.union(&self.scaled_prev_used).copied().collect();
+        let keep_scaled: HashSet<_> = self
+            .scaled_used
+            .union(&self.scaled_prev_used)
+            .copied()
+            .collect();
         self.scaled.retain(|k, _| keep_scaled.contains(k));
         self.scaled_prev_used = std::mem::take(&mut self.scaled_used);
         &self.buf
@@ -403,7 +456,15 @@ impl CpuRenderer {
     }
 
     /// 轴对齐矩形解析 AA 填充（物理浮点坐标）。
-    fn fill_rect_aa(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, color: Color, clip: Option<Rect>) {
+    fn fill_rect_aa(
+        &mut self,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        color: Color,
+        clip: Option<Rect>,
+    ) {
         if x1 <= x0 || y1 <= y0 {
             return;
         }
@@ -469,7 +530,12 @@ impl CpuRenderer {
                     continue;
                 }
                 let idx = (py * self.w + px) as usize * 4;
-                let mut px4 = [self.buf[idx], self.buf[idx + 1], self.buf[idx + 2], self.buf[idx + 3]];
+                let mut px4 = [
+                    self.buf[idx],
+                    self.buf[idx + 1],
+                    self.buf[idx + 2],
+                    self.buf[idx + 3],
+                ];
                 blend_px(&mut px4, c, cov);
                 self.buf[idx..idx + 4].copy_from_slice(&px4);
             }
@@ -518,9 +584,17 @@ impl CpuRenderer {
             let mut edges = [[0.0f32; 5]; 3];
             for (k, (a, b)) in [(0, 1), (1, 2), (2, 0)].into_iter().enumerate() {
                 let (p, q) = (pts[a], pts[b]);
-                let (y_lo, y_hi) = if p[1] <= q[1] { (p[1], q[1]) } else { (q[1], p[1]) };
+                let (y_lo, y_hi) = if p[1] <= q[1] {
+                    (p[1], q[1])
+                } else {
+                    (q[1], p[1])
+                };
                 // 水平边（dy==0）不参与扫描线求交，斜率置 0（该边无覆盖率贡献）。
-                let dx_dy = if q[1] != p[1] { (q[0] - p[0]) / (q[1] - p[1]) } else { 0.0 };
+                let dx_dy = if q[1] != p[1] {
+                    (q[0] - p[0]) / (q[1] - p[1])
+                } else {
+                    0.0
+                };
                 edges[k] = [p[0], p[1], dx_dy, y_lo, y_hi];
             }
             let y_lo = pts[0][1].min(pts[1][1]).min(pts[2][1]);
@@ -647,7 +721,12 @@ impl CpuRenderer {
                         continue;
                     }
                     let idx = (py * self.w + px as u32) as usize * 4;
-                    let mut px4 = [self.buf[idx], self.buf[idx + 1], self.buf[idx + 2], self.buf[idx + 3]];
+                    let mut px4 = [
+                        self.buf[idx],
+                        self.buf[idx + 1],
+                        self.buf[idx + 2],
+                        self.buf[idx + 3],
+                    ];
                     // 内部像素快路径：在行中心合并区间内部（距边界 ≥ EXT）且内部行
                     // → 4 样本必然全中（数学严格，见函数注释），cov = clip_cov 直写。
                     let mut internal = false;
@@ -710,7 +789,13 @@ impl CpuRenderer {
     ) {
         let scale = self.scale;
         let c = [color.r, color.g, color.b, color.a];
-        let key = layout_key(content, rect, style, align, wrap, max_lines, overflow, scale);
+        // 浓度旋钮：对比度 / gamma 在此折成「覆盖率 → 覆盖率」查表（前景亮度定档）；
+        // 全默认时 lut = None，覆盖率原样进混合，逐像素不变。
+        let tuning = self.text_tuning;
+        let lut = tuning.coverage_lut(c);
+        let key = layout_key(
+            content, rect, style, align, wrap, max_lines, overflow, scale,
+        );
         self.layout_used.insert(key);
         // 缓存与字形位图移出 self（避免与 self.buf 借用冲突），零克隆。
         let mut cache = std::mem::take(&mut self.layout_cache);
@@ -720,7 +805,7 @@ impl CpuRenderer {
             Some(e) if e.content.as_ref() == content => {
                 for g in &e.placed {
                     if let Some((_, bitmap)) = glyphs.get(&g.key) {
-                        self.blit_coverage(bitmap, g.x, g.y, g.w, g.h, c, clip);
+                        self.blit_coverage(bitmap, g.x, g.y, g.w, g.h, c, lut.as_ref(), clip);
                     }
                 }
                 true
@@ -728,32 +813,56 @@ impl CpuRenderer {
             _ => false,
         };
         if !hit {
-            // miss：layout + 光栅化字形 + 入缓存。
+            // miss：layout + 光栅化字形 + 入缓存。默认旋钮走原路径（零额外开销）。
             self.layout_misses += 1;
-            let placed = layout_text_glyphs(
-                engine,
-                &mut glyphs,
-                content,
-                rect,
-                style,
-                align,
-                wrap,
-                max_lines,
-                overflow,
-                scale,
-            );
+            let placed = if tuning.is_default() {
+                layout_text_glyphs(
+                    engine,
+                    &mut glyphs,
+                    content,
+                    rect,
+                    style,
+                    align,
+                    wrap,
+                    max_lines,
+                    overflow,
+                    scale,
+                )
+            } else {
+                layout_text_glyphs_tuned(
+                    engine,
+                    &mut glyphs,
+                    content,
+                    rect,
+                    style,
+                    align,
+                    wrap,
+                    max_lines,
+                    overflow,
+                    scale,
+                    tuning,
+                )
+            };
             for g in &placed {
                 if let Some((_, bitmap)) = glyphs.get(&g.key) {
-                    self.blit_coverage(bitmap, g.x, g.y, g.w, g.h, c, clip);
+                    self.blit_coverage(bitmap, g.x, g.y, g.w, g.h, c, lut.as_ref(), clip);
                 }
             }
-            cache.insert(key, LayoutEntry { content: Arc::from(content), placed });
+            cache.insert(
+                key,
+                LayoutEntry {
+                    content: Arc::from(content),
+                    placed,
+                },
+            );
         }
         self.layout_cache = cache;
         self.glyph_bitmaps = glyphs;
     }
 
     /// 覆盖位图 blit：`bitmap` 为灰度覆盖（0..=255），目标左上角 / 尺寸为逻辑坐标。
+    /// `lut` 为可选的「覆盖率 → 覆盖率」预混合表（对比度 / gamma）；`None` = 原样。
+    #[allow(clippy::too_many_arguments)]
     fn blit_coverage(
         &mut self,
         bitmap: &[u8],
@@ -762,6 +871,7 @@ impl CpuRenderer {
         w: f32,
         h: f32,
         color: [f32; 4],
+        lut: Option<&[u8; 256]>,
         clip: Option<Rect>,
     ) {
         let scale = self.scale;
@@ -790,12 +900,22 @@ impl CpuRenderer {
                 }
                 let tx = (px - x0).clamp(0, bw as i64 - 1) as u32;
                 let ty = (py - y0).clamp(0, bh as i64 - 1) as u32;
-                let cov = bitmap[(ty * bw + tx) as usize] as f32 / 255.0;
+                let raw = bitmap[(ty * bw + tx) as usize];
+                let cov = match lut {
+                    Some(l) => l[raw as usize],
+                    None => raw,
+                } as f32
+                    / 255.0;
                 if cov <= 0.0 {
                     continue;
                 }
                 let idx = ((py as u32) * self.w + px as u32) as usize * 4;
-                let mut px4 = [self.buf[idx], self.buf[idx + 1], self.buf[idx + 2], self.buf[idx + 3]];
+                let mut px4 = [
+                    self.buf[idx],
+                    self.buf[idx + 1],
+                    self.buf[idx + 2],
+                    self.buf[idx + 3],
+                ];
                 blend_px(&mut px4, color, cov);
                 self.buf[idx..idx + 4].copy_from_slice(&px4);
             }
@@ -845,7 +965,11 @@ impl CpuRenderer {
             .map(|t| t.r == 1.0 && t.g == 1.0 && t.b == 1.0)
             .unwrap_or(true);
         let tint_rgb = tint.map(|t| {
-            [srgb_decode_f32(t.r), srgb_decode_f32(t.g), srgb_decode_f32(t.b)]
+            [
+                srgb_decode_f32(t.r),
+                srgb_decode_f32(t.g),
+                srgb_decode_f32(t.b),
+            ]
         });
         let dst_w = x1 - x0;
         let dst_h = y1 - y0;
@@ -865,9 +989,21 @@ impl CpuRenderer {
             && (y0 - y0.round()).abs() < 0.01
             && (dst_w - dst_w.round()).abs() < 0.01
             && (dst_h - dst_h.round()).abs() < 0.01;
-        if !aligned && pixel_aligned && tint_is_white && opacity >= 1.0 && dst_w >= 1.0 && dst_h >= 1.0 {
+        if !aligned
+            && pixel_aligned
+            && tint_is_white
+            && opacity >= 1.0
+            && dst_w >= 1.0
+            && dst_h >= 1.0
+        {
             let (tw, th) = (dst_w.round() as u32, dst_h.round() as u32);
-            let key = (src.as_ptr() as usize, src.len(), sample_fingerprint(src), tw, th);
+            let key = (
+                src.as_ptr() as usize,
+                src.len(),
+                sample_fingerprint(src),
+                tw,
+                th,
+            );
             let scaled = match self.scaled.get(&key) {
                 Some(b) => b.clone(),
                 None => {
@@ -883,7 +1019,10 @@ impl CpuRenderer {
         for py in py0..py1 {
             for px in px0..px1 {
                 if fast {
-                    let (u, v) = ((px as f32 - x0.round()) as u32, (py as f32 - y0.round()) as u32);
+                    let (u, v) = (
+                        (px as f32 - x0.round()) as u32,
+                        (py as f32 - y0.round()) as u32,
+                    );
                     if u < sw && v < sh {
                         let s = texel(src, sw, u, v);
                         if s[3] == 255 {
@@ -897,8 +1036,10 @@ impl CpuRenderer {
                     }
                 }
                 // 目标像素中心 → 源坐标（双线性）。
-                let u = ((px as f32 + 0.5 - x0) / dst_w * sw as f32 - 0.5).clamp(0.0, sw as f32 - 1.0);
-                let v = ((py as f32 + 0.5 - y0) / dst_h * sh as f32 - 0.5).clamp(0.0, sh as f32 - 1.0);
+                let u =
+                    ((px as f32 + 0.5 - x0) / dst_w * sw as f32 - 0.5).clamp(0.0, sw as f32 - 1.0);
+                let v =
+                    ((py as f32 + 0.5 - y0) / dst_h * sh as f32 - 0.5).clamp(0.0, sh as f32 - 1.0);
                 let (u0, v0) = (u.floor() as u32, v.floor() as u32);
                 let (u1, v1) = ((u0 + 1).min(sw - 1), (v0 + 1).min(sh - 1));
                 let (fu, fv) = (u - u0 as f32, v - v0 as f32);
@@ -910,7 +1051,13 @@ impl CpuRenderer {
                 // 与 GPU 的 *UnormSrgb 纹理一致，否则半透明边缘发暗）。
                 let mut lin = [0.0f32; 4];
                 for ch in 0..4 {
-                    let dec = |v: u8| if ch == 3 { v as f32 / 255.0 } else { srgb_decode_u8(v) };
+                    let dec = |v: u8| {
+                        if ch == 3 {
+                            v as f32 / 255.0
+                        } else {
+                            srgb_decode_u8(v)
+                        }
+                    };
                     let c00 = dec(s00[ch]);
                     let c10 = dec(s10[ch]);
                     let c01 = dec(s01[ch]);
@@ -932,7 +1079,12 @@ impl CpuRenderer {
                     continue;
                 }
                 let idx = (py * self.w + px) as usize * 4;
-                let mut px4 = [self.buf[idx], self.buf[idx + 1], self.buf[idx + 2], self.buf[idx + 3]];
+                let mut px4 = [
+                    self.buf[idx],
+                    self.buf[idx + 1],
+                    self.buf[idx + 2],
+                    self.buf[idx + 3],
+                ];
                 let mut c = [0.0f32; 4];
                 // rgb 是预乘值；blend_px 收直通色，故先除回 alpha 再编码（a=1 时与旧路径一致）。
                 for ch in 0..3 {
@@ -1010,10 +1162,21 @@ fn resample_bilinear(src: &[u8], sw: u32, sh: u32, tw: u32, th: u32) -> Vec<u8> 
             let u0 = u.floor() as u32;
             let u1 = (u0 + 1).min(sw - 1);
             let fu = u - u0 as f32;
-            let (s00, s10, s01, s11) = (texel(src, sw, u0, v0), texel(src, sw, u1, v0), texel(src, sw, u0, v1), texel(src, sw, u1, v1));
+            let (s00, s10, s01, s11) = (
+                texel(src, sw, u0, v0),
+                texel(src, sw, u1, v0),
+                texel(src, sw, u0, v1),
+                texel(src, sw, u1, v1),
+            );
             let o = ((y * tw + x) * 4) as usize;
             for ch in 0..4 {
-                let dec = |b: u8| if ch == 3 { b as f32 / 255.0 } else { srgb_decode_u8(b) };
+                let dec = |b: u8| {
+                    if ch == 3 {
+                        b as f32 / 255.0
+                    } else {
+                        srgb_decode_u8(b)
+                    }
+                };
                 let l = dec(s00[ch]) * (1.0 - fu) * (1.0 - fv)
                     + dec(s10[ch]) * fu * (1.0 - fv)
                     + dec(s01[ch]) * (1.0 - fu) * fv
@@ -1106,6 +1269,12 @@ mod tests {
             .count()
     }
 
+    /// 总墨量（亮度之和）：白字在透明/深底上，通道值正比覆盖率，比像素计数更能
+    /// 反映「平均墨量」——对比度查表会把最淡的 AA 像素归零，却把中间调抬浓。
+    fn ink_sum(r: &CpuRenderer) -> u64 {
+        r.buf.chunks_exact(4).map(|px| px[0] as u64).sum()
+    }
+
     fn render_scene(scene: &Scene, w: f32, h: f32) -> CpuRenderer {
         let mut r = CpuRenderer::new(w, h, 1.0);
         // 形状测试不依赖字体：engine = None 跳过 Text 命令。
@@ -1121,7 +1290,10 @@ mod tests {
     #[test]
     fn opaque_rect_interior_is_exact() {
         let mut scene = Scene::default();
-        scene.fill_rect(Color::new(0.2, 0.4, 0.6, 1.0), Rect::new(0.0, 0.0, 8.0, 8.0));
+        scene.fill_rect(
+            Color::new(0.2, 0.4, 0.6, 1.0),
+            Rect::new(0.0, 0.0, 8.0, 8.0),
+        );
         let r = render_scene(&scene, 8.0, 8.0);
         let p = px_at(&r, 4, 4);
         assert_eq!([p[0], p[1], p[2]], [51, 102, 153]); // 0.2/0.4/0.6 × 255
@@ -1174,9 +1346,21 @@ mod tests {
             scene.image_with_opacity(&icon, Rect::new(0.0, 0.0, 2.0, 2.0), None, op);
             render_scene(&scene, 2.0, 2.0)
         };
-        assert_eq!(px_at(&render(1.0), 0, 0), [255, 255, 255, 255], "opacity 1 = 原色");
-        assert_eq!(px_at(&render(0.5), 0, 0), [188, 188, 188, 128], "opacity 0.5 = 半透明");
-        assert_eq!(px_at(&render(0.0), 0, 0), [0, 0, 0, 0], "opacity 0 = 全透明");
+        assert_eq!(
+            px_at(&render(1.0), 0, 0),
+            [255, 255, 255, 255],
+            "opacity 1 = 原色"
+        );
+        assert_eq!(
+            px_at(&render(0.5), 0, 0),
+            [188, 188, 188, 128],
+            "opacity 0.5 = 半透明"
+        );
+        assert_eq!(
+            px_at(&render(0.0), 0, 0),
+            [0, 0, 0, 0],
+            "opacity 0 = 全透明"
+        );
     }
 
     #[test]
@@ -1202,7 +1386,10 @@ mod tests {
         // 回归：局部帧里裁剪矩形与 damage 不相交 → 命令完全跳过，damage 外的上帧内容保留。
         let mut r = CpuRenderer::new(8.0, 8.0, 1.0);
         let mut base = Scene::default();
-        base.fill_rect(Color::new(1.0, 0.0, 0.0, 1.0), Rect::new(0.0, 0.0, 8.0, 8.0));
+        base.fill_rect(
+            Color::new(1.0, 0.0, 0.0, 1.0),
+            Rect::new(0.0, 0.0, 8.0, 8.0),
+        );
         r.render_inner(None, &base, None);
         let mut scene = Scene::default();
         scene.push_clip(Rect::new(0.0, 0.0, 4.0, 4.0));
@@ -1254,13 +1441,19 @@ mod tests {
     fn damage_redraw_keeps_untouched_region() {
         // 帧 1：左半边白。
         let mut scene1 = Scene::default();
-        scene1.fill_rect(Color::new(1.0, 1.0, 1.0, 1.0), Rect::new(0.0, 0.0, 4.0, 8.0));
+        scene1.fill_rect(
+            Color::new(1.0, 1.0, 1.0, 1.0),
+            Rect::new(0.0, 0.0, 4.0, 8.0),
+        );
         let mut r = render_scene(&scene1, 8.0, 8.0);
         assert_eq!(px_at(&r, 2, 4), [255, 255, 255, 255], "帧1左半白");
 
         // 帧 2：右半边红，只报右侧 damage → 左半保留帧1白，右半重绘为红。
         let mut scene2 = Scene::default();
-        scene2.fill_rect(Color::new(1.0, 0.0, 0.0, 1.0), Rect::new(4.0, 0.0, 4.0, 8.0));
+        scene2.fill_rect(
+            Color::new(1.0, 0.0, 0.0, 1.0),
+            Rect::new(4.0, 0.0, 4.0, 8.0),
+        );
         r.render_inner(None, &scene2, Some(Rect::new(4.0, 0.0, 4.0, 8.0)));
         assert_eq!(px_at(&r, 2, 4), [255, 255, 255, 255], "左侧未重光栅保持帧1");
         assert_eq!(px_at(&r, 6, 4), [255, 0, 0, 255], "右侧重绘为红");
@@ -1270,10 +1463,16 @@ mod tests {
     #[test]
     fn full_redraw_clears_all() {
         let mut scene1 = Scene::default();
-        scene1.fill_rect(Color::new(1.0, 1.0, 1.0, 1.0), Rect::new(0.0, 0.0, 8.0, 8.0));
+        scene1.fill_rect(
+            Color::new(1.0, 1.0, 1.0, 1.0),
+            Rect::new(0.0, 0.0, 8.0, 8.0),
+        );
         let mut r = render_scene(&scene1, 8.0, 8.0);
         let mut scene2 = Scene::default();
-        scene2.fill_rect(Color::new(0.0, 0.0, 1.0, 1.0), Rect::new(0.0, 0.0, 8.0, 8.0));
+        scene2.fill_rect(
+            Color::new(0.0, 0.0, 1.0, 1.0),
+            Rect::new(0.0, 0.0, 8.0, 8.0),
+        );
         r.render_inner(None, &scene2, None);
         assert_eq!(px_at(&r, 2, 4), [0, 0, 255, 255], "全量覆盖");
         assert_eq!(px_at(&r, 6, 4), [0, 0, 255, 255]);
@@ -1343,9 +1542,16 @@ mod tests {
 
         // 帧 2：damage 右侧（不覆盖文本）→ 文本区像素保留帧 1。
         let mut scene2 = Scene::default();
-        scene2.fill_rect(Color::new(1.0, 0.0, 0.0, 1.0), Rect::new(48.0, 0.0, 16.0, 32.0));
+        scene2.fill_rect(
+            Color::new(1.0, 0.0, 0.0, 1.0),
+            Rect::new(48.0, 0.0, 16.0, 32.0),
+        );
         r.render(&engine, &scene2, Some(Rect::new(48.0, 0.0, 16.0, 32.0)));
-        assert_eq!(painted_count(&r), painted1 + 16 * 32, "文本区保留、右侧新增");
+        assert_eq!(
+            painted_count(&r),
+            painted1 + 16 * 32,
+            "文本区保留、右侧新增"
+        );
 
         // 帧 3：damage 覆盖文本区 → 新文本（右侧）只画在损坏区内。
         let mut scene3 = Scene::default();
@@ -1375,22 +1581,39 @@ mod tests {
     /// （零容差契约的硬保证，参函数注释的严格性推导）。
     #[test]
     fn fill_triangles_scanline_matches_naive() {
-        use kanesumi_canvas::geometry::{rounded_rect_polygon, triangulate_arc, triangulate_stroke};
+        use kanesumi_canvas::geometry::{
+            rounded_rect_polygon, triangulate_arc, triangulate_stroke,
+        };
         use kanesumi_core::{Point, Rect};
         // 场景：圆角矩形 + 弧 + stroke 环 + 两个独立三角形 + 圆角 clip。
         let mut tris: Vec<kanesumi_canvas::geometry::Triangle> = Vec::new();
         // 圆角矩形（中心扇出 12 三角）。
         let rect = Rect::new(2.0, 3.0, 40.0, 28.0);
         let pts = rounded_rect_polygon(rect, 5.0, 12);
-        let center = Point::new(rect.origin.x + rect.size.width / 2.0, rect.origin.y + rect.size.height / 2.0);
+        let center = Point::new(
+            rect.origin.x + rect.size.width / 2.0,
+            rect.origin.y + rect.size.height / 2.0,
+        );
         for i in 0..pts.len() {
             let j = (i + 1) % pts.len();
-            tris.push(kanesumi_canvas::geometry::Triangle::new(center, pts[i], pts[j]));
+            tris.push(kanesumi_canvas::geometry::Triangle::new(
+                center, pts[i], pts[j],
+            ));
         }
         // 弧（环形扇带）。
-        tris.extend(triangulate_arc(Point::new(50.0, 10.0), 8.0, 2.0, 20.0, 200.0));
+        tris.extend(triangulate_arc(
+            Point::new(50.0, 10.0),
+            8.0,
+            2.0,
+            20.0,
+            200.0,
+        ));
         // stroke 环。
-        tris.extend(triangulate_stroke(Rect::new(60.0, 2.0, 12.0, 12.0), 2.0, 1.5));
+        tris.extend(triangulate_stroke(
+            Rect::new(60.0, 2.0, 12.0, 12.0),
+            2.0,
+            1.5,
+        ));
         // 独立三角形。
         tris.push(kanesumi_canvas::geometry::Triangle::new(
             Point::new(78.0, 4.0),
@@ -1405,22 +1628,10 @@ mod tests {
             let c = [0.4f32, 0.8, 1.0, 0.7]; // 半透明覆盖 blend 全路径
             let phys: Vec<[[f32; 2]; 3]> = src
                 .iter()
-                .map(|t| {
-                    [
-                        [t.p0.x, t.p0.y],
-                        [t.p1.x, t.p1.y],
-                        [t.p2.x, t.p2.y],
-                    ]
-                })
+                .map(|t| [[t.p0.x, t.p0.y], [t.p1.x, t.p1.y], [t.p2.x, t.p2.y]])
                 .collect();
-            let clip_rect = [
-                clip.origin.x,
-                clip.origin.y,
-                clip.right(),
-                clip.bottom(),
-            ];
-            let (cx0, cy0, cx1, cy1) =
-                (clip_rect[0], clip_rect[1], clip_rect[2], clip_rect[3]);
+            let clip_rect = [clip.origin.x, clip.origin.y, clip.right(), clip.bottom()];
+            let (cx0, cy0, cx1, cy1) = (clip_rect[0], clip_rect[1], clip_rect[2], clip_rect[3]);
             let (bx0, by0, bx1, by1) = (cx0, cy0, cx1, cy1);
             for py in by0.floor().max(0.0) as u32..by1.ceil().min(r.h as f32) as u32 {
                 for px in bx0.floor().max(0.0) as u32..bx1.ceil().min(r.w as f32) as u32 {
@@ -1447,12 +1658,7 @@ mod tests {
                         continue;
                     }
                     let idx = (py * r.w + px) as usize * 4;
-                    let mut px4 = [
-                        r.buf[idx],
-                        r.buf[idx + 1],
-                        r.buf[idx + 2],
-                        r.buf[idx + 3],
-                    ];
+                    let mut px4 = [r.buf[idx], r.buf[idx + 1], r.buf[idx + 2], r.buf[idx + 3]];
                     blend_px(&mut px4, c, hits as f32 / SAMPLES * clip_cov);
                     r.buf[idx..idx + 4].copy_from_slice(&px4);
                 }
@@ -1474,12 +1680,7 @@ mod tests {
                     break;
                 }
             }
-            panic!(
-                "fast={} naive={} 首个差异 {:?}",
-                f(&fast),
-                f(&ref_r),
-                first
-            );
+            panic!("fast={} naive={} 首个差异 {:?}", f(&fast), f(&ref_r), first);
         }
     }
 
@@ -1529,11 +1730,122 @@ mod tests {
         // 局部 damage 帧：无文本命令。generation GC 保留「本帧 ∪ 上帧」使用条目。
         // 帧 3 用了 B（prev={B}）→ 帧 4 后 B 保留；A 连续两帧未用被淘汰。
         let mut s4 = Scene::default();
-        s4.fill_rect(Color::new(1.0, 0.0, 0.0, 1.0), Rect::new(150.0, 0.0, 50.0, 50.0));
+        s4.fill_rect(
+            Color::new(1.0, 0.0, 0.0, 1.0),
+            Rect::new(150.0, 0.0, 50.0, 50.0),
+        );
         r.render(&engine, &s4, Some(Rect::new(150.0, 0.0, 50.0, 50.0)));
-        assert_eq!(r.layout_cache.len(), 1, "上帧使用窗口保留 B、淘汰久未用的 A");
+        assert_eq!(
+            r.layout_cache.len(),
+            1,
+            "上帧使用窗口保留 B、淘汰久未用的 A"
+        );
         // 静态文本持续使用即持续命中：帧 5 再渲染 A → miss（被淘汰后重排一次）。
         r.render(&engine, &s1, None);
         assert_eq!(r.layout_misses, 3, "淘汰后的 A 重排一次后入缓存");
+    }
+
+    /// tx1 旋钮默认关 = 现状逐像素不变：显式 `set_text_tuning(default)` 与不设置一致。
+    #[test]
+    fn text_tuning_default_keeps_pixels_identical() {
+        let Some(path) = test_font_path() else {
+            return;
+        };
+        let engine = TextEngine::load(path).unwrap();
+        let style = TextStyle::new(20.0, 24.0, FontWeight::Normal);
+        let mut scene = Scene::default();
+        scene.fill_rect(
+            Color::new(0.12, 0.12, 0.12, 1.0),
+            Rect::new(0.0, 0.0, 200.0, 40.0),
+        );
+        scene.text(
+            "浓度现状 Ether 0123".to_string(),
+            Rect::new(2.0, 4.0, 196.0, 32.0),
+            Color::WHITE,
+            style,
+            TextAlign::Left,
+        );
+        let mut base = CpuRenderer::new(200.0, 40.0, 2.0);
+        base.render(&engine, &scene, None);
+        let mut tuned = CpuRenderer::new(200.0, 40.0, 2.0);
+        tuned.set_text_tuning(TextRenderTuning::default());
+        tuned.render(&engine, &scene, None);
+        assert_eq!(base.buf, tuned.buf, "默认旋钮必须逐像素一致");
+        assert!(base.text_tuning().is_default());
+    }
+
+    /// 加粗旋钮开启后墨量（非零像素 + 亮度）必须增加；关闭时与现状一致。
+    #[test]
+    fn stem_darken_increases_ink() {
+        let Some(path) = test_font_path() else {
+            return;
+        };
+        let engine = TextEngine::load(path).unwrap();
+        let style = TextStyle::new(20.0, 24.0, FontWeight::Normal);
+        let mut scene = Scene::default();
+        scene.text(
+            "笔画加粗 stem".to_string(),
+            Rect::new(2.0, 4.0, 180.0, 32.0),
+            Color::WHITE,
+            style,
+            TextAlign::Left,
+        );
+        let render = |tuning: TextRenderTuning| {
+            let mut r = CpuRenderer::new(192.0, 40.0, 2.0);
+            r.set_text_tuning(tuning);
+            r.render(&engine, &scene, None);
+            r
+        };
+        let off = render(TextRenderTuning::default());
+        let on = render(TextRenderTuning {
+            stem_darken_px: 0.5,
+            ..TextRenderTuning::default()
+        });
+        assert!(
+            ink_sum(&on) > ink_sum(&off),
+            "加粗应增加墨量：on={} off={}",
+            ink_sum(&on),
+            ink_sum(&off)
+        );
+        assert!(
+            painted_count(&on) > painted_count(&off),
+            "加粗应增加覆盖像素"
+        );
+    }
+
+    /// 对比度旋钮开启后整体墨量增加（覆盖率查表把中间调抬高）。
+    #[test]
+    fn contrast_increases_ink() {
+        let Some(path) = test_font_path() else {
+            return;
+        };
+        let engine = TextEngine::load(path).unwrap();
+        let style = TextStyle::new(20.0, 24.0, FontWeight::Normal);
+        let mut scene = Scene::default();
+        scene.text(
+            "对比度 contrast".to_string(),
+            Rect::new(2.0, 4.0, 180.0, 32.0),
+            Color::WHITE,
+            style,
+            TextAlign::Left,
+        );
+        let render = |tuning: TextRenderTuning| {
+            let mut r = CpuRenderer::new(192.0, 40.0, 2.0);
+            r.set_text_tuning(tuning);
+            r.render(&engine, &scene, None);
+            r
+        };
+        let off = render(TextRenderTuning::default());
+        let on = render(TextRenderTuning {
+            contrast: 1.0,
+            gamma: 1.8,
+            stem_darken_px: 0.0,
+        });
+        assert!(
+            ink_sum(&on) > ink_sum(&off),
+            "对比度增强应增加墨量：on={} off={}",
+            ink_sum(&on),
+            ink_sum(&off)
+        );
     }
 }
