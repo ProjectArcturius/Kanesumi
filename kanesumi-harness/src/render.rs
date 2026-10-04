@@ -565,7 +565,19 @@ impl Renderer {
             width: pw.round().max(1.0) as u32,
             height: ph.round().max(1.0) as u32,
             desired_maximum_frame_latency: 2,
-            present_mode: wgpu::PresentMode::Fifo,
+            // 优先非阻塞呈现（G1 修复）：内容变化帧由损伤驱动，若用 FIFO，`acquire`
+            // 会等合成器释放上一帧缓冲（~16.7 ms），把「每帧光栅耗时」从真实 GPU 工作
+            // （<1 ms）抬高到 ~19 ms，G1 的浮层 GPU 收益被 vsync 等待吃掉。
+            // Mailbox 可丢旧帧、acquire 立返；合成器不广告时回落 Immediate / FIFO。
+            present_mode: {
+                let chosen = choose_present_mode(&caps.present_modes);
+                log::info!(
+                    "kanesumi surface present_modes={:?} → 选 {:?}",
+                    caps.present_modes,
+                    chosen
+                );
+                chosen
+            },
         };
         surface.configure(device, &config);
 
@@ -1484,6 +1496,18 @@ fn intersect(a: Rect, b: Rect) -> Option<Rect> {
     }
 }
 
+/// 选呈现模式（G1）：优先 `Mailbox`（可丢旧帧、acquire 立返，避免 FIFO 的并发等待
+/// 把内容变化帧的「光栅耗时」抬到 ~16.7 ms），其次 `Immediate`，最后回落 `Fifo`。
+fn choose_present_mode(available: &[wgpu::PresentMode]) -> wgpu::PresentMode {
+    if available.contains(&wgpu::PresentMode::Mailbox) {
+        wgpu::PresentMode::Mailbox
+    } else if available.contains(&wgpu::PresentMode::Immediate) {
+        wgpu::PresentMode::Immediate
+    } else {
+        wgpu::PresentMode::Fifo
+    }
+}
+
 /// 合并全局损伤裁剪与步骤裁剪（G1 损伤感知）。
 /// 返回 `Some(None)` = 全表面（无损伤且步骤无裁剪）；`Some(Some(r))` = 裁剪到 r；
 /// `None` = 两者无交集 → 该步整步跳过（不动颜色）。
@@ -1631,5 +1655,19 @@ mod tests {
         let d = Rect::new(0.0, 0.0, 5.0, 5.0);
         let far = Rect::new(50.0, 50.0, 10.0, 10.0);
         assert_eq!(damage_clip(Some(d), Some(far)), None);
+    }
+
+    #[test]
+    fn present_mode_优先非阻塞() {
+        use wgpu::PresentMode::{Fifo, Immediate, Mailbox};
+        // 合成器广告 Mailbox → 选 Mailbox（避免 FIFO 并发等待）。
+        assert_eq!(choose_present_mode(&[Mailbox, Fifo]), Mailbox);
+        assert_eq!(choose_present_mode(&[Fifo, Mailbox]), Mailbox);
+        // 无 Mailbox 有 Immediate → Immediate。
+        assert_eq!(choose_present_mode(&[Fifo, Immediate]), Immediate);
+        // 只有 Fifo → 回落 Fifo（保底可用）。
+        assert_eq!(choose_present_mode(&[Fifo]), Fifo);
+        // 空表（异常输入）→ Fifo。
+        assert_eq!(choose_present_mode(&[]), Fifo);
     }
 }
