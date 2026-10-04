@@ -1,0 +1,57 @@
+rd_base_dark_2x.png	arm=base bg=dark scale=2x
+rd_base_dark_2x_zoom3.png	rd_base_dark_2x.png 左上裁切 3× 最近邻
+rd_base_dark_1x.png	arm=base bg=dark scale=1x
+rd_base_dark_1x_zoom3.png	rd_base_dark_1x.png 左上裁切 3× 最近邻
+rd_base_light_2x.png	arm=base bg=light scale=2x
+rd_base_light_2x_zoom3.png	rd_base_light_2x.png 左上裁切 3× 最近邻
+rd_base_light_1x.png	arm=base bg=light scale=1x
+rd_base_light_1x_zoom3.png	rd_base_light_1x.png 左上裁切 3× 最近邻
+rd_ctr_dark_2x.png	arm=ctr bg=dark scale=2x
+rd_ctr_dark_2x_zoom3.png	rd_ctr_dark_2x.png 左上裁切 3× 最近邻
+rd_ctr_dark_1x.png	arm=ctr bg=dark scale=1x
+rd_ctr_dark_1x_zoom3.png	rd_ctr_dark_1x.png 左上裁切 3× 最近邻
+rd_ctr_light_2x.png	arm=ctr bg=light scale=2x
+rd_ctr_light_2x_zoom3.png	rd_ctr_light_2x.png 左上裁切 3× 最近邻
+rd_ctr_light_1x.png	arm=ctr bg=light scale=1x
+rd_ctr_light_1x_zoom3.png	rd_ctr_light_1x.png 左上裁切 3× 最近邻
+rd_gam_dark_2x.png	arm=gam bg=dark scale=2x
+rd_gam_dark_2x_zoom3.png	rd_gam_dark_2x.png 左上裁切 3× 最近邻
+rd_gam_dark_1x.png	arm=gam bg=dark scale=1x
+rd_gam_dark_1x_zoom3.png	rd_gam_dark_1x.png 左上裁切 3× 最近邻
+rd_gam_light_2x.png	arm=gam bg=light scale=2x
+rd_gam_light_2x_zoom3.png	rd_gam_light_2x.png 左上裁切 3× 最近邻
+rd_gam_light_1x.png	arm=gam bg=light scale=1x
+rd_gam_light_1x_zoom3.png	rd_gam_light_1x.png 左上裁切 3× 最近邻
+rd_stem25_dark_2x.png	arm=stem25 bg=dark scale=2x
+rd_stem25_dark_2x_zoom3.png	rd_stem25_dark_2x.png 左上裁切 3× 最近邻
+rd_stem25_dark_1x.png	arm=stem25 bg=dark scale=1x
+rd_stem25_dark_1x_zoom3.png	rd_stem25_dark_1x.png 左上裁切 3× 最近邻
+rd_stem25_light_2x.png	arm=stem25 bg=light scale=2x
+rd_stem25_light_2x_zoom3.png	rd_stem25_light_2x.png 左上裁切 3× 最近邻
+rd_stem25_light_1x.png	arm=stem25 bg=light scale=1x
+rd_stem25_light_1x_zoom3.png	rd_stem25_light_1x.png 左上裁切 3× 最近邻
+rd_stem50_dark_2x.png	arm=stem50 bg=dark scale=2x
+rd_stem50_dark_2x_zoom3.png	rd_stem50_dark_2x.png 左上裁切 3× 最近邻
+rd_stem50_dark_1x.png	arm=stem50 bg=dark scale=1x
+rd_stem50_dark_1x_zoom3.png	rd_stem50_dark_1x.png 左上裁切 3× 最近邻
+rd_stem50_light_2x.png	arm=stem50 bg=light scale=2x
+rd_stem50_light_2x_zoom3.png	rd_stem50_light_2x.png 左上裁切 3× 最近邻
+rd_stem50_light_1x.png	arm=stem50 bg=light scale=1x
+rd_stem50_light_1x_zoom3.png	rd_stem50_light_1x.png 左上裁切 3× 最近邻
+rd_both-md_dark_2x.png	arm=both-md bg=dark scale=2x
+rd_both-md_dark_2x_zoom3.png	rd_both-md_dark_2x.png 左上裁切 3× 最近邻
+rd_both-md_dark_1x.png	arm=both-md bg=dark scale=1x
+rd_both-md_dark_1x_zoom3.png	rd_both-md_dark_1x.png 左上裁切 3× 最近邻
+rd_both-md_light_2x.png	arm=both-md bg=light scale=2x
+rd_both-md_light_2x_zoom3.png	rd_both-md_light_2x.png 左上裁切 3× 最近邻
+rd_both-md_light_1x.png	arm=both-md bg=light scale=1x
+rd_both-md_light_1x_zoom3.png	rd_both-md_light_1x.png 左上裁切 3× 最近邻
+rd_both-hi_dark_2x.png	arm=both-hi bg=dark scale=2x
+rd_both-hi_dark_2x_zoom3.png	rd_both-hi_dark_2x.png 左上裁切 3× 最近邻
+rd_both-hi_dark_1x.png	arm=both-hi bg=dark scale=1x
+rd_both-hi_dark_1x_zoom3.png	rd_both-hi_dark_1x.png 左上裁切 3× 最近邻
+rd_both-hi_light_2x.png	arm=both-hi bg=light scale=2x
+rd_both-hi_light_2x_zoom3.png	rd_both-hi_light_2x.png 左上裁切 3× 最近邻
+rd_both-hi_light_1x.png	arm=both-hi bg=light scale=1x
+rd_both-hi_light_1x_zoom3.png	rd_both-hi_light_1x.png 左上裁切 3× 最近邻
+matrix_15N_dark_2x.png	6 档横向对照 size=15 Normal dark 2x 顺序=["base", "ctr", "gam", "stem25", "both-md", "both-hi"]
