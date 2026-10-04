@@ -83,8 +83,13 @@ fn open_node_for(main_device: Option<libc::dev_t>) -> Option<(File, String)> {
         ordered.extend(nodes.iter().filter(|(_, rdev)| dev != 0 && *rdev == dev));
     }
     ordered.extend(nodes.iter());
+    // ⚠ 必须 **O_RDWR** 打开：libgbm 的 `gbm_create_device` 在只读 fd 上会段错误
+    // （2026-10-04 g1a 实测：Arch/i915 上 `File::open`（O_RDONLY）→ `Device::new` SIGSEGV；
+    // 改 `O_RDWR` 后 device/bo/fd 全通过）。这正是 2026-08-19「gbm 打开段错误」的真因，
+    // 旧探测因此永远失败、全壳层回落 SHM。render 节点对普通用户可读写，card 节点拿不到
+    // 写权限时 `open` 失败 → 自然回退下一候选 / SHM（安全性不退）。
     for (path, _) in ordered {
-        if let Ok(f) = File::open(path) {
+        if let Ok(f) = File::options().read(true).write(true).open(path) {
             return Some((f, path.clone()));
         }
     }
