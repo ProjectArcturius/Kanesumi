@@ -4,7 +4,7 @@ use std::rc::Rc;
 use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::{MetroTheme, Point, Rect, Size, TextStyle};
+use kanesumi_core::{MetroTheme, MetroTypography, Point, Rect, Size};
 use kanesumi_element::{
     Event, EventCtx, Key, MeasureCtx, PaintCtx, PointerButton, PopupSpec, UpdateCtx, Widget,
     WidgetId,
@@ -132,7 +132,7 @@ impl MetroSelectorFlyout {
         };
         scene.fill_rounded_rect(bg, trigger, theme.tokens.corner_radius);
 
-        let style = TextStyle::new(14.0, 20.0, kanesumi_core::FontWeight::Normal);
+        let style = MetroTypography::metro().body_medium;
         let text = self
             .selected
             .and_then(|i| self.items.get(i))
@@ -178,7 +178,7 @@ impl MetroSelectorFlyout {
     /// 画面板项。布局与旧实现一致：项高 32，选中 = `selection_tint`，悬停 = `hover_tint`。
     fn paint_items(&self, theme: &MetroTheme, scene: &mut Scene, scroll: f32) {
         let colors = &theme.colors;
-        let style = TextStyle::new(14.0, 20.0, kanesumi_core::FontWeight::Normal);
+        let style = MetroTypography::metro().body_medium;
         let viewport_top = self.panel_rect.origin.y;
         let viewport_bottom = viewport_top + self.panel_height();
         // 容器语义 = 裁到面板矩形（审计 P0-2）：末项可能只露出半行，不裁会画到面板之外。
@@ -426,7 +426,7 @@ impl MetroSelectorFlyout {
 impl Widget for MetroSelectorFlyout {
     /// 固有尺寸：显示文本（选中项或占位）+ 左 12 + 箭头区 30，高 32。
     fn measure(&mut self, ctx: &mut MeasureCtx, _available: Size) -> Size {
-        let style = TextStyle::new(14.0, 20.0, kanesumi_core::FontWeight::Normal);
+        let style = MetroTypography::metro().body_medium;
         let display = self
             .selected
             .and_then(|i| self.items.get(i))

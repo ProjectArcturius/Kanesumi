@@ -651,12 +651,12 @@ pub struct MenuPath {
 /// 悬停语义签名（S1 输入门控）：`(顶层 hovered, 子菜单 (父项索引, 子菜单 hovered))`。
 pub type MenuInteractionSignature = Option<(Option<usize>, Option<(usize, Option<usize>)>)>;
 
-/// 菜单项文本样式：14px 正常。
+/// 菜单项文本样式：14px 正文（走令牌，参 §G-67）。
 fn menu_item_style() -> TextStyle {
-    TextStyle::new(14.0, 20.0, kanesumi_core::FontWeight::Normal)
+    kanesumi_core::MetroTypography::metro().body_medium
 }
 
-/// 菜单图标样式：16px。
+/// 菜单图标样式：16px。图标字形保持 Normal —— 符号笔画本就细，加粗会糊。
 fn icon_style() -> TextStyle {
     TextStyle::new(16.0, 16.0, kanesumi_core::FontWeight::Normal)
 }

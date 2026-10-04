@@ -8,7 +8,7 @@
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::TextStyle;
+use kanesumi_core::MetroTypography;
 use kanesumi_core::{CornerRadius, MetroTheme, Point, Rect, Size};
 
 use crate::state::ControlState;
@@ -237,11 +237,7 @@ impl MetroSlider {
 
         // Header（可选）
         if !self.header.is_empty() {
-            let style = TextStyle::new(
-                SLIDER_HEADER_SIZE,
-                SLIDER_HEADER_SIZE + 4.0,
-                kanesumi_core::FontWeight::Normal,
-            );
+            let style = MetroTypography::metro().body_small;
             scene.text(
                 self.header.clone(),
                 Rect::new(

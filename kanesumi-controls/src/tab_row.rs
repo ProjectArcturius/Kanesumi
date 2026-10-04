@@ -2,6 +2,7 @@ use kanesumi_anim::{EasingMode, MetroAnim, UwpEasing};
 use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::typography::body_weight;
 use kanesumi_core::{Color, FontWeight, MetroTheme, Point, Rect, TextStyle};
 
 /// MetroTabRow —— 标签行（Pivot 参考）。参 CONTROL_SPEC §6：
@@ -122,14 +123,16 @@ impl MetroTabRow {
 
     /// Header 文字样式（展开态）：24 SemiLight，字距 −2.5%（UWP CharacterSpacing=−25）。
     /// V16：字距落到 TextStyle.letter_spacing_em，render/measure 全局生效。
+    /// 保持 Semilight —— 展开态页签大标题刻意用轻字重（UWP PivotHeader 观感），非正文。
     pub fn header_style() -> TextStyle {
         TextStyle::new(24.0, 30.0, FontWeight::Semilight).with_letter_spacing_em(-0.025)
     }
 
     /// 当前文字样式：`compact`（15px，Win10 设置二级页签）或展开态 24px。
+    /// compact 无同字号令牌（15/20），只取正文字重（G-67），字号行高保持原位。
     pub fn style(&self) -> TextStyle {
         if self.compact {
-            TextStyle::new(15.0, 20.0, FontWeight::Normal)
+            TextStyle::new(15.0, 20.0, body_weight())
         } else {
             Self::header_style()
         }

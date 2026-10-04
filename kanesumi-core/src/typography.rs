@@ -99,6 +99,20 @@ impl Default for MetroTypography {
     }
 }
 
+/// 正文字重 —— G-67 规定正文 / 标签 / 说明类统一用正文族字重。
+///
+/// 供少数「字号 / 行高必须保持写死值、不能整体换成具名样式」的控件与页面使用。
+/// 不直接写 `FontWeight::Medium`，是为了让令牌改档时这些地方同步生效。
+/// 参 `docs/DECISIONS_2026-10-04.md` §G-67。
+pub const fn body_weight() -> FontWeight {
+    MetroTypography::metro().body.weight
+}
+
+/// 标题字重 —— G-67 规定标题类 Bold。用途同 [`body_weight`]。
+pub const fn heading_weight() -> FontWeight {
+    MetroTypography::metro().title.weight
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,5 +157,16 @@ mod tests {
         ] {
             assert_eq!(style.weight, FontWeight::Medium, "{name} 应为 Medium");
         }
+    }
+
+    /// G-67：字号与令牌不一致时的字重辅助函数必须与令牌同源，
+    /// 否则改了令牌而写死处不跟随，正文 Medium 又会被绕过。
+    #[test]
+    fn weight_helpers_track_tokens() {
+        let t = MetroTypography::metro();
+        assert_eq!(body_weight(), FontWeight::Medium);
+        assert_eq!(heading_weight(), FontWeight::Bold);
+        assert_eq!(body_weight(), t.body.weight);
+        assert_eq!(heading_weight(), t.title.weight);
     }
 }

@@ -8,7 +8,7 @@
 // 提示**不吃输入、不抢焦点**：`hit_test` 恒 false，框架对该弹层另设 `PopupSpec::passthrough`。
 
 use kanesumi_canvas::{Scene, TextAlign, TextOverflow};
-use kanesumi_core::{FontWeight, Size, TextStyle};
+use kanesumi_core::{Size, TextStyle};
 
 use crate::widget::{AccessInfo, AccessRole, MeasureCtx, PaintCtx, Widget};
 
@@ -21,13 +21,10 @@ const PAD_L: f32 = 8.0;
 const PAD_T: f32 = 5.0;
 const PAD_R: f32 = 8.0;
 const PAD_B: f32 = 7.0;
-/// 正文 12px（UWP `ToolTipContentThemeFontSize = 12`，`A1:101`）；行高取 16（16:12 比例）。
-const FONT_SIZE: f32 = 12.0;
-const LINE_HEIGHT: f32 = 16.0;
-
-/// 气泡正文样式。
+/// 气泡正文样式：12px / 行高 16（UWP `ToolTipContentThemeFontSize = 12`，`A1:101`），
+/// 直接套正文小号令牌（参 `docs/DECISIONS_2026-10-04.md` §G-67）。
 pub fn tooltip_style() -> TextStyle {
-    TextStyle::new(FONT_SIZE, LINE_HEIGHT, FontWeight::Normal)
+    kanesumi_core::MetroTypography::metro().body_small
 }
 
 /// 提示气泡（覆盖层节点）。参本文件头。

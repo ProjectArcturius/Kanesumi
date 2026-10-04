@@ -189,14 +189,14 @@ impl MetroIconButton {
     }
 }
 
-/// 图标字形样式：16px 正常。
+/// 图标字形样式：16px。图标字形保持 Normal —— 符号笔画本就细，加粗会糊。
 fn icon_style() -> kanesumi_core::TextStyle {
     kanesumi_core::TextStyle::new(16.0, 16.0, kanesumi_core::FontWeight::Normal)
 }
 
-/// 标签样式：12px 正常。
+/// 标签样式：12px 正文小号（走令牌，参 §G-67）。
 fn label_style() -> kanesumi_core::TextStyle {
-    kanesumi_core::TextStyle::new(12.0, 16.0, kanesumi_core::FontWeight::Normal)
+    kanesumi_core::MetroTypography::metro().body_small
 }
 
 // ── 元素树接入（参 docs/ELEMENT_TREE.md §Ⅹ E3；模板同 button.rs）──────────────────

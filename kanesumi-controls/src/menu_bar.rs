@@ -16,7 +16,7 @@
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::{FontWeight, MetroTheme, Point, Rect, TextStyle};
+use kanesumi_core::{MetroTheme, MetroTypography, Point, Rect, TextStyle};
 
 use crate::dropdown_menu::{MenuItem, MetroDropdownMenu};
 use crate::popup::{PopupState, place_popup};
@@ -91,9 +91,9 @@ impl MetroMenuBar {
         }
     }
 
-    /// Header 文字样式：14px Normal（对齐 UWP MenuBarItem 字号，同 MenuFlyout 项）。
+    /// Header 文字样式：14px 正文（对齐 UWP MenuBarItem 字号，同 MenuFlyout 项；走令牌，参 §G-67）。
     pub fn header_style() -> TextStyle {
-        TextStyle::new(14.0, 20.0, FontWeight::Normal)
+        MetroTypography::metro().body_medium
     }
 
     /// 单 header 宽度（label 宽 + 2×`HEADER_PAD_X`）。
