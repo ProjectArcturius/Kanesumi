@@ -1,0 +1,83 @@
+rd_base_dark_2x.png	arm=base weight=Normal bg=dark scale=2x
+rd_base_dark_2x_zoom3.png	rd_base_dark_2x.png 左上裁切 3× 最近邻
+rd_base_dark_2x_holes3x.png	rd_base_dark_2x.png 13px 第 3 行（含器）3× 最近邻
+rd_base_dark_1x.png	arm=base weight=Normal bg=dark scale=1x
+rd_base_dark_1x_zoom3.png	rd_base_dark_1x.png 左上裁切 3× 最近邻
+rd_base_light_2x.png	arm=base weight=Normal bg=light scale=2x
+rd_base_light_2x_zoom3.png	rd_base_light_2x.png 左上裁切 3× 最近邻
+rd_base_light_2x_holes3x.png	rd_base_light_2x.png 13px 第 3 行（含器）3× 最近邻
+rd_base_light_1x.png	arm=base weight=Normal bg=light scale=1x
+rd_base_light_1x_zoom3.png	rd_base_light_1x.png 左上裁切 3× 最近邻
+rd_med_dark_2x.png	arm=med weight=Medium bg=dark scale=2x
+rd_med_dark_2x_zoom3.png	rd_med_dark_2x.png 左上裁切 3× 最近邻
+rd_med_dark_2x_holes3x.png	rd_med_dark_2x.png 13px 第 3 行（含器）3× 最近邻
+rd_med_dark_1x.png	arm=med weight=Medium bg=dark scale=1x
+rd_med_dark_1x_zoom3.png	rd_med_dark_1x.png 左上裁切 3× 最近邻
+rd_med_light_2x.png	arm=med weight=Medium bg=light scale=2x
+rd_med_light_2x_zoom3.png	rd_med_light_2x.png 左上裁切 3× 最近邻
+rd_med_light_2x_holes3x.png	rd_med_light_2x.png 13px 第 3 行（含器）3× 最近邻
+rd_med_light_1x.png	arm=med weight=Medium bg=light scale=1x
+rd_med_light_1x_zoom3.png	rd_med_light_1x.png 左上裁切 3× 最近邻
+rd_med-cg_dark_2x.png	arm=med-cg weight=Medium bg=dark scale=2x
+rd_med-cg_dark_2x_zoom3.png	rd_med-cg_dark_2x.png 左上裁切 3× 最近邻
+rd_med-cg_dark_2x_holes3x.png	rd_med-cg_dark_2x.png 13px 第 3 行（含器）3× 最近邻
+rd_med-cg_dark_1x.png	arm=med-cg weight=Medium bg=dark scale=1x
+rd_med-cg_dark_1x_zoom3.png	rd_med-cg_dark_1x.png 左上裁切 3× 最近邻
+rd_med-cg_light_2x.png	arm=med-cg weight=Medium bg=light scale=2x
+rd_med-cg_light_2x_zoom3.png	rd_med-cg_light_2x.png 左上裁切 3× 最近邻
+rd_med-cg_light_2x_holes3x.png	rd_med-cg_light_2x.png 13px 第 3 行（含器）3× 最近邻
+rd_med-cg_light_1x.png	arm=med-cg weight=Medium bg=light scale=1x
+rd_med-cg_light_1x_zoom3.png	rd_med-cg_light_1x.png 左上裁切 3× 最近邻
+rd_reg-cg_dark_2x.png	arm=reg-cg weight=Normal bg=dark scale=2x
+rd_reg-cg_dark_2x_zoom3.png	rd_reg-cg_dark_2x.png 左上裁切 3× 最近邻
+rd_reg-cg_dark_2x_holes3x.png	rd_reg-cg_dark_2x.png 13px 第 3 行（含器）3× 最近邻
+rd_reg-cg_dark_1x.png	arm=reg-cg weight=Normal bg=dark scale=1x
+rd_reg-cg_dark_1x_zoom3.png	rd_reg-cg_dark_1x.png 左上裁切 3× 最近邻
+rd_reg-cg_light_2x.png	arm=reg-cg weight=Normal bg=light scale=2x
+rd_reg-cg_light_2x_zoom3.png	rd_reg-cg_light_2x.png 左上裁切 3× 最近邻
+rd_reg-cg_light_2x_holes3x.png	rd_reg-cg_light_2x.png 13px 第 3 行（含器）3× 最近邻
+rd_reg-cg_light_1x.png	arm=reg-cg weight=Normal bg=light scale=1x
+rd_reg-cg_light_1x_zoom3.png	rd_reg-cg_light_1x.png 左上裁切 3× 最近邻
+rd_ol15_dark_2x.png	arm=ol15 weight=Normal bg=dark scale=2x
+rd_ol15_dark_2x_zoom3.png	rd_ol15_dark_2x.png 左上裁切 3× 最近邻
+rd_ol15_dark_2x_holes3x.png	rd_ol15_dark_2x.png 13px 第 3 行（含器）3× 最近邻
+rd_ol15_dark_1x.png	arm=ol15 weight=Normal bg=dark scale=1x
+rd_ol15_dark_1x_zoom3.png	rd_ol15_dark_1x.png 左上裁切 3× 最近邻
+rd_ol15_light_2x.png	arm=ol15 weight=Normal bg=light scale=2x
+rd_ol15_light_2x_zoom3.png	rd_ol15_light_2x.png 左上裁切 3× 最近邻
+rd_ol15_light_2x_holes3x.png	rd_ol15_light_2x.png 13px 第 3 行（含器）3× 最近邻
+rd_ol15_light_1x.png	arm=ol15 weight=Normal bg=light scale=1x
+rd_ol15_light_1x_zoom3.png	rd_ol15_light_1x.png 左上裁切 3× 最近邻
+rd_ol30_dark_2x.png	arm=ol30 weight=Normal bg=dark scale=2x
+rd_ol30_dark_2x_zoom3.png	rd_ol30_dark_2x.png 左上裁切 3× 最近邻
+rd_ol30_dark_2x_holes3x.png	rd_ol30_dark_2x.png 13px 第 3 行（含器）3× 最近邻
+rd_ol30_dark_1x.png	arm=ol30 weight=Normal bg=dark scale=1x
+rd_ol30_dark_1x_zoom3.png	rd_ol30_dark_1x.png 左上裁切 3× 最近邻
+rd_ol30_light_2x.png	arm=ol30 weight=Normal bg=light scale=2x
+rd_ol30_light_2x_zoom3.png	rd_ol30_light_2x.png 左上裁切 3× 最近邻
+rd_ol30_light_2x_holes3x.png	rd_ol30_light_2x.png 13px 第 3 行（含器）3× 最近邻
+rd_ol30_light_1x.png	arm=ol30 weight=Normal bg=light scale=1x
+rd_ol30_light_1x_zoom3.png	rd_ol30_light_1x.png 左上裁切 3× 最近邻
+rd_ol15-cg_dark_2x.png	arm=ol15-cg weight=Normal bg=dark scale=2x
+rd_ol15-cg_dark_2x_zoom3.png	rd_ol15-cg_dark_2x.png 左上裁切 3× 最近邻
+rd_ol15-cg_dark_2x_holes3x.png	rd_ol15-cg_dark_2x.png 13px 第 3 行（含器）3× 最近邻
+rd_ol15-cg_dark_1x.png	arm=ol15-cg weight=Normal bg=dark scale=1x
+rd_ol15-cg_dark_1x_zoom3.png	rd_ol15-cg_dark_1x.png 左上裁切 3× 最近邻
+rd_ol15-cg_light_2x.png	arm=ol15-cg weight=Normal bg=light scale=2x
+rd_ol15-cg_light_2x_zoom3.png	rd_ol15-cg_light_2x.png 左上裁切 3× 最近邻
+rd_ol15-cg_light_2x_holes3x.png	rd_ol15-cg_light_2x.png 13px 第 3 行（含器）3× 最近邻
+rd_ol15-cg_light_1x.png	arm=ol15-cg weight=Normal bg=light scale=1x
+rd_ol15-cg_light_1x_zoom3.png	rd_ol15-cg_light_1x.png 左上裁切 3× 最近邻
+rd_dil25_dark_2x.png	arm=dil25 weight=Normal bg=dark scale=2x
+rd_dil25_dark_2x_zoom3.png	rd_dil25_dark_2x.png 左上裁切 3× 最近邻
+rd_dil25_dark_2x_holes3x.png	rd_dil25_dark_2x.png 13px 第 3 行（含器）3× 最近邻
+rd_dil25_dark_1x.png	arm=dil25 weight=Normal bg=dark scale=1x
+rd_dil25_dark_1x_zoom3.png	rd_dil25_dark_1x.png 左上裁切 3× 最近邻
+rd_dil25_light_2x.png	arm=dil25 weight=Normal bg=light scale=2x
+rd_dil25_light_2x_zoom3.png	rd_dil25_light_2x.png 左上裁切 3× 最近邻
+rd_dil25_light_2x_holes3x.png	rd_dil25_light_2x.png 13px 第 3 行（含器）3× 最近邻
+rd_dil25_light_1x.png	arm=dil25 weight=Normal bg=light scale=1x
+rd_dil25_light_1x_zoom3.png	rd_dil25_light_1x.png 左上裁切 3× 最近邻
+matrix_15_dark_2x.png	8 档横向对照 size=15 dark 2x 顺序=["base", "med", "med-cg", "reg-cg", "ol15", "ol30", "ol15-cg", "dil25"]
+onesheet_dark.png	1:1 实际尺寸（2× 物理，不放大）8 档上下排列
+onesheet_light.png	1:1 实际尺寸（2× 物理，不放大）8 档上下排列
