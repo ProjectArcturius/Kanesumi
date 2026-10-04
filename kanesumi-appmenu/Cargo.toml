@@ -4,7 +4,7 @@ description = "Kanesumi（矩隅）· 全局应用菜单：com.canonical.dbusmen
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-authors = ["Takahashi Rinta <mc1586182829@outlook.com>"]
+authors = ["Project Arcturius"]
 
 [dependencies]
 # 跨平台仅声明式菜单树（tree.rs）；D-Bus / Wayland 服务均为 Linux 专属。

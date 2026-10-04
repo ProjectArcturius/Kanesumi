@@ -4,7 +4,7 @@ description = "Kanesumi（矩隅）· 动画层：消费 Sokuou（即応エン�
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-authors = ["Takahashi Rinta <mc1586182829@outlook.com>"]
+authors = ["Project Arcturius"]
 
 [dependencies]
 # Sokuou（即応エンジン）是动画唯一真源（参 Ether-main PLAN.md §2.1/§6.3）。

@@ -4,7 +4,7 @@ description = "Kanesumi（矩隅）· 计算器 —— 首个 Kanesumi 控件构
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-authors = ["Takahashi Rinta <mc1586182829@outlook.com>"]
+authors = ["Project Arcturius"]
 
 [dependencies]
 kanesumi-core = { path = "../kanesumi-core" }
