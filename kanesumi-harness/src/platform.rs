@@ -218,10 +218,9 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
     // dmabuf gbm 探测子进程入口（由 crate::dmabuf::probe_gbm_crash_safe 拉起）：
     // 只做一次 gbm 打开即退出 —— 段错误/失败 = 该驱动上直通不可用 → 父进程回退 SHM。
     // ⚠ 必须在任何 Wayland/字体/日志初始化之前：探测子进程不留副作用。
-    if std::env::var_os("ETHER_DMABUF_PROBE").is_some() {
-        // 退出码 = 探测阶段（0 = 可用；非 0 = 失败阶段，父进程据此给出可读原因）。
-        std::process::exit(crate::dmabuf::probe_gbm_raw() as i32);
-    }
+    // 应用 `main` **第一行**还应调 `kanesumi_harness::dmabuf_probe_entry()` 把入口再前移
+    // （避免子进程重执行时先跑应用前半段，把段错误锅扣到 gbm 头上）。
+    crate::dmabuf::dmabuf_probe_entry();
     env_logger::init();
 
     let conn = Connection::connect_to_env()
@@ -626,9 +625,12 @@ struct SurfaceOutput {
 
 impl SurfaceOutput {
     /// `device` 为**进程共享**句柄（所有表面共用一个 gbm device，避免每表面一次 Mesa screen）。
+    /// 探测证明可用的组合随共享 device 传递，后建的浮层/popup 表面自动继承。
     fn new(allow: bool, device: crate::dmabuf::DmabufDevice) -> Self {
+        let recipe = device.recipe();
         let mut dmabuf = crate::dmabuf::DmabufBuffers::default();
         dmabuf.set_device(device);
+        dmabuf.set_probe_recipe(recipe);
         Self {
             shm: ShmBuffers::default(),
             dmabuf,
@@ -1008,8 +1010,15 @@ impl Shell {
         // 段错误无法进程内捕获 → 子进程探测，见 crate::dmabuf::probe_gbm_crash_safe）。
         // ⚠ 探测与 gbm device 都不在此处无条件执行：探测在子进程里、device 仍惰性。
         let dmabuf_opt_out = std::env::var("ETHER_DMABUF").as_deref() == Ok("0");
-        let dmabuf_allowed =
-            dmabuf_present && !dmabuf_opt_out && crate::dmabuf::probe_gbm_crash_safe();
+        // 探测证明可用的组合（`None` = 未探测出 → 全 SHM，绝不在未验证组合上分配）。
+        // ⚠ 此刻尚未收到 per-surface feedback（主设备 dev_t 异步到达）→ 传 None；
+        //   「主设备节点」备选跳过，真实提交仍按已证明的组合分配。
+        let dmabuf_recipe = if dmabuf_present && !dmabuf_opt_out {
+            crate::dmabuf::probe_gbm_crash_safe(None)
+        } else {
+            None
+        };
+        let dmabuf_allowed = dmabuf_recipe.is_some();
         // 主动请求 per-surface dmabuf feedback（v4+）：拿主设备 dev_t + 格式表。
         // ⚠ 必须显式请求 —— 合成器只对 protocol version < 4 发 legacy format/modifier 事件，
         //   v5 global 下不请求 feedback 则一个格式事件都收不到（无法做设备/格式校验）。
@@ -1054,7 +1063,10 @@ impl Shell {
             None => Vec::new(),
         };
         // 进程共享 gbm device 句柄（惰性：首次 dmabuf 提交才真正打开）。
+        // 探测证明可用的组合存进共享 device → 所有表面（含后建浮层/popup）自动继承，
+        // 无需在每个 `SurfaceOutput::new` 点重复传递。
         let dmabuf_device = crate::dmabuf::DmabufDevice::default();
+        dmabuf_device.set_recipe(dmabuf_recipe);
         // 合成图层（G3-b）：wl_subcompositor + ether_composition_v1（Ether 私有，别的合成器没有 → None 回落）。
         let comp = layers::Composition::new(
             globals.bind::<layers::EtherCompositionManagerV1, Self, ()>(qh, 1..=1, ()).ok(),
@@ -3331,7 +3343,8 @@ impl Shell {
             surface.set_buffer_scale(self.scale.round().max(1.0) as i32);
             let popup = im.get_input_popup_surface(&surface, qh, ());
             log::info!("IME 候选窗 popup 创建：{pw:.0}×{ph:.0} scale={}", self.scale);
-            let mut out = SurfaceOutput::new(self.dmabuf_allowed, self.dmabuf_device.clone());
+            let mut out =
+                SurfaceOutput::new(self.dmabuf_allowed, self.dmabuf_device.clone());
             if let Some((dev, formats)) = self.dmabuf_feedback.clone() {
                 out.set_feedback(dev, &formats);
             }
