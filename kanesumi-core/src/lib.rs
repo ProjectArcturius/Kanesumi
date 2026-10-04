@@ -27,4 +27,4 @@ pub use interaction::InteractionSettings;
 pub use status::StatusColors;
 pub use theme::MetroTheme;
 pub use tokens::{Spacing, Tokens};
-pub use typography::{FontWeight, MetroTypography, TextStyle};
+pub use typography::{FontWeight, MetroTypography, TextVAlign, TextStyle};

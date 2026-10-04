@@ -1078,9 +1078,13 @@ impl Renderer {
                     if is_fully_clipped(&clip_stack) || rect.is_empty() {
                         continue;
                     }
+                    // 单行 label 的纵向对齐：Top 恒等；Center / Bottom 换成一行行盒矩形，
+                    // 排版与裁剪同用它（矩形矮于一行时行盒反而更大，字不被裁）。参 o4 纵向对齐。
+                    let rect =
+                        crate::glyph_layout::text_rect_with_valign(*rect, *style, *wrap, *max_lines);
                     let text_clip = match effective_clip(&clip_stack) {
-                        Some(parent) => intersect(parent, *rect),
-                        None => intersect(surface_bounds, *rect),
+                        Some(parent) => intersect(parent, rect),
+                        None => intersect(surface_bounds, rect),
                     };
                     let Some(text_clip) = text_clip else { continue };
                     let before = text_runs.len() as u32;
@@ -1091,7 +1095,7 @@ impl Renderer {
                         &mut text_runs,
                         &mut pending_glyphs,
                         content,
-                        *rect,
+                        rect,
                         *color,
                         *style,
                         *align,

@@ -369,20 +369,24 @@ impl CpuRenderer {
                     if rect.is_empty() {
                         continue;
                     }
+                    // 单行 label 的纵向对齐：Top 恒等；Center / Bottom 换成一行行盒矩形，
+                    // 排版与裁剪同用它（矩形矮于一行时行盒反而更大，字不被裁）。参 o4 纵向对齐。
+                    let rect =
+                        crate::glyph_layout::text_rect_with_valign(*rect, *style, *wrap, *max_lines);
                     // 文字裁剪 = (有效裁剪 ∩ damage) ∩ rect。None = 无裁剪上下文
                     // （全量帧、无 PushClip）→ 回退表面边界（镜像 GPU 路径 surface_bounds
                     // 语义，参 render.rs emit_text）——⚠ 曾把 None 当「不相交」跳过：
                     // 全量帧无 clip 文本永不绘制，仅局部 damage 帧与损坏区相交才显示
                     // （静止时中文全部缺失、悬停一闪即出，S4 回归）。
                     let text_clip = match clip {
-                        Some(parent) => intersect_logical(parent, *rect),
-                        None => intersect_logical(Rect::new(0.0, 0.0, self.lw, self.lh), *rect),
+                        Some(parent) => intersect_logical(parent, rect),
+                        None => intersect_logical(Rect::new(0.0, 0.0, self.lw, self.lh), rect),
                     };
                     let Some(text_clip) = text_clip else { continue };
                     self.emit_text(
                         engine,
                         content,
-                        *rect,
+                        rect,
                         *color,
                         *style,
                         *align,
