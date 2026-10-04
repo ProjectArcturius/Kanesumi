@@ -14,7 +14,10 @@ use kanesumi_canvas::text::{TextEngine, TextLayoutOptions};
 use kanesumi_canvas::{Scene, SceneCommand, TextAlign};
 use kanesumi_core::{Color, Rect, TextStyle};
 
-use crate::glyph_layout::{GlyphKey, PlacedGlyph, glyph_key, layout_text_glyphs};
+use crate::glyph_layout::{
+    GlyphKey, PlacedGlyph, TextRenderTuning, glyph_key, layout_text_glyphs,
+    layout_text_glyphs_tuned,
+};
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{Connection, Proxy};
 // 顶点持久化使用 write_buffer；无 create_buffer_init（DeviceExt 不再需要）。
@@ -71,6 +74,10 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 }
 @group(0) @binding(0) var glyph_tex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
+// 文字浓度补偿（裁定 G-67）。与 CPU `TextRenderTuning::tune_coverage` 同一条公式；
+// 改动必须两处同步，由 harness `gpu_formula_matches_cpu_lut` 守住。
+// x = contrast，y = gamma，zw 为 16 字节对齐填充。
+@group(0) @binding(2) var<uniform> tune: vec4<f32>;
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -86,7 +93,14 @@ fn vs(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) colo
 }
 @fragment
 fn fs(in: VsOut) -> @location(0) vec4<f32> {
-    let cov = textureSample(glyph_tex, samp, in.uv).r;
+    var cov = textureSample(glyph_tex, samp, in.uv).r;
+    // 恒等档短路（与 CPU 查表返回 None 一致），保证旧行为逐像素不变。
+    if (tune.x != 0.0 || tune.y != 1.0) {
+        let luma = clamp(0.2126 * in.color.r + 0.7152 * in.color.g + 0.0722 * in.color.b, 0.0, 1.0);
+        let gamma_eff = max(tune.y * (1.0 + 0.30 * (luma - 0.5)), 0.05);
+        let g = pow(cov, 1.0 / gamma_eff);
+        cov = clamp(0.5 + (g - 0.5) * (1.0 + tune.x), 0.0, 1.0);
+    }
     return vec4<f32>(srgb_to_linear(in.color.rgb) * in.color.a * cov, in.color.a * cov);
 }
 "#;
@@ -274,7 +288,13 @@ pub struct Renderer {
     text_pipeline: wgpu::RenderPipeline,
     image_pipeline: wgpu::RenderPipeline,
     text_bgl: wgpu::BindGroupLayout,
+    /// 图标绑定布局（纹理 + 采样器，无文字浓度 uniform）。
+    image_bgl: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// 文字浓度补偿 uniform（contrast / gamma）。GPU 片元着色器消费，见 `TEXT_SHADER`。
+    tuning_buf: wgpu::Buffer,
+    /// 当前文字浓度旋钮。默认 = G-67 生产档。
+    text_tuning: TextRenderTuning,
     glyphs: HashMap<GlyphKey, GlyphEntry>,
     /// 图标纹理缓存：key = (width,height) + rgba 内容 FNV 哈希。同一图标去重复用。
     images: HashMap<u32, GlyphEntry>,
@@ -546,6 +566,28 @@ impl Renderer {
             label: Some("kanesumi-text"),
             source: wgpu::ShaderSource::Wgsl(TEXT_SHADER.into()),
         });
+        // 图标绑定布局：纹理 + 采样器（与文本共用顶点布局，但不需文字浓度 uniform）。
+        let image_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("kanesumi-image-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
         let text_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("kanesumi-text-bgl"),
             entries: &[
@@ -563,6 +605,16 @@ impl Renderer {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(16),
+                    },
                     count: None,
                 },
             ],
@@ -622,7 +674,7 @@ impl Renderer {
         });
         let image_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("kanesumi-image-layout"),
-            bind_group_layouts: &[&text_bgl],
+            bind_group_layouts: &[&image_bgl],
             push_constant_ranges: &[],
         });
         let image_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -659,6 +711,20 @@ impl Renderer {
             cache: None,
         });
 
+        // 文字浓度补偿 uniform（16 字节 = 4×f32，满足 uniform 最小绑定大小）。
+        let tuning_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("kanesumi-text-tuning"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let text_tuning = TextRenderTuning::default();
+        queue.write_buffer(
+            &tuning_buf,
+            0,
+            bytemuck::cast_slice(&[text_tuning.contrast, text_tuning.gamma, 0.0f32, 0.0f32]),
+        );
+
         // 持久顶点缓冲（初始容量，不足时翻倍）。§4.1 不变量 1：静态内容保留，避免每帧重建。
         let mk_vert_buf = |label: &str, cap: u64| {
             device.create_buffer(&wgpu::BufferDescriptor {
@@ -684,7 +750,10 @@ impl Renderer {
             text_pipeline,
             image_pipeline,
             text_bgl,
+            image_bgl,
             sampler,
+            tuning_buf,
+            text_tuning,
             glyphs: HashMap::new(),
             images: HashMap::new(),
             glyph_bitmaps: HashMap::new(),
@@ -699,6 +768,28 @@ impl Renderer {
             width,
             height,
         })
+    }
+
+    /// 设定文字浓度旋钮。变化时写 uniform 并清空字形位图 / 纹理缓存 ——
+    /// 加粗会改变字形位图与放置几何，旧缓存对新旋钮不再有效。
+    /// 设为 `TextRenderTuning::identity()` 即恢复改动前行为（覆盖率不过表、字形原样）。
+    pub fn set_text_tuning(&mut self, tuning: TextRenderTuning) {
+        if self.text_tuning == tuning {
+            return;
+        }
+        self.text_tuning = tuning;
+        self.queue.write_buffer(
+            &self.tuning_buf,
+            0,
+            bytemuck::cast_slice(&[tuning.contrast, tuning.gamma, 0.0f32, 0.0f32]),
+        );
+        self.glyphs.clear();
+        self.glyph_bitmaps.clear();
+    }
+
+    /// 诊断：当前文字浓度旋钮。
+    pub fn text_tuning(&self) -> TextRenderTuning {
+        self.text_tuning
     }
 
     /// 重配尺寸（逻辑）与缩放。configure 事件触发。
@@ -1138,18 +1229,34 @@ impl Renderer {
         max_lines: Option<usize>,
         overflow: kanesumi_canvas::TextOverflow,
     ) {
-        let placed = layout_text_glyphs(
-            engine,
-            &mut self.glyph_bitmaps,
-            content,
-            rect,
-            style,
-            align,
-            wrap,
-            max_lines,
-            overflow,
-            self.scale,
-        );
+        let placed = if self.text_tuning.needs_glyph_tuning() {
+            layout_text_glyphs_tuned(
+                engine,
+                &mut self.glyph_bitmaps,
+                content,
+                rect,
+                style,
+                align,
+                wrap,
+                max_lines,
+                overflow,
+                self.scale,
+                self.text_tuning,
+            )
+        } else {
+            layout_text_glyphs(
+                engine,
+                &mut self.glyph_bitmaps,
+                content,
+                rect,
+                style,
+                align,
+                wrap,
+                max_lines,
+                overflow,
+                self.scale,
+            )
+        };
         for g in placed {
             let (x1, y1) = (g.x + g.w, g.y + g.h);
             let start = verts.len() as u32;
@@ -1230,6 +1337,10 @@ impl Renderer {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.tuning_buf.as_entire_binding(),
+                },
             ],
         });
         self.glyphs.insert(
@@ -1285,7 +1396,7 @@ impl Renderer {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("kanesumi-image-bg"),
-            layout: &self.text_bgl,
+            layout: &self.image_bgl,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
