@@ -125,6 +125,8 @@ pub trait TreeApp {
 struct FloatingTree {
     tree: Tree,
     pending_dt: f64,
+    /// 真实经过时间的定时器累计（`advance_clock` 加、`update` 取；墙钟语义）。
+    timer_dt: f64,
     pointer: Point,
     /// 上一次 `render_floating` 的帧损伤（`None` = 整幅）。
     damage: Option<Rect>,
@@ -176,6 +178,10 @@ pub struct TreeHost<A: TreeApp> {
     tree: Tree,
     /// 外壳 `update(dt)` 给的时间步，下一次 `render_into` 交给 `Tree::frame`。
     pending_dt: f64,
+    /// 真实经过时间的定时器累计（`advance_clock` 加、`update` 取）。
+    /// 定时器是墙钟语义（「多久之后」），挂起恢复后的长间隔按真实时长扣；
+    /// 与动画的 `pending_dt` 分开记，方便 `update` 里只取走定时器份额。
+    timer_dt: f64,
     /// 上一帧的损伤（外壳在 render 之后经 `damage_hint` 取走）。
     damage: Option<Rect>,
     /// 最近指针位置（滚轮事件不带坐标，命中要用）。
@@ -203,13 +209,14 @@ impl<A: TreeApp> TreeHost<A> {
                 app.build_floating(i, &mut t);
                 // 浮层恒为 CPU 光栅 + 局部提交（外壳按 `floating_damage` 只重画损伤区）。
                 t.set_damage_cull(true);
-                FloatingTree { tree: t, pending_dt: 0.0, pointer: Point::new(0.0, 0.0), damage: None }
+                FloatingTree { tree: t, pending_dt: 0.0, timer_dt: 0.0, pointer: Point::new(0.0, 0.0), damage: None }
             })
             .collect();
         Self {
             app,
             tree,
             pending_dt: 0.0,
+            timer_dt: 0.0,
             damage: None,
             pointer: Point::new(0.0, 0.0),
             popup_dirty: std::collections::HashSet::new(),
@@ -472,21 +479,29 @@ impl<A: TreeApp> App for TreeHost<A> {
     }
 
     /// 真实（未限幅）经过时间 → 各树的动画时钟。`frame` 据此推进动画，掉帧不拉长总时长。
+    /// 同时累计定时器份额：定时器是墙钟语义（STATE 2026-10-02 §Ⅲ #8——
+    /// 「1.5 s 后隐藏」在空闲大间隔唤醒下不再被限幅拉长），到期的定时器由
+    /// `tick_timers` 的 `retain_mut` 语义保证只触发一次。
     fn advance_clock(&mut self, dt: f64) {
         self.pending_dt += dt;
+        self.timer_dt += dt;
         for f in &mut self.floating {
             f.pending_dt += dt;
+            f.timer_dt += dt;
         }
     }
 
     fn update(&mut self, dt: f64) {
-        // 非动画逻辑（定时器 / App tick）仍用限幅 dt（防挂起恢复后的巨大步长）。
+        // 定时器（含工具提示计时）按真实经过时间推进，取走累计份额；挂起恢复的
+        // 大步长在这里是期望行为（一次结算），不会重复触发。
+        let timers = std::mem::take(&mut self.timer_dt);
+        self.tree.tick_timers(timers);
+        // 每步积分类逻辑（App tick / 控件 hover 过渡）仍用限幅 dt 防跳变。
         let logic = dt.min(0.05);
-        // 定时器在 update 里推进：外壳空闲时也有兜底唤醒，到期者置脏出帧。
-        self.tree.tick_timers(logic);
         self.app.tick(&mut self.tree, logic);
         for (i, f) in self.floating.iter_mut().enumerate() {
-            f.tree.tick_timers(logic);
+            let ft = std::mem::take(&mut f.timer_dt);
+            f.tree.tick_timers(ft);
             self.app.tick_floating(i, &mut f.tree, logic);
         }
         self.drain_actions();
