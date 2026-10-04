@@ -1155,13 +1155,8 @@ impl Renderer {
 
             for step in &frame.steps {
                 // 损伤裁剪（G1）：与步骤自身裁剪求交；空交集 → 整步跳过（不动颜色）。
-                let clip = match (damage, step.clip()) {
-                    (Some(d), Some(c)) => match intersect(c, d) {
-                        Some(x) => Some(x),
-                        None => continue,
-                    },
-                    (Some(d), None) => Some(d),
-                    (None, c) => c,
+                let Some(clip) = damage_clip(damage, step.clip()) else {
+                    continue;
                 };
                 match step {
                     Step::Solid { start, count, .. } => {
@@ -1489,6 +1484,17 @@ fn intersect(a: Rect, b: Rect) -> Option<Rect> {
     }
 }
 
+/// 合并全局损伤裁剪与步骤裁剪（G1 损伤感知）。
+/// 返回 `Some(None)` = 全表面（无损伤且步骤无裁剪）；`Some(Some(r))` = 裁剪到 r；
+/// `None` = 两者无交集 → 该步整步跳过（不动颜色）。
+fn damage_clip(damage: Option<Rect>, clip: Option<Rect>) -> Option<Option<Rect>> {
+    match (damage, clip) {
+        (None, c) => Some(c),
+        (Some(d), None) => Some(Some(d)),
+        (Some(d), Some(c)) => intersect(c, d).map(Some),
+    }
+}
+
 /// 推入一个 quad（两三角形）。
 fn push_quad(
     verts: &mut Vec<TextVertex>,
@@ -1595,5 +1601,35 @@ mod tests {
             scissor_rect(Some(Rect::new(100.75, 0.0, 0.25, 1.0)), 1.5, 152, 2),
             (151, 0, 1, 2),
         );
+    }
+
+    #[test]
+    fn damage_clip_无损伤时保留步骤裁剪() {
+        assert_eq!(damage_clip(None, None), Some(None));
+        let c = Rect::new(1.0, 2.0, 3.0, 4.0);
+        assert_eq!(damage_clip(None, Some(c)), Some(Some(c)));
+    }
+
+    #[test]
+    fn damage_clip_有损伤时限制到损伤区() {
+        let d = Rect::new(10.0, 10.0, 20.0, 20.0);
+        // 步骤无裁剪 → 裁剪到损伤。
+        assert_eq!(damage_clip(Some(d), None), Some(Some(d)));
+        // 步骤裁剪完全包含损伤 → 交集仍是损伤。
+        let outer = Rect::new(0.0, 0.0, 100.0, 100.0);
+        assert_eq!(damage_clip(Some(d), Some(outer)), Some(Some(d)));
+        // 部分重叠 → 交集。
+        let part = Rect::new(15.0, 15.0, 40.0, 40.0);
+        assert_eq!(
+            damage_clip(Some(d), Some(part)),
+            Some(Some(Rect::new(15.0, 15.0, 15.0, 15.0)))
+        );
+    }
+
+    #[test]
+    fn damage_clip_无交集则整步跳过() {
+        let d = Rect::new(0.0, 0.0, 5.0, 5.0);
+        let far = Rect::new(50.0, 50.0, 10.0, 10.0);
+        assert_eq!(damage_clip(Some(d), Some(far)), None);
     }
 }

@@ -1294,8 +1294,10 @@ impl Shell {
         );
         if kind == RendererKind::Gpu
             && let Some(ctx) = self.ensure_gpu_context(&surf)
-            && let Ok(r) = Renderer::with_context(ctx, &self.conn, &surf, fw, fh, fscale, true)
+            && let Ok(mut r) = Renderer::with_context(ctx, &self.conn, &surf, fw, fh, fscale, true)
         {
+            // 预热：空场景提交一次，强制管线/着色器编译（消除 G0 测得的首帧 20~40 ms 尖峰）。
+            r.render(&self.engine, &Scene::default());
             log::info!("浮层 wgpu 渲染器已创建（{}）", r.diagnostics());
             self.floating[idx].renderer = Some(r);
             return;
@@ -1400,9 +1402,15 @@ impl Shell {
             self.floating_full[idx] = false;
             self.floating_raster_size[idx] = phys_now;
         } else if let Some(r) = f.renderer.as_mut() {
-            // GPU（G1）：全幅直出（损伤感知在后续提交补齐）。
+            // GPU（G1）：消费损伤 —— 全幅或只重画损伤矩形（scissor + MSAA Load 保留
+            // 上一帧其余像素）；零面积 = 本帧无变化 → 不提交。
+            let damage = if full { None } else { app.floating_damage(idx) };
+            if damage.is_some_and(|d| d.size.width <= 0.0 || d.size.height <= 0.0) {
+                self.floating_full[idx] = false;
+                return;
+            }
             let t = Instant::now();
-            r.render(&self.engine, &scene);
+            r.render_with_damage(&self.engine, &scene, damage);
             raster_ms = t.elapsed().as_secs_f32() * 1000.0;
             self.floating_full[idx] = false;
             self.floating_raster_size[idx] = phys_now;
