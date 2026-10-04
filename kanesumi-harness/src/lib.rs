@@ -21,6 +21,12 @@ pub(crate) mod glyph_layout;
 #[cfg(target_os = "linux")]
 pub mod dmabuf;
 
+// dmabuf 探测子进程入口：应用 `main` 第一行调用（若 `ETHER_DMABUF_PROBE` 存在则跑探测并
+// exit，否则立即返回）。前移入口避免子进程重执行时先跑应用前半段而误判段错误来源。
+// 参 docs/STATE_2026-10-02.md §Ⅳ-8（g1a 诊断改造）。
+#[cfg(target_os = "linux")]
+pub use dmabuf::dmabuf_probe_entry;
+
 #[cfg(target_os = "linux")]
 pub mod platform;
 
