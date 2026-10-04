@@ -3109,6 +3109,18 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                     WEnum::Value(wayland_client::protocol::wl_keyboard::KeyState::Pressed)
                 );
                 if !is_pressed {
+                    // 松开事件：引擎激活期交给 App —— Shift 点按在**松开时**判定
+                    // （按住期间无其它键、且按住 < 300 ms 才切中英，参 docs/IME_PLAN.md §Ⅱ-2）。
+                    // 非激活期与按下同样门控，不介入（IME1）。松开不重放：按下时已随键透传。
+                    if !grab_key_passthrough(state.im_active, state.im_xkb.is_some())
+                        && let Some(xkb) = state.im_xkb.as_ref()
+                    {
+                        let (sym, utf8) = xkb.keycode_to_sym(key);
+                        let logical = map_key(xkeysym::Keysym::new(sym), utf8);
+                        let _ = guard("ime_engine_key_release", || {
+                            state.app.ime_engine_key_release(logical, state.im_modifiers)
+                        });
+                    }
                     return;
                 }
                 // ⚠ 引擎不可用（文本字段未聚焦 / keymap 未建立）时**绝不吞键**：直接经虚拟
