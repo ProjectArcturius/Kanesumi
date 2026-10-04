@@ -276,8 +276,8 @@ impl MetroDialog {
             box_rect.size.height - 18.0 - 24.0,
         );
 
-        // 标题（20px，最多 2 行）——CONTROL_SPEC §9 Title FontSize 20 / Normal，MaxLines 2。
-        let title_style = TextStyle::new(20.0, 26.0, kanesumi_core::FontWeight::Normal);
+        // 标题（20px，最多 2 行）——CONTROL_SPEC §9 Title FontSize 20，标题类字重（G-67），MaxLines 2。
+        let title_style = TextStyle::new(20.0, 26.0, kanesumi_core::typography::heading_weight());
         let title_h = if self.title.is_empty() {
             0.0
         } else {
@@ -302,7 +302,7 @@ impl MetroDialog {
         // 内容 —— 起点 = 标题下沿 + TitleMargin(12)。
         // 旧 bug：只加 title_gap 没加 title_h → 正文与标题重叠 26px。参 CONTROL_SPEC §9。
         if !self.content.is_empty() {
-            let content_style = TextStyle::new(14.0, 20.0, kanesumi_core::FontWeight::Normal);
+            let content_style = kanesumi_core::MetroTypography::metro().body_medium;
             let title_margin = if self.title.is_empty() { 0.0 } else { 12.0 };
             let y_off = title_h + title_margin;
             let content_rect = Rect::new(

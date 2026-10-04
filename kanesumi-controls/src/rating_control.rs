@@ -50,7 +50,7 @@ impl MetroRatingControl {
         Self::default()
     }
 
-    /// 星字形样式（item_size）。
+    /// 星字形样式（item_size）。星形图标字形保持 Normal —— 加粗会让星角糊成团。
     pub fn star_style(&self) -> TextStyle {
         TextStyle::new(self.item_size, self.item_size, FontWeight::Normal)
     }

@@ -10,8 +10,8 @@
 use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::TextStyle;
-use kanesumi_core::{FontWeight, MetroTheme, Point, Rect, Size};
+use kanesumi_core::typography::{MetroTypography, TextStyle};
+use kanesumi_core::{MetroTheme, Point, Rect, Size};
 use kanesumi_element::{
     Event, EventCtx, Key, MeasureCtx, PaintCtx, PointerButton, PopupSpec, UpdateCtx, Widget,
     WidgetId,
@@ -20,8 +20,6 @@ use kanesumi_element::{
 use crate::dropdown_menu::{MenuItem, MetroDropdownMenu};
 use crate::popup::{place_popup, popup_gap};
 
-/// Item 字号（BreadcrumbBarItemThemeFontSize = ControlContentThemeFontSize 14）。
-const ITEM_FONT: f32 = 14.0;
 /// Item 水平 Padding（`1,3` → 左右各 1）。
 const ITEM_PAD_X: f32 = 1.0;
 /// Item 垂直 Padding（上下各 3）。
@@ -90,9 +88,10 @@ impl MetroBreadcrumbBar {
         }
     }
 
-    /// Item 文本样式。
+    /// Item 文本样式（BreadcrumbBarItemThemeFontSize = ControlContentThemeFontSize 14，
+    /// 即正文中号令牌 14/20；走令牌，参 §G-67）。
     pub fn item_style() -> TextStyle {
-        TextStyle::new(ITEM_FONT, 20.0, FontWeight::Normal)
+        MetroTypography::metro().body_medium
     }
 
     /// 计算折叠布局。参 CONTROL_SPEC §18 折叠语义。

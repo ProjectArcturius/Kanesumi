@@ -10,7 +10,7 @@
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::TextStyle;
+use kanesumi_core::typography::{MetroTypography, TextStyle};
 use kanesumi_core::{Color, FontWeight, MetroTheme, Point, Rect};
 
 /// 严重级别。参 CONTROL_SPEC §12。
@@ -144,9 +144,9 @@ impl MetroInfoBar {
         TextStyle::new(14.0, 20.0, FontWeight::Semibold)
     }
 
-    /// Message / Action 样式：14px Normal。
+    /// Message / Action 样式：14px 正文（走令牌，参 §G-67）。
     fn body_style() -> TextStyle {
-        TextStyle::new(14.0, 20.0, FontWeight::Normal)
+        MetroTypography::metro().body_medium
     }
 
     /// Close 按钮 rect（38×38，Margin 5，右上）。

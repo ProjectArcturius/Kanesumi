@@ -9,8 +9,8 @@
 use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::TextStyle;
-use kanesumi_core::{FontWeight, MetroTheme, Point, Rect, Size};
+use kanesumi_core::typography::{MetroTypography, TextStyle};
+use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
 /// Nav 按钮边长（40）。
 const NAV_SIZE: f32 = 40.0;
@@ -141,7 +141,7 @@ impl MetroPagerControl {
     }
 
     fn page_number_style() -> TextStyle {
-        TextStyle::new(14.0, 20.0, FontWeight::Normal)
+        MetroTypography::metro().body_medium
     }
 
     /// 单个数字按钮宽（Max(32, 数字文本宽)）。

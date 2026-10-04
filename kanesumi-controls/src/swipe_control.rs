@@ -7,8 +7,8 @@
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::TextStyle;
-use kanesumi_core::{FontWeight, MetroTheme, Point, Rect};
+use kanesumi_core::MetroTypography;
+use kanesumi_core::{MetroTheme, Point, Rect};
 
 /// 操作项宽。
 pub const SWIPE_ITEM_W: f32 = 64.0;
@@ -229,7 +229,7 @@ impl MetroSwipeControl {
     /// 渲染：内容（宿主自绘占位）+ 露出的操作项。
     pub fn render(&self, theme: &MetroTheme, _engine: &TextEngine, rect: Rect, scene: &mut Scene) {
         let colors = &theme.colors;
-        let style = TextStyle::new(12.0, 16.0, FontWeight::Normal);
+        let style = MetroTypography::metro().body_small;
 
         if self.offset > 0.0 {
             for (i, item) in self.left_items.iter().enumerate() {

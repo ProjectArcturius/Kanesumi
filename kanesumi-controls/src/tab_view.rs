@@ -8,8 +8,8 @@
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::TextStyle;
-use kanesumi_core::{Color, FontWeight, MetroTheme, Point, Rect};
+use kanesumi_core::MetroTypography;
+use kanesumi_core::{Color, MetroTheme, Point, Rect};
 
 /// 顶部留白（TabViewHeaderPadding 0,8,0,0）。
 pub const TABVIEW_HEADER_PAD: f32 = 8.0;
@@ -226,7 +226,7 @@ impl MetroTabView {
     /// 渲染 tab strip（＋ Add 按钮）。
     pub fn render(&self, theme: &MetroTheme, _engine: &TextEngine, rect: Rect, scene: &mut Scene) {
         let colors = &theme.colors;
-        let style = TextStyle::new(TABVIEW_ITEM_FONT, 16.0, FontWeight::Normal);
+        let style = MetroTypography::metro().body_small;
 
         // 容器语义 = 裁到自身矩形（2026-09-22 审计 P0-2）：页签横向滚动后越界项仍会被绘制。
         scene.push_clip(rect);

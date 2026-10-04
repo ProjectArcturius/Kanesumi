@@ -58,7 +58,12 @@ impl MetroCandidateWindow {
 
     /// 候选词字号（微软拼音候选字号偏大 → 显式 18px，横排清晰）。
     fn candidate_style(&self, _theme: &MetroTheme) -> kanesumi_core::typography::TextStyle {
-        kanesumi_core::typography::TextStyle::new(18.0, 26.0, kanesumi_core::FontWeight::Normal)
+        // 候选词无同字号令牌（18/26），只取正文字重，字号行高保持原位。
+        kanesumi_core::typography::TextStyle::new(
+            18.0,
+            26.0,
+            kanesumi_core::typography::body_weight(),
+        )
     }
 
     /// 单候选「序号 + 词」的宽度（估算：汉字 ≈ 字号宽，拉丁 ≈ 字号×0.6）。

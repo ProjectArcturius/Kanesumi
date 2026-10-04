@@ -9,7 +9,7 @@
 use kanesumi_anim::{EasingMode, MetroAnim, UwpEasing};
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::TextStyle;
+use kanesumi_core::typography::{MetroTypography, TextStyle};
 use kanesumi_core::{FontWeight, MetroTheme, Point, Rect, Size};
 use kanesumi_element::{
     Event, EventCtx, Key, MeasureCtx, PaintCtx, PointerButton, PopupSpec, Widget, WidgetId,
@@ -169,7 +169,7 @@ impl MetroTeachingTip {
     }
 
     fn body_style() -> TextStyle {
-        TextStyle::new(14.0, 20.0, FontWeight::Normal)
+        MetroTypography::metro().body_medium
     }
 
     /// 打开：计算放置 + 淡入。

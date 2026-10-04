@@ -10,8 +10,8 @@ use kanesumi_canvas::glyph;
 use kanesumi_canvas::icon::Icon;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::TextStyle;
-use kanesumi_core::{FontWeight, MetroTheme, Point, Rect};
+use kanesumi_core::typography::{body_weight, TextStyle};
+use kanesumi_core::{MetroTheme, Point, Rect};
 
 /// Compact 高度（TitleBarCompactHeight = 32）。
 pub const TITLEBAR_COMPACT: f32 = 32.0;
@@ -117,9 +117,9 @@ impl MetroTitleBar {
         Rect::new(x, rect.origin.y + (h - 14.0) / 2.0, w, 14.0)
     }
 
-    /// Title 样式（Caption 12px）。
+    /// Title 样式（Caption 12px）。无同字号令牌（12/14），只取正文字重（G-67）。
     pub fn title_style() -> TextStyle {
-        TextStyle::new(12.0, 14.0, FontWeight::Normal)
+        TextStyle::new(12.0, 14.0, body_weight())
     }
 
     /// 命中：Back 按钮。

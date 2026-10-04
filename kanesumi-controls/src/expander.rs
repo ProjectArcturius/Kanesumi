@@ -12,8 +12,8 @@
 use kanesumi_anim::{MetroAnim, MetroPresets};
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::TextStyle;
-use kanesumi_core::{FontWeight, MetroTheme, Point, Rect, Size};
+use kanesumi_core::typography::{MetroTypography, TextStyle};
+use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
 use crate::state::ControlState;
 
@@ -184,7 +184,7 @@ impl MetroExpander {
 
     /// Header 文本样式：14px。
     pub fn header_style() -> TextStyle {
-        TextStyle::new(14.0, 20.0, FontWeight::Normal)
+        MetroTypography::metro().body_medium
     }
 
     /// 渲染 Header 行（bg + 边框 + 标签 + chevron）。Content 由宿主渲染。

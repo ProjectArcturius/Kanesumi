@@ -11,7 +11,7 @@ use kanesumi_canvas::glyph;
 use kanesumi_canvas::icon::Icon;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::TextStyle;
+use kanesumi_core::typography::{MetroTypography, TextStyle};
 use kanesumi_core::{FontWeight, MetroTheme, Point, Rect};
 
 /// Expanded Pane 宽（320）。
@@ -345,7 +345,7 @@ impl MetroNavigationView {
     }
 
     fn item_style() -> TextStyle {
-        TextStyle::new(14.0, 20.0, FontWeight::Normal)
+        MetroTypography::metro().body_medium
     }
 
     /// 命中：Toggle / 顶层项。`engine` 仅 Top 模式用来量 label 宽；Left 模式忽略。
@@ -461,6 +461,7 @@ impl MetroNavigationView {
             } else if let Some(icon) = &item.icon {
                 let icon_rect =
                     Rect::new(x, r.origin.y + (r.size.height - 16.0) / 2.0, 16.0, 16.0);
+                // 图标字形保持 Normal —— 符号笔画本就细，加粗会糊。
                 scene.text(
                     icon.clone(),
                     icon_rect,
@@ -858,6 +859,17 @@ mod tests {
 
     fn area() -> Rect {
         Rect::new(0.0, 0.0, 800.0, 600.0)
+    }
+
+    /// G-67：导航条目属正文类，字重必须跟随正文令牌，不得再写死 Normal 绕过令牌。
+    #[test]
+    fn item_style_uses_body_weight_token() {
+        let item = MetroNavigationView::item_style();
+        assert_eq!(item.weight, MetroTypography::metro().body.weight);
+        assert_eq!(item.weight, kanesumi_core::typography::body_weight());
+        // 字号 / 行高保持原值，本任务不改布局。
+        assert_eq!(item.size, 14.0);
+        assert_eq!(item.line_height, 20.0);
     }
 
     #[test]

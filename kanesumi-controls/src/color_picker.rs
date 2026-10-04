@@ -8,8 +8,8 @@
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::TextStyle;
-use kanesumi_core::{Accent, Color, CornerRadius, FontWeight, MetroTheme, Point, Rect};
+use kanesumi_core::MetroTypography;
+use kanesumi_core::{Accent, Color, CornerRadius, MetroTheme, Point, Rect};
 
 /// 滑轨拇指边长（ColorPickerSliderInnerThumb = 10）。
 pub const COLOR_THUMB: f32 = 10.0;
@@ -259,7 +259,7 @@ impl MetroColorPicker {
     /// 渲染：Spectrum（阶梯带）→ 四滑轨 → 预览 + Hex。
     pub fn render(&self, theme: &MetroTheme, _engine: &TextEngine, rect: Rect, scene: &mut Scene) {
         let colors = &theme.colors;
-        let style = TextStyle::new(12.0, 16.0, FontWeight::Normal);
+        let style = MetroTypography::metro().body_small;
 
         // Spectrum 阶梯 hue 带（离散 12 色列）
         if let Some(sr) = self.spectrum_rect(rect) {

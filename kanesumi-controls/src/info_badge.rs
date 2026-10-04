@@ -9,8 +9,8 @@
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::TextStyle;
-use kanesumi_core::{CornerRadius, FontWeight, MetroTheme, Rect, Size};
+use kanesumi_core::typography::{MetroTypography, TextStyle};
+use kanesumi_core::{CornerRadius, MetroTheme, Rect, Size};
 
 /// InfoBadge 派生风格底色（对齐 InfoBar Severity 图标色，参 CONTROL_SPEC §14 表）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,7 +115,7 @@ impl MetroInfoBadge {
 
     /// 值文本样式：11px（`InfoBadgeValueFontSize`）。
     pub fn value_style() -> TextStyle {
-        TextStyle::new(11.0, 14.0, FontWeight::Normal)
+        MetroTypography::metro().label
     }
 
     /// 固有尺寸（含 Padding `4,0,4,2`；图标态 `4,4,4,4`）。

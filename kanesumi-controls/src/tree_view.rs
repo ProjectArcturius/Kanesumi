@@ -10,8 +10,8 @@ use kanesumi_anim::{EasingMode, MetroAnim, UwpEasing};
 use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::TextStyle;
-use kanesumi_core::{FontWeight, MetroTheme, Point, Rect, Size};
+use kanesumi_core::MetroTypography;
+use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
 /// 行高（TreeViewItemMinHeight = 28）。
 pub const TREE_ITEM_H: f32 = 28.0;
@@ -252,7 +252,7 @@ impl MetroTreeView {
         let colors = &theme.colors;
         let rows = self.visible_rows();
         let (_, rects) = self.layout(rect);
-        let style = TextStyle::new(14.0, 20.0, FontWeight::Normal);
+        let style = MetroTypography::metro().body_medium;
 
         // 容器语义 = 裁到自身矩形（2026-09-22 审计 P0-2）：展平行自 rect.origin.y 向下排，
         // 无视口上限时超出行高总和的项会画到控件之外。`rects` 应与 `rows` 等长，
