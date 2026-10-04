@@ -13,3 +13,11 @@
 
 方向：浓度优先来自**真字重**（Noto Sans CJK 自带 DemiLight / Regular / Medium / Bold，设计好的笔画边缘锐利）+ 对比度 / gamma；
 裁定 N-41（正文 Normal）不由调度者改动，出样张请用户选。后续证据任务 `tx2-weight-outline`。
+
+## tx2 审阅（2026-10-04 17:10）
+
+1:1 页（`docs/research/tx2/rust/onesheet_light.png` / `onesheet_dark.png`，2× 物理像素不放大）读图：
+**只有真字重 Medium（med / med-cg）在实际尺寸下一眼可见地「强劲」且锐利**；对比度 / gamma 与轮廓加粗（reg-cg / ol15 / ol30 / ol15-cg）
+在 1:1 下与 base 差别很小，只在放大图上可辨；掩码膨胀（dil25）仍发虚。
+结论：**浓度的主杠杆是字重**，渲染层补偿是次要的。工人在不改 N-41 前提下首推的 ol15-cg 在 1:1 下提升有限。
+建议用户裁定：正文 Medium（+ contrast 0.5 / gamma 1.4），即修订 N-41；Win10 截图到后复核。
