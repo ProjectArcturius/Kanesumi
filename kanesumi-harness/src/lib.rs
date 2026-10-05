@@ -14,6 +14,7 @@ pub mod perf;
 pub mod renderer_policy;
 pub mod role;
 pub mod system_theme;
+pub mod timeline;
 pub mod tree_host;
 
 pub mod cpu_raster;

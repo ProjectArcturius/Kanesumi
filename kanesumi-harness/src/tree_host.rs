@@ -492,6 +492,7 @@ impl<A: TreeApp> App for TreeHost<A> {
     }
 
     fn update(&mut self, dt: f64) {
+        crate::timeline::note_once("app_update_start");
         // 定时器（含工具提示计时）按真实经过时间推进，取走累计份额；挂起恢复的
         // 大步长在这里是期望行为（一次结算），不会重复触发。
         let timers = std::mem::take(&mut self.timer_dt);
@@ -505,6 +506,7 @@ impl<A: TreeApp> App for TreeHost<A> {
             self.app.tick_floating(i, &mut f.tree, logic);
         }
         self.drain_actions();
+        crate::timeline::note_once("app_update_done");
     }
 
     fn needs_redraw(&self) -> bool {
@@ -617,6 +619,7 @@ impl<A: TreeApp> App for TreeHost<A> {
     }
 
     fn render_into(&mut self, engine: &TextEngine, size: Size, out: &mut Scene) {
+        crate::timeline::note_once("render_into_start");
         let dt = std::mem::take(&mut self.pending_dt);
         let frame = self.tree.frame(engine, size, dt);
         // 弹层分离：本帧损伤（None = 全量）碰到的弹层要重画其表面。

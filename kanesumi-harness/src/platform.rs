@@ -226,6 +226,9 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
     // 应用 `main` **第一行**还应调 `kanesumi_harness::dmabuf_probe_entry()` 把入口再前移
     // （避免子进程重执行时先跑应用前半段，把段错误锅扣到 gbm 头上）。
     crate::dmabuf::dmabuf_probe_entry();
+    // 拉起时间线：应用未在 `main` 调 `start` 时以此兜底（所有 kanesumi 应用自动获得）。
+    // 参 DECISIONS_2026-10-05 §104、crate::timeline。
+    crate::timeline::ensure_started(app.config().app_id);
     env_logger::init();
 
     let conn = Connection::connect_to_env()
@@ -257,8 +260,12 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         &extra_sources(&font_source.path),
     )
     .map_err(|e| format!("加载字体失败 {}：{e}", font_source.path.display()))?;
+    // 字体栈整文件读入 + 解码完成（怀疑的大头之一，单独成段）。
+    crate::timeline::note("fonts_loaded");
 
     let mut shell = Shell::new(app, engine, &conn, &globals, &qh, role)?;
+    // 表面 / 角色 / 协议绑定完成，随即等首个 configure。
+    crate::timeline::note("shell_ready");
     // 系统主题：读 Chorus 的 theme.toml 并推给 App（accent / scheme）。
     // 这是「用户在 Chorus 改 accent、应用却仍是写死橙色」那条断链的接回点。
     shell.apply_system_theme();
@@ -288,8 +295,10 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         event_loop
             .dispatch(timeout, &mut shell)
             .map_err(|e| format!("事件循环 dispatch 失败：{e}"))?;
+        crate::timeline::note_once("dispatch_done");
         // 引擎宿主幂等绑定（input_method.is_none 才建，seat 就绪后即生效）。
         shell.ensure_ime_engine(&qh);
+        crate::timeline::note_once("ime_ready");
         // 推进步：update / 定时器 / 菜单命令 / IME / 尺寸同步（与渲染解耦，I-4）。
         shell.step(&qh);
         // 脏 → 渲染 + commit（I-1：CPU 缓冲恒就绪，无条件成功）。
@@ -1567,6 +1576,11 @@ impl Shell {
                     "wgpu 共享上下文已创建（format={:?}）—— 主表面/浮层共用一份 device",
                     ctx.format()
                 );
+                // 时间线：wgpu instance / adapter / device 就绪（怀疑的最大头）。
+                crate::timeline::note_once_detail(
+                    "gpu_device_ready",
+                    &format!("format={:?}", ctx.format()),
+                );
                 self.gpu = Some(ctx.clone());
                 Some(ctx)
             }
@@ -1617,6 +1631,7 @@ impl Shell {
                 Ok(r) => {
                     log::info!("wgpu 渲染器已创建（{:.0}x{:.0}）", self.width, self.height);
                     self.renderer = Some(r);
+                    crate::timeline::note_once("renderer_ready");
                 }
                 Err(e) => {
                     log::error!("wgpu 渲染器初始化失败（{e:?}），退出");
@@ -1663,6 +1678,7 @@ impl Shell {
             {
                 log::info!("主表面 wgpu 渲染器已创建（{}）", r.diagnostics());
                 self.renderer = Some(r);
+                crate::timeline::note_once("renderer_ready");
                 return;
             }
         }
@@ -1675,6 +1691,7 @@ impl Shell {
             self.scale,
         );
         self.cpu = Some(cpu);
+        crate::timeline::note_once("cpu_renderer_ready");
         // CPU 局部光栅只重画 damage 区 → App 可按 damage 剔除拼接（wgpu 整幅直出不开）。
         self.app.set_damage_cull(true);
     }
@@ -1686,6 +1703,7 @@ impl Shell {
         if !self.configured {
             return;
         }
+        crate::timeline::note_once("step_start");
         // 合成器时钟（PLAN §4.2）：真实经过时间给动画（advance_clock），限幅 dt 给非动画逻辑
         //（防卡顿后跳变，§4.1 不变量 2）。参 ELEMENT_TREE §帧调度。
         let now = Instant::now();
@@ -1821,6 +1839,8 @@ impl Shell {
                 .render(&self.app.theme(), &self.engine, &mut self.scene_buf);
         }
         let render_ms = t_render.elapsed().as_secs_f32() * 1000.0;
+        // 时间线：首帧 Scene 渲染完成（App::render_into 返回）。
+        crate::timeline::note_once("first_frame_rendered");
 
         // 渲染后仍在动画 → 请求下一帧（vsync 提示，I-2）。App 在 render() 内清除
         // 自身脏标记（契约），此处的 needs_redraw = 动画推进中。
@@ -1861,6 +1881,8 @@ impl Shell {
             r.render(&self.engine, &self.scene_buf);
             raster_ms = t.elapsed().as_secs_f32() * 1000.0;
         }
+        // 时间线：首次提交（CPU 主表面 → SHM/dmabuf；xdg → wgpu present）。
+        crate::timeline::note_once("first_commit");
         self.perf_main.record(render_ms, raster_ms, commit_ms);
     }
 
@@ -2342,6 +2364,7 @@ impl WindowHandler for Shell {
         configure: WindowConfigure,
         _serial: u32,
     ) {
+        crate::timeline::note_once("configure_enter");
         let w = configure
             .new_size
             .0
@@ -2362,6 +2385,7 @@ impl WindowHandler for Shell {
         }
         if !self.configured {
             self.configured = true;
+            crate::timeline::note_once("first_configure");
             // 首帧：置脏 → 主循环渲染 + commit（I-1：无条件成功）。
             self.dirty = true;
         } else {
@@ -2471,6 +2495,7 @@ impl LayerShellHandler for Shell {
         self.dirty = true;
         if !self.configured {
             self.configured = true;
+            crate::timeline::note_once("first_configure");
         }
     }
 }

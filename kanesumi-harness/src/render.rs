@@ -434,6 +434,8 @@ impl GpuContext {
             backends: backend,
             ..Default::default()
         });
+        // 拉起时间线：Vulkan/WGPU 实例创建（ICD 扫描）。
+        crate::timeline::note_once("gpu_instance");
         let surface =
             create_wl_surface(&instance, conn, wl_surface).map_err(RendererError::Surface)?;
 
@@ -453,10 +455,13 @@ impl GpuContext {
             }))
         })
         .ok_or(RendererError::Adapter)?;
+        // 拉起时间线：适配器选定（此前的实例 / 表面 / 适配器枚举一起计时）。
+        crate::timeline::note_once("gpu_adapter");
 
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None))
                 .map_err(RendererError::Device)?;
+        crate::timeline::note_once("gpu_device");
 
         let caps = surface.get_capabilities(&adapter);
         // 诊断：surface capabilities 的 alpha_modes / formats（排查「主表面无法透明」）。
@@ -824,6 +829,8 @@ impl Renderer {
         let image_buf = mk_vert_buf("kanesumi-image-buf", 128);
 
         let msaa_view = create_msaa_view(device, &config);
+        // 拉起时间线：三条管线 / 绑定布局 / 缓冲建完（首帧前的最后一段 GPU 初始化）。
+        crate::timeline::note_once("renderer_pipelines");
 
         Ok(Self {
             ctx,
