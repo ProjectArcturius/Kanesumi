@@ -75,8 +75,9 @@ const LIGHT_MIX: [f32; 3] = [0.25, 0.45, 0.65];
 const DARK_MIX: [f32; 3] = [0.20, 0.35, 0.50];
 
 impl Accent {
-    /// Ether 默认强调色（橙金）。同时也是 `theme.toml` 缺失时的回退值。
-    pub const DEFAULT_HEX: u32 = 0xE5_78_12;
+    /// Ether 默认强调色（暮蓝，裁定 `docs/DECISIONS_2026-10-04.md` §M-87）。
+    /// 同时也是 `theme.toml` 缺失时的回退值。
+    pub const DEFAULT_HEX: u32 = 0x2D_6F_E0;
 
     /// 由基色派生全阶。
     pub fn from_base(base: Color) -> Self {
@@ -163,9 +164,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_accent_is_ether_orange() {
+    fn default_accent_is_dusk_blue() {
         let a = Accent::default();
-        assert_eq!(a.base, Color::from_hex(0xE5_78_12));
+        assert_eq!(a.base, Color::from_hex(0x2D_6F_E0));
     }
 
     #[test]

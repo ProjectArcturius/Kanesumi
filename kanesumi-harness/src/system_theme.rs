@@ -7,8 +7,9 @@
 // 此前 Kanesumi 完全不读这个文件：用户在 Chorus 把 accent 改成青绿，全部应用仍是写死的橙色。
 // 本模块是那条断掉链路的接回点。
 //
-// 解析器与 Chorus 同款容错：非法 accent 回退默认、未知 scheme 回退暗色、未知键忽略。
+// 解析器与 Chorus 同款容错：非法 accent 回退默认、未知 scheme 回退浅色、未知键忽略。
 // 不引入 toml 依赖（与 Chorus 保持一致，且 harness 侧依赖越少越好）。
+// 浅色为系统默认（裁定 Ether docs/DECISIONS_2026-10-04.md §M-87、88）。
 
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -25,7 +26,7 @@ pub fn config_path() -> PathBuf {
         })
 }
 
-/// 读取系统主题。文件缺失 / 不可读 → 默认（暗色 + 默认 accent）。
+/// 读取系统主题。文件缺失 / 不可读 → 默认（浅色 + 默认强调色，裁定 §M-87、88）。
 /// 亚克力背板设置（壁纸 + 模糊 + 着色），与主题同一份 theme.toml。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Backdrop {
@@ -87,14 +88,14 @@ pub fn parse_backdrop(raw: &str) -> Backdrop {
 pub fn load() -> MetroTheme {
     match std::fs::read_to_string(config_path()) {
         Ok(raw) => parse(&raw),
-        Err(_) => MetroTheme::dark(Accent::default()),
+        Err(_) => MetroTheme::light(Accent::default()),
     }
 }
 
 /// 解析主题文本（容错，未知键忽略）。
 pub fn parse(raw: &str) -> MetroTheme {
     let mut accent = Accent::default();
-    let mut scheme = ColorScheme::Dark;
+    let mut scheme = ColorScheme::Light;
     for line in raw.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -106,7 +107,7 @@ pub fn parse(raw: &str) -> MetroTheme {
         let (k, v) = (k.trim(), v.trim().trim_matches('"'));
         match k {
             "accent" => accent = Accent::parse(v),
-            "scheme" => scheme = ColorScheme::parse(v).unwrap_or(ColorScheme::Dark),
+            "scheme" => scheme = ColorScheme::parse(v).unwrap_or(ColorScheme::Light),
             _ => {}
         }
     }
@@ -161,16 +162,16 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_dark_with_default_accent() {
+    fn defaults_to_light_with_default_accent() {
         let t = parse("");
-        assert_eq!(t.scheme, ColorScheme::Dark);
+        assert_eq!(t.scheme, ColorScheme::Light);
         assert_eq!(t.colors.primary, Accent::default().base);
     }
 
     #[test]
     fn invalid_values_fall_back_without_panicking() {
         let t = parse("accent = \"zzz\"\nscheme = \"neon\"\nunknown = 1\n# comment\n");
-        assert_eq!(t.scheme, ColorScheme::Dark);
+        assert_eq!(t.scheme, ColorScheme::Light);
         assert_eq!(t.colors.primary, Accent::default().base);
     }
 

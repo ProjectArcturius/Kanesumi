@@ -95,7 +95,7 @@ impl Default for MetroColorPicker {
     fn default() -> Self {
         Self {
             // 初始取值 = 强调色默认基色（`Accent::DEFAULT_HEX`）。
-            // 不在此再写一遍 `#E57812`：那是第三处重复的强调色字面量，
+            // 不在此再写一遍 `#2D6FE0`：那是第三处重复的强调色字面量，
             // 换默认强调色时必被漏改（正是 T2 登记的那类漂移）。
             color: Accent::default().base,
             show_spectrum: true,
@@ -659,7 +659,7 @@ mod tests {
     #[test]
     fn default_color_and_hex() {
         let p = picker();
-        assert_eq!(p.hex(), "#E57812");
+        assert_eq!(p.hex(), "#2D6FE0");
     }
 
     #[test]
