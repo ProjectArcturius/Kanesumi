@@ -419,6 +419,11 @@ impl kanesumi_element::Widget for MetroExpander {
         }
     }
 
+    /// 插树前 `set_expanded` 留下的未稳态 → 请框架登记续帧（k-switch-init）。
+    fn wants_anim(&self) -> bool {
+        self.is_animating()
+    }
+
     fn focusable(&self) -> bool {
         true
     }
