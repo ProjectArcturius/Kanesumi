@@ -83,6 +83,18 @@ pub trait Widget: Any {
     /// 不提供量测失效。
     fn update(&mut self, _ctx: &mut UpdateCtx, _dt: f64) {}
 
+    /// 插树 / `edit` 后是否有「未稳态动画」需要框架登记续帧。
+    ///
+    /// 背景（k-switch-init）：`frame()` 只对 `anim` 集合里的节点调 `update`，而
+    /// 「构造后 `set_target` / `set_checked` 再插树」的控件不在集合里，动画永远
+    /// 停在初值（开关 knob 停左侧实证：ime3/07 截图）。框架在 `insert*` 与 `edit`
+    /// 之后查本方法，为 true 则 `request_anim` 一次，之后由 `update` 的
+    /// `ctx.animate` 自动续帧。默认 false —— 无动画控件零开销；
+    /// 带 `MetroAnim` / 循环相位的控件按自身稳态返回。参 docs/ELEMENT_TREE.md §Ⅴ-bis。
+    fn wants_anim(&self) -> bool {
+        false
+    }
+
     /// 布局前的子节点实现钩子（虚拟化容器用）。默认不做事。
     ///
     /// 调用时机：`Tree::frame` 在 measure 之前，对本节点被标记 `needs_realize` 且
