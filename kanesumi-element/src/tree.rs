@@ -388,9 +388,15 @@ impl Tree {
             log::error!("kanesumi-element: insert 的父节点不存在，改挂内容根");
             self.root
         };
+        // 插树时控件已带未稳态动画（构造后 set_target / set_checked 等）→ 登记续帧；
+        // 不登记则 `update` 永远不被调，动画卡在初值（k-switch-init：开关 knob 停左侧）。
+        let wants_anim = widget.wants_anim();
         let id = self.alloc(widget, Some(parent), props);
         if let Some(p) = self.node_mut(parent) {
             p.children.push(id);
+        }
+        if wants_anim {
+            self.request_anim(id);
         }
         self.invalidate_measure(parent);
         id
@@ -565,6 +571,16 @@ impl Tree {
         }
         // 内容变化必然要重画自身（量测 / 排列失效只保证矩形变化时重画）。
         self.invalidate_paint(id);
+        // 闭包把动画目标改了（如 `set_checked`）→ 控件未稳态，登记续帧，
+        // 否则 edit 路径的动画同样卡在初值（k-switch-init，与插树同因）。
+        let wants_anim = self
+            .node(id)
+            .and_then(|n| n.widget.as_deref())
+            .map(|w| w.wants_anim())
+            .unwrap_or(false);
+        if wants_anim {
+            self.request_anim(id);
+        }
         Some(r)
     }
 

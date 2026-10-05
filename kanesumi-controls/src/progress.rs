@@ -325,6 +325,12 @@ impl kanesumi_element::Widget for MetroProgressBar {
         }
     }
 
+    /// 不确定态需每帧推进相位；插树前 `set_value` / `paused` / `error` 未稳态同理
+    /// （k-switch-init：不登记则进度条静止）。
+    fn wants_anim(&self) -> bool {
+        self.is_animating()
+    }
+
     fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
         Some(kanesumi_element::AccessInfo {
             role: kanesumi_element::AccessRole::Other,
@@ -359,6 +365,12 @@ impl kanesumi_element::Widget for MetroProgressRing {
             ctx.invalidate_paint();
             ctx.request_anim_frame();
         }
+    }
+
+    /// 活动中的不确定环每帧推进相位；插树即登记，不等首帧 paint 续
+    /// （k-switch-init）。
+    fn wants_anim(&self) -> bool {
+        self.indeterminate && self.active
     }
 
     fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {

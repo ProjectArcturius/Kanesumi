@@ -587,6 +587,11 @@ impl kanesumi_element::Widget for MetroNavigationView {
         self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
     }
 
+    /// 插树前 / `edit` 改过 Pane 目标（未稳态）→ 请框架登记续帧（k-switch-init）。
+    fn wants_anim(&self) -> bool {
+        !self.pane.is_steady()
+    }
+
     fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, _dt: f64) {
         if !self.pane.is_steady() {
             // 统一动画入口：真实时钟推进 + 未稳态自动续帧（参 ELEMENT_TREE §帧调度）。

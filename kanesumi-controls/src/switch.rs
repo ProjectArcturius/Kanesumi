@@ -165,6 +165,16 @@ impl MetroSwitch {
         self
     }
 
+    /// 带初值构造 —— knob **直接跳到终点**（`jump_to`，不播动画）。
+    /// Win10 设置页载入时开关静止在正确位置（实证 ime3/07：「开」态 knob 却在左端，
+    /// 用户反馈「knob 反了」—— 实为插树不登记动画、progress 停在 0）。运行中被外部
+    /// 状态改变用 `set_checked`（滑过去）。
+    pub fn with_checked(mut self, checked: bool) -> Self {
+        self.checked = checked;
+        self.knob.jump_to(if checked { 1.0 } else { 0.0 });
+        self
+    }
+
     /// 编程式设置选中 —— 动画从当前 progress 滑向新目标。
     pub fn set_checked(&mut self, checked: bool) {
         if self.checked == checked {
@@ -453,6 +463,11 @@ impl kanesumi_element::Widget for MetroSwitch {
         }
     }
 
+    /// knob 未稳态（插树前 `set_checked` / `edit` 改目标）→ 请框架登记续帧。
+    fn wants_anim(&self) -> bool {
+        self.is_animating()
+    }
+
     fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
         use kanesumi_element::{Event, Key, PointerButton};
         match event {
@@ -610,6 +625,79 @@ mod tree_tests {
         assert!(h.take::<SwitchToggled>().is_empty());
         assert!(!h.tree.get::<MetroSwitch>(id).unwrap().checked);
     }
+
+    /// ① `with_checked(true)` 插树后**首帧** knob 就在右端（jump_to 终点，不播动画）。
+    #[test]
+    fn with_checked_true_paints_knob_at_right_on_first_frame() {
+        let mut h = TestHarness::new(320.0, 200.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroSwitch::with_header("Wi-Fi").with_checked(true),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        let theme = MetroTheme::ether_dark();
+        let sw = h.tree.get::<MetroSwitch>(id).unwrap();
+        assert!((sw.progress() - 1.0).abs() < 0.001, "初值即稳态终点");
+        let rect = h.rect(id);
+        let track = sw.track_rect(rect, &theme);
+        let knob = sw.knob_rect(rect, &theme);
+        assert!(
+            (knob.origin.x - (track.right() - knob.size.width - 3.0)).abs() < 0.5,
+            "首帧 knob 在轨道右端（右留白 3），实际 x={}",
+            knob.origin.x
+        );
+        // 下一帧仍稳态：动画不应空转续帧。
+        assert!(!sw.is_animating());
+    }
+
+    /// ② 插树前 `set_checked(true)`（未稳态）→ 框架插树登记动画，若干帧内 knob 到右端。
+    #[test]
+    fn set_checked_before_insert_still_reaches_target() {
+        let mut h = TestHarness::new(320.0, 200.0);
+        let mut sw = MetroSwitch::with_header("Wi-Fi");
+        sw.set_checked(true);
+        assert!(sw.is_animating(), "set_checked 后未稳态");
+        let id = h.tree.insert_with(
+            h.root(),
+            sw,
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        // 不手动 settle：给最多 30 帧让它自己滑过去（框架若不登记,永远到不了）。
+        let mut reached = false;
+        for _ in 0..30 {
+            h.frame();
+            if (h.tree.get::<MetroSwitch>(id).unwrap().progress() - 1.0).abs() < 0.001 {
+                reached = true;
+                break;
+            }
+        }
+        assert!(reached, "插树后动画应被框架登记并推进到 1.0");
+    }
+
+    /// ③ 运行中 `tree.edit` 改 `set_checked(false)` → edit 自查 wants_anim 登记，
+    /// knob 滑回左端（edit 路径与插树同因，k-switch-init）。
+    #[test]
+    fn edit_set_checked_animates_after_edit() {
+        let (mut h, id) = harness();
+        h.tree
+            .edit::<MetroSwitch, _>(id, |c, _| c.set_checked(true));
+        h.settle();
+        assert!((h.tree.get::<MetroSwitch>(id).unwrap().progress() - 1.0).abs() < 0.001);
+        h.tree
+            .edit::<MetroSwitch, _>(id, |c, _| c.set_checked(false));
+        h.settle();
+        let p = h.tree.get::<MetroSwitch>(id).unwrap().progress();
+        assert!((p - 0.0).abs() < 0.001, "edit 后动画应推进回 0，实际 {p}");
+    }
 }
 
 #[cfg(test)]
@@ -690,6 +778,19 @@ mod tests {
         }
         assert!(!s.is_animating());
         assert!((s.progress() - 1.0).abs() < 0.001);
+    }
+
+    /// `with_checked` = jump_to 终点：初值即稳态，不播动画（k-switch-init）。
+    #[test]
+    fn with_checked_jumps_without_animation() {
+        let on = MetroSwitch::new().with_checked(true);
+        assert!(on.checked);
+        assert!((on.progress() - 1.0).abs() < 0.001);
+        assert!(!on.is_animating(), "载入不播动画");
+        let off = MetroSwitch::new().with_checked(false);
+        assert!(!off.checked);
+        assert!((off.progress() - 0.0).abs() < 0.001);
+        assert!(!off.is_animating());
     }
 
     #[test]
