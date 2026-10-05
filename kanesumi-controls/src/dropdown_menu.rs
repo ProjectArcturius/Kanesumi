@@ -6,6 +6,10 @@ use kanesumi_core::{MetroTheme, Point, Rect, TextStyle, TextVAlign};
 
 use crate::popup::{PopupAnim, PopupState, place_submenu, popup_gap, render_overlay};
 
+/// 留白式分组间距（逻辑 pt）：以空白表达组间分界，**不画线**。
+/// 参 docs/DECISIONS_2026-10-05.md §100（TopBar 不要分割线，分组改用留白）。
+pub const MENU_GROUP_GAP: f32 = 8.0;
+
 /// 菜单项。参 CONTROL_SPEC §8（MenuFlyout）：
 /// - 项高 ≈32（Padding `11,9,11,10` + 14px 字）；图标 16px；快捷键右侧；
 /// - PointerOver = 中性高亮，瞬时；分隔线高 1、左右 12 留白。
@@ -20,6 +24,9 @@ pub struct MenuItem {
     pub radio_group: Option<String>,
     /// 项后加分隔线。
     pub separator_after: bool,
+    /// 项后加**留白式**分组间距（不画线）。与 `separator_after` 独立；同时置位时
+    /// 以留白为准（不画线）——TopBar 依 §100 用它取代分割线。
+    pub gap_after: bool,
     /// 嵌套子菜单（MenuFlyoutSubItem 语义，参 CONTROL_SPEC §39）。
     pub submenu: Vec<MenuItem>,
 }
@@ -33,6 +40,7 @@ impl MenuItem {
             checked: false,
             radio_group: None,
             separator_after: false,
+            gap_after: false,
             submenu: Vec::new(),
         }
     }
@@ -46,6 +54,13 @@ impl MenuItem {
 
     pub fn separator(mut self) -> Self {
         self.separator_after = true;
+        self
+    }
+
+    /// 项后加留白式分组间距（不画线，参 [`MENU_GROUP_GAP`]）。
+    /// 与 [`Self::separator`] 二选一：TopBar 依 §100 用留白取代分割线。
+    pub fn gap(mut self) -> Self {
+        self.gap_after = true;
         self
     }
 
@@ -212,9 +227,15 @@ impl MetroDropdownMenu {
             .filter_map(|i| i.shortcut.as_ref())
             .map(|s| engine.measure(s, style.size))
             .fold(0.0, f32::max);
-        let separators = self.items.iter().filter(|i| i.separator_after).count() as f32;
+        let separators = self
+            .items
+            .iter()
+            .filter(|i| i.separator_after && !i.gap_after)
+            .count() as f32;
+        let gaps = self.items.iter().filter(|i| i.gap_after).count() as f32;
         let width = (icon_w + text_w + shortcut_w + 22.0 + 24.0).max(120.0);
-        let height = self.items.len() as f32 * self.item_height + separators * 2.0;
+        let height =
+            self.items.len() as f32 * self.item_height + separators * 2.0 + gaps * MENU_GROUP_GAP;
         let size = kanesumi_core::Size::new(width, height);
         self.panel_size_cache.set(Some(size));
         size
@@ -236,7 +257,10 @@ impl MetroDropdownMenu {
                 return Some(i);
             }
             y += h;
-            if item.separator_after {
+            if item.gap_after {
+                // 留白式分组间距：不画线，间隙不可命中。
+                y += MENU_GROUP_GAP;
+            } else if item.separator_after {
                 // 分隔线本身不可命中；+2px 计入下一项起点。
                 if local_y >= y - 1.0 && local_y < y + 1.0 {
                     return None;
@@ -255,7 +279,9 @@ impl MetroDropdownMenu {
                 break;
             }
             y += self.item_height;
-            if item.separator_after {
+            if item.gap_after {
+                y += MENU_GROUP_GAP;
+            } else if item.separator_after {
                 y += 2.0;
             }
         }
@@ -480,8 +506,11 @@ impl MetroDropdownMenu {
             }
 
             y += self.item_height;
-            // 分隔线
-            if item.separator_after {
+            if item.gap_after {
+                // 留白式分组间距：只留空，不画线。
+                y += MENU_GROUP_GAP;
+            } else if item.separator_after {
+                // 分隔线
                 let sep_rect = Rect::new(
                     self.panel_rect.origin.x + 12.0,
                     y,
@@ -550,7 +579,10 @@ impl MetroDropdownMenu {
                 kanesumi_canvas::glyph::chevron_right(scene, chevron_rect, colors.on_surface_variant);
             }
             y += self.item_height;
-            if item.separator_after {
+            if item.gap_after {
+                // 留白式分组间距：只留空，不画线。
+                y += MENU_GROUP_GAP;
+            } else if item.separator_after {
                 scene.fill_rect(
                     colors.divider,
                     Rect::new(
@@ -1007,5 +1039,50 @@ mod tests {
         }
         // 分隔线本身不可命中（第 3 项后，y = 4h）。
         assert_eq!(menu.item_at(Point::new(10.0, 4.0 * h)), None, "分隔线不可命中");
+    }
+
+    /// 留白式分组间距：只占高、不画线（参 docs/DECISIONS_2026-10-05 §100）。
+    #[test]
+    fn gap_after_reserves_whitespace_and_draws_no_line() {
+        use kanesumi_canvas::SceneCommand;
+        let mut menu = MetroDropdownMenu::new(vec![
+            MenuItem::new("头部").gap(),
+            MenuItem::new("打开"),
+            MenuItem::new("退出"),
+        ]);
+        menu.open(Rect::new(0.0, 0.0, 160.0, 0.0));
+        let h = menu.item_height;
+        // 布局：项 0 [0,h)，间距 [h,h+GAP)，项 1 [h+GAP,2h+GAP)。
+        assert!((menu.item_rect(1).origin.y - (h + MENU_GROUP_GAP)).abs() < 1e-3);
+        assert_eq!(
+            menu.item_at(Point::new(10.0, h + MENU_GROUP_GAP * 0.5)),
+            None,
+            "间距不可命中"
+        );
+        assert_eq!(
+            menu.item_at(Point::new(10.0, h + MENU_GROUP_GAP + h * 0.5)),
+            Some(1)
+        );
+        let Some(engine) = find_engine() else { return };
+        let size = menu.panel_size(&engine);
+        assert!(
+            (size.height - (3.0 * h + MENU_GROUP_GAP)).abs() < 1e-3,
+            "面板高应含间距，实际 {}",
+            size.height
+        );
+        // 间距处不得出现 divider 色的分隔线。
+        let theme = MetroTheme::ether_dark();
+        let divider = theme.colors.divider;
+        menu.update(1.0);
+        let mut scene = Scene::default();
+        menu.render(&theme, &engine, Rect::new(0.0, 0.0, 800.0, 600.0), &mut scene);
+        let sep_at_gap = scene.commands.iter().any(|c| {
+            matches!(
+                c,
+                SceneCommand::FillRect { color, rect, .. }
+                    if *color == divider && (rect.origin.y - h).abs() < 1.5
+            )
+        });
+        assert!(!sep_at_gap, "留白式间距处不得画分隔线");
     }
 }
