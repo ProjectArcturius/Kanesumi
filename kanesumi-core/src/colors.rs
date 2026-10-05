@@ -73,15 +73,17 @@ pub struct MetroColors {
     /// → `SystemBaseLowColor`（暗 `#33FFFFFF` / 亮 `#33000000`，`themeresources.xaml`
     /// L353 / L4269 → L211 / L4127）= **BaseLow 20%**。
     ///
-    /// ⚠ 暗色档未按一手源取 20%（那会把按钮从 #242424 提亮到约 #4A4A4A，属深色回归），
-    /// 按任务约束「深色档视觉不得因此变化」保留旧 `surface` 观感；深色真值差异登记于审计文档。
+    /// ⚠ 暗色档未按一手源取 20%（UWP 真值 `#33FFFFFF` 叠底）——2026-10-01 曾按「深色档视觉
+    /// 不得变化」保留旧值，2026-10-04 起改按 K-79「Lumia 方案」取 `#333333`（规格指定的
+    /// 控件第二层表面，仍低于 UWP 真值的提亮幅度）；演变登记于 `CANON_VS_TEMPORARY` T22/T25。
     pub control_fill: Color,
     /// 交互控件静止描边（文本框 / 数字框底边）。
     ///
     /// 一手源：UWP `TextControlBorderBrush` → `SystemControlForegroundBaseMediumLowBrush`
     /// → `SystemBaseMediumLowColor`（暗 `#66FFFFFF` / 亮 `#66000000`，L859 → L269 → L214 / L4130）
     /// = **BaseMediumLow 40%**。浅色旧值取 `divider`（#D6D6D6）过淡。
-    /// 暗色档保留旧 `divider` 观感（真值 `#66FFFFFF` 更亮，登记待裁定）。
+    /// 暗色档保留「随 `divider`」惯例（K-79：divider = #333333；UWP 真值 `#66FFFFFF`
+    /// 更亮，不采纳的裁定见 `CANON_VS_TEMPORARY` T22）。
     pub control_stroke: Color,
     /// 强描边 / 勾选外圈（CheckBox / RadioButton / ToggleSwitch 轨道）。
     ///
@@ -89,37 +91,44 @@ pub struct MetroColors {
     /// / `ToggleSwitchStrokeOff` → `SystemControlForegroundBaseMediumHighBrush`
     /// → `SystemBaseMediumHighColor`（暗 `#CCFFFFFF` / 亮 `#CC000000`，L437/L377/L509 → L213 / L4129）
     /// = **BaseMediumHigh 80%**。浅色旧值取 `on_surface_variant`（约 65% 灰）偏淡。
-    /// 暗色档保留旧 `on_surface_variant` 观感（真值 `#CCFFFFFF` 更亮，登记待裁定）。
+    /// 暗色档保留「随 `on_surface_variant`」惯例（K-79 保持 #9AA0A6；UWP 真值
+    /// `#CCFFFFFF` 更亮，不采纳的裁定见 `CANON_VS_TEMPORARY` T22）。
     pub control_stroke_strong: Color,
 }
 
 impl MetroColors {
     /// 暗色方案。
     ///
-    /// ⚠ 取值口径：`background = #1A1A1A` 是**暗色方案内的一个选择**，不是正典级规定 ——
-    /// 原「OLED 纯黑」表述已由 `KANESUMI_DESIGN.md` §Ⅲ.3 修正为「深浅两套并列方案、
-    /// 取值属实现决策」，故该项在 `docs/CANON_VS_TEMPORARY.md` 的登记（T1）已解除；
-    /// 若日后仍想改纯黑，那属视觉调优，不再是「与正典冲突」。
+    /// 取值口径（2026-10-04 用户裁定 K-79「Lumia 方案」，实测依据
+    /// `Ether/docs/research/lumia/ANALYSIS.md`）：内容底 `#000000`、正文 `#FFFFFF`
+    /// （21:1，Lumia 950 实测对比度）、chrome `#171717`、控件底与分隔 `#333333`。
+    /// 纯黑基底是正典 §Ⅲ.3 明确允许的实现选择（深浅取值属实现决策）。
+    /// 深色取值登记于 `docs/CANON_VS_TEMPORARY.md`（T22 / T25）。
     pub fn dark(accent: Accent) -> Self {
-        let surface_variant = Color::from_hex(0x2E_2E_2E);
+        let surface_variant = Color::from_hex(0x33_33_33);
         Self {
-            background: Color::from_hex(0x1A_1A_1A),
-            surface: Color::from_hex(0x24_24_24),
+            background: Color::from_hex(0x00_00_00),
+            surface: Color::from_hex(0x17_17_17),
             surface_variant,
-            divider: Color::from_hex(0x3A_3A_3A),
+            divider: Color::from_hex(0x33_33_33),
             primary: accent.base,
             primary_hover: accent.hover_for(ColorScheme::Dark),
             primary_pressed: accent.pressed_for(ColorScheme::Dark),
             on_primary: accent.on_accent,
-            on_background: Color::from_hex(0xF0_F0_F0),
-            on_surface: Color::from_hex(0xF0_F0_F0),
+            on_background: Color::from_hex(0xFF_FF_FF),
+            on_surface: Color::from_hex(0xFF_FF_FF),
+            // #9AA0A6 对纯黑 #000 对比度 7.95:1（≥ 7:1），按 K-79 规格保持现值。
             on_surface_variant: Color::from_hex(0x9A_A0_A6),
             selection_tint: accent.base.with_alpha(0.60),
             text_selection_tint: accent.base.with_alpha(0.35),
             track_subtle: surface_variant.with_alpha(0.60),
             focus_stroke: accent.focus_for(ColorScheme::Dark),
-            control_fill: Color::from_hex(0x24_24_24),
-            control_stroke: Color::from_hex(0x3A_3A_3A),
+            // 深色控件底 2026-10-04 起**有意**与页面拉开（K-79 Lumia 方案：控件底 #333333
+            // 是规格指定的第二层表面），此前的「保留旧 surface 观感」约束已被该裁定取代。
+            control_fill: Color::from_hex(0x33_33_33),
+            // 静止描边沿用「随 divider」惯例：K-79 分隔线 = #333333。
+            control_stroke: Color::from_hex(0x33_33_33),
+            // 强描边随 `on_surface_variant`（K-79 保持 #9AA0A6）。
             control_stroke_strong: Color::from_hex(0x9A_A0_A6),
         }
     }
