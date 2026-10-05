@@ -10,8 +10,8 @@
 use kanesumi_canvas::icon::Icon;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::TextStyle;
-use kanesumi_core::{Color, CornerRadius, FontWeight, MetroTheme, Rect};
+use kanesumi_core::typography::{TextStyle, base_weight};
+use kanesumi_core::{Color, CornerRadius, MetroTheme, Rect};
 
 /// 名字字符分类。参 InitialsGenerator::GetCharacterType。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,10 +204,10 @@ impl MetroPersonPicture {
         initials_from_display_name(&self.display_name)
     }
 
-    /// Initials 文本样式：42% of 边长，SemiBold。
+    /// Initials 文本样式：42% of 边长，ExtraBold（§112 强调标签档）。
     pub fn initials_style(side: f32) -> TextStyle {
         let size = (side * 0.42).max(1.0);
-        TextStyle::new(size, size * 1.4, FontWeight::Semibold)
+        TextStyle::new(size, size * 1.4, base_weight())
     }
 
     /// Badge 圆 rect（50% of 边长，右上角，Margin 0,-4,-4,0 外溢）。
@@ -296,7 +296,7 @@ impl MetroPersonPicture {
             let style = TextStyle::new(
                 (badge_size * 0.6).max(1.0),
                 badge_size * 0.6 * 1.4,
-                FontWeight::Semibold,
+                base_weight(),
             );
             let text_rect = Rect::new(
                 badge.origin.x,

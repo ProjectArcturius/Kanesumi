@@ -331,7 +331,7 @@ state → progress → resolved spatial state → render → Scene
 |---|---|
 | `MetroTheme` | 聚合 `MetroColors` + `MetroTypography` + `Tokens` + `MetroIndication` |
 | `MetroColors` | 纯色板：`background/surface/surface_variant/divider/primary/on_*` |
-| `MetroTypography` | `page_heading/title/body/caption/label` 等样式 |
+| `MetroTypography` | `header/subheader/title/subtitle/base/body/caption/label` 等样式（字重参 §112） |
 | `Tokens` | 圆角/间距/字体族 |
 | `MetroIndication` | 悬停/按压 tint、禁用透明度、焦点描边 |
 

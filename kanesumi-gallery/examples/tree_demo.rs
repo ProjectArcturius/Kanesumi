@@ -102,7 +102,7 @@ impl TreeApp for Demo {
         );
         let col = tree.insert(page, Stack::column().with_spacing(12.0));
 
-        tree.insert(col, Label::new("元素树参照页").style(t.page_heading));
+        tree.insert(col, Label::new("元素树参照页").style(t.subheader));
         tree.insert(
             col,
             Label::new(
