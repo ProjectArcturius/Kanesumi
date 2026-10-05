@@ -12,8 +12,8 @@ fn main() {
     let (src, out, blur) = (&a[0], &a[1], a[2].parse::<f32>().unwrap_or(0.0));
     let scheme = if a.get(3).map(String::as_str) == Some("light") { ColorScheme::Light } else { ColorScheme::Dark };
     let theme = MetroTheme::for_scheme(scheme, Accent::default());
-    // 壁纸多为 JPEG：按魔数分派 PNG / JPEG（rasterize_image），不信扩展名。
-    let wall = rasterize_image(src).expect("读壁纸失败");
+    // 壁纸多为 JPEG / SVG：按扩展名分派（rasterize_image）；预览全尺寸即可。
+    let wall = rasterize_image(src, None).expect("读壁纸失败");
     let (w, h) = (1280.0, 800.0);
     let t0 = std::time::Instant::now();
     let bg = backdrop(&wall, w, h, &Acrylic::for_theme(&theme, blur, Acrylic::default_tint(scheme)));
