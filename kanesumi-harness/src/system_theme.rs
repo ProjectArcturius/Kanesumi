@@ -47,7 +47,7 @@ pub fn load_backdrop() -> Backdrop {
     std::fs::read_to_string(config_path()).map(|r| parse_backdrop(&r)).unwrap_or_default()
 }
 
-/// 读取背板壁纸并解码为 RGBA（PNG / JPEG 按文件头魔数分派，参 `rasterize_image`）。
+/// 读取背板壁纸并解码为 RGBA（PNG / JPEG / SVG 按扩展名分派，参 `rasterize_image`）。
 /// 未配置壁纸或解码失败 → None（渲染回退纯色底，不 panic）。
 /// 这是壁纸「只解 PNG」断链的接回点：真实壁纸多为 JPEG。
 pub fn load_wallpaper() -> Option<kanesumi_canvas::Icon> {
@@ -57,7 +57,7 @@ pub fn load_wallpaper() -> Option<kanesumi_canvas::Icon> {
 /// 从给定背板设置解码壁纸（便于测试 / 调用方复用已解析的设置）。
 pub fn load_wallpaper_from(backdrop: &Backdrop) -> Option<kanesumi_canvas::Icon> {
     let path = backdrop.wallpaper.as_ref()?;
-    kanesumi_canvas::rasterize_image(path)
+    kanesumi_canvas::rasterize_image(path, None)
 }
 
 pub fn parse_backdrop(raw: &str) -> Backdrop {
