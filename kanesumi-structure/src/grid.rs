@@ -1,6 +1,7 @@
 // grid.rs —— 网格布局原语（MetroGrid + UniformGrid + TileWall）。
 //
-// 狗粮化缺口（kanesumi-calculator 键盘区手算 rect 暴露）：补均匀网格布局器。
+// 狗粮化缺口（早期计算器键盘区手算 rect 暴露；该应用 2026-10-04 已迁往 Ether apps/calculator）：
+// 补均匀网格布局器。
 // 应用：键盘（0 键跨 2 列）、磁贴墙（TILES_DESIGN §2/§3：1×1 / 2×2 / 4×2）、
 // Settings 面板（MetroGrid，UWP Grid 复刻，参 CONTROL_SPEC §33）。
 
