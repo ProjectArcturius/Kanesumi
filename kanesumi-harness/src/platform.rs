@@ -255,15 +255,59 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         })
         .or_else(find_font_source)
         .ok_or_else(|| "未找到字体：设 KANESUMI_TEST_FONT 或提供 App::font_path()".to_string())?;
-    let engine = TextEngine::load_stack(
-        &font_source,
-        &extra_sources(&font_source.path),
-    )
-    .map_err(|e| format!("加载字体失败 {}：{e}", font_source.path.display()))?;
-    // 字体栈整文件读入 + 解码完成（怀疑的大头之一，单独成段）。
+    let font_label = font_source.path.clone();
+    // 字体栈整文件读入 + 解码：放后台线程，与下方 GPU 上下文初始化并行 —— 两者都是
+    // 启动期大头，串行执行会把两段相加（参 DECISIONS_2026-10-05 §104 拉起时间线）。
+    let font_extra = extra_sources(&font_source.path);
+    let font_thread =
+        std::thread::spawn(move || TextEngine::load_stack(&font_source, &font_extra));
+
+    // xdg-shell 窗口恒走 wgpu 直出（`Renderer`）→ 在等字体的同时预建共享 GPU 上下文
+    // （instance / adapter / device）并挂在 Shell 上，首个 configure 免再等。
+    // layer 角色可能按面积/刷新率选 CPU 光栅，保持惰性（不预载无谓的 Vulkan 设备）。
+    // `KANESUMI_NO_GPU_PRELOAD=1` 关预载（A/B 实测与排障用；不影响功能）。
+    let preload_enabled = role.surface_kind() == SurfaceKind::XdgShell
+        && std::env::var_os("KANESUMI_NO_GPU_PRELOAD").is_none();
+    let preloaded_gpu = if preload_enabled {
+        match CompositorState::bind(&globals, &qh) {
+            Ok(comp) => {
+                // 临时表面仅用于挑适配器 / 选格式，与 `GpuContext::new` 内部同款；
+                // 真实表面由 `Renderer::with_context` 另行创建。
+                let tmp = comp.create_surface(&qh);
+                match crate::render::GpuContext::new(
+                    &conn,
+                    &tmp,
+                    &[wgpu::Backends::VULKAN, wgpu::Backends::GL],
+                ) {
+                    Ok(ctx) => {
+                        log::info!("GPU 上下文预载完成（与字体加载并行）");
+                        Some(ctx)
+                    }
+                    Err(e) => {
+                        log::warn!("GPU 上下文预载失败（{e:?}），首个 configure 时重试");
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("GPU 预载跳过（wl_compositor 绑定失败）：{e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let engine = font_thread
+        .join()
+        .map_err(|_| "字体加载线程 panic".to_string())?
+        .map_err(|e| format!("加载字体失败 {}：{e}", font_label.display()))?;
+    // 字体栈整文件读入 + 解码完成（与 GPU 预载并行，故耗时不再是首帧关键路径）。
     crate::timeline::note("fonts_loaded");
 
     let mut shell = Shell::new(app, engine, &conn, &globals, &qh, role)?;
+    // 预载的 GPU 上下文交给外壳（None → 首个 configure 照旧惰性创建）。
+    shell.gpu = preloaded_gpu;
     // 表面 / 角色 / 协议绑定完成，随即等首个 configure。
     crate::timeline::note("shell_ready");
     // 系统主题：读 Chorus 的 theme.toml 并推给 App（accent / scheme）。
