@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use kanesumi_canvas::TextAlign;
 use kanesumi_canvas::text::{TextEngine, TextLayoutOptions};
-use kanesumi_core::{Rect, TextStyle};
+use kanesumi_core::{Rect, TextVAlign, TextStyle};
 
 /// 文字浓度旋钮（tx1/tx2 spike → G-67 进生产）。
 ///
@@ -156,6 +156,32 @@ pub(crate) struct PlacedGlyph {
     /// 字形位图尺寸（逻辑坐标）。
     pub w: f32,
     pub h: f32,
+}
+
+/// 单行标签（`wrap == false` 且 `max_lines == Some(1)`）按 `style.v_align` 把
+/// 一行行盒放进目标矩形，返回用于**排版与裁剪**的矩形。参 o4 纵向对齐。
+///
+/// - `Top` 恒等返回原矩形（改前行为逐像素不变，裁剪范围也不变）；
+/// - `Center` / `Bottom` 返回高度为一行 `line_height` 的行盒矩形：
+///   中线对齐矩形中线 / 下沿贴矩形下沿。矩形矮于一行时 Center 上下溢出
+///   （行盒比矩形高 → 裁剪范围反而扩大，字不被裁）。
+/// - 多行路径（paragraph / 自动换行）原样返回，纵排语义不变。
+pub(crate) fn text_rect_with_valign(
+    rect: Rect,
+    style: TextStyle,
+    wrap: bool,
+    max_lines: Option<usize>,
+) -> Rect {
+    if wrap || max_lines != Some(1) || style.v_align == TextVAlign::Top {
+        return rect;
+    }
+    let lh = style.line_height.max(0.0);
+    let dy = match style.v_align {
+        TextVAlign::Top => 0.0,
+        TextVAlign::Center => (rect.size.height - lh) / 2.0,
+        TextVAlign::Bottom => rect.size.height - lh,
+    };
+    Rect::new(rect.origin.x, rect.origin.y + dy, rect.size.width, lh)
 }
 
 /// 排版一段文本 → 字形放置列表（placement 与旧 emit_text 完全一致）。
@@ -371,6 +397,7 @@ fn cross_max(src: &[u8], w: usize, h: usize, r: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kanesumi_core::FontWeight;
 
     fn metrics(w: usize, h: usize) -> kanesumi_canvas::text::GlyphMetrics {
         kanesumi_canvas::text::GlyphMetrics {
@@ -531,6 +558,122 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    // ── 单行纵向对齐（o4：TextVAlign，消除调用方手算「一行高 + 纵向居中」）─────────
+
+    fn test_font_path() -> Option<std::path::PathBuf> {
+        if let Ok(p) = std::env::var("KANESUMI_TEST_FONT") {
+            let p = std::path::PathBuf::from(p);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+        [
+            "C:/Windows/Fonts/segoeui.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ]
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .find(|p| p.exists())
+    }
+
+    /// Top 与多行路径恒等：改前行为逐像素不变（裁剪范围也不变）。
+    #[test]
+    fn valign_rect_identity_for_top_and_multiline() {
+        let s = TextStyle::new(20.0, 24.0, FontWeight::Normal);
+        let r = Rect::new(10.0, 20.0, 200.0, 60.0);
+        assert_eq!(text_rect_with_valign(r, s, false, Some(1)), r, "Top 恒等");
+        assert_eq!(text_rect_with_valign(r, s, true, None), r, "多行段落不受影响");
+        assert_eq!(text_rect_with_valign(r, s, false, None), r);
+        let c = s.with_v_align(TextVAlign::Center);
+        assert_eq!(text_rect_with_valign(r, c, true, Some(1)), r, "换行路径不适用");
+        assert_eq!(text_rect_with_valign(r, c, false, None), r, "无行数上限不适用");
+    }
+
+    /// Center / Bottom 的一行行盒几何：中线对齐 / 下沿贴齐；矩形矮于一行时 Center 上下溢出。
+    #[test]
+    fn valign_center_and_bottom_place_line_box() {
+        let base = TextStyle::new(20.0, 24.0, FontWeight::Normal);
+        let r = Rect::new(0.0, 0.0, 200.0, 60.0);
+        let c = text_rect_with_valign(r, base.with_v_align(TextVAlign::Center), false, Some(1));
+        assert_eq!(c.origin.y, 18.0, "(60 − 24)/2 = 18，行盒中线对齐矩形中线");
+        assert_eq!(c.size.height, 24.0);
+        let b = text_rect_with_valign(r, base.with_v_align(TextVAlign::Bottom), false, Some(1));
+        assert_eq!(b.origin.y, 36.0, "60 − 24 = 36，行盒下沿贴矩形下沿");
+        assert_eq!(b.size.height, 24.0);
+        // 矩形 12 < 行盒 24：Center 溢出（盒顶 −6），行盒比矩形高 → 字不被裁。
+        let short = Rect::new(0.0, 0.0, 200.0, 12.0);
+        let o = text_rect_with_valign(short, base.with_v_align(TextVAlign::Center), false, Some(1));
+        assert_eq!(o.origin.y, -6.0);
+        assert_eq!(o.size.height, 24.0);
+        assert!(o.origin.y < short.origin.y && o.bottom() > short.bottom(), "上下都溢出");
+    }
+
+    /// 几何断言：同一文本 Top vs Center / Bottom，字形整体位移 = 行盒位移
+    /// （首行基线 y 的期望值由 line_height 与矩形高算出）。
+    #[test]
+    fn valign_glyphs_shift_by_line_box_offset() {
+        let Some(path) = test_font_path() else {
+            return;
+        };
+        let engine = TextEngine::load(path).unwrap();
+        let mut bitmaps = HashMap::new();
+        let style = TextStyle::new(20.0, 24.0, FontWeight::Normal);
+        let rect = Rect::new(0.0, 0.0, 200.0, 60.0);
+        // 与光栅调用点同流程：先按 v_align 调整矩形，再把调整后矩形交给排版放置。
+        let r_top = text_rect_with_valign(rect, style, false, Some(1));
+        let r_center =
+            text_rect_with_valign(rect, style.with_v_align(TextVAlign::Center), false, Some(1));
+        let r_bottom =
+            text_rect_with_valign(rect, style.with_v_align(TextVAlign::Bottom), false, Some(1));
+        let top = layout_text_glyphs(
+            &engine,
+            &mut bitmaps,
+            "Ay",
+            r_top,
+            style,
+            TextAlign::Left,
+            false,
+            Some(1),
+            kanesumi_canvas::TextOverflow::Ellipsis,
+            1.0,
+        );
+        assert!(!top.is_empty(), "应排出字形（需测试字体）");
+        let center = layout_text_glyphs(
+            &engine,
+            &mut bitmaps,
+            "Ay",
+            r_center,
+            style,
+            TextAlign::Left,
+            false,
+            Some(1),
+            kanesumi_canvas::TextOverflow::Ellipsis,
+            1.0,
+        );
+        let dy_c = r_center.origin.y - r_top.origin.y;
+        assert_eq!(center.len(), top.len());
+        for (t, c) in top.iter().zip(center.iter()) {
+            assert_eq!(c.x, t.x, "纵向对齐不改横向");
+            assert!((c.y - t.y - dy_c).abs() < 1e-4, "Center 位移应为 {dy_c}");
+        }
+        let bottom = layout_text_glyphs(
+            &engine,
+            &mut bitmaps,
+            "Ay",
+            r_bottom,
+            style,
+            TextAlign::Left,
+            false,
+            Some(1),
+            kanesumi_canvas::TextOverflow::Ellipsis,
+            1.0,
+        );
+        let dy_b = r_bottom.origin.y - r_top.origin.y;
+        for (t, b) in top.iter().zip(bottom.iter()) {
+            assert!((b.y - t.y - dy_b).abs() < 1e-4, "Bottom 位移应为 {dy_b}");
         }
     }
 }

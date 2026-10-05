@@ -8,7 +8,7 @@
 use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::TextStyle;
+use kanesumi_core::typography::{TextVAlign, TextStyle};
 use kanesumi_core::{MetroTheme, Point, Rect};
 
 use crate::dropdown_menu::{MenuItem, MetroDropdownMenu};
@@ -202,17 +202,18 @@ impl MetroDropDownButton {
         // 标签（左侧，留出 chevron 区）：可用宽由 **rect 派生**，不用量测宽度。
         // 旧实现 `label_w = engine.measure(...)` 当 rect 宽 → 长标签画进 chevron 甚至按钮外
         // （2026-09-22 审计 P0-1）。可用宽 = 宽 − 左 8 − chevron 12 − 右 8 − 间隔 6。
+        // 纵向交给 TextVAlign::Center（与手算 (h−lh)/2 逐位同值）。参 o4 纵向对齐。
         let text_rect = Rect::new(
             rect.origin.x + 8.0,
-            rect.origin.y + (rect.size.height - style.line_height) / 2.0,
+            rect.origin.y,
             (rect.size.width - 34.0).max(0.0),
-            style.line_height,
+            rect.size.height,
         );
         scene.label(
             self.label.clone(),
             text_rect,
             colors.on_surface,
-            style,
+            style.with_v_align(TextVAlign::Center),
             TextAlign::Left,
         );
 

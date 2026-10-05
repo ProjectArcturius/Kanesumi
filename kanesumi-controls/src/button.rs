@@ -1,6 +1,6 @@
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::TextStyle;
+use kanesumi_core::typography::{TextVAlign, TextStyle};
 use kanesumi_core::{MetroTheme, Rect, Size};
 
 use crate::state::ControlState;
@@ -102,13 +102,21 @@ impl MetroButton {
         // 的固有尺寸，一旦 App 给的 rect 比固有尺寸窄，文字就画到按钮外（参 V6）。
         // 2026-09-22 溢出审计 P0-1：绘制矩形必须由 rect 派生，永不由量测宽度派生。
         const PAD_X: f32 = 8.0; // CONTROL_SPEC §1：Padding `8,5,8,6`
+        // 纵向交给 TextVAlign::Center（行盒中线对齐矩形中线，与手算 (h−lh)/2 逐位同值）。
+        // 参 o4 纵向对齐。
         let label_rect = Rect::new(
             rect.origin.x + PAD_X,
-            rect.origin.y + (rect.size.height - style.line_height) / 2.0,
+            rect.origin.y,
             (rect.size.width - PAD_X * 2.0).max(0.0),
-            style.line_height,
+            rect.size.height,
         );
-        scene.label(self.label.clone(), label_rect, fg, style, TextAlign::Center);
+        scene.label(
+            self.label.clone(),
+            label_rect,
+            fg,
+            style.with_v_align(TextVAlign::Center),
+            TextAlign::Center,
+        );
     }
 }
 

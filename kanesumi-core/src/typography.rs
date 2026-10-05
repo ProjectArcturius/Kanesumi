@@ -8,6 +8,19 @@ pub enum FontWeight {
     Bold,
 }
 
+/// 单行文本在目标矩形内的纵向对齐（UWP `VerticalAlignment` 的一行行盒版）。
+/// 只作用于单行标签（`Scene::label`）；多行段落始终从矩形上沿排。
+/// 参 o4 纵向对齐（STATE 2026-10-02 §Ⅳ-11：消除调用方手算「一行高 + 纵向居中」）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextVAlign {
+    /// 行盒顶对齐矩形上沿（默认，改前行为逐像素不变）。
+    Top,
+    /// 一行行盒中线对齐矩形中线；矩形矮于一行时允许上下溢出（不裁字）。
+    Center,
+    /// 行盒下沿贴矩形下沿。
+    Bottom,
+}
+
 /// 文本样式：尺寸为逻辑像素（display.rs 逻辑/物理分离的同一原则）。
 /// `letter_spacing_em` = 字距（em 单位），负值收紧、正值放宽。UWP CharacterSpacing/1000。
 /// 例：TabRow Header CharacterSpacing=−25 → letter_spacing_em = −0.025。参 V16。
@@ -17,22 +30,31 @@ pub struct TextStyle {
     pub line_height: f32,
     pub weight: FontWeight,
     pub letter_spacing_em: f32,
+    /// 单行纵向对齐（默认 Top）。参 o4 纵向对齐。
+    pub v_align: TextVAlign,
 }
 
 impl TextStyle {
-    /// 默认字距 0（普通排版）。
+    /// 默认字距 0（普通排版）、纵向顶对齐。
     pub const fn new(size: f32, line_height: f32, weight: FontWeight) -> Self {
         Self {
             size,
             line_height,
             weight,
             letter_spacing_em: 0.0,
+            v_align: TextVAlign::Top,
         }
     }
 
     /// Builder：设 em 单位字距（对齐 UWP CharacterSpacing）。参 V16。
     pub const fn with_letter_spacing_em(mut self, em: f32) -> Self {
         self.letter_spacing_em = em;
+        self
+    }
+
+    /// Builder：设单行纵向对齐（默认 Top）。参 o4 纵向对齐。
+    pub const fn with_v_align(mut self, a: TextVAlign) -> Self {
+        self.v_align = a;
         self
     }
 
