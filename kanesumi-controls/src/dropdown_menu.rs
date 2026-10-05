@@ -2,7 +2,7 @@ use std::cell::Cell;
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::{MetroTheme, Point, Rect, TextStyle};
+use kanesumi_core::{MetroTheme, Point, Rect, TextStyle, TextVAlign};
 
 use crate::popup::{PopupAnim, PopupState, place_submenu, popup_gap, render_overlay};
 
@@ -441,17 +441,14 @@ impl MetroDropdownMenu {
             let reserve = if shortcut.is_some() { sc_w + 12.0 } else { 0.0 };
             let text_right = self.panel_rect.right() - 11.0 - reserve;
             let text_w = (text_right - x).max(0.0);
-            let text_rect = Rect::new(
-                x,
-                y + (self.item_height - style.line_height) / 2.0,
-                text_w,
-                style.line_height,
-            );
+            // 纵向交给 TextVAlign::Center（行盒中线对齐 item 中线，与手算 (h−lh)/2
+            // 逐位同值）。参 o4 纵向对齐。
+            let text_rect = Rect::new(x, y, text_w, self.item_height);
             scene.label(
                 item.label.clone(),
                 text_rect,
                 colors.on_surface,
-                style,
+                style.with_v_align(TextVAlign::Center),
                 TextAlign::Left,
             );
             // 子菜单指示（chevron right）
@@ -465,18 +462,19 @@ impl MetroDropdownMenu {
                 kanesumi_canvas::glyph::chevron_right(scene, chevron_rect, colors.on_surface_variant);
             }
             // 快捷键（右侧）：矩形由面板右缘派生并夹到可用宽，单行省略号。
+            // 纵向同上交给 TextVAlign::Center。参 o4 纵向对齐。
             if let Some(sc) = shortcut {
                 let sc_rect = Rect::new(
                     self.panel_rect.right() - 11.0 - sc_w,
-                    y + (self.item_height - style.line_height) / 2.0,
+                    y,
                     sc_w,
-                    style.line_height,
+                    self.item_height,
                 );
                 scene.label(
                     sc,
                     sc_rect,
                     colors.on_surface_variant,
-                    style,
+                    style.with_v_align(TextVAlign::Center),
                     TextAlign::Right,
                 );
             }
@@ -532,17 +530,14 @@ impl MetroDropdownMenu {
             }
             let text_right = sub.panel.right() - 11.0;
             let text_w = (text_right - x).max(0.0);
-            let text_rect = Rect::new(
-                x,
-                y + (self.item_height - style.line_height) / 2.0,
-                text_w,
-                style.line_height,
-            );
+            // 纵向交给 TextVAlign::Center（行盒中线对齐 item 中线，与手算 (h−lh)/2
+            // 逐位同值）。参 o4 纵向对齐。
+            let text_rect = Rect::new(x, y, text_w, self.item_height);
             scene.label(
                 item.label.clone(),
                 text_rect,
                 colors.on_surface,
-                style,
+                style.with_v_align(TextVAlign::Center),
                 TextAlign::Left,
             );
             if item.is_submenu() {

@@ -4,7 +4,7 @@ use std::rc::Rc;
 use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::{MetroTheme, MetroTypography, Point, Rect, Size};
+use kanesumi_core::{MetroTheme, MetroTypography, Point, Rect, Size, TextVAlign};
 use kanesumi_element::{
     Event, EventCtx, Key, MeasureCtx, PaintCtx, PointerButton, PopupSpec, UpdateCtx, Widget,
     WidgetId,
@@ -138,18 +138,26 @@ impl MetroSelectorFlyout {
             .and_then(|i| self.items.get(i))
             .cloned()
             .unwrap_or_else(|| self.placeholder.clone());
+        // 纵向交给 TextVAlign::Center（行盒中线对齐 trigger 中线，与手算 (h−lh)/2
+        // 逐位同值）。参 o4 纵向对齐。
         let text_rect = Rect::new(
             trigger.origin.x + 12.0,
-            trigger.origin.y + (trigger.size.height - style.line_height) / 2.0,
+            trigger.origin.y,
             (trigger.size.width - 42.0).max(0.0),
-            style.line_height,
+            trigger.size.height,
         );
         let fg = if self.selected.is_some() {
             colors.on_surface
         } else {
             colors.on_surface_variant
         };
-        scene.label(text, text_rect, fg, style, TextAlign::Left);
+        scene.label(
+            text,
+            text_rect,
+            fg,
+            style.with_v_align(TextVAlign::Center),
+            TextAlign::Left,
+        );
 
         // 箭头 —— Metro 自绘 chevron（不依赖 Fluent codepoint，参 V7）。
         let arrow_rect = Rect::new(
@@ -204,13 +212,20 @@ impl MetroSelectorFlyout {
             } else {
                 colors.on_surface_variant
             };
+            // 纵向交给 TextVAlign::Center（行盒中线对齐 32 高 item 中线）。参 o4 纵向对齐。
             let text_rect = Rect::new(
                 self.panel_rect.origin.x + 11.0,
-                y + (32.0 - style.line_height) / 2.0,
+                y,
                 (self.panel_rect.size.width - 22.0).max(0.0),
-                style.line_height,
+                32.0,
             );
-            scene.label(item.clone(), text_rect, fg, style, TextAlign::Left);
+            scene.label(
+                item.clone(),
+                text_rect,
+                fg,
+                style.with_v_align(TextVAlign::Center),
+                TextAlign::Left,
+            );
         }
         scene.pop_clip();
     }

@@ -11,7 +11,7 @@
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::{Color, CornerRadius, MetroTheme, Rect, Size, TextStyle};
+use kanesumi_core::{Color, CornerRadius, MetroTheme, Rect, Size, TextStyle, TextVAlign};
 use kanesumi_element::{
     Event, Key, MeasureCtx, PaintCtx, PointerButton, PopupSpec, Widget, WidgetId,
 };
@@ -122,18 +122,26 @@ impl MetroCalendarDatePicker {
         }
 
         // 文本：未选 = BaseMedium（占位）；已选 = BaseHigh。
+        // 纵向交给 TextVAlign::Center（行盒中线对齐 rect 中线，与手算 (h−lh)/2
+        // 逐位同值）。参 o4 纵向对齐。
         let text_rect = Rect::new(
             rect.origin.x + 12.0,
-            rect.origin.y + (rect.size.height - style.line_height) / 2.0,
+            rect.origin.y,
             (rect.size.width - 12.0 - PICKER_GLYPH_W).max(0.0),
-            style.line_height,
+            rect.size.height,
         );
         let fg = if self.selected.is_some() {
             colors.on_surface
         } else {
             colors.on_surface_variant
         };
-        scene.label(self.display_text(), text_rect, fg, style, TextAlign::Left);
+        scene.label(
+            self.display_text(),
+            text_rect,
+            fg,
+            style.with_v_align(TextVAlign::Center),
+            TextAlign::Left,
+        );
 
         // 日历字形（E787 的 Kanesumi 自绘近似：外框 + 顶栏 + 两挂环）。
         let glyph = Rect::new(
