@@ -69,7 +69,7 @@
 | 焦点环 | 🔶 | Button/IconButton `Focused` 态自绘描边（Kanesumi 适配，非 Metro 状态） |
 | 弹层遮罩 | ✅ | `PopupAnim` + `render_overlay`；主题 `overlay_color`（黑 45%） |
 | 弹层方向自适应 | 🔶 | 判据已记录（Top>0 向下），Phase 3 续 |
-| 图标系统（SVG/自绘） | ✅ | `kanesumi-canvas` `icon::rasterize_svg` → `Scene::image`（直通 RGBA + tint 染色）→ harness Image 管线（RGBA8 纹理）；`MetroIconButton::with_svg` 接入 |
+| 图标系统（SVG/自绘） | ✅ | `kanesumi-canvas` `icon::rasterize_svg` → `Scene::image`（直通 RGBA + tint 染色）→ harness Image 管线（RGBA8 纹理）；`MetroIconButton::with_svg` 接入。壁纸等位图走 `icon::rasterize_image`（PNG / JPEG / SVG 统一入口，wp1） |
 | 圆角光栅化 | 🔶 | Scene `corner_radius` 已携带，外壳实现圆角绘制时生效 |
 | 弧线光栅化 | 🔶 | Scene `Arc` 命令已携带，外壳实现 |
 

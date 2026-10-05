@@ -312,7 +312,7 @@ state → progress → resolved spatial state → render → Scene
 | `fill_rect` / `fill_rounded_rect` | 纯色填充（含 `CornerRadius::Square/Slight/Capsule`）|
 | `stroke_rect` / `stroke_rounded_rect` | 描边 |
 | `text` / `text_with_options` | 文本（对齐 / 换行 / max_lines / 省略）|
-| `image` | 位图（`rasterize_svg` → `Icon`，可 tint）|
+| `image` | 位图（`rasterize_image` / `rasterize_svg` → `Icon`，可 tint；PNG / JPEG / SVG 按扩展名统一入口，`target` 给定时 SVG Cover 光栅、位图 ≥ 2× 目标盒式降采样）|
 | `push_clip` / `pop_clip` | 成对裁剪栈（禁止裸 clip，见 COMPOSITION）|
 | `fill_arc` | 圆环/扇形（进度指示）|
 
