@@ -70,6 +70,7 @@
 | 弹层遮罩 | ✅ | `PopupAnim` + `render_overlay`；主题 `overlay_color`（黑 45%） |
 | 弹层方向自适应 | 🔶 | 判据已记录（Top>0 向下），Phase 3 续 |
 | 图标系统（SVG/自绘） | ✅ | `kanesumi-canvas` `icon::rasterize_svg` → `Scene::image`（直通 RGBA + tint 染色）→ harness Image 管线（RGBA8 纹理）；`MetroIconButton::with_svg` 接入 |
+| 统一图像解码（PNG/JPEG/SVG） | ✅ | `kanesumi-canvas` `icon::rasterize_image(path, target)` 按扩展名分派（`rasterize_image_bytes(data, ImageKind)` 字节版）；JPEG 走 zune-jpeg 0.4.21；`target` 为用途物理像素：栅格大图降采样到 ≤ 2×（3840×2400 壁纸 → 2560×1600），SVG 按 target Cover 光栅；壁纸接线见 Ether WALLPAPER_DESIGN.md §Ⅴ |
 | 圆角光栅化 | 🔶 | Scene `corner_radius` 已携带，外壳实现圆角绘制时生效 |
 | 弧线光栅化 | 🔶 | Scene `Arc` 命令已携带，外壳实现 |
 
