@@ -167,7 +167,7 @@ pub struct CpuRenderer {
     scaled_prev_used: HashSet<(usize, usize, u64, u32, u32)>,
     /// 布局 miss 计数（诊断/测试：静态文本重复渲染应不增长）。
     layout_misses: u64,
-    /// 文字浓度旋钮（G-67 生产默认 contrast 0.5 / gamma 1.4；恒等档见
+    /// 文字浓度旋钮（§112 生产默认 contrast 0.2 / gamma 1.0；恒等档见
     /// `TextRenderTuning::identity`）。
     text_tuning: TextRenderTuning,
 }
