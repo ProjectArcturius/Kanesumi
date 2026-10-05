@@ -11,7 +11,7 @@
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign, TextOverflow};
-use kanesumi_core::{MetroTheme, Point, Rect};
+use kanesumi_core::{MetroTheme, Point, Rect, TextVAlign};
 
 use crate::ime::{ImeContentHint, ImeContext};
 use crate::state::ControlState;
@@ -383,18 +383,20 @@ impl MetroAutoSuggestBox {
                     scene.fill_rect(theme.indication.hover_tint, item);
                 }
                 // 建议项单行不换行 + 裁剪（超宽项截断进 item，不溢出面板）。
+                // 纵向交给 TextVAlign::Center（行盒中线对齐 item 中线，与手算 (H−lh)/2
+                // 逐位同值）。参 o4 纵向对齐。
                 let text_rect = Rect::new(
                     item.origin.x + AUTOSUGGEST_ITEM_PAD,
-                    item.origin.y + (AUTOSUGGEST_ITEM_H - style.line_height) / 2.0,
+                    item.origin.y,
                     (item.size.width - 2.0 * AUTOSUGGEST_ITEM_PAD).max(0.0),
-                    style.line_height,
+                    AUTOSUGGEST_ITEM_H,
                 );
                 scene.push_clip(text_rect);
                 scene.text_with_options(
                     s.clone(),
                     text_rect,
                     colors.on_surface,
-                    style,
+                    style.with_v_align(TextVAlign::Center),
                     TextAlign::Left,
                     false,
                     Some(1),
@@ -563,18 +565,19 @@ impl kanesumi_element::Widget for SuggestionList {
                 // 高亮 = 中性（参 CONTROL_SPEC §5 规律 5：悬停用中性）。
                 scene.fill_rect(theme.indication.hover_tint, item);
             }
+            // 纵向交给 TextVAlign::Center（同上）。参 o4 纵向对齐。
             let text_rect = Rect::new(
                 item.origin.x + AUTOSUGGEST_ITEM_PAD,
-                item.origin.y + (AUTOSUGGEST_ITEM_H - style.line_height) / 2.0,
+                item.origin.y,
                 (item.size.width - 2.0 * AUTOSUGGEST_ITEM_PAD).max(0.0),
-                style.line_height,
+                AUTOSUGGEST_ITEM_H,
             );
             scene.push_clip(text_rect);
             scene.text_with_options(
                 s.clone(),
                 text_rect,
                 colors.on_surface,
-                style,
+                style.with_v_align(TextVAlign::Center),
                 TextAlign::Left,
                 false,
                 Some(1),
