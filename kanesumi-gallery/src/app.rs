@@ -28,7 +28,7 @@ use crate::pages::{GalleryPage, page_tree, palette};
 const PAD: f32 = 16.0;
 /// 标题 y 起点。
 const TITLE_Y: f32 = 20.0;
-/// 标题 rect 高度 —— page_heading (34/42) 行高，与 emit_text 实际排版一致
+/// 标题 rect 高度 —— subheader (34/42) 行高，与 emit_text 实际排版一致
 /// （原本用 36 与 line_height 42 不一致，视觉上标题会溢出 rect 6px）。
 const TITLE_H: f32 = 42.0;
 /// 页导航栏（TabRow, UWP NavigationView Top 模式的等价物）。
@@ -2210,7 +2210,7 @@ impl App for GalleryApp {
         );
 
         // 标题
-        let title_style = self.theme.typography.page_heading;
+        let title_style = self.theme.typography.subheader;
         scene.text(
             "Kanesumi Gallery".into(),
             Rect::new(PAD, TITLE_Y, size.width - PAD * 2.0, TITLE_H),

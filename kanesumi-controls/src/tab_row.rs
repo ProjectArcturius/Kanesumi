@@ -121,11 +121,12 @@ impl MetroTabRow {
         self.select_anim.value() as f32
     }
 
-    /// Header 文字样式（展开态）：24 SemiLight，字距 −2.5%（UWP CharacterSpacing=−25）。
+    /// Header 文字样式（展开态）：24 Light，字距 −2.5%（UWP CharacterSpacing=−25）。
     /// V16：字距落到 TextStyle.letter_spacing_em，render/measure 全局生效。
-    /// 保持 Semilight —— 展开态页签大标题刻意用轻字重（UWP PivotHeader 观感），非正文。
+    /// 标题类走 Light —— 展开态页签大标题刻意用轻字重（UWP PivotHeader 观感），非正文；
+    /// §112 把标题类统一定为 Light（取代旧 Semilight）。
     pub fn header_style() -> TextStyle {
-        TextStyle::new(24.0, 30.0, FontWeight::Semilight).with_letter_spacing_em(-0.025)
+        TextStyle::new(24.0, 30.0, FontWeight::Light).with_letter_spacing_em(-0.025)
     }
 
     /// 当前文字样式：`compact`（15px，Win10 设置二级页签）或展开态 24px。

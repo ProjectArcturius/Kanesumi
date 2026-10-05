@@ -47,7 +47,7 @@ impl Sheet {
                 .padding(Insets::all(16.0)),
         );
         let col = tree.insert(page, Stack::column().with_spacing(12.0));
-        tree.insert(col, Label::new("Image · Stretch 四值").style(t.page_heading));
+        tree.insert(col, Label::new("Image · Stretch 四值").style(t.subheader));
         let row = tree.insert(col, Stack::row().with_spacing(16.0));
         for (name, stretch) in [
             ("None", Stretch::None),
@@ -84,7 +84,7 @@ impl Sheet {
                 .padding(Insets::all(16.0)),
         );
         let col = tree.insert(page, Stack::column().with_spacing(16.0));
-        tree.insert(col, Label::new("TabRow · 溢出滚动").style(t.page_heading));
+        tree.insert(col, Label::new("TabRow · 溢出滚动").style(t.subheader));
         let tabs = ["常规", "显示", "声音", "网络", "隐私", "更新", "关于"]
             .iter()
             .map(|s| MetroTab::new(*s))

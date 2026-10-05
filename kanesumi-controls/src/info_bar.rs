@@ -10,8 +10,8 @@
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::{MetroTypography, TextStyle};
-use kanesumi_core::{Color, FontWeight, MetroTheme, Point, Rect};
+use kanesumi_core::typography::{MetroTypography, TextStyle, base_weight};
+use kanesumi_core::{Color, MetroTheme, Point, Rect};
 
 /// 严重级别。参 CONTROL_SPEC §12。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,9 +139,9 @@ impl MetroInfoBar {
         self.open = true;
     }
 
-    /// Title 样式：14px SemiBold。
+    /// Title 样式：14px ExtraBold（§112 强调标签档）。
     fn title_style() -> TextStyle {
-        TextStyle::new(14.0, 20.0, FontWeight::Semibold)
+        TextStyle::new(14.0, 20.0, base_weight())
     }
 
     /// Message / Action 样式：14px 正文（走令牌，参 §G-67）。
@@ -285,7 +285,7 @@ impl MetroInfoBar {
                 .icon_glyph
                 .clone()
                 .unwrap_or_else(|| self.severity.icon_glyph().to_string());
-            let style = TextStyle::new(11.0, 16.0, FontWeight::Bold);
+            let style = TextStyle::new(11.0, 16.0, base_weight());
             // 字形颜色**按对比度取**，不写死白色：方块底是语义色，暗色下 critical 为
             // `#FF99A4`、success 为 `#6CCB5F` —— 白字在其上只有 1.6~1.9:1，等于看不见。
             // 取黑/白中对比度大者恒 ≥4.58:1（参 `Color::most_readable_on`）。

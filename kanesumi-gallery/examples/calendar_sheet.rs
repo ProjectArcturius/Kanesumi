@@ -72,7 +72,7 @@ impl TreeApp for Sheet {
                 ColorScheme::Dark => "Kanesumi 日历样张 · Dark",
                 ColorScheme::Light => "Kanesumi 日历样张 · Light",
             })
-            .style(t.page_heading),
+            .style(t.subheader),
         );
 
         let row = tree.insert(col, Stack::row().with_spacing(24.0));

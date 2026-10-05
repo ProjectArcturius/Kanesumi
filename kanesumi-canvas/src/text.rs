@@ -209,8 +209,12 @@ struct FontFace {
     bytes: Arc<[u8]>,
     collection_index: u32,
     units_per_em: f32,
-    /// OS/2 `usWeightClass`（表缺失时 ttf_parser 回落 Regular=400）。字重选字面用（T7）。
+    /// 该条目的 OS/2 `usWeightClass`（表缺失时 ttf_parser 回落 Regular=400）。
+    /// 可变字体实例条目存**请求字重目标值**（如 800），静态字面存真实 usWeightClass。
     weight: u16,
+    /// 可变字体的 `wght` 轴坐标；`None` = 静态字面 / 不设轴（T7 原路径）。
+    /// 塑形与光栅都据此把同一实例化面喂给 rustybuzz / ttf-parser，二者必须同值。
+    wght: Option<f32>,
 }
 
 /// 字形度量（像素）。语义与原 fontdue `Metrics` 一致，外壳按它摆放位图：
@@ -225,14 +229,38 @@ pub struct GlyphMetrics {
 }
 
 impl FontFace {
-    /// 按 `FontSource` 加载：带 TTC 集合标签则选匹配字面，否则下标 0。
-    fn from_source(bytes: &[u8], src: &FontSource) -> Result<Self, TextLoadError> {
+    /// 加载一个来源为若干字重条目（§112）：可变字体（带 `wght` 轴）按 [`WEIGHT_INSTANCES`]
+    /// 实例化成多条，静态字面仍为一条。多条共享同一份 `Arc<[u8]>`，内存即字体文件本身。
+    fn faces_from_source(bytes: &[u8], src: &FontSource) -> Result<Vec<Self>, TextLoadError> {
         let bytes: Arc<[u8]> = Arc::from(bytes.to_vec());
         let index = src
             .collection_tag
             .and_then(|tag| collection_index_matching(&bytes, tag))
             .unwrap_or(0);
-        Self::from_bytes(bytes, index)
+        let base = Self::from_bytes(bytes, index)?;
+        let Some((min, max)) = base.wght_axis_range() else {
+            return Ok(vec![base]);
+        };
+        Ok(WEIGHT_INSTANCES
+            .iter()
+            .map(|w| {
+                let target = weight_target(*w);
+                let mut face = base.clone();
+                face.weight = target;
+                // 轴坐标夹进字体实际范围，但请求目标值留在 `weight` 供精确选面。
+                face.wght = Some((target as f32).clamp(min, max));
+                face
+            })
+            .collect())
+    }
+
+    /// `wght` 轴范围（可变字体）。非可变字体 / 无该轴返回 `None`。
+    fn wght_axis_range(&self) -> Option<(f32, f32)> {
+        let face = self.parser();
+        face.variation_axes().into_iter().find_map(|axis| {
+            (axis.tag == ttf_parser::Tag::from_bytes(b"wght"))
+                .then_some((axis.min_value, axis.max_value))
+        })
     }
 
     /// 只校验、不预解析字形。
@@ -252,16 +280,32 @@ impl FontFace {
             collection_index,
             units_per_em,
             weight,
+            wght: None,
         })
     }
 
+    /// 塑形面：可变字体实例条目先设 `wght` 轴，再交给 rustybuzz。
     fn shaper(&self) -> Face<'_> {
-        Face::from_slice(&self.bytes, self.collection_index).expect("字体已在加载时验证")
+        let mut face = Face::from_slice(&self.bytes, self.collection_index)
+            .expect("字体已在加载时验证");
+        if let Some(value) = self.wght {
+            face.set_variations(&[rustybuzz::Variation {
+                tag: ttf_parser::Tag::from_bytes(b"wght"),
+                value,
+            }]);
+        }
+        face
     }
 
-    /// 解析表目录（只读头部，微秒级）。每次调用重建，免去自引用结构。
+    /// 解析面（度量 / 轮廓）：与 [`Self::shaper`] 施加同一 `wght` 轴坐标。
+    /// 每次调用重建，免去自引用结构。
     fn parser(&self) -> ttf_parser::Face<'_> {
-        ttf_parser::Face::parse(&self.bytes, self.collection_index).expect("字体已在加载时验证")
+        let mut face = ttf_parser::Face::parse(&self.bytes, self.collection_index)
+            .expect("字体已在加载时验证");
+        if let Some(value) = self.wght {
+            face.set_variation(ttf_parser::Tag::from_bytes(b"wght"), value);
+        }
+        face
     }
 
     fn has_glyph(&self, c: char) -> bool {
@@ -686,16 +730,30 @@ pub(crate) fn embolden_contours(contours: &mut [Vec<[f32; 2]>], d: f32) {
     }
 }
 
-/// `FontWeight` → OS/2 `usWeightClass` 目标值（思源无 Semibold 字面，按 600 就重选 Bold）。
+/// `FontWeight` → OS/2 `usWeightClass` 目标值。参 §112 界面三档：
+/// Light 300 / Normal 400 / ExtraBold 800；其余为历史档（第三方保留）。
 fn weight_target(weight: FontWeight) -> u16 {
     match weight {
-        FontWeight::Semilight => 350,
+        FontWeight::Light => 300,
         FontWeight::Normal => 400,
+        FontWeight::Semilight => 350,
         FontWeight::Medium => 500,
         FontWeight::Semibold => 600,
         FontWeight::Bold => 700,
+        FontWeight::ExtraBold => 800,
     }
 }
+
+/// 可变字体按 `wght` 轴实例化的字重档（覆盖枚举全部取值，任何请求都有精确条目）。
+const WEIGHT_INSTANCES: [FontWeight; 7] = [
+    FontWeight::Light,
+    FontWeight::Normal,
+    FontWeight::Semilight,
+    FontWeight::Medium,
+    FontWeight::Semibold,
+    FontWeight::Bold,
+    FontWeight::ExtraBold,
+];
 
 /// 塑形缓存键 —— 文本 + 字号 + 字距 + 字重。运行期字体栈不变（加载期一次性），
 /// 故不含 `identity`；字体栈变化时 `load_with_fallbacks` 尚未被渲染消费，缓存为空。
@@ -810,8 +868,8 @@ impl TextEngine {
             let Ok(bytes) = std::fs::read(&src.path) else {
                 continue;
             };
-            if let Ok(face) = FontFace::from_source(&bytes, src) {
-                Arc::make_mut(&mut engine.fonts).push(face);
+            if let Ok(faces) = FontFace::faces_from_source(&bytes, src) {
+                Arc::make_mut(&mut engine.fonts).extend(faces);
             }
         }
         engine.refresh_identity();
@@ -820,9 +878,9 @@ impl TextEngine {
 
     fn load_tagged(src: &FontSource) -> Result<Self, TextLoadError> {
         let bytes = std::fs::read(&src.path).map_err(TextLoadError::Io)?;
-        let face = FontFace::from_source(&bytes, src)?;
+        let faces = FontFace::faces_from_source(&bytes, src)?;
         Ok(Self {
-            fonts: Arc::new(vec![face]),
+            fonts: Arc::new(faces),
             identity: 0,
             shape_cache: Arc::new(Mutex::new(HashMap::new())),
             layout_cache: Arc::new(Mutex::new(HashMap::new())),
@@ -870,32 +928,61 @@ impl TextEngine {
             .unwrap_or(0)
     }
 
-    /// 按请求字重选字面下标（T7）：精确匹配 → 最近且不轻于 → 最近 → `fonts[0]`。
+    /// 按请求字重选字面下标（T7 + §112）：可变字体精确实例 → 任何精确 →
+    /// ExtraBold(800) 宁轻勿重（取不重于 800 的最大档，即静态 Bold 700）→ 最近且不轻于 → 最近。
     /// 请求字重的字面缺字时，调用方再走 `font_for_grapheme` 的覆盖回退。
     fn face_for_weight(&self, weight: FontWeight) -> usize {
         if self.fonts.len() <= 1 {
             return 0;
         }
         let target = weight_target(weight);
-        let weights: Vec<u16> = self.fonts.iter().map(|f| f.weight).collect();
-        if let Some(i) = weights.iter().position(|&w| w == target) {
-            return i;
-        }
-        if let Some((i, _)) = weights
+        // 可变字体：优先精确实例条目（多条同源，仅 wght 轴不同）。
+        if let Some(i) = self
+            .fonts
             .iter()
-            .enumerate()
-            .filter(|(_, w)| **w >= target)
-            .min_by_key(|(_, w)| **w)
+            .position(|f| f.wght.is_some() && f.weight == target)
         {
             return i;
         }
-        weights
+        if let Some(i) = self.fonts.iter().position(|f| f.weight == target) {
+            return i;
+        }
+        // §112 静态回退：ExtraBold(800) 宁轻勿重，取不重于 800 的最大档（Bold 700 优先于 Black 900）。
+        if weight == FontWeight::ExtraBold
+            && let Some((i, _)) = self
+                .fonts
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.weight <= target)
+                .max_by_key(|(_, f)| f.weight)
+        {
+            return i;
+        }
+        if let Some((i, _)) = self
+            .fonts
             .iter()
             .enumerate()
-            .filter(|(_, w)| **w < target)
-            .max_by_key(|(_, w)| **w)
+            .filter(|(_, f)| f.weight >= target)
+            .min_by_key(|(_, f)| f.weight)
+        {
+            return i;
+        }
+        self.fonts
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.weight < target)
+            .max_by_key(|(_, f)| f.weight)
             .map(|(i, _)| i)
             .unwrap_or(0)
+    }
+
+    /// ExtraBold(800) 是否由可变字体精确实例化。`false` = 无可变字体，静态回退到
+    /// Bold 700 / 最近档；平台层据此在 `~/.local/state/ether/` 的字体诊断日志落一行（§112）。
+    pub fn extra_bold_is_variable(&self) -> bool {
+        let target = weight_target(FontWeight::ExtraBold);
+        self.fonts
+            .iter()
+            .any(|f| f.wght.is_some() && f.weight == target)
     }
 
     /// 塑形一行，输出视觉顺序 glyph。BiDi run 由 UAX #9 决定，run 内由 rustybuzz 处理
@@ -1595,7 +1682,7 @@ mod tests {
         let cloned = engine.clone();
         assert!(Arc::ptr_eq(&engine.fonts, &cloned.fonts));
     }
-/// T7 字重选择：精确 → 最近且不轻于 → 最近。用系统 Noto CJK TTC（与思源同源，
+/// T7 字重选择：精确定位（含 §112 静态回退）。用系统 Noto CJK TTC（与思源同源，
 /// Regular 400 / Medium 500 各一集合，SC 字面）；机器无 Noto CJK 时跳过。
 /// （reference/ 下的测试字体是 LFS 指针，瘦 checkout 无内容，不可依赖。）
 #[test]
@@ -1619,13 +1706,95 @@ fn weight_selection_prefers_exact_then_nearest() {
             .map(|g| g.font_id)
             .unwrap()
     };
+    assert_eq!(ids(FontWeight::Light), 0, "Light(300) 无 300 → 最近不轻于 400");
     assert_eq!(ids(FontWeight::Normal), 0, "Normal → 400 字面");
     assert_eq!(ids(FontWeight::Semilight), 0, "Semilight(350) → 最近不轻于 400");
     assert_eq!(ids(FontWeight::Medium), 1, "Medium(500) → 精确 500 字面");
-    assert_eq!(ids(FontWeight::Semibold), 1, "Semibold(600) 无 700 → 最近 500");
+    assert_eq!(ids(FontWeight::Semibold), 1, "Semibold(600) 无 600 → 最近 500");
     assert_eq!(ids(FontWeight::Bold), 1, "Bold(700) 无 700 → 最近 500");
     // 塑形缓存按字重隔离：同文本同字号不同字重 → 不同字面来源。
     assert_ne!(ids(FontWeight::Normal), ids(FontWeight::Medium));
+}
+
+/// §112 静态回退：无可变字体时 ExtraBold(800) 宁轻勿重 → 静态 Bold 700，而非 Black 900。
+/// 用系统 Noto CJK Regular + Bold（SC 字面）；机器无字体时跳过。
+#[test]
+fn static_fallback_extra_bold_picks_bold_not_black() {
+    use crate::text::FontSource;
+    let dir = std::path::PathBuf::from("/usr/share/fonts/noto-cjk");
+    let regular = dir.join("NotoSansCJK-Regular.ttc");
+    let bold = dir.join("NotoSansCJK-Bold.ttc");
+    if !regular.exists() || !bold.exists() {
+        return;
+    }
+    let engine = TextEngine::load_stack(
+        &FontSource { path: regular, collection_tag: Some("SC") },
+        &[FontSource { path: bold, collection_tag: Some("SC") }],
+    )
+    .unwrap();
+    assert!(!engine.extra_bold_is_variable(), "静态栈不得报告可变字体");
+    let ids = |w: FontWeight| {
+        engine
+            .shape_line_weighted("以太 Ether", 16.0, 0.0, w)
+            .first()
+            .map(|g| g.font_id)
+            .unwrap()
+    };
+    assert_eq!(ids(FontWeight::Bold), 1, "Bold → 精确 700 字面");
+    assert_eq!(ids(FontWeight::ExtraBold), 1, "ExtraBold(800) → 静态回落 Bold 700");
+    // 回落选中的确实是 700 档，而非更重的 Black：字面 usWeightClass 由光栅路径决定。
+    let selected = engine.fonts[ids(FontWeight::ExtraBold) as usize].weight;
+    assert_eq!(selected, 700, "800 必须回落 Bold(700)，不是 Black(900)");
+}
+
+/// §112 可变字体：带 `wght` 轴的字体按 300 / 400 / 800 实例化后，墨迹面积单调递增。
+/// 测试字体经 `KANESUMI_TEST_VF` 指定，或落在系统候选路径；不在场时跳过（既不误报也不阻塞 CI）。
+#[test]
+fn variable_font_weight_instances_grow_ink_monotonically() {
+    let Some(path) = find_variable_font() else {
+        return;
+    };
+    let engine = TextEngine::load_stack(
+        &FontSource { path, collection_tag: None },
+        &[],
+    )
+    .unwrap();
+    assert!(engine.extra_bold_is_variable(), "带 wght 轴的字体应实例化 ExtraBold");
+
+    // 同一 CJK 字在三个字重下光栅化，比较覆盖率之和（≈ 墨迹面积 / 笔宽代理）。
+    let ink = |w: FontWeight| -> u64 {
+        let glyphs = engine.shape_line_weighted("永", 64.0, 0.0, w);
+        let g = glyphs.first().expect("应塑形出字形");
+        let (m, bitmap) = engine.rasterize_glyph(g.font_id, g.glyph_id, 64.0);
+        assert!(m.width > 0 && m.height > 0, "字形位图非空");
+        bitmap.iter().map(|&b| u64::from(b)).sum()
+    };
+    let light = ink(FontWeight::Light);
+    let normal = ink(FontWeight::Normal);
+    let extra_bold = ink(FontWeight::ExtraBold);
+    assert!(
+        light < normal && normal < extra_bold,
+        "300 / 400 / 800 墨量应严格递增：{light} / {normal} / {extra_bold}"
+    );
+}
+
+/// 可变字体测试源：环境变量优先，其次系统 / 开发机常见路径。
+fn find_variable_font() -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("KANESUMI_TEST_VF") {
+        let p = std::path::PathBuf::from(p);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    [
+        "/usr/local/share/fonts/s/NotoSansSC-VF.ttf",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-VF.otf.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-VF.otf.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansSC-VF.ttf",
+    ]
+    .into_iter()
+    .map(std::path::PathBuf::from)
+    .find(|p| p.exists())
 }
 
 /// TTC 集合按族名（name ID 1/16）选 SC 字面（N-40）。系统无 Noto CJK 时跳过。

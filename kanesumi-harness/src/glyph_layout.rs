@@ -9,18 +9,18 @@ use kanesumi_canvas::TextAlign;
 use kanesumi_canvas::text::{TextEngine, TextLayoutOptions};
 use kanesumi_core::{Rect, TextVAlign, TextStyle};
 
-/// 文字浓度旋钮（tx1/tx2 spike → G-67 进生产）。
+/// 文字浓度旋钮（tx1/tx2 spike → G-67 进生产 → §112 重调）。
 ///
-/// 默认值 = 生产默认：contrast 0.5 / gamma 1.4（恒等档见 `identity`）。CPU 与 GPU
+/// 默认值 = 生产默认：contrast 0.2 / gamma 1.0（恒等档见 `identity`）。CPU 与 GPU
 /// 两条光栅路径都要消费：CPU 在 `cpu_raster::blit_coverage` 处过 `coverage_lut`；
 /// GPU 在 `render.rs` 的 `TEXT_SHADER` 里对采样覆盖率套 `tune_coverage` 同一条公式。
-/// 参 Ether `docs/DECISIONS_2026-10-04.md` §G-67 与 `docs/TYPE_ENGINE_PLAN.md` §一·五。
+/// 参 Ether `docs/DECISIONS_2026-10-05.md` §112（实测标定 `docs/research/fw1/TUNE.md`）。
 /// 三个旋钮都作用于字形「进入混合之前」：
 /// - `contrast` / `gamma`：覆盖率 → 覆盖率的预混合查表（`coverage_lut` / `tune_coverage`）。
 /// - `stem_darken_px`：覆盖率掩码的亚像素膨胀（横 / 纵最大值滤波按比例混合）—— tx1
 ///   的旧途径，产生灰色光晕、边缘发虚，调度者审阅判定**不可用**，仅留作反例对照。
 /// - `outline_embolden_px`：轮廓沿法线外扩（tx2 新增）—— 在轮廓进光栅器前加粗，
-///   边缘仍是干净反走样阶梯，是推荐的加粗途径（G-67 生产默认仍关）。
+///   边缘仍是干净反走样阶梯，是推荐的加粗途径（§112 生产默认仍关）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextRenderTuning {
     /// 对比度增强强度（0 = 关）。以 0.5 为轴做 S 形拉伸。
@@ -34,11 +34,16 @@ pub struct TextRenderTuning {
 }
 
 impl Default for TextRenderTuning {
-    /// 生产默认（裁定 G-67）：正文 contrast 0.5 / gamma 1.4；轮廓加粗与掩码膨胀仍关。
+    /// 生产默认（§112）：contrast 0.2 / gamma 1.0；轮廓加粗与掩码膨胀仍关。
+    ///
+    /// §112 把正文由 Medium 改回 Regular 后，§67 为 Medium 调的 contrast 0.5 / gamma 1.4
+    /// 会明显过浓。以 `docs/research/fw1/` 的六行字重对照表逐行比对期望图（Chrome +
+    /// NotoSansSC-VF，2×）的平均墨迹覆盖率，标定出 contrast 0.2 / gamma 1.0 —— 六行偏差
+    /// ≤ ±2%（旧值最大 +9.4%，恒等档 +4.5%）。数据表 `docs/research/fw1/TUNE.md`。
     fn default() -> Self {
         Self {
-            contrast: 0.5,
-            gamma: 1.4,
+            contrast: 0.2,
+            gamma: 1.0,
             stem_darken_px: 0.0,
             outline_embolden_px: 0.0,
         }
@@ -423,14 +428,14 @@ mod tests {
         assert_eq!(out, src);
     }
 
-    /// 生产默认（G-67）= contrast 0.5 / gamma 1.4，且非恒等。
+    /// 生产默认（§112）= contrast 0.2 / gamma 1.0，且非恒等（对比度仍轻微生效）。
     #[test]
-    fn default_is_g67_production_tuning() {
+    fn default_is_s112_production_tuning() {
         let t = TextRenderTuning::default();
-        assert_eq!(t.contrast, 0.5);
-        assert_eq!(t.gamma, 1.4);
+        assert_eq!(t.contrast, 0.2);
+        assert_eq!(t.gamma, 1.0);
         assert!(!t.is_identity());
-        assert!(!t.needs_glyph_tuning(), "G-67 默认不加粗字形几何");
+        assert!(!t.needs_glyph_tuning(), "§112 默认不加粗字形几何");
         assert!(t.coverage_lut([1.0, 1.0, 1.0, 1.0]).is_some());
     }
 

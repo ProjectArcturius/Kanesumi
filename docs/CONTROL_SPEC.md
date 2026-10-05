@@ -183,7 +183,7 @@
 |---|---|
 | Header 高 | **48** |
 | Header Padding | `12,0,12,0` |
-| 头字 FontSize / Weight / 字距 | **24 / SemiLight / −2.5%**（CharacterSpacing −25） |
+| 头字 FontSize / Weight / 字距 | **24 / Light / −2.5%**（CharacterSpacing −25；§112 标题类 Light，UWP 一手值 SemiLight） |
 | 内容 Margin | `12,0,12,0` |
 
 ### 选中指示器（SelectedPipe）
@@ -211,7 +211,7 @@
 
 ### compact 样式（2026-10-01 补）
 - 调用方 `MetroTabRow::with_compact(true)` 选择：标题 **15px / Normal**（Win10 设置二级页签观感），
-  默认展开态 24 / SemiLight / −2.5%。
+  默认展开态 24 / Light / −2.5%（§112）。
 
 ---
 
@@ -432,7 +432,7 @@ C:\Program Files (x86)\Windows Kits\10\DesignTime\CommonConfiguration\
 ┌ ContentRoot（边框 1px divider）───────────────────────────────┐
 │ Padding 16,0,0,0，MinHeight 48                                  │
 │  [Icon] │ InfoBarPanel（横排或纵排）            │ [× 38×38] │
-│          Title (14 SemiBold)  Message (14)  [Action]             │
+│          Title (14 ExtraBold)  Message (14)  [Action]             │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -447,7 +447,7 @@ C:\Program Files (x86)\Windows Kits\10\DesignTime\CommonConfiguration\
 | Panel Margin | `0,0,16,0` |
 | 横排 Padding | `0,0,0,0`；Title `0,14,0,0`、Message `12,14,0,0`、Action `16,8,0,0` |
 | 纵排 Padding | `0,14,0,18`；Title `0,14,0,0`、Message `0,4,0,0`、Action `0,12,0,0` |
-| Title / Message | 14px；SemiBold / Normal |
+| Title / Message | 14px；ExtraBold / Normal（§112） |
 | Close 按钮 | **38×38**，glyph 16，Margin `5` |
 
 ### 横排/纵排判据（InfoBarPanel::MeasureOverride）
@@ -575,7 +575,7 @@ C:\Program Files (x86)\Windows Kits\10\DesignTime\CommonConfiguration\
 ```
 ┌────────────────┐
 │   ╭─────╮      │ ← 头像圆（min(w,h) 方形），Ellipse fill surface_variant
-│   │  JJ │      │   Initials 字号 = 42% of size，SemiBold，白
+│   │  JJ │      │   Initials 字号 = 42% of size，ExtraBold，白
 │   ╰─────╯      │
 │     ┌──┐       │ ← Badge（可选）：50% of size 圆，右上角 Margin 0,-4,-4,0
 └─────┴──┴───────┘   Badge 字号 = 60% of badge，2px 描边
@@ -585,7 +585,7 @@ C:\Program Files (x86)\Windows Kits\10\DesignTime\CommonConfiguration\
 |---|---|
 | 默认尺寸 | **96×96**；尺寸变化维持方形（min 值强制到宽高） |
 | 头像圆 | Ellipse fill `surface_variant`、无描边、fg 白 |
-| Initials 字号 | **42%** of 边长；SemiBold |
+| Initials 字号 | **42%** of 边长；ExtraBold（§112） |
 | Badge | **50%** of 边长；位置右上 Margin `0,-4,-4,0`；fill `#1A1A1A`、描边 `divider` **2px** opacity 0.8、fg `on_surface`（白） |
 | Badge 字号 | **60%** of badge 圆 |
 | Badge 数字 | `>99` → **"99+"** |
@@ -920,7 +920,7 @@ else → SinglePane（PanePriority 指定单面板）
 ```
         ┌──────────────────────────────┐
         │ [×]                          │  ← AlternateCloseButton 40×40（glyph 16）
-        │  Title（SemiBold 14）         │
+        │  Title（ExtraBold 14）         │
         │  Subtitle（14）               │
         │  Body                        │
         │  [Action] [Close]            │
@@ -932,7 +932,7 @@ else → SinglePane（PanePriority 指定单面板）
 |---|---|
 | 面板 | MinW **320** / MaxW **336**；MinH **40** / MaxH **520** |
 | ContentMargin | **12**；Border 1px |
-| Title / Subtitle | 14px；SemiBold / Normal；前景 `on_surface` |
+| Title / Subtitle | 14px；ExtraBold / Normal（§112）；前景 `on_surface` |
 | Close（Alternate） | **40×40**、× 16；右上；Title 区右让位 Margin `0,0,28,0` |
 | 操作区 | Row 2：[Action] [Close] 两列 `*/*`；Margin `0,12,0,0` |
 | Tail | 三角指向目标，Fill 面板底 |
