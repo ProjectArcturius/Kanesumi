@@ -257,6 +257,13 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         &extra_sources(&font_source.path),
     )
     .map_err(|e| format!("加载字体失败 {}：{e}", font_source.path.display()))?;
+    // §112：800 无可变字体时静态回落 Bold 700，落一行持久字体诊断（零交互，重启不丢）。
+    if !engine.extra_bold_is_variable() {
+        write_diag(
+            "ether-fonts.log",
+            "800 回落 Bold（无可变字体；参 docs/DECISIONS_2026-10-05.md §112）\n",
+        );
+    }
 
     let mut shell = Shell::new(app, engine, &conn, &globals, &qh, role)?;
     // 系统主题：读 Chorus 的 theme.toml 并推给 App（accent / scheme）。
@@ -355,6 +362,12 @@ pub fn find_font_source() -> Option<kanesumi_canvas::text::FontSource> {
 
 fn regular_candidates() -> Vec<kanesumi_canvas::text::FontSource> {
     [
+        // §112 可变字体优先：带 wght 轴，按请求字重（300 / 400 / 800）实例化；
+        // 在场时静态字重字面不再加载（见 extra_sources）。
+        ("/usr/local/share/fonts/s/NotoSansSC-VF.ttf", None),
+        ("/usr/local/share/fonts/s/NotoSansCJK-VF.otf.ttc", SC_TAG),
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-VF.otf.ttc", SC_TAG),
+        ("/usr/share/fonts/noto-cjk/NotoSansCJK-VF.otf.ttc", SC_TAG),
         // Ether 正体字体：思源黑体 SC（合成器同款，SD §IX 唯一字体）。
         ("/usr/local/share/fonts/s/SourceHanSansSC-Regular.otf", None),
         // 系统 Noto CJK（与思源黑体同源；TTC 集合须选 SC 字面，否则静默落到 JP）。
@@ -384,17 +397,27 @@ fn regular_candidates() -> Vec<kanesumi_canvas::text::FontSource> {
 
 /// 主字面之外的附加字面：Light / Medium / Bold（T7 字重）+ 脚本回退（阿拉伯 / 希伯来 / 符号）。
 /// 缺整条候选链的字重记 warn（零交互诊断；该字重渲染时自动回落 Regular）。
+/// 主字体为可变字体（文件名含 `-VF`）时跳过静态字重字面 —— 轴实例已覆盖全档，
+/// 再加载数份 20 MB 的 TTC 只增常驻内存（参 Kanesumi R1）。
 fn extra_sources(primary: &std::path::Path) -> Vec<kanesumi_canvas::text::FontSource> {
     use kanesumi_canvas::text::FontSource;
     let primary_canonical = primary.canonicalize().unwrap_or_else(|_| primary.to_path_buf());
     let mut out = Vec::new();
-    for weight in ["Light", "Medium", "Bold"] {
-        let Some(src) = weight_candidates(weight).into_iter().find(|s| s.path.exists())
-        else {
-            log::warn!("字重 {weight} 字面缺失（思源 SC / Noto CJK 均不在场），该字重将渲染为 Regular");
-            continue;
-        };
-        out.push(src);
+    let primary_is_vf = primary
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.contains("-VF"));
+    if primary_is_vf {
+        log::info!("主字体为可变字体（{}），跳过静态字重字面加载", primary.display());
+    } else {
+        for weight in ["Light", "Medium", "Bold"] {
+            let Some(src) = weight_candidates(weight).into_iter().find(|s| s.path.exists())
+            else {
+                log::warn!("字重 {weight} 字面缺失（思源 SC / Noto CJK 均不在场），该字重将渲染为 Regular");
+                continue;
+            };
+            out.push(src);
+        }
     }
     for path in [
         "/usr/share/fonts/noto/NotoSansArabic-Regular.ttf",
