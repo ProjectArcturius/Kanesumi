@@ -74,7 +74,7 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 }
 @group(0) @binding(0) var glyph_tex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
-// 文字浓度补偿（裁定 G-67）。与 CPU `TextRenderTuning::tune_coverage` 同一条公式；
+// 文字浓度补偿（§112 重调；原 G-67）。与 CPU `TextRenderTuning::tune_coverage` 同一条公式；
 // 改动必须两处同步，由 harness `gpu_formula_matches_cpu_lut` 守住。
 // x = contrast，y = gamma，zw 为 16 字节对齐填充。
 @group(0) @binding(2) var<uniform> tune: vec4<f32>;
@@ -318,7 +318,7 @@ pub struct Renderer {
     sampler: wgpu::Sampler,
     /// 文字浓度补偿 uniform（contrast / gamma）。GPU 片元着色器消费，见 `TEXT_SHADER`。
     tuning_buf: wgpu::Buffer,
-    /// 当前文字浓度旋钮。默认 = G-67 生产档。
+    /// 当前文字浓度旋钮。默认 = §112 生产档。
     text_tuning: TextRenderTuning,
     glyphs: HashMap<GlyphKey, GlyphEntry>,
     /// 图标纹理缓存：key = (width,height) + rgba 内容 FNV 哈希。同一图标去重复用。
@@ -434,6 +434,8 @@ impl GpuContext {
             backends: backend,
             ..Default::default()
         });
+        // 拉起时间线：Vulkan/WGPU 实例创建（ICD 扫描）。
+        crate::timeline::note_once("gpu_instance");
         let surface =
             create_wl_surface(&instance, conn, wl_surface).map_err(RendererError::Surface)?;
 
@@ -453,10 +455,13 @@ impl GpuContext {
             }))
         })
         .ok_or(RendererError::Adapter)?;
+        // 拉起时间线：适配器选定（此前的实例 / 表面 / 适配器枚举一起计时）。
+        crate::timeline::note_once("gpu_adapter");
 
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None))
                 .map_err(RendererError::Device)?;
+        crate::timeline::note_once("gpu_device");
 
         let caps = surface.get_capabilities(&adapter);
         // 诊断：surface capabilities 的 alpha_modes / formats（排查「主表面无法透明」）。
@@ -824,6 +829,8 @@ impl Renderer {
         let image_buf = mk_vert_buf("kanesumi-image-buf", 128);
 
         let msaa_view = create_msaa_view(device, &config);
+        // 拉起时间线：三条管线 / 绑定布局 / 缓冲建完（首帧前的最后一段 GPU 初始化）。
+        crate::timeline::note_once("renderer_pipelines");
 
         Ok(Self {
             ctx,

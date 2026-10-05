@@ -9,8 +9,8 @@
 use kanesumi_anim::{EasingMode, MetroAnim, UwpEasing};
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::{MetroTypography, TextStyle};
-use kanesumi_core::{FontWeight, MetroTheme, Point, Rect, Size};
+use kanesumi_core::typography::{MetroTypography, TextStyle, base_weight};
+use kanesumi_core::{MetroTheme, Point, Rect, Size};
 use kanesumi_element::{
     Event, EventCtx, Key, MeasureCtx, PaintCtx, PointerButton, PopupSpec, Widget, WidgetId,
 };
@@ -165,7 +165,7 @@ impl MetroTeachingTip {
     }
 
     fn title_style() -> TextStyle {
-        TextStyle::new(14.0, 20.0, FontWeight::Semibold)
+        TextStyle::new(14.0, 20.0, base_weight())
     }
 
     fn body_style() -> TextStyle {

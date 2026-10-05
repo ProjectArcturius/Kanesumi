@@ -85,7 +85,7 @@ impl TreeApp for Sheet {
                 ColorScheme::Dark => "Kanesumi 主题样张 · Dark",
                 ColorScheme::Light => "Kanesumi 主题样张 · Light",
             })
-            .style(t.page_heading),
+            .style(t.subheader),
         );
 
         // Button：标准 / 强调 / 禁用。

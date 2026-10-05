@@ -226,6 +226,9 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
     // 应用 `main` **第一行**还应调 `kanesumi_harness::dmabuf_probe_entry()` 把入口再前移
     // （避免子进程重执行时先跑应用前半段，把段错误锅扣到 gbm 头上）。
     crate::dmabuf::dmabuf_probe_entry();
+    // 拉起时间线：应用未在 `main` 调 `start` 时以此兜底（所有 kanesumi 应用自动获得）。
+    // 参 DECISIONS_2026-10-05 §104、crate::timeline。
+    crate::timeline::ensure_started(app.config().app_id);
     env_logger::init();
 
     let conn = Connection::connect_to_env()
@@ -252,13 +255,70 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         })
         .or_else(find_font_source)
         .ok_or_else(|| "未找到字体：设 KANESUMI_TEST_FONT 或提供 App::font_path()".to_string())?;
-    let engine = TextEngine::load_stack(
-        &font_source,
-        &extra_sources(&font_source.path),
-    )
-    .map_err(|e| format!("加载字体失败 {}：{e}", font_source.path.display()))?;
+    let font_label = font_source.path.clone();
+    // 字体栈整文件读入 + 解码：放后台线程，与下方 GPU 上下文初始化并行 —— 两者都是
+    // 启动期大头，串行执行会把两段相加（参 DECISIONS_2026-10-05 §104 拉起时间线）。
+    let font_extra = extra_sources(&font_source.path);
+    let font_thread =
+        std::thread::spawn(move || TextEngine::load_stack(&font_source, &font_extra));
+
+    // xdg-shell 窗口恒走 wgpu 直出（`Renderer`）→ 在等字体的同时预建共享 GPU 上下文
+    // （instance / adapter / device）并挂在 Shell 上，首个 configure 免再等。
+    // layer 角色可能按面积/刷新率选 CPU 光栅，保持惰性（不预载无谓的 Vulkan 设备）。
+    // `KANESUMI_NO_GPU_PRELOAD=1` 关预载（A/B 实测与排障用；不影响功能）。
+    let preload_enabled = role.surface_kind() == SurfaceKind::XdgShell
+        && std::env::var_os("KANESUMI_NO_GPU_PRELOAD").is_none();
+    let preloaded_gpu = if preload_enabled {
+        match CompositorState::bind(&globals, &qh) {
+            Ok(comp) => {
+                // 临时表面仅用于挑适配器 / 选格式，与 `GpuContext::new` 内部同款；
+                // 真实表面由 `Renderer::with_context` 另行创建。
+                let tmp = comp.create_surface(&qh);
+                match crate::render::GpuContext::new(
+                    &conn,
+                    &tmp,
+                    &[wgpu::Backends::VULKAN, wgpu::Backends::GL],
+                ) {
+                    Ok(ctx) => {
+                        log::info!("GPU 上下文预载完成（与字体加载并行）");
+                        Some(ctx)
+                    }
+                    Err(e) => {
+                        log::warn!("GPU 上下文预载失败（{e:?}），首个 configure 时重试");
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("GPU 预载跳过（wl_compositor 绑定失败）：{e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let engine = font_thread
+        .join()
+        .map_err(|_| "字体加载线程 panic".to_string())?
+        .map_err(|e| format!("加载字体失败 {}：{e}", font_label.display()))?;
+    // 字体栈整文件读入 + 解码完成（与 GPU 预载并行，故耗时不再是首帧关键路径）。
+    crate::timeline::note("fonts_loaded");
+    // §112:800 无可变字体时静态回落 Bold 700,落一行持久字体诊断(零交互,重启不丢)。
+    // (fw1;engine 由并行线程 join 取得,诊断在其后判定。
+    if !engine.extra_bold_is_variable() {
+        write_diag(
+            "ether-fonts.log",
+            "800 回落 Bold(无可变字体;参 docs/DECISIONS_2026-10-05.md §112)
+",
+        );
+    }
 
     let mut shell = Shell::new(app, engine, &conn, &globals, &qh, role)?;
+    // 预载的 GPU 上下文交给外壳（None → 首个 configure 照旧惰性创建）。
+    shell.gpu = preloaded_gpu;
+    // 表面 / 角色 / 协议绑定完成，随即等首个 configure。
+    crate::timeline::note("shell_ready");
     // 系统主题：读 Chorus 的 theme.toml 并推给 App（accent / scheme）。
     // 这是「用户在 Chorus 改 accent、应用却仍是写死橙色」那条断链的接回点。
     shell.apply_system_theme();
@@ -288,8 +348,10 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         event_loop
             .dispatch(timeout, &mut shell)
             .map_err(|e| format!("事件循环 dispatch 失败：{e}"))?;
+        crate::timeline::note_once("dispatch_done");
         // 引擎宿主幂等绑定（input_method.is_none 才建，seat 就绪后即生效）。
         shell.ensure_ime_engine(&qh);
+        crate::timeline::note_once("ime_ready");
         // 推进步：update / 定时器 / 菜单命令 / IME / 尺寸同步（与渲染解耦，I-4）。
         shell.step(&qh);
         // 脏 → 渲染 + commit（I-1：CPU 缓冲恒就绪，无条件成功）。
@@ -355,6 +417,12 @@ pub fn find_font_source() -> Option<kanesumi_canvas::text::FontSource> {
 
 fn regular_candidates() -> Vec<kanesumi_canvas::text::FontSource> {
     [
+        // §112 可变字体优先：带 wght 轴，按请求字重（300 / 400 / 800）实例化；
+        // 在场时静态字重字面不再加载（见 extra_sources）。
+        ("/usr/local/share/fonts/s/NotoSansSC-VF.ttf", None),
+        ("/usr/local/share/fonts/s/NotoSansCJK-VF.otf.ttc", SC_TAG),
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-VF.otf.ttc", SC_TAG),
+        ("/usr/share/fonts/noto-cjk/NotoSansCJK-VF.otf.ttc", SC_TAG),
         // Ether 正体字体：思源黑体 SC（合成器同款，SD §IX 唯一字体）。
         ("/usr/local/share/fonts/s/SourceHanSansSC-Regular.otf", None),
         // 系统 Noto CJK（与思源黑体同源；TTC 集合须选 SC 字面，否则静默落到 JP）。
@@ -384,17 +452,27 @@ fn regular_candidates() -> Vec<kanesumi_canvas::text::FontSource> {
 
 /// 主字面之外的附加字面：Light / Medium / Bold（T7 字重）+ 脚本回退（阿拉伯 / 希伯来 / 符号）。
 /// 缺整条候选链的字重记 warn（零交互诊断；该字重渲染时自动回落 Regular）。
+/// 主字体为可变字体（文件名含 `-VF`）时跳过静态字重字面 —— 轴实例已覆盖全档，
+/// 再加载数份 20 MB 的 TTC 只增常驻内存（参 Kanesumi R1）。
 fn extra_sources(primary: &std::path::Path) -> Vec<kanesumi_canvas::text::FontSource> {
     use kanesumi_canvas::text::FontSource;
     let primary_canonical = primary.canonicalize().unwrap_or_else(|_| primary.to_path_buf());
     let mut out = Vec::new();
-    for weight in ["Light", "Medium", "Bold"] {
-        let Some(src) = weight_candidates(weight).into_iter().find(|s| s.path.exists())
-        else {
-            log::warn!("字重 {weight} 字面缺失（思源 SC / Noto CJK 均不在场），该字重将渲染为 Regular");
-            continue;
-        };
-        out.push(src);
+    let primary_is_vf = primary
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.contains("-VF"));
+    if primary_is_vf {
+        log::info!("主字体为可变字体（{}），跳过静态字重字面加载", primary.display());
+    } else {
+        for weight in ["Light", "Medium", "Bold"] {
+            let Some(src) = weight_candidates(weight).into_iter().find(|s| s.path.exists())
+            else {
+                log::warn!("字重 {weight} 字面缺失（思源 SC / Noto CJK 均不在场），该字重将渲染为 Regular");
+                continue;
+            };
+            out.push(src);
+        }
     }
     for path in [
         "/usr/share/fonts/noto/NotoSansArabic-Regular.ttf",
@@ -1567,6 +1645,11 @@ impl Shell {
                     "wgpu 共享上下文已创建（format={:?}）—— 主表面/浮层共用一份 device",
                     ctx.format()
                 );
+                // 时间线：wgpu instance / adapter / device 就绪（怀疑的最大头）。
+                crate::timeline::note_once_detail(
+                    "gpu_device_ready",
+                    &format!("format={:?}", ctx.format()),
+                );
                 self.gpu = Some(ctx.clone());
                 Some(ctx)
             }
@@ -1617,6 +1700,7 @@ impl Shell {
                 Ok(r) => {
                     log::info!("wgpu 渲染器已创建（{:.0}x{:.0}）", self.width, self.height);
                     self.renderer = Some(r);
+                    crate::timeline::note_once("renderer_ready");
                 }
                 Err(e) => {
                     log::error!("wgpu 渲染器初始化失败（{e:?}），退出");
@@ -1663,6 +1747,7 @@ impl Shell {
             {
                 log::info!("主表面 wgpu 渲染器已创建（{}）", r.diagnostics());
                 self.renderer = Some(r);
+                crate::timeline::note_once("renderer_ready");
                 return;
             }
         }
@@ -1675,6 +1760,7 @@ impl Shell {
             self.scale,
         );
         self.cpu = Some(cpu);
+        crate::timeline::note_once("cpu_renderer_ready");
         // CPU 局部光栅只重画 damage 区 → App 可按 damage 剔除拼接（wgpu 整幅直出不开）。
         self.app.set_damage_cull(true);
     }
@@ -1686,6 +1772,7 @@ impl Shell {
         if !self.configured {
             return;
         }
+        crate::timeline::note_once("step_start");
         // 合成器时钟（PLAN §4.2）：真实经过时间给动画（advance_clock），限幅 dt 给非动画逻辑
         //（防卡顿后跳变，§4.1 不变量 2）。参 ELEMENT_TREE §帧调度。
         let now = Instant::now();
@@ -1821,6 +1908,8 @@ impl Shell {
                 .render(&self.app.theme(), &self.engine, &mut self.scene_buf);
         }
         let render_ms = t_render.elapsed().as_secs_f32() * 1000.0;
+        // 时间线：首帧 Scene 渲染完成（App::render_into 返回）。
+        crate::timeline::note_once("first_frame_rendered");
 
         // 渲染后仍在动画 → 请求下一帧（vsync 提示，I-2）。App 在 render() 内清除
         // 自身脏标记（契约），此处的 needs_redraw = 动画推进中。
@@ -1861,6 +1950,8 @@ impl Shell {
             r.render(&self.engine, &self.scene_buf);
             raster_ms = t.elapsed().as_secs_f32() * 1000.0;
         }
+        // 时间线：首次提交（CPU 主表面 → SHM/dmabuf；xdg → wgpu present）。
+        crate::timeline::note_once("first_commit");
         self.perf_main.record(render_ms, raster_ms, commit_ms);
     }
 
@@ -2342,6 +2433,7 @@ impl WindowHandler for Shell {
         configure: WindowConfigure,
         _serial: u32,
     ) {
+        crate::timeline::note_once("configure_enter");
         let w = configure
             .new_size
             .0
@@ -2362,6 +2454,7 @@ impl WindowHandler for Shell {
         }
         if !self.configured {
             self.configured = true;
+            crate::timeline::note_once("first_configure");
             // 首帧：置脏 → 主循环渲染 + commit（I-1：无条件成功）。
             self.dirty = true;
         } else {
@@ -2471,6 +2564,7 @@ impl LayerShellHandler for Shell {
         self.dirty = true;
         if !self.configured {
             self.configured = true;
+            crate::timeline::note_once("first_configure");
         }
     }
 }
