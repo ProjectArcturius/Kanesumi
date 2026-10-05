@@ -24,7 +24,8 @@ pub const CANDIDATE_LABEL_GAP: f32 = 2.0;
 pub const CANDIDATE_ITEM_GAP: f32 = 0.0;
 /// 高亮块左右内边距（加宽 → 每块内左右留白更大，内容宽松不挤）。
 pub const CANDIDATE_HL_PAD: f32 = 16.0;
-/// 面板最大宽度（超过则溢出省略当前页尾项）。
+/// 面板最大宽度。放不下的候选整项省略（不画半个），面板宽恒 ≤ 此值
+/// （内容预算 = 此值 − `CANDIDATE_PAD_X`，省略时右缘补回内边距）。
 pub const CANDIDATE_MAX_W: f32 = 640.0;
 /// 每页候选数（数字键 1–9）。
 pub const CANDIDATES_PER_PAGE: usize = 9;
@@ -81,26 +82,57 @@ impl MetroCandidateWindow {
         label_w + CANDIDATE_LABEL_GAP + text_w + CANDIDATE_HL_PAD * 2.0
     }
 
+    /// 本页实际可见条数：按每项实际宽度累加，第一个放不下的候选起**整项省略**
+    /// （微软拼音行为：不画半个，翻页键可见；参 imp1 报告范围外第 1 条）。
+    /// 预算 = `CANDIDATE_MAX_W − CANDIDATE_PAD_X`：省略时面板右缘补回右内边距，
+    /// 总宽仍 ≤ `CANDIDATE_MAX_W`。至少显示 1 项（单项超宽时块内文本自身省略）。
+    /// 引擎层（Ceyboard）以后可据此翻页；本控件不产生翻页。
+    pub fn visible_count(&self) -> usize {
+        if self.candidates.is_empty() {
+            return 0;
+        }
+        let budget = CANDIDATE_MAX_W - CANDIDATE_PAD_X;
+        let mut w = 0.0;
+        for i in 0..self.candidates.len() {
+            let iw = self.item_width(i);
+            let gap = if i > 0 { CANDIDATE_ITEM_GAP } else { 0.0 };
+            if i > 0 && w + gap + iw > budget {
+                return i;
+            }
+            w += gap + iw;
+        }
+        self.candidates.len()
+    }
+
     /// 面板内容尺寸（横排单行，宽 = 各候选自适应宽累加 + 间距，高 = 单行）。
-    /// 供 popup surface 定位用。宽上限 CANDIDATE_MAX_W。
+    /// 供 popup surface 定位用。放不下的候选整项省略（`visible_count`），
+    /// 此时宽 = 最后一个完整候选的右沿 + 右内边距。
     pub fn popup_size(&self) -> Size {
         if self.candidates.is_empty() {
             return Size::new(0.0, 0.0);
         }
+        let vis = self.visible_count();
         let mut w = 0.0;
-        for i in 0..self.candidates.len() {
+        for i in 0..vis {
             if i > 0 {
                 w += CANDIDATE_ITEM_GAP;
             }
             w += self.item_width(i);
         }
+        // 有省略：右缘补内边距收尾（不再贴内容）；全显：纯累加，与旧版逐像素一致。
+        let width = if vis < self.candidates.len() {
+            w + CANDIDATE_PAD_X
+        } else {
+            w.clamp(1.0, CANDIDATE_MAX_W)
+        };
         Size::new(
-            w.min(CANDIDATE_MAX_W).max(1.0),
+            width.max(1.0),
             CANDIDATE_PAD_Y * 2.0 + CANDIDATE_ROW_H,
         )
     }
 
-    /// 命中候选项（横排自适应宽 + 间距）。返回下标。
+    /// 命中候选项（横排自适应宽 + 间距）。返回**页内**下标；只覆盖可见项
+    /// （被省略的区域不命中，点击空白无动作）。
     pub fn hit_candidate(&self, rect: Rect, pos: Point) -> Option<usize> {
         if !self.open || self.candidates.is_empty() || !rect.contains(pos) {
             return None;
@@ -112,7 +144,8 @@ impl MetroCandidateWindow {
         }
         let start = rect.origin.x;
         let mut x = start;
-        for i in 0..self.candidates.len() {
+        let vis = self.visible_count();
+        for i in 0..vis {
             let iw = self.item_width(i);
             if pos.x >= x && pos.x < x + iw {
                 return Some(i);
@@ -140,7 +173,10 @@ impl MetroCandidateWindow {
         let start = rect.origin.x; // 贴面板左缘 → 高亮块贴边
         let mut x = start;
 
-        for (i, cand) in self.candidates.iter().enumerate() {
+        // 放不下的候选整项省略（不画半个）；高亮项落在省略部分时同样不画
+        // （翻页到可见处是引擎的责任，参 imp1 报告范围外第 1 条）。
+        let vis = self.visible_count();
+        for (i, cand) in self.candidates.iter().enumerate().take(vis) {
             let iw = self.item_width(i);
             if x >= rect.right() {
                 break;
@@ -354,6 +390,58 @@ mod tree_tests {
         assert_eq!(h.tree.focused(), None, "点击候选窗不改变焦点");
     }
 
+    /// 9 个长候选的树（宽表面容纳省略后的窗口）。
+    fn overflow_harness() -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(900.0, 160.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroCandidateWindow {
+                candidates: (0..9).map(|i| format!("候选词长长长{i:02}")).collect(),
+                highlighted: Some(0),
+                page: 2,
+                has_prev: true,
+                has_next: false,
+                open: true,
+            },
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    #[test]
+    fn click_last_visible_item_reports_correct_global_index() {
+        let (mut h, id) = overflow_harness();
+        let vis = h.tree.get::<MetroCandidateWindow>(id).unwrap().visible_count();
+        assert!(vis < 9);
+        h.click_at(item_center(&h, id, vis - 1));
+        let expected = 2 * CANDIDATES_PER_PAGE + vis - 1;
+        assert_eq!(h.take::<CandidateChosen>(), vec![(id, CandidateChosen(expected))]);
+    }
+
+    #[test]
+    fn click_on_omitted_area_does_nothing() {
+        let (mut h, id) = overflow_harness();
+        let cw = h.tree.get::<MetroCandidateWindow>(id).unwrap();
+        let rect = h.rect(id);
+        let mut content_w = 0.0;
+        for i in 0..cw.visible_count() {
+            content_w += cw.item_width(i) + if i > 0 { CANDIDATE_ITEM_GAP } else { 0.0 };
+        }
+        // 最后一个可见项右侧、面板右内边距内的空白 = 被省略区域。
+        let pos = Point::new(
+            rect.origin.x + content_w + CANDIDATE_PAD_X / 2.0,
+            rect.origin.y + CANDIDATE_PAD_Y + CANDIDATE_ROW_H / 2.0,
+        );
+        assert_eq!(cw.hit_candidate(rect, pos), None, "省略区不命中");
+        h.click_at(pos);
+        assert_eq!(h.take::<CandidateChosen>(), Vec::new(), "省略区点击无动作");
+    }
+
     #[test]
     fn sizes_and_passes_insurance_checks() {
         let (h, id) = harness();
@@ -494,5 +582,99 @@ mod tests {
         // 宽 = 3 项等宽总和（无间距，贴边）。
         assert!(sz.width <= CANDIDATE_MAX_W);
         assert!(sz.width > 0.0);
+    }
+
+    fn overflowing() -> MetroCandidateWindow {
+        MetroCandidateWindow {
+            candidates: (0..9).map(|i| format!("候选词长长长{i:02}")).collect(),
+            highlighted: Some(0),
+            page: 0,
+            has_prev: false,
+            has_next: true,
+            open: true,
+        }
+    }
+
+    /// 放不下 → 从第一个超预算的候选起整项省略；面板宽 ≤ 上限，
+    /// 最后一个可见项完整（右沿 = 面板宽 − 右内边距）。
+    #[test]
+    fn overflow_omits_whole_tail_items() {
+        let cw = overflowing();
+        let vis = cw.visible_count();
+        assert!(vis < 9, "长候选须整项省略，实际可见 {vis}");
+        assert!(vis >= 1, "至少显示 1 项");
+        let sz = cw.popup_size();
+        assert!(sz.width <= CANDIDATE_MAX_W, "面板宽 {} 超上限", sz.width);
+        let mut content_w = 0.0;
+        for i in 0..vis {
+            if i > 0 {
+                content_w += CANDIDATE_ITEM_GAP;
+            }
+            content_w += cw.item_width(i);
+        }
+        assert_eq!(sz.width, content_w + CANDIDATE_PAD_X, "宽 = 最后完整项右沿 + 右内边距");
+    }
+
+    /// 省略场景不画半个：所有文本 / 高亮块右沿 ≤ 面板宽 − 右内边距。
+    #[test]
+    fn overflow_renders_no_partial_item() {
+        if !font_available() {
+            return;
+        }
+        let engine = TextEngine::load(find_font().unwrap()).unwrap();
+        let theme = themed();
+        let cw = overflowing();
+        let sz = cw.popup_size();
+        let rect = Rect::new(0.0, 0.0, sz.width, sz.height);
+        let mut scene = Scene::default();
+        cw.render(&theme, &engine, rect, &mut scene);
+        let limit = rect.right() - CANDIDATE_PAD_X;
+        for cmd in &scene.commands {
+            match cmd {
+                // 文本框（含 ellipsis 兜底）不得越出可见区。
+                SceneCommand::Text { rect: r, .. } => {
+                    assert!(r.origin.x + r.size.width <= limit + 0.5, "文本越出可见区 {r:?}");
+                }
+                // 高亮块不得越出可见区（面板底 surface 铺满 rect，不在此列）。
+                SceneCommand::FillRect { color, rect: r, .. } if color == &theme.colors.primary => {
+                    assert!(r.right() <= limit + 0.5, "高亮块越出可见区 {r:?}");
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// 全部放得下 → 全可见，宽度 = 逐项累加（与改前一致）。
+    #[test]
+    fn short_candidates_all_visible_width_unchanged() {
+        let cw = sample();
+        assert_eq!(cw.visible_count(), 3);
+        let expect: f32 = (0..3).map(|i| cw.item_width(i)).sum();
+        assert_eq!(cw.popup_size().width, expect);
+    }
+
+    /// 高亮项落在省略部分：不画高亮块（翻页是引擎的责任），不 panic。
+    #[test]
+    fn highlight_in_omitted_range_is_not_drawn() {
+        if !font_available() {
+            return;
+        }
+        let engine = TextEngine::load(find_font().unwrap()).unwrap();
+        let theme = themed();
+        let mut cw = overflowing();
+        cw.highlighted = Some(8); // 最后一项必然被省略
+        let sz = cw.popup_size();
+        let rect = Rect::new(0.0, 0.0, sz.width, sz.height);
+        let mut scene = Scene::default();
+        cw.render(&theme, &engine, rect, &mut scene);
+        let primary_fills = scene
+            .commands
+            .iter()
+            .filter(|c| match c {
+                SceneCommand::FillRect { color, .. } => color == &theme.colors.primary,
+                _ => false,
+            })
+            .count();
+        assert_eq!(primary_fills, 0, "省略区内的高亮项不得画出高亮块");
     }
 }
