@@ -1419,3 +1419,96 @@ fn entry_only_control_plays_full_animation_without_manual_frame_requests() {
     h.frame();
     assert!(!h.tree.needs_frame(), "完成后进入空闲");
 }
+
+// ── 定时器墙钟语义（k-timer-realdt：定时器按真实经过时间推进，不限幅）─────────
+
+/// 定时器探针：点击时请求 `delay` 秒定时器；每次被 `update`（到期回调路径）计数。
+/// 到期的定时器经 `request_anim` 走动画帧路径回调本节点 `update`。
+struct TimerProbe {
+    delay: f64,
+    ticks: Rc<Cell<u32>>,
+}
+
+impl Widget for TimerProbe {
+    fn measure(&mut self, _ctx: &mut MeasureCtx, _available: Size) -> Size {
+        Size::new(10.0, 10.0)
+    }
+    fn paint(&mut self, _ctx: &mut PaintCtx, scene: &mut Scene) {
+        scene.fill_rect(Color::rgb(0.1, 0.1, 0.1), Rect::new(0.0, 0.0, 10.0, 10.0));
+    }
+    fn update(&mut self, _ctx: &mut UpdateCtx, _dt: f64) {
+        self.ticks.set(self.ticks.get() + 1);
+    }
+    fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
+        // 用 PointerDown 而非 Click：探针没有视觉状态，Click 只投给 interactive_ancestor。
+        if matches!(event, Event::PointerDown { .. }) {
+            ctx.request_timer(self.delay);
+            ctx.set_handled();
+        }
+    }
+}
+
+#[test]
+fn timer_fires_after_real_elapsed_time_not_clamped_steps() {
+    // 0.3 s 一次的空闲唤醒 × 1.5 s 定时器：第 5 次唤醒到期（限幅旧路要 9 s，STATE §Ⅲ #8）。
+    let mut h = TestHarness::new(60.0, 60.0);
+    let ticks = Rc::new(Cell::new(0));
+    let id = h.tree.insert(h.root(), TimerProbe { delay: 1.5, ticks: ticks.clone() });
+    h.frame();
+    h.click(id); // 点击武装定时器（update 只对动画队列节点回调，挂载首帧不跑）
+    assert_eq!(ticks.get(), 0);
+    // click 内部的收尾帧以 dt = 1/60 走了一次 tick_timers，起点即 1.5 − 1/60。
+    assert!(
+        h.tree.next_timer().is_some_and(|t| (t - (1.5 - 1.0 / 60.0)).abs() < 1e-9),
+        "武装后剩余应约 1.4833 s，得到 {:?}",
+        h.tree.next_timer()
+    );
+    for _ in 0..4 {
+        h.idle(0.3); // 累计 1.2 s，未到期
+    }
+    assert_eq!(ticks.get(), 0, "1.2 s 时不应到期");
+    let left = h.tree.next_timer().expect("定时器应仍在");
+    assert!(
+        left > 0.0 && left <= 0.3 - 1.0 / 60.0 + 1e-9,
+        "剩余应约 0.2833 s，得到 {left:?}"
+    );
+    h.idle(0.3); // 第 5 次：累计 1.5 s 到期
+    assert_eq!(ticks.get(), 1, "到期触发一次 update");
+    assert_eq!(h.tree.next_timer(), None, "到期后定时器移除");
+    h.idle(0.3);
+    assert_eq!(ticks.get(), 1, "到期后不再触发");
+}
+
+#[test]
+fn suspend_resume_settles_timer_exactly_once() {
+    // 挂起恢复：一次 30 s 的大步长把 1.5 s 定时器一次结算；不重复触发、不 panic。
+    let mut h = TestHarness::new(60.0, 60.0);
+    let ticks = Rc::new(Cell::new(0));
+    let id = h.tree.insert(h.root(), TimerProbe { delay: 1.5, ticks: ticks.clone() });
+    h.frame();
+    h.click(id);
+    h.idle(30.0);
+    assert_eq!(ticks.get(), 1, "30 s 一步长到期且只触发一次");
+    assert_eq!(h.tree.next_timer(), None);
+    h.idle(30.0);
+    assert_eq!(ticks.get(), 1, "已到期的定时器不得重复触发");
+}
+
+#[test]
+fn tooltip_delay_and_hide_expire_by_real_elapsed_time() {
+    // 工具提示计时与控件定时器同路（tick_timers）：500 ms 延迟、5 s 隐藏，都按真实时间到期。
+    let mut h = TestHarness::new(120.0, 80.0);
+    let b = h.tree.insert(h.root(), TestButton::new(50.0, 40.0));
+    h.tree.set_tooltip(b, "提示");
+    h.frame();
+    h.move_to(h.center(b)); // 悬停 → 武装显示计时
+    assert_eq!(h.tree.tooltip_popup(), None, "延迟期内不显示");
+    h.idle(0.2); // 0.2 s 不足
+    assert_eq!(h.tree.tooltip_popup(), None);
+    h.idle(0.4); // 累计 0.6 s 越过 500 ms
+    assert!(h.tree.tooltip_popup().is_some(), "真实时间累计到期应显示提示");
+    h.idle(2.0); // 显示后 2 s，未到 5 s
+    assert!(h.tree.tooltip_popup().is_some());
+    h.idle(4.0); // 累计 6 s，越过 5 s 隐藏计时
+    assert_eq!(h.tree.tooltip_popup(), None, "隐藏计时按真实时间到期");
+}
