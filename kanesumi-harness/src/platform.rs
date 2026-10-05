@@ -354,6 +354,8 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         crate::timeline::note_once("ime_ready");
         // 推进步：update / 定时器 / 菜单命令 / IME / 尺寸同步（与渲染解耦，I-4）。
         shell.step(&qh);
+        // 掉帧计数：渲染前声明各表面的动画状态（边沿开始 / 结束）。参 perf.rs。
+        shell.sync_pacing();
         // 脏 → 渲染 + commit（I-1：CPU 缓冲恒就绪，无条件成功）。
         if shell.dirty {
             shell.render_and_commit(&qh);
@@ -1499,6 +1501,8 @@ impl Shell {
         if let Some(p) = self.perf_floating.get_mut(idx) {
             p.record(render_ms, raster_ms, commit_ms);
         }
+        // 掉帧计数：浮层本帧已提交（零面积早退分支不计）；按表面分别记避免污染间隔。参 perf.rs。
+        crate::perf::pacing_present_named(&self.pacing_floating_name(idx), Instant::now());
     }
 
     /// 浮层输入事件错误边界。事件到达即置脏（I-4）。
@@ -1953,6 +1957,33 @@ impl Shell {
         // 时间线：首次提交（CPU 主表面 → SHM/dmabuf；xdg → wgpu present）。
         crate::timeline::note_once("first_commit");
         self.perf_main.record(render_ms, raster_ms, commit_ms);
+        // 掉帧计数：主表面本帧已提交（零面积早退分支不计）。参 perf.rs。
+        crate::perf::pacing_present_named(&self.pacing_main_name(), Instant::now());
+    }
+
+    /// 掉帧计数：声明主表面与各浮层的「动画进行中」状态（App::needs_redraw 语义 = 内容脏 /
+    /// 动画推进中）。边沿触发：开始登记、结束落盘一行（未提交过帧则不落）。参 perf.rs。
+    fn sync_pacing(&mut self) {
+        let now = Instant::now();
+        // 判据：本帧确实要渲染（dirty）且 App 报告动画推进中（needs_redraw）——否则 App 可能在
+        // 空闲期持续报告 needs_redraw，把十几秒的空闲间隔误记成掉帧。
+        let main_active = self.app.needs_redraw() && self.dirty;
+        crate::perf::pacing_mark(&self.pacing_main_name(), main_active, now, now);
+        for i in 0..self.floating.len() {
+            let active = self.app.floating_needs_redraw(i) && self.floating_dirty[i];
+            let name = self.pacing_floating_name(i);
+            crate::perf::pacing_mark(&name, active, now, now);
+        }
+    }
+
+    /// 主表面掉帧记录名（角色 + 表面）。
+    fn pacing_main_name(&self) -> String {
+        format!("{:?}:main", self.role)
+    }
+
+    /// 浮层掉帧记录名。
+    fn pacing_floating_name(&self, idx: usize) -> String {
+        format!("{:?}:floating{idx}", self.role)
     }
 
     /// 每 10s 且有新帧时把各表面三段耗时 p50/p95/max 追加到持久日志（默认开启）。
