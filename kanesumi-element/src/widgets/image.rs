@@ -1,8 +1,12 @@
 // Image —— 位图 / 图标元素（XAML Image + Stretch）。
 //
-// 持已光栅化的 `Icon`（RGBA）或 SVG 路径：SVG 按**目标尺寸 × 缩放**惰性光栅并缓存，
-// 尺寸变化时重光栅（保证高 DPI 下清晰，而非把一张固定小图拉大）。`Stretch` 取 XAML 四值语义，
-// 目标矩形用 `fitted_rect` 纯函数算出，便于单测。
+// 持已光栅化的 `Icon`（RGBA）或 SVG 路径：**解码不进 paint**（参 docs/CANVAS_PLAN.md §Ⅴ 规则 1）。
+// SVG 源一律走 Kanesumi 统一解码服务（`kanesumi_canvas::decode`，后台线程池 + 按字节 LRU）：
+// paint 只查缓存 —— 命中就画；未命中则提交请求、本帧什么都不画（**尺寸照旧占位**，不跳），
+// 并登记一个短定时器；就绪后 `update` 经元素树既有失效机制令本节点重画。失败结果被服务记住，
+// 不反复重试（缺失图标不会每帧读盘）。对照 Windows：WIC / XAML `BitmapImage` 异步解码。
+//
+// `Stretch` 取 XAML 四值语义，目标矩形用 `fitted_rect` 纯函数算出，便于单测。
 //
 // 无子节点；`hit_test` 沿用默认（矩形内命中），与 Label 一致。
 //
@@ -11,11 +15,16 @@
 
 use std::path::PathBuf;
 
+use kanesumi_canvas::decode::{self, DecodeKey, Peek};
 use kanesumi_canvas::icon::Icon;
-use kanesumi_canvas::{Scene, rasterize_svg};
+use kanesumi_canvas::Scene;
 use kanesumi_core::{Brush, Rect, Size};
 
-use crate::widget::{MeasureCtx, PaintCtx, Widget};
+use crate::widget::{MeasureCtx, PaintCtx, UpdateCtx, Widget};
+
+/// 占位期间查询就绪的间隔（秒）。服务是下拉式的，元素树用既有定时器机制轮询：
+/// 等待期间不占帧（`next_timer` 给外壳唤醒点），就绪即重画。
+const DECODE_POLL_SECS: f64 = 1.0 / 60.0;
 
 /// 缩放模式（XAML `Stretch`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -46,13 +55,6 @@ impl Default for ImageSource {
     }
 }
 
-/// 已光栅化缓存（键 = 由目标矩形算出的像素边长）。
-#[derive(Debug, Clone, PartialEq)]
-struct RasterCache {
-    px: u32,
-    icon: Icon,
-}
-
 /// 图像元素。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Image {
@@ -64,11 +66,12 @@ pub struct Image {
     pub width: Option<f32>,
     /// 显式高（优先于图源固有尺寸）。
     pub height: Option<f32>,
-    /// SVG 重光栅的显示缩放（逻辑 px → 目标像素），默认 1.0。
+    /// SVG 光栅的显示缩放（逻辑 px → 目标像素），默认 1.0。
     pub scale: f32,
     /// 整图不透明度（0..1；`None` = 1.0）。
     pub opacity: Option<f32>,
-    raster: Option<RasterCache>,
+    /// 在途解码键与目标像素（paint 提交时登记；就绪后由 `update` 消费并清空）。
+    pending: Option<(DecodeKey, u32)>,
 }
 
 impl Image {
@@ -81,7 +84,7 @@ impl Image {
             height: None,
             scale: 1.0,
             opacity: None,
-            raster: None,
+            pending: None,
         }
     }
 
@@ -127,28 +130,42 @@ impl Image {
         }
     }
 
-    /// 取（必要时重光栅化）的位图。SVG 目标像素边长 = `ceil(目标长边 × scale)`。
-    fn rasterized(&mut self, dest: Rect) -> Option<&Icon> {
+    /// SVG 源在目标矩形下的光栅像素边长（最长边 × `scale`）。`Raster` 源无需解码 → `None`。
+    fn target_px(&self, dest: Rect) -> Option<u32> {
         match &self.source {
-            ImageSource::Raster(i) => Some(i),
-            ImageSource::Svg { path, .. } => {
-                let scale = self.scale.max(0.01);
-                let px = ((dest.size.width.max(dest.size.height)) * scale)
+            ImageSource::Raster(_) => None,
+            ImageSource::Svg { .. } => Some(
+                ((dest.size.width.max(dest.size.height)) * self.scale.max(0.01))
                     .round()
-                    .max(1.0) as u32;
-                let stale = self.raster.as_ref().is_none_or(|c| c.px != px);
-                if stale {
-                    self.raster = rasterize_svg(path, px)
-                        .map(|icon| RasterCache { px, icon });
-                }
-                self.raster.as_ref().map(|c| &c.icon)
-            }
+                    .max(1.0) as u32,
+            ),
         }
+    }
+
+    /// 预热：按**声明尺寸**（显式宽高，否则固有尺寸）× `scale` 算目标像素，提交后台解码。
+    ///
+    /// 界面显现前调用（Launcher 升起前预热磁贴图标，参 docs/CANVAS_PLAN.md §Ⅳ C3）；
+    /// 命中缓存即忽略，重复调用无代价。返回 false 表示本源无需解码（已是位图）。
+    pub fn prefetch(&self) -> bool {
+        let ImageSource::Svg { path, .. } = &self.source else {
+            return false;
+        };
+        let intrinsic = self.intrinsic_size();
+        let logical = Size::new(
+            self.width.unwrap_or(intrinsic.width),
+            self.height.unwrap_or(intrinsic.height),
+        );
+        let px = (logical.width.max(logical.height) * self.scale.max(0.01))
+            .round()
+            .max(1.0) as u32;
+        decode::global().request_svg_longest(path.clone(), px);
+        true
     }
 }
 
 impl Widget for Image {
-    /// 显式宽高优先，否则图源固有尺寸。
+    /// 显式宽高优先，否则图源固有尺寸。**占位不改变量测结果**：尺寸只由图源固有尺寸与
+    /// 显式宽高决定，与解码是否就绪无关（参 §Ⅴ 规则 1「先占好尺寸」）。
     fn measure(&mut self, _ctx: &mut MeasureCtx, _available: Size) -> Size {
         let i = self.intrinsic_size();
         Size::new(
@@ -166,14 +183,64 @@ impl Widget for Image {
         let stretch = self.stretch;
         let tint = self.tint.map(|b| b.resolve(ctx.theme()));
         let opacity = self.opacity.unwrap_or(1.0);
-        let Some(icon) = self.rasterized(dest) else {
+        // 取图：**只查缓存**，绝不在 paint 里解码 / 读盘。
+        let mut requested: Option<(DecodeKey, u32)> = None;
+        let icon: Option<Icon> = match &self.source {
+            ImageSource::Raster(i) => Some(i.clone()),
+            ImageSource::Svg { path, .. } => {
+                let px = self.target_px(dest).unwrap_or(1);
+                let key = DecodeKey::svg_longest(path, px);
+                match decode::global().peek(&key) {
+                    Peek::Ready(out) => Some(out.icon.clone()),
+                    // 已确认失败：保持占位，不反复重试（服务已记住负面结果）。
+                    Peek::Failed => None,
+                    // 未缓存：提交后台请求（只入队，不在此解码），本帧留占位。
+                    Peek::Missing => {
+                        decode::global().request_svg_longest(path.clone(), px);
+                        requested = Some((key, px));
+                        None
+                    }
+                    Peek::Pending => {
+                        requested = Some((key, px));
+                        None
+                    }
+                }
+            }
+        };
+        let Some(icon) = icon else {
+            // 未就绪：本帧什么都不画（尺寸已由 measure 占好，不跳）。登记短定时器，
+            // 就绪后 `update` 令本节点重画。
+            self.pending = requested;
+            ctx.request_timer(DECODE_POLL_SECS);
             return;
         };
+        self.pending = None;
         let fitted = fitted_rect(intrinsic, dest, stretch);
         // 裁剪到自身矩形：UniformToFill / None 的目标矩形可越出容器。
         scene.push_clip(dest);
-        scene.image_with_opacity(icon, fitted, tint, opacity);
+        scene.image_with_opacity(&icon, fitted, tint, opacity);
         scene.pop_clip();
+    }
+
+    /// 就绪轮询：解码好了就令自己重画（元素树既有失效机制）；没好继续等一个间隔。
+    fn update(&mut self, ctx: &mut UpdateCtx, _dt: f64) {
+        let Some((key, px)) = self.pending.clone() else {
+            return;
+        };
+        match decode::global().peek(&key) {
+            Peek::Ready(_) | Peek::Failed => {
+                self.pending = None;
+                ctx.invalidate_paint();
+            }
+            Peek::Pending => ctx.request_timer(DECODE_POLL_SECS),
+            // 缓存被清（主题切换 / 显式 clear）→ 重新提交，别永远等下去。
+            Peek::Missing => {
+                if let ImageSource::Svg { path, .. } = &self.source {
+                    decode::global().request_svg_longest(path.clone(), px);
+                }
+                ctx.request_timer(DECODE_POLL_SECS);
+            }
+        }
     }
 }
 
@@ -343,6 +410,7 @@ mod tests {
             .expect("应产生 Image 命令")
     }
 
+    /// SVG 光栅像素随 `scale` 变化（scope 改变 → 服务按新像素出图，2× 下不糊）。
     #[test]
     fn svg_rerasterizes_on_scale_change() {
         let Some(path) = svg_24() else { return };
@@ -358,11 +426,128 @@ mod tests {
                 ..LayoutProps::default()
             },
         );
-        h.frame();
+        h.wait_decodes();
         assert_eq!(image_cmd(&h, id).0, 30, "scale=1 → 目标 30px 光栅");
         h.tree.edit::<Image, _>(id, |img, _| img.scale = 2.0);
         h.frame();
+        h.wait_decodes();
         assert_eq!(image_cmd(&h, id).0, 60, "scale=2 → 重光栅到 60px");
+    }
+
+    /// 占位：解码就绪之前不画图，**但尺寸照旧占好**（measure 与解码无关，不跳）。
+    #[test]
+    fn placeholder_paints_nothing_but_keeps_measure() {
+        let Some(path) = svg_24() else { return };
+        let mut h = TestHarness::new(200.0, 200.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            Image::svg(&path),
+            LayoutProps {
+                width: Some(40.0),
+                height: Some(24.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        // 首帧：请求已提交、结果未到 → 无图像命令，但矩形已按显式尺寸占好。
+        let _ = kanesumi_canvas::decode::global().poll_ready();
+        h.frame();
+        assert_eq!(h.rect(id).size, Size::new(40.0, 24.0), "占位不改变量测结果");
+        if kanesumi_canvas::decode::global().pending_count() > 0 {
+            assert!(
+                h.tree
+                    .painted(id)
+                    .iter()
+                    .all(|c| !matches!(c, SceneCommand::Image { .. })),
+                "未就绪时不得画图"
+            );
+        }
+        // 就绪后同尺寸仍不变。
+        h.wait_decodes();
+        assert_eq!(h.rect(id).size, Size::new(40.0, 24.0));
+    }
+
+    /// 就绪后节点经元素树既有失效机制重画（定时器 → update → invalidate_paint）。
+    #[test]
+    fn node_repaints_after_decode_ready() {
+        let Some(path) = svg_24() else { return };
+        let mut h = TestHarness::new(200.0, 200.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            Image::svg(&path).stretch(Stretch::Fill),
+            LayoutProps {
+                width: Some(24.0),
+                height: Some(24.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        // 后台完成 → 定时器到期那一帧必须已经画出图。
+        let svc = kanesumi_canvas::decode::global();
+        assert!(svc.wait_idle(std::time::Duration::from_secs(10)));
+        h.frame();
+        let (w, hgt, _) = image_cmd(&h, id);
+        assert_eq!((w, hgt), (24, 24), "就绪后应重画并出 24pt 图");
+    }
+
+    /// `prefetch`：SVG 源提交后台解码（不阻塞），随后首帧 paint 直接命中。
+    #[test]
+    fn prefetch_makes_first_paint_a_cache_hit() {
+        let Some(path) = svg_24() else { return };
+        let img = Image::svg(&path).size(24.0, 24.0);
+        assert!(img.prefetch(), "SVG 源应可预热");
+        let mut h = TestHarness::new(200.0, 200.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            img,
+            LayoutProps {
+                width: Some(24.0),
+                height: Some(24.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.wait_decodes();
+        assert_eq!(image_cmd(&h, id).0, 24);
+        // 位图源无需解码 → 返回 false。
+        let icon = Icon {
+            rgba: std::sync::Arc::from(vec![0u8; 4].into_boxed_slice()),
+            width: 1,
+            height: 1,
+        };
+        assert!(!Image::raster(icon).prefetch());
+    }
+
+    /// 缺失 SVG：服务记住失败，反复出帧不反复读盘（每次都保持占位、不 panic）。
+    #[test]
+    fn missing_svg_keeps_placeholder_without_retry() {
+        let mut h = TestHarness::new(200.0, 200.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            Image::svg("/nonexistent/kanesumi-c3-missing.svg"),
+            LayoutProps {
+                width: Some(16.0),
+                height: Some(16.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.wait_decodes();
+        h.frame();
+        h.frame();
+        assert!(
+            h.tree
+                .painted(id)
+                .iter()
+                .all(|c| !matches!(c, SceneCommand::Image { .. })),
+            "缺失图标不得画出任何图"
+        );
+        assert_eq!(h.rect(id).size, Size::new(16.0, 16.0));
     }
 
     #[test]

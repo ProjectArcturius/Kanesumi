@@ -99,6 +99,23 @@ impl TestHarness {
         }
     }
 
+    /// 等 Kanesumi 统一解码服务空闲，随后出一帧让就绪的节点重画。
+    ///
+    /// 解码在后台线程（参 docs/CANVAS_PLAN.md §Ⅳ C3），元素树在 paint 时只查缓存并登记
+    /// 定时器；本方法把「后台完成 → 定时器到期 → `update` 失效 → 重画」这条链一次跑完，
+    /// 供断言图像命令的测试使用。超时即 panic（静默跳过比没有测试更危险）。
+    pub fn wait_decodes(&mut self) {
+        let svc = kanesumi_canvas::decode::global();
+        // 先出一帧：让「查缓存 → 提交请求」这一步发生（首次调用尤其必要，此时还没有任何请求）。
+        self.frame();
+        assert!(
+            svc.wait_idle(std::time::Duration::from_secs(10)),
+            "后台解码 10 秒内未完成"
+        );
+        // 再出一帧：定时器到期 → `update` 见就绪 → 失效重画。
+        self.frame();
+    }
+
     pub fn resize(&mut self, width: f32, height: f32) {
         self.size = Size::new(width, height);
     }

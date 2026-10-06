@@ -7,6 +7,7 @@
 use std::any::Any;
 
 use kanesumi_anim::Animation;
+use kanesumi_canvas::decode::{DecodeKey, Job};
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, SceneCommand};
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
@@ -305,6 +306,15 @@ impl Tree {
     pub fn request_full_repaint(&mut self) {
         self.full_repaint = true;
         self.mark_dirty();
+    }
+
+    /// 树级预热：把解码请求提交给 Kanesumi 统一解码服务（界面显现前调用，命中即忽略）。
+    ///
+    /// 单节点的便捷封装是 `widgets::Image::prefetch`；本口给「一次预热一批」（Launcher
+    /// 升起前预热全部磁贴图标）与非 `Image` 控件（如自有图标缓存的列表）用。
+    /// 参 docs/CANVAS_PLAN.md §Ⅳ C3。
+    pub fn prefetch(&mut self, key: DecodeKey, job: Job) {
+        kanesumi_canvas::decode::global().request(key, job);
     }
 
     pub fn root(&self) -> WidgetId {
