@@ -6,6 +6,7 @@
 // 依赖方向：core ← canvas ← controls/harness/gallery。
 
 pub mod acrylic;
+pub mod decode;
 pub mod geometry;
 pub mod glyph;
 pub mod icon;
@@ -19,6 +20,7 @@ pub use geometry::{
     triangulate_stroke,
 };
 pub use acrylic::{Acrylic, backdrop};
+pub use decode::{DecodeKey, DecodeOutput, DecodeService, DecodeStats, Job, Peek};
 pub use icon::{Icon, ImageKind, rasterize_image, rasterize_image_bytes, rasterize_png, rasterize_svg};
 pub use scale::{set_surface_scale, surface_scale};
 pub use layout::{
