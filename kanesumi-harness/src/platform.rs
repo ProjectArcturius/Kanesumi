@@ -647,6 +647,8 @@ pub(crate) struct Shell {
     perf_flush_at: Instant,
     /// 进程名（日志行首）。
     perf_proc: String,
+    /// 进程启动自证行（msaa / gpu 计时）是否已写 —— perf 日志首行只写一次。
+    perf_header_done: bool,
 
     // ── 系统主题（Chorus）─────
     /// 当前生效的系统主题。外壳拥有并在启动 / 配置变更时推给 App（`App::set_theme`）。
@@ -1274,6 +1276,7 @@ impl Shell {
             perf_floating: vec![crate::perf::SurfacePerf::new(); floating_len],
             perf_flush_at: Instant::now(),
             perf_proc,
+            perf_header_done: false,
             system_theme: MetroTheme::ether_dark(),
             theme_fingerprint: None,
             next_theme_check: Instant::now(),
@@ -1457,6 +1460,7 @@ impl Shell {
         }
         let mut raster_ms = 0.0f32;
         let mut commit_ms = 0.0f32;
+        let mut gpu_samples: Vec<f32> = Vec::new();
         if let Some(cpu) = f.cpu.as_mut() {
             let (pw, ph) = cpu.physical_size();
             let t = Instant::now();
@@ -1495,11 +1499,15 @@ impl Shell {
             let t = Instant::now();
             r.render_with_damage(&self.engine, &scene, damage);
             raster_ms = t.elapsed().as_secs_f32() * 1000.0;
+            gpu_samples = r.drain_gpu_samples();
             self.floating_full[idx] = false;
             self.floating_raster_size[idx] = phys_now;
         }
         if let Some(p) = self.perf_floating.get_mut(idx) {
             p.record(render_ms, raster_ms, commit_ms);
+            for ms in gpu_samples {
+                p.record_gpu(ms);
+            }
         }
         // 掉帧计数：浮层本帧已提交（零面积早退分支不计）；按表面分别记避免污染间隔。参 perf.rs。
         crate::perf::pacing_present_named(&self.pacing_floating_name(idx), Instant::now());
@@ -1930,6 +1938,7 @@ impl Shell {
         }
         let mut raster_ms = 0.0f32;
         let mut commit_ms = 0.0f32;
+        let mut gpu_samples: Vec<f32> = Vec::new();
         if let Some(cpu) = self.cpu.as_mut() {
             let (pw, ph) = cpu.physical_size();
             let t = Instant::now();
@@ -1953,10 +1962,14 @@ impl Shell {
             let t = Instant::now();
             r.render(&self.engine, &self.scene_buf);
             raster_ms = t.elapsed().as_secs_f32() * 1000.0;
+            gpu_samples = r.drain_gpu_samples();
         }
         // 时间线：首次提交（CPU 主表面 → SHM/dmabuf；xdg → wgpu present）。
         crate::timeline::note_once("first_commit");
         self.perf_main.record(render_ms, raster_ms, commit_ms);
+        for ms in gpu_samples {
+            self.perf_main.record_gpu(ms);
+        }
         // 掉帧计数：主表面本帧已提交（零面积早退分支不计）。参 perf.rs。
         crate::perf::pacing_present_named(&self.pacing_main_name(), Instant::now());
     }
@@ -2014,6 +2027,30 @@ impl Shell {
         }
         if out.is_empty() {
             return;
+        }
+        // 首行自证：实际 MSAA 采样数 + GPU 计时是否开启（A/B 必须能从日志分辨档位）。
+        if !self.perf_header_done {
+            self.perf_header_done = true;
+            let gpu_ok = self
+                .renderer
+                .as_ref()
+                .map(|r| r.gpu_timing_supported())
+                .or_else(|| {
+                    self.floating
+                        .iter()
+                        .find_map(|f| f.renderer.as_ref().map(|r| r.gpu_timing_supported()))
+                })
+                .unwrap_or(false);
+            let msaa = self
+                .renderer
+                .as_ref()
+                .map(|r| r.msaa_samples())
+                .or_else(|| {
+                    self.floating
+                        .iter()
+                        .find_map(|f| f.renderer.as_ref().map(|r| r.msaa_samples()))
+                });
+            out.insert_str(0, &crate::perf::format_header(msaa, gpu_ok));
         }
         if let Some(path) = crate::perf::state_log_path("ether-harness-perf.log") {
             crate::perf::write_log(&path, &out);
