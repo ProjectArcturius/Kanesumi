@@ -148,10 +148,11 @@ pub fn format_line(proc: &str, role: &str, surface: &str, p: &SurfacePerf) -> St
     )
 }
 
-/// 进程启动自证行（每进程一次性写在 perf 日志首行）：实际 MSAA 采样数与 GPU 计时是否开启。
+/// 进程启动自证行（每进程一次性写在 perf 日志首行）：进程名 + 实际 MSAA 采样数 +
+/// GPU 计时是否开启。多个进程共写同一日志文件，故必须带进程名才能归属。
 /// `msaa = None` 表示本进程无 GPU 光栅器（layer-shell / CPU 光栅角色）。
 /// 参 Ether docs/research/gpu_t1（任务 gpu-t1：MSAA 4 vs 1 与 GPU 帧耗时的 A/B 必须能从日志分辨档位）。
-pub fn format_header(msaa_samples: Option<u32>, gpu_supported: bool) -> String {
+pub fn format_header(proc: &str, msaa_samples: Option<u32>, gpu_supported: bool) -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -160,7 +161,7 @@ pub fn format_header(msaa_samples: Option<u32>, gpu_supported: bool) -> String {
         .map(|n| n.to_string())
         .unwrap_or_else(|| "n/a".to_string());
     let gpu = if gpu_supported { "ts" } else { "n/a" };
-    format!("# kanesumi-harness t={secs} msaa={msaa} gpu={gpu}\n")
+    format!("# kanesumi-harness proc={proc} t={secs} msaa={msaa} gpu={gpu}\n")
 }
 
 // ── GPU 时间戳环形缓冲的索引与换算（纯函数，单测覆盖）──
@@ -522,15 +523,16 @@ mod tests {
 
     #[test]
     fn header_records_msaa_and_gpu_support() {
-        let h = format_header(Some(1), false);
+        let h = format_header("ether-settings", Some(1), false);
         assert!(h.starts_with('#'), "首行以 # 开标注：{h}");
+        assert!(h.contains("proc=ether-settings"), "{h}");
         assert!(h.contains("msaa=1"), "{h}");
         assert!(h.contains("gpu=n/a"), "{h}");
-        let h = format_header(Some(4), true);
+        let h = format_header("ether-settings", Some(4), true);
         assert!(h.contains("msaa=4") && h.contains("gpu=ts"), "{h}");
         assert!(h.ends_with('\n'));
         // 无 GPU 光栅器（layer-shell / CPU 角色）→ msaa=n/a。
-        let h = format_header(None, false);
+        let h = format_header("ether-settings", None, false);
         assert!(h.contains("msaa=n/a"), "{h}");
     }
 

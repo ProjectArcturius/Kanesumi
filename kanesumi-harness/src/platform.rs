@@ -2050,7 +2050,7 @@ impl Shell {
                         .iter()
                         .find_map(|f| f.renderer.as_ref().map(|r| r.msaa_samples()))
                 });
-            out.insert_str(0, &crate::perf::format_header(msaa, gpu_ok));
+            out.insert_str(0, &crate::perf::format_header(&proc, msaa, gpu_ok));
         }
         if let Some(path) = crate::perf::state_log_path("ether-harness-perf.log") {
             crate::perf::write_log(&path, &out);
