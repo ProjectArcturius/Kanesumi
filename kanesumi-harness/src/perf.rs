@@ -87,6 +87,9 @@ pub struct SurfacePerf {
     /// GPU 时间戳实测（毫秒；仅 WGPU 路径且设备支持时间戳查询时有样本）。
     /// 空环 = 不支持 / 尚未回读到 → 日志写 `gpu=n/a`。
     pub gpu: Ring,
+    /// 取交换链纹理的阻塞墙钟（毫秒；仅 WGPU 路径）。它包含在 `raster` 里，单列出来区分
+    /// 「画得慢」与「等合成器 / vblank 放缓冲」。空环 → 日志写 `acquire=n/a`。
+    pub acquire: Ring,
     pub frames: u64,
 }
 
@@ -97,6 +100,7 @@ impl SurfacePerf {
             raster: Ring::new(),
             commit: Ring::new(),
             gpu: Ring::new(),
+            acquire: Ring::new(),
             frames: 0,
         }
     }
@@ -111,6 +115,11 @@ impl SurfacePerf {
     /// 记一个已回读到的 GPU 帧耗时（异步、滞后数帧，故与 `record` 分开调用）。
     pub fn record_gpu(&mut self, gpu_ms: f32) {
         self.gpu.record(gpu_ms);
+    }
+
+    /// 记一帧取交换链纹理的阻塞时长。
+    pub fn record_acquire(&mut self, ms: f32) {
+        self.acquire.record(ms);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -139,8 +148,10 @@ pub fn format_line(proc: &str, role: &str, surface: &str, p: &SurfacePerf) -> St
         )
     };
     let gpu = if p.gpu.is_empty() { "n/a".to_string() } else { seg(&p.gpu) };
+    // acquire 放行尾：既有解析脚本（tools/perf/gpu_t1_ab.py）按字段名取值，不受影响。
+    let acquire = if p.acquire.is_empty() { "n/a".to_string() } else { seg(&p.acquire) };
     format!(
-        "{proc} {role} t={secs} surface={surface} frames={} render={} raster={} commit={} gpu={gpu}\n",
+        "{proc} {role} t={secs} surface={surface} frames={} render={} raster={} commit={} gpu={gpu} acquire={acquire}\n",
         p.frames,
         seg(&p.render),
         seg(&p.raster),
@@ -519,6 +530,20 @@ mod tests {
         let line = format_line("ether-settings", "Settings", "main", &p);
         assert!(line.contains("gpu=3.00/4.00/4.00"), "有样本写 p50/p95/max：{line}");
         assert!(!line.contains("gpu=n/a"));
+    }
+
+    /// 取帧阻塞时长单列在行尾：无样本 n/a，有样本 p50/p95/max。
+    #[test]
+    fn format_line_acquire_field() {
+        let mut p = SurfacePerf::new();
+        p.record(1.0, 2.0, 3.0);
+        let line = format_line("ether-settings", "Browser", "main", &p);
+        assert!(line.ends_with("acquire=n/a\n"), "{line}");
+        for v in [16.0, 17.0, 33.0] {
+            p.record_acquire(v);
+        }
+        let line = format_line("ether-settings", "Browser", "main", &p);
+        assert!(line.contains("acquire=17.00/33.00/33.00"), "{line}");
     }
 
     #[test]

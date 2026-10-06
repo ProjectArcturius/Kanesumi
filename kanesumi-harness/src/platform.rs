@@ -1939,6 +1939,7 @@ impl Shell {
         let mut raster_ms = 0.0f32;
         let mut commit_ms = 0.0f32;
         let mut gpu_samples: Vec<f32> = Vec::new();
+        let mut acquire_ms: Option<f32> = None;
         if let Some(cpu) = self.cpu.as_mut() {
             let (pw, ph) = cpu.physical_size();
             let t = Instant::now();
@@ -1963,10 +1964,14 @@ impl Shell {
             r.render(&self.engine, &self.scene_buf);
             raster_ms = t.elapsed().as_secs_f32() * 1000.0;
             gpu_samples = r.drain_gpu_samples();
+            acquire_ms = r.take_acquire_ms();
         }
         // 时间线：首次提交（CPU 主表面 → SHM/dmabuf；xdg → wgpu present）。
         crate::timeline::note_once("first_commit");
         self.perf_main.record(render_ms, raster_ms, commit_ms);
+        if let Some(ms) = acquire_ms {
+            self.perf_main.record_acquire(ms);
+        }
         for ms in gpu_samples {
             self.perf_main.record_gpu(ms);
         }

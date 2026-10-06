@@ -354,6 +354,9 @@ pub struct Renderer {
     msaa_samples: u32,
     /// GPU 时间戳计时（设备支持时 Some；否则 None → 日志 `gpu=n/a`）。
     gpu_timer: Option<GpuTimer>,
+    /// 最近一次 `get_current_texture` 的阻塞时长（毫秒）。真机上取帧会等合成器释放缓冲 / vblank，
+    /// 这段墙钟不是绘制成本——单独记，免得与光栅混为一谈。参 Ether docs/CANVAS_PLAN.md §Ⅰ。
+    last_acquire_ms: Option<f32>,
     /// 逻辑 → 物理缩放（整数，通常 1 或 2）。
     scale: f32,
     /// 逻辑尺寸。
@@ -1081,6 +1084,7 @@ impl Renderer {
             msaa_view,
             msaa_samples: msaa,
             gpu_timer,
+            last_acquire_ms: None,
             scale,
             width,
             height,
@@ -1149,6 +1153,11 @@ impl Renderer {
     }
 
     /// GPU 时间戳计时是否可用（不可用时 perf 日志写 `gpu=n/a`）。
+    /// 取走最近一帧取交换链纹理的阻塞时长（毫秒；未取过为 None）。
+    pub fn take_acquire_ms(&mut self) -> Option<f32> {
+        self.last_acquire_ms.take()
+    }
+
     pub fn gpu_timing_supported(&self) -> bool {
         self.gpu_timer.is_some()
     }
@@ -1184,7 +1193,10 @@ impl Renderer {
             return;
         }
         let frame = self.build_frame(engine, scene);
-        let surface_texture = match self.surface.get_current_texture() {
+        let acquire_at = std::time::Instant::now();
+        let acquired = self.surface.get_current_texture();
+        self.last_acquire_ms = Some(acquire_at.elapsed().as_secs_f32() * 1000.0);
+        let surface_texture = match acquired {
             Ok(t) => t,
             Err(e) => {
                 log::warn!("kanesumi-harness 获取帧纹理失败：{e}");
