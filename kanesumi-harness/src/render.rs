@@ -18,6 +18,7 @@ use crate::glyph_layout::{
     GlyphKey, PlacedGlyph, TextRenderTuning, glyph_key, layout_text_glyphs,
     layout_text_glyphs_tuned,
 };
+use crate::perf;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{Connection, Proxy};
 // 顶点持久化使用 write_buffer；无 create_buffer_init（DeviceExt 不再需要）。
@@ -283,10 +284,21 @@ fn scissor_rect(
 
 // ── 光栅化器 ─────────────────────────────────────────────────────────────
 
-/// MSAA 采样数。4× 是桌面 GPU 上「几何抗锯齿的甜蜜点」——
+/// 默认 MSAA 采样数。4× 是桌面 GPU 上「几何抗锯齿的甜蜜点」——
 /// 圆角矩形/弧线的斜边 staircase 显著减少，成本一次 resolve pass 可接受。
 /// 参 A1（本次会话新增）：40×20 胶囊在 2× 缩放下每角 6 段 tessellation 产生的边缘锯齿。
-const MSAA_SAMPLES: u32 = 4;
+pub const MSAA_SAMPLES_DEFAULT: u32 = 4;
+
+/// 实际 MSAA 采样数：`KANESUMI_MSAA=1` → 单采样（不建 MSAA 纹理，直画交换链），
+/// 其余（未设 / 其它值）→ [`MSAA_SAMPLES_DEFAULT`]。行为默认不变。
+/// 只读一次并缓存 —— 同进程内管线 / 纹理 / 交换链配置必须用同一个值。
+pub fn msaa_samples() -> u32 {
+    static N: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *N.get_or_init(|| match std::env::var("KANESUMI_MSAA") {
+        Ok(v) if v.trim() == "1" => 1,
+        _ => MSAA_SAMPLES_DEFAULT,
+    })
+}
 
 /// 进程共享的 wgpu 上下文（G1）：instance / adapter / device / queue 与选定的表面格式。
 ///
@@ -334,9 +346,14 @@ pub struct Renderer {
     solid_cap: u32,
     text_cap: u32,
     image_cap: u32,
-    /// MSAA 中间纹理 view（sample_count=MSAA_SAMPLES）。render pass attachment 用它，
-    /// swapchain view 作 resolve_target。resize 时重建。
-    msaa_view: wgpu::TextureView,
+    /// MSAA 中间纹理 view（sample_count = [`msaa_samples`]）。render pass attachment 用它，
+    /// swapchain view 作 resolve_target。resize 时重建。单采样（`KANESUMI_MSAA=1`）时 None ——
+    /// 直接画到交换链，无中间纹理、无 resolve。
+    msaa_view: Option<wgpu::TextureView>,
+    /// 本渲染器实际 MSAA 采样数（1 或 4）。
+    msaa_samples: u32,
+    /// GPU 时间戳计时（设备支持时 Some；否则 None → 日志 `gpu=n/a`）。
+    gpu_timer: Option<GpuTimer>,
     /// 逻辑 → 物理缩放（整数，通常 1 或 2）。
     scale: f32,
     /// 逻辑尺寸。
@@ -344,10 +361,11 @@ pub struct Renderer {
     height: f32,
 }
 
-/// 创建与当前 surface 同尺寸/格式的 MSAA 中间纹理 view（`MSAA_SAMPLES` 采样）。
+/// 创建与当前 surface 同尺寸/格式的 MSAA 中间纹理 view（`samples` 采样）。
 fn create_msaa_view(
     device: &wgpu::Device,
     config: &wgpu::SurfaceConfiguration,
+    samples: u32,
 ) -> wgpu::TextureView {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("kanesumi-msaa"),
@@ -357,13 +375,186 @@ fn create_msaa_view(
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
-        sample_count: MSAA_SAMPLES,
+        sample_count: samples,
         dimension: wgpu::TextureDimension::D2,
         format: config.format,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });
     tex.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+// ── GPU 时间戳计时（WGPU 路径）── 参 Ether docs/research/gpu_t1（任务 gpu-t1-frame-timing）。
+//
+// 设备支持 `TIMESTAMP_QUERY_INSIDE_ENCODERS` 时启用：每帧在 render pass 前后各写一个时间戳，
+// 环形 query set（[`perf::TIMESTAMP_SLOTS`] 槽 × 2 时间戳），把查询结果 resolve 进 GPU 缓冲、
+// 再复制到 MAP_READ 缓冲，**滞后 [`perf::TIMESTAMP_LAG`] 帧**异步回读 —— 绝不 `Wait` 当帧。
+// 结果落到 `SurfacePerf::gpu`（p50/p95/max），写 `ether-harness-perf.log` 的 `gpu=` 字段。
+struct GpuTimer {
+    query_set: wgpu::QuerySet,
+    /// QUERY_RESOLVE | COPY_SRC；每槽 256 字节对齐（QUERY_RESOLVE_BUFFER_ALIGNMENT）。
+    resolve_buf: wgpu::Buffer,
+    /// 每槽一份 MAP_READ | COPY_DST 回读缓冲（16 字节 = 两个 u64 时间戳）。
+    read_bufs: Vec<Arc<wgpu::Buffer>>,
+    /// 每 tick 纳秒数（`Queue::get_timestamp_period`）。
+    period_ns: f32,
+    /// 已提交的帧序号（决定当前写槽）。
+    frame: u64,
+    /// 槽状态：None = 空闲可写；Some(frame) = 该槽已写、等待回读。
+    slot_frame: [Option<u64>; perf::TIMESTAMP_SLOTS as usize],
+    /// 槽是否已挂上 `map_async`（挂上后同一槽不得重复挂，否则 wgpu 断言已映射）。
+    slot_mapped: [bool; perf::TIMESTAMP_SLOTS as usize],
+    /// 槽在回读后是否计入样本（跳过帧记 false，只回收槽不记数）。
+    slot_keep: [bool; perf::TIMESTAMP_SLOTS as usize],
+    /// 本帧是否真的写入了时间戳（槽被占用时跳过）。
+    active: bool,
+    /// 回读结果的发送端（回调线程 → 主线程）。
+    tx: std::sync::mpsc::Sender<(usize, f32)>,
+    rx: std::sync::mpsc::Receiver<(usize, f32)>,
+    /// 已完成、待取走的样本（毫秒）。有上限，后端不取也不无界增长。
+    pending: Vec<f32>,
+}
+
+/// 回读样本上限（每槽一次一帧，够 10 s 窗口用；后端取走后清零）。
+const GPU_PENDING_CAP: usize = 4096;
+/// 每槽 resolve 区大小（256 字节对齐要求；实际用 16 字节）。
+const SLOT_STRIDE: u64 = 256;
+
+impl GpuTimer {
+    /// 设备支持时间戳查询则建计时器；否则 None（静默不开）。
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Self> {
+        if !device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
+        {
+            return None;
+        }
+        let slots = perf::TIMESTAMP_SLOTS as u32;
+        let query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("kanesumi-gpu-timer"),
+            ty: wgpu::QueryType::Timestamp,
+            count: slots * 2,
+        });
+        let resolve_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("kanesumi-gpu-timer-resolve"),
+            size: SLOT_STRIDE * slots as u64,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let read_bufs = (0..slots)
+            .map(|i| {
+                Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(&format!("kanesumi-gpu-timer-read-{i}")),
+                    size: 16,
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }))
+            })
+            .collect();
+        let (tx, rx) = std::sync::mpsc::channel();
+        Some(Self {
+            query_set,
+            resolve_buf,
+            read_bufs,
+            period_ns: queue.get_timestamp_period(),
+            frame: 0,
+            slot_frame: [None; perf::TIMESTAMP_SLOTS as usize],
+            slot_mapped: [false; perf::TIMESTAMP_SLOTS as usize],
+            slot_keep: [true; perf::TIMESTAMP_SLOTS as usize],
+            active: false,
+            tx,
+            rx,
+            pending: Vec::new(),
+        })
+    }
+
+    /// 本帧的写槽（空闲时才写；被占用则该帧不采样）。
+    fn begin(&mut self) -> Option<usize> {
+        let s = perf::timestamp_slot(self.frame, perf::TIMESTAMP_SLOTS);
+        if self.slot_frame[s].is_some() {
+            self.active = false;
+            return None;
+        }
+        self.slot_frame[s] = Some(self.frame);
+        self.active = true;
+        Some(s)
+    }
+
+    /// 在 render pass 前后各写一个时间戳。
+    fn write_first(&self, encoder: &mut wgpu::CommandEncoder, slot: usize) {
+        encoder.write_timestamp(&self.query_set, slot as u32 * 2);
+    }
+    fn write_last(&self, encoder: &mut wgpu::CommandEncoder, slot: usize) {
+        encoder.write_timestamp(&self.query_set, slot as u32 * 2 + 1);
+    }
+
+    /// 把本帧两枚时间戳 resolve 到回读缓冲（须在 `write_last` 之后、提交之前调用）。
+    fn encode_readback(&self, encoder: &mut wgpu::CommandEncoder, slot: usize) {
+        let base = slot as u64 * 2;
+        encoder.resolve_query_set(
+            &self.query_set,
+            base as u32..(base + 2) as u32,
+            &self.resolve_buf,
+            slot as u64 * SLOT_STRIDE,
+        );
+        encoder.copy_buffer_to_buffer(
+            &self.resolve_buf,
+            slot as u64 * SLOT_STRIDE,
+            &self.read_bufs[slot],
+            0,
+            16,
+        );
+    }
+
+    /// 提交后推进帧号：为滞后帧挂上非阻塞 `map_async`（回调把毫秒送回 `rx`），再看有无到位结果。
+    /// `keep` = 本帧是否计入样本（跳过帧传 false，只回收槽）。
+    fn end(&mut self, device: &wgpu::Device, keep: bool) {
+        if self.active {
+            let s = perf::timestamp_slot(self.frame, perf::TIMESTAMP_SLOTS);
+            self.slot_keep[s] = keep;
+        }
+        self.frame += 1;
+        // 为 LAG 帧前写下的槽挂回读（每个槽在回到可写前只挂一次）。
+        if let Some(s) = perf::readback_slot_for(self.frame, perf::TIMESTAMP_SLOTS, perf::TIMESTAMP_LAG)
+            && let Some(written) = self.slot_frame[s]
+            && !self.slot_mapped[s]
+            && self.frame >= written + perf::TIMESTAMP_LAG
+        {
+            self.slot_mapped[s] = true;
+            let buf = self.read_bufs[s].clone();
+            let reader = buf.clone();
+            let period = self.period_ns;
+            let tx = self.tx.clone();
+            buf.slice(0..16).map_async(wgpu::MapMode::Read, move |res| {
+                if res.is_ok() {
+                    let data = reader.slice(0..16).get_mapped_range();
+                    let start = u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
+                    let end = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
+                    drop(data);
+                    let _ = tx.send((s, perf::ticks_to_ms(start, end, period)));
+                } else {
+                    let _ = tx.send((s, f32::NAN));
+                }
+            });
+        }
+        // 非阻塞轮询：让已完成的 map 回调跑起来（不等待当帧 GPU）。
+        let _ = device.poll(wgpu::Maintain::Poll);
+        // 收结果：槽 → 空闲；keep 的样本计入。
+        while let Ok((s, ms)) = self.rx.try_recv() {
+            let keep = std::mem::replace(&mut self.slot_keep[s], true);
+            self.slot_frame[s] = None;
+            self.slot_mapped[s] = false;
+            let _ = self.read_bufs[s].unmap();
+            if keep && ms.is_finite() && self.pending.len() < GPU_PENDING_CAP {
+                self.pending.push(ms);
+            }
+        }
+    }
+
+    /// 取走已完成样本（平台层每帧收取，记进对应表面的 `SurfacePerf::gpu`）。
+    fn drain(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.pending)
+    }
 }
 
 /// 从 wl_display / wl_surface 原始指针创建 wgpu 表面（同 launcher render.rs 模式）。
@@ -458,9 +649,28 @@ impl GpuContext {
         // 拉起时间线：适配器选定（此前的实例 / 表面 / 适配器枚举一起计时）。
         crate::timeline::note_once("gpu_adapter");
 
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None))
-                .map_err(RendererError::Device)?;
+        // GPU 时间戳查询（帧耗时实测）：请求失败则静默重试无特性设备，GPU 计时关闭。
+        // 参 Ether docs/research/gpu_t1（任务 gpu-t1-frame-timing）。
+        let want = wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        let (device, queue) = match pollster::block_on(
+            adapter.request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("kanesumi-device"),
+                    required_features: want,
+                    ..Default::default()
+                },
+                None,
+            ),
+        ) {
+            Ok(dq) => dq,
+            Err(e) => {
+                log::info!("时间戳查询特性请求失败（{e}），GPU 计时关闭");
+                pollster::block_on(
+                    adapter.request_device(&wgpu::DeviceDescriptor::default(), None),
+                )
+                .map_err(RendererError::Device)?
+            }
+        };
         crate::timeline::note_once("gpu_device");
 
         let caps = surface.get_capabilities(&adapter);
@@ -580,6 +790,8 @@ impl Renderer {
             });
         // device 借用共享上下文（wgpu 22 的 Device 非 Clone，用引用即可）。
         let device = &ctx.device;
+        // 实际 MSAA 采样数（进程内一致；`KANESUMI_MSAA=1` → 单采样）。
+        let msaa = msaa_samples();
 
         let (pw, ph) = (width * scale, height * scale);
         let config = wgpu::SurfaceConfiguration {
@@ -642,7 +854,7 @@ impl Renderer {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState {
-                count: MSAA_SAMPLES,
+                count: msaa,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
@@ -739,7 +951,7 @@ impl Renderer {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState {
-                count: MSAA_SAMPLES,
+                count: msaa,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
@@ -792,7 +1004,7 @@ impl Renderer {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState {
-                count: MSAA_SAMPLES,
+                count: msaa,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
@@ -828,7 +1040,17 @@ impl Renderer {
         let text_buf = mk_vert_buf("kanesumi-text-buf", 1024);
         let image_buf = mk_vert_buf("kanesumi-image-buf", 128);
 
-        let msaa_view = create_msaa_view(device, &config);
+        // 单采样（KANESUMI_MSAA=1）不建中间纹理，直接画到交换链。
+        let msaa_view = if msaa > 1 {
+            Some(create_msaa_view(device, &config, msaa))
+        } else {
+            None
+        };
+        let gpu_timer = GpuTimer::new(device, &ctx.queue);
+        log::info!(
+            "kanesumi 光栅器：msaa={msaa} gpu_timer={}",
+            if gpu_timer.is_some() { "on" } else { "n/a" }
+        );
         // 拉起时间线：三条管线 / 绑定布局 / 缓冲建完（首帧前的最后一段 GPU 初始化）。
         crate::timeline::note_once("renderer_pipelines");
 
@@ -854,6 +1076,8 @@ impl Renderer {
             text_cap,
             image_cap,
             msaa_view,
+            msaa_samples: msaa,
+            gpu_timer,
             scale,
             width,
             height,
@@ -891,13 +1115,19 @@ impl Renderer {
         self.config.width = pw.round().max(1.0) as u32;
         self.config.height = ph.round().max(1.0) as u32;
         self.surface.configure(&self.ctx.device, &self.config);
-        self.msaa_view = create_msaa_view(&self.ctx.device, &self.config);
+        if self.msaa_samples > 1 {
+            self.msaa_view = Some(create_msaa_view(
+                &self.ctx.device,
+                &self.config,
+                self.msaa_samples,
+            ));
+        }
     }
 
     /// 诊断：当前表面格式 / alpha_mode / buffer 物理尺寸（排查合成器下显示透明）。
     pub fn diagnostics(&self) -> String {
         format!(
-            "format={:?} alpha_mode={:?} buffer={}x{} (逻辑 {:.0}x{:.0}, scale {:.0})",
+            "format={:?} alpha_mode={:?} buffer={}x{} (逻辑 {:.0}x{:.0}, scale {:.0}) msaa={} gpu_timer={}",
             self.config.format,
             self.config.alpha_mode,
             self.config.width,
@@ -905,7 +1135,25 @@ impl Renderer {
             self.width,
             self.height,
             self.scale,
+            self.msaa_samples,
+            if self.gpu_timer.is_some() { "on" } else { "n/a" },
         )
+    }
+
+    /// 实际 MSAA 采样数（1 / 4）。
+    pub fn msaa_samples(&self) -> u32 {
+        self.msaa_samples
+    }
+
+    /// GPU 时间戳计时是否可用（不可用时 perf 日志写 `gpu=n/a`）。
+    pub fn gpu_timing_supported(&self) -> bool {
+        self.gpu_timer.is_some()
+    }
+
+    /// 取走已回读到的 GPU 帧耗时样本（毫秒）。平台层每帧调用并记进对应表面的
+    /// `SurfacePerf::gpu`；异步滞后回读，故与绘制调用分开。参 perf.rs。
+    pub fn drain_gpu_samples(&mut self) -> Vec<f32> {
+        self.gpu_timer.as_mut().map(|t| t.drain()).unwrap_or_default()
     }
 
     /// 物理像素尺寸（读回 / SHM 提交用，与 config 同步）。
@@ -1199,20 +1447,42 @@ impl Renderer {
                 label: Some("kanesumi-frame"),
             });
 
+        // GPU 计时：pass 前写起始时间戳（槽被占用则该帧不采样）。
+        let timer_slot = self.gpu_timer.as_mut().and_then(|t| t.begin());
+        if let (Some(t), Some(slot)) = (self.gpu_timer.as_ref(), timer_slot) {
+            t.write_first(&mut encoder, slot);
+        }
+
         {
             // 全幅 clear；损伤帧 Load 保留 MSAA 上一帧内容（store=Store 使其跨帧存活）。
-            let load = match damage {
-                Some(_) => wgpu::LoadOp::Load,
-                None => wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+            // ⚠ 单采样（KANESUMI_MSAA=1）时交换链内容未定义，无法 Load → 损伤帧也全幅重画
+            //   （不做「持久单采样纹理 + 复制到交换链」，取舍见 docs/research/gpu_t1/REPORT.md）。
+            let single = self.msaa_samples <= 1;
+            let load = if single {
+                wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+            } else {
+                match damage {
+                    Some(_) => wgpu::LoadOp::Load,
+                    None => wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                }
+            };
+            let (view, resolve_target): (&wgpu::TextureView, Option<&wgpu::TextureView>) = if single {
+                (resolve, None)
+            } else {
+                (
+                    self.msaa_view.as_ref().expect("MSAA 采样 >1 但中间纹理缺失"),
+                    Some(resolve),
+                )
             };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("kanesumi-pass"),
                 // MSAA：多重采样纹理作 attachment，resolve 视图作 resolve_target。
                 // pass 结束时硬件自动 4→1 downsample 到 resolve（swapchain）。
                 // store=Store（非 Discard）是为损伤帧 Load 保留上一帧内容服务。
+                // 单采样：直接画到交换链，无 resolve。
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.msaa_view,
-                    resolve_target: Some(resolve),
+                    view,
+                    resolve_target,
                     ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
                 })],
                 depth_stencil_attachment: None,
@@ -1323,7 +1593,19 @@ impl Renderer {
             pass.set_scissor_rect(0, 0, self.config.width, self.config.height);
         }
 
+        // GPU 计时：pass 后写结束时间戳，并把本帧两枚时间戳 resolve 到回读缓冲。
+        if let (Some(t), Some(slot)) = (self.gpu_timer.as_ref(), timer_slot) {
+            t.write_last(&mut encoder, slot);
+            t.encode_readback(&mut encoder, slot);
+        }
+
         self.ctx.queue.submit(Some(encoder.finish()));
+
+        // 推进计时器帧号并非阻塞收结果（滞后数帧，绝不阻塞当帧）。
+        // 每帧都算有效帧（本函数只在确有内容要画时调用）→ keep = true。
+        if let Some(t) = self.gpu_timer.as_mut() {
+            t.end(&self.ctx.device, true);
+        }
     }
 
     /// 排版一段文本并产出字形 quad。placement 与 CPU 光栅器共用
