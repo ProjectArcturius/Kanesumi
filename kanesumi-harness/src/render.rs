@@ -543,7 +543,7 @@ impl GpuTimer {
             let keep = std::mem::replace(&mut self.slot_keep[s], true);
             self.slot_frame[s] = None;
             self.slot_mapped[s] = false;
-            let _ = self.read_bufs[s].unmap();
+            self.read_bufs[s].unmap();
             if keep && ms.is_finite() && self.pending.len() < GPU_PENDING_CAP {
                 self.pending.push(ms);
             }
