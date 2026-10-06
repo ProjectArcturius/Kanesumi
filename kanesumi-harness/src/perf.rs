@@ -78,12 +78,15 @@ impl Ring {
     }
 }
 
-/// 单表面三段耗时 + 帧数（一窗）。
+/// 单表面三段耗时 + GPU 耗时 + 帧数（一窗）。
 #[derive(Default, Clone, Copy)]
 pub struct SurfacePerf {
     pub render: Ring,
     pub raster: Ring,
     pub commit: Ring,
+    /// GPU 时间戳实测（毫秒；仅 WGPU 路径且设备支持时间戳查询时有样本）。
+    /// 空环 = 不支持 / 尚未回读到 → 日志写 `gpu=n/a`。
+    pub gpu: Ring,
     pub frames: u64,
 }
 
@@ -93,6 +96,7 @@ impl SurfacePerf {
             render: Ring::new(),
             raster: Ring::new(),
             commit: Ring::new(),
+            gpu: Ring::new(),
             frames: 0,
         }
     }
@@ -102,6 +106,11 @@ impl SurfacePerf {
         self.raster.record(raster_ms);
         self.commit.record(commit_ms);
         self.frames += 1;
+    }
+
+    /// 记一个已回读到的 GPU 帧耗时（异步、滞后数帧，故与 `record` 分开调用）。
+    pub fn record_gpu(&mut self, gpu_ms: f32) {
+        self.gpu.record(gpu_ms);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -114,7 +123,8 @@ impl SurfacePerf {
     }
 }
 
-/// 一行日志：行首 = 进程名 + 角色 + 时间（unix 秒），后接帧数与三段 p50/p95/max。
+/// 一行日志：行首 = 进程名 + 角色 + 时间（unix 秒），后接帧数与 render / raster / commit /
+/// gpu 四段的 p50/p95/max。GPU 无样本（设备不支持时间戳查询，或尚未回读）写 `gpu=n/a`。
 pub fn format_line(proc: &str, role: &str, surface: &str, p: &SurfacePerf) -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -128,13 +138,60 @@ pub fn format_line(proc: &str, role: &str, surface: &str, p: &SurfacePerf) -> St
             r.max()
         )
     };
+    let gpu = if p.gpu.is_empty() { "n/a".to_string() } else { seg(&p.gpu) };
     format!(
-        "{proc} {role} t={secs} surface={surface} frames={} render={} raster={} commit={}\n",
+        "{proc} {role} t={secs} surface={surface} frames={} render={} raster={} commit={} gpu={gpu}\n",
         p.frames,
         seg(&p.render),
         seg(&p.raster),
         seg(&p.commit),
     )
+}
+
+/// 进程启动自证行（每进程一次性写在 perf 日志首行）：进程名 + 实际 MSAA 采样数 +
+/// GPU 计时是否开启。多个进程共写同一日志文件，故必须带进程名才能归属。
+/// `msaa = None` 表示本进程无 GPU 光栅器（layer-shell / CPU 光栅角色）。
+/// 参 Ether docs/research/gpu_t1（任务 gpu-t1：MSAA 4 vs 1 与 GPU 帧耗时的 A/B 必须能从日志分辨档位）。
+pub fn format_header(proc: &str, msaa_samples: Option<u32>, gpu_supported: bool) -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let msaa = msaa_samples
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "n/a".to_string());
+    let gpu = if gpu_supported { "ts" } else { "n/a" };
+    format!("# kanesumi-harness proc={proc} t={secs} msaa={msaa} gpu={gpu}\n")
+}
+
+// ── GPU 时间戳环形缓冲的索引与换算（纯函数，单测覆盖）──
+//
+// 每帧写一对起止时间戳到第 `frame % SLOTS` 槽；回读滞后 [`TIMESTAMP_LAG`] 帧，
+// 使查询结果有足够时间由 GPU 落定，**绝不阻塞当帧**。参 Ether docs/GPU_COMPOSITION_PLAN.md §Ⅲ。
+
+/// 时间戳查询槽位数（每槽一对起止时间戳 + 一份回读缓冲）。
+pub const TIMESTAMP_SLOTS: u64 = 4;
+/// 回读滞后帧数：第 N 帧读第 N-LAG 帧写下的槽。
+pub const TIMESTAMP_LAG: u64 = 2;
+
+/// 第 `frame` 帧占用的槽位（纯函数）。
+pub fn timestamp_slot(frame: u64, slots: u64) -> usize {
+    (frame % slots.max(1)) as usize
+}
+
+/// 第 `frame` 帧应当尝试回读的槽位（写在第 `frame - TIMESTAMP_LAG` 帧）。
+/// 帧号不足 `lag`（刚启动）→ None。
+pub fn readback_slot_for(frame: u64, slots: u64, lag: u64) -> Option<usize> {
+    frame.checked_sub(lag).map(|f| timestamp_slot(f, slots))
+}
+
+/// 两个 GPU 时间戳之差 → 毫秒。`period_ns` = 每 tick 纳秒数（`Queue::get_timestamp_period`）。
+/// `end <= start`（查询无效 / 计数器回绕）→ 0。
+pub fn ticks_to_ms(start: u64, end: u64, period_ns: f32) -> f32 {
+    if end <= start {
+        return 0.0;
+    }
+    ((end - start) as f64 * period_ns as f64 / 1e6) as f32
 }
 
 /// 持久日志路径：`$HOME/.local/state/ether/<name>`（与 `platform::write_diag` 同目录约定）。
@@ -429,6 +486,7 @@ mod tests {
         p.reset();
         assert!(p.is_empty());
         assert_eq!(p.frames, 0);
+        assert!(p.gpu.is_empty(), "reset 一并清 GPU 样本");
     }
 
     #[test]
@@ -441,6 +499,72 @@ mod tests {
         assert!(line.contains("frames=1"));
         assert!(line.contains("render=1.00/1.00/1.00"));
         assert!(line.ends_with('\n'));
+    }
+
+    #[test]
+    fn format_line_gpu_is_n_a_without_samples() {
+        let mut p = SurfacePerf::new();
+        p.record(1.0, 2.0, 3.0);
+        let line = format_line("ether-settings", "Settings", "main", &p);
+        assert!(line.contains("gpu=n/a"), "无 GPU 样本写 n/a：{line}");
+    }
+
+    #[test]
+    fn format_line_gpu_shows_percentiles_with_samples() {
+        let mut p = SurfacePerf::new();
+        p.record(1.0, 2.0, 3.0);
+        for v in [1.0, 2.0, 3.0, 4.0] {
+            p.record_gpu(v);
+        }
+        let line = format_line("ether-settings", "Settings", "main", &p);
+        assert!(line.contains("gpu=3.00/4.00/4.00"), "有样本写 p50/p95/max：{line}");
+        assert!(!line.contains("gpu=n/a"));
+    }
+
+    #[test]
+    fn header_records_msaa_and_gpu_support() {
+        let h = format_header("ether-settings", Some(1), false);
+        assert!(h.starts_with('#'), "首行以 # 开标注：{h}");
+        assert!(h.contains("proc=ether-settings"), "{h}");
+        assert!(h.contains("msaa=1"), "{h}");
+        assert!(h.contains("gpu=n/a"), "{h}");
+        let h = format_header("ether-settings", Some(4), true);
+        assert!(h.contains("msaa=4") && h.contains("gpu=ts"), "{h}");
+        assert!(h.ends_with('\n'));
+        // 无 GPU 光栅器（layer-shell / CPU 角色）→ msaa=n/a。
+        let h = format_header("ether-settings", None, false);
+        assert!(h.contains("msaa=n/a"), "{h}");
+    }
+
+    #[test]
+    fn timestamp_slot_cycles_and_readback_lags() {
+        // 槽位按帧号取模循环。
+        assert_eq!(timestamp_slot(0, TIMESTAMP_SLOTS), 0);
+        assert_eq!(timestamp_slot(3, TIMESTAMP_SLOTS), 3);
+        assert_eq!(timestamp_slot(4, TIMESTAMP_SLOTS), 0);
+        assert_eq!(timestamp_slot(9, TIMESTAMP_SLOTS), 1);
+        // 回读滞后 LAG 帧，且与写入槽互不碰撞（LAG ≤ SLOTS）。
+        for f in TIMESTAMP_LAG..(TIMESTAMP_LAG + 8) {
+            let w = timestamp_slot(f, TIMESTAMP_SLOTS);
+            let r = readback_slot_for(f, TIMESTAMP_SLOTS, TIMESTAMP_LAG).unwrap();
+            assert_eq!(r, timestamp_slot(f - TIMESTAMP_LAG, TIMESTAMP_SLOTS));
+            assert_ne!(r, w, "第 {f} 帧的回读槽不得与写入槽相同");
+        }
+        // 启动前几帧无可回读槽。
+        assert_eq!(readback_slot_for(0, TIMESTAMP_SLOTS, TIMESTAMP_LAG), None);
+        assert_eq!(readback_slot_for(1, TIMESTAMP_SLOTS, TIMESTAMP_LAG), None);
+        assert_eq!(readback_slot_for(2, TIMESTAMP_SLOTS, TIMESTAMP_LAG), Some(0));
+    }
+
+    #[test]
+    fn ticks_to_ms_scales_and_guards_wraparound() {
+        // 1 tick = 1 ns（多数 Vulkan 驱动）→ 10_000 tick = 0.01 ms。
+        assert!((ticks_to_ms(0, 10_000, 1.0) - 0.01).abs() < 1e-6);
+        // 1 tick = 1 µs（period=1000 ns）→ 1000 tick = 1 ms。
+        assert!((ticks_to_ms(0, 1000, 1000.0) - 1.0).abs() < 1e-4);
+        // end ≤ start 视为无效样本（计数器回绕 / 查询未写）→ 0。
+        assert_eq!(ticks_to_ms(5, 5, 1.0), 0.0);
+        assert_eq!(ticks_to_ms(9, 3, 1.0), 0.0);
     }
 
     #[test]
