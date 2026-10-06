@@ -18,7 +18,7 @@
 | # | 项 | 现取值 | 位置 | 目标 / 正典 | 权威来源 | 状态 |
 |---|---|---|---|---|---|---|
 | T1 | 暗色背景 | `#1A1A1A` | `kanesumi-core/src/colors.rs` `MetroColors::dark` | **正典已修正（2026-09-22）**：不再规定「OLED 纯黑」，改为「深浅两套并列方案，取值属实现决策」 | `KANESUMI_DESIGN.md` §Ⅲ.3（已改） | **解除登记**：取值本身是方案内选择，不再是正典冲突；若仍想改纯黑，属视觉调优 |
-| T2 | 强调色基色来源 | 代码内默认 `#E57812` | `kanesumi-core/src/accent.rs` `Accent::DEFAULT_HEX` | 应**始终来自 Chorus** 的 `~/.config/ether/theme.toml` 的 `accent` | `Ether/chorus/src/theme.rs` | 机制已建（accent 派生 + 双态）；**消费端接线待做**（harness 读取 + App 跟随） |
+| T2 | 强调色基色来源 | 代码内默认 `#2D6FE0`（暮蓝，裁定 Ether `docs/DECISIONS_2026-10-04.md` §M-87、88；旧占位 `#E57812` 已撤出） | `kanesumi-core/src/accent.rs` `Accent::DEFAULT_HEX` | 应**始终来自 Chorus** 的 `~/.config/ether/theme.toml` 的 `accent` | `Ether/chorus/src/theme.rs` | 机制已建（accent 派生 + 双态 + harness 读取 + App 跟随）；默认值已按 §M-87 裁定为暮蓝 |
 | T3 | 亮色中性色 | `#FAFAFA` / `#FFFFFF` / `#F0F0F0` / `#D6D6D6` / `#1A1A1A` / `#5A5F66` | `kanesumi-core/src/colors.rs` `MetroColors::light` | WinUI 3 `SolidBackgroundFillColorBase/Secondary/Tertiary` + `TextFillColorPrimary` | **一手源已取到**（2026-09-22）：`main/controls/dev/CommonStyles/Common_themeresources_any.xaml`（字典边界 暗 L4-207 / 亮 L208-414），并与发布版 `Microsoft.WindowsAppSDK.WinUI/1.8.250906003` 的 `Themes/generic.xaml` **249 个 Color 键逐字节交叉验证（差异 0）** | **部分结案**：`on_background`/`on_surface` 的 `#1A1A1A` **已经就是** `TextFillColorPrimary` 亮色值（`#E4000000` = 黑 89.4%，250×(1−0.894)=0x1A）✓；三个候选更正：`background #FAFAFA → #F3F3F3`、`surface #FFFFFF → #F9F9F9`、`divider #D6D6D6 → #DADADA`（**未落地** —— 属亮色视觉变更，须与 T9 真机确认同批）。`surface_variant` **维持 §Ⅴ-3 裁定不映射**（WinUI 3 无同构令牌，这是该裁定最具体的依据）。另注：暗色同族也非 WinUI 3 值，且 `BaseAlt` 暗 `#0A0A0A` 与亮 `#DADADA` **方向相反**，不可照亮色方式硬塞 |
 | T21 | 字号阶梯 + 字重 | `body 15` / `caption 13` / `label 11` / `title 22` / `subheader 34`；字重 `Light`(标题) / `Normal`(正文) / `ExtraBold`(Base) | `kanesumi-core/src/typography.rs` | UWP TypeRamp = **12/14/20/24/34/46**（WinUI 3 = 12/14/18/20/28/40/46/68）；UWP 字重阶梯 `Header/Subheader=Light`、`Title=SemiLight`、`Base=SemiBold` | 一手源 `themeresources.xaml`（`ControlContentThemeFontSize = 14`，L28）+ `generic.xaml` L15120-15156 的 7 个 `*TextBlockStyle`；字重参 `docs/DECISIONS_2026-10-05.md` §112（实测对标微软雅黑） | **字重已按 §112 落地**：`header/subheader/title*` = Light、`subtitle/body*/caption/label` = Normal、`base` = ExtraBold（可变字体 wght 800，静态回落 Bold），取代 §G-67 的「标题 Bold / 正文 Medium」。`subheader 34` = UWP Subheader ✓；`title 22` vs UWP 24、`body 15`/`caption 13`/`label 11` 仍属 CJK 可读性自定（字号校准归 `sz1`）；TypeRamp **没有行高资源**，本仓行高**不得声称来自 UWP** |
 | T23 | 焦点框内圈对比色 | 深色主题黑 / 浅色主题白 | `kanesumi-core/src/interaction.rs` `focus_inner_color` | 正典 §Ⅳ 焦点框 = 外 2px + 内 1px 对比色；「对比色」的**具体取值与方向无一手源**（UWP 双层焦点视觉待核） | — | 临时：先随主题翻转（深黑 / 浅白），备选是取 `on_accent` 反色；等真机核对后转正式或改登记 |
@@ -90,7 +90,7 @@
 > **新增 T17/T18/T19**（按压下沉无一手依据、ProgressRing 时长与角度、选区高亮 35%）。
 > 仍属真缺口的只有 **T13 遗留（危险底对比度 3.2:1）与 T15（亮色轨道 2.7）**，各需一次真机确认。
 
-1. **T2**：`theme.toml` 缺失时的回退强调色，是否就用 `#E57812`？（现 `Accent::DEFAULT_HEX` 与 Chorus `Theme::default()` 一致。）
+1. **T2（已结）**：`theme.toml` 缺失时的回退强调色 —— 已由 Ether 裁定 §M-87 定为暮蓝 `#2D6FE0`（2026-10-06 落地，`Accent::DEFAULT_HEX` 与 Chorus `Theme::default()` 一致）。
 2. **T9**：焦点描边改用 accent 派生档后，是否需要一次真机视觉确认再定稿？
 3. **T13 / T15**：SwipeControl 危险项的文字可读性、亮色 ProgressBar 轨道与指示条的分辨度 ——
    两条都需要一次真机确认；`colors.rs` 与 `status.rs` 的自检已把下界钉住，改值时会立刻有测试反馈。
