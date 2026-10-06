@@ -423,10 +423,9 @@ const SLOT_STRIDE: u64 = 256;
 impl GpuTimer {
     /// 设备支持时间戳查询则建计时器；否则 None（静默不开）。
     fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Self> {
-        if !device
-            .features()
-            .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
-        {
+        let need =
+            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        if !device.features().contains(need) {
             return None;
         }
         let slots = perf::TIMESTAMP_SLOTS as u32;
@@ -650,8 +649,12 @@ impl GpuContext {
         crate::timeline::note_once("gpu_adapter");
 
         // GPU 时间戳查询（帧耗时实测）：请求失败则静默重试无特性设备，GPU 计时关闭。
+        // ⚠ 必须同时请求 `TIMESTAMP_QUERY`（查询类型许可）与 `..._INSIDE_ENCODERS`（允许在
+        //   命令编码器里写时间戳）—— 二者是独立的特性位，只请求后者会在 create_query_set
+        //   时校验失败（Features(TIMESTAMP_QUERY) are required but not enabled）。
         // 参 Ether docs/research/gpu_t1（任务 gpu-t1-frame-timing）。
-        let want = wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        let want =
+            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
         let (device, queue) = match pollster::block_on(
             adapter.request_device(
                 &wgpu::DeviceDescriptor {
