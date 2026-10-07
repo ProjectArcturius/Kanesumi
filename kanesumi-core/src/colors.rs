@@ -106,21 +106,23 @@ impl MetroColors {
     /// 深色取值登记于 `docs/CANON_VS_TEMPORARY.md`（T22 / T25）。
     pub fn dark(accent: Accent) -> Self {
         let surface_variant = Color::from_hex(0x33_33_33);
+        // 暗色主强调色取派生亮档（基色在近黑底上偏暗）；前景 / tint 全体随之同源。
+        let primary = accent.primary_for(ColorScheme::Dark);
         Self {
             background: Color::from_hex(0x00_00_00),
             surface: Color::from_hex(0x17_17_17),
             surface_variant,
             divider: Color::from_hex(0x33_33_33),
-            primary: accent.base,
+            primary,
             primary_hover: accent.hover_for(ColorScheme::Dark),
             primary_pressed: accent.pressed_for(ColorScheme::Dark),
-            on_primary: accent.on_accent,
+            on_primary: accent.on_primary_for(ColorScheme::Dark),
             on_background: Color::from_hex(0xFF_FF_FF),
             on_surface: Color::from_hex(0xFF_FF_FF),
             // #9AA0A6 对纯黑 #000 对比度 7.95:1（≥ 7:1），按 K-79 规格保持现值。
             on_surface_variant: Color::from_hex(0x9A_A0_A6),
-            selection_tint: accent.base.with_alpha(0.60),
-            text_selection_tint: accent.base.with_alpha(0.35),
+            selection_tint: primary.with_alpha(0.60),
+            text_selection_tint: primary.with_alpha(0.35),
             track_subtle: surface_variant.with_alpha(0.60),
             focus_stroke: accent.focus_for(ColorScheme::Dark),
             // 深色控件底 2026-10-04 起**有意**与页面拉开（K-79 Lumia 方案：控件底 #333333
@@ -136,20 +138,22 @@ impl MetroColors {
     /// 亮色方案。与暗色**字段一一对应** —— 缺少任一字段即编译失败，以此强制「深浅对称」。
     pub fn light(accent: Accent) -> Self {
         let surface_variant = Color::from_hex(0xF0_F0_F0);
+        // 亮色主强调色 = 基色（无派生档）。
+        let primary = accent.primary_for(ColorScheme::Light);
         Self {
             background: Color::from_hex(0xFA_FA_FA),
             surface: Color::from_hex(0xFF_FF_FF),
             surface_variant,
             divider: Color::from_hex(0xD6_D6_D6),
-            primary: accent.base,
+            primary,
             primary_hover: accent.hover_for(ColorScheme::Light),
             primary_pressed: accent.pressed_for(ColorScheme::Light),
-            on_primary: accent.on_accent,
+            on_primary: accent.on_primary_for(ColorScheme::Light),
             on_background: Color::from_hex(0x1A_1A_1A),
             on_surface: Color::from_hex(0x1A_1A_1A),
             on_surface_variant: Color::from_hex(0x5A_5F_66),
-            selection_tint: accent.base.with_alpha(0.40),
-            text_selection_tint: accent.base.with_alpha(0.35),
+            selection_tint: primary.with_alpha(0.40),
+            text_selection_tint: primary.with_alpha(0.35),
             track_subtle: surface_variant.with_alpha(0.60),
             focus_stroke: accent.focus_for(ColorScheme::Light),
             // 亮色按 UWP 一手源取真值（`from_rgba` 显式 alpha，避开 from_hex 阈值坑）。
