@@ -9,9 +9,14 @@
 // Kanesumi 移植：**纯状态 + 几何**（不持视觉树）。offset 夹紧、scrollbar 拇指/轨道几何、
 // 滚轮路由、可选弹簧平滑滚动。宿主渲染内容时以 `content_offset` 平移 + 视口裁剪。
 
-use kanesumi_anim::{MetroPresets, SpringAnim};
+use kanesumi_anim::{Animation, EasingMode, FrictionAnim, MetroAnim, UwpEasing};
 use kanesumi_canvas::Scene;
+use kanesumi_core::interaction::{
+    FINGER_VELOCITY_WINDOW_MS, INERTIA_MIN_START_VELOCITY, INERTIA_STOP_VELOCITY, INERTIA_TAU_S,
+    WHEEL_SMOOTH_MS,
+};
 use kanesumi_core::{Rect, Size};
+use kanesumi_element::{Event, Key, ScrollPhase, ScrollSource};
 
 /// 滚轮离散步（正典 §Ⅴ：3 行 × 16px = 48px）。
 pub const SCROLL_WHEEL_STEP: f32 = kanesumi_core::interaction::WHEEL_STEP_PX;
@@ -52,10 +57,25 @@ pub struct MetroScrollView {
     pub mode: ScrollMode,
     /// 滚动条可见性。
     pub scrollbar_visibility: ScrollBarVisibility,
-    /// 是否使用弹簧平滑滚动（默认开）。
+    /// 是否使用平滑滚动（默认开）。关时滚轮 / 键盘瞬时定位，无惯性。
     pub smooth_scroll: bool,
-    /// 平滑滚动弹簧。
-    spring: SpringAnim,
+    /// 滚轮 / 键盘平滑追踪（150 ms UWP 缓出，可中断 / 可累加）。
+    wheel: MetroAnim,
+    /// 平滑追踪的目标偏移（连滚累加；`MetroAnim` 无 target getter，故自持）。
+    wheel_target: f32,
+    /// 触摸板松手后的摩擦惯性。
+    inertia: FrictionAnim,
+    /// 本帧尚未计入速度采样的跟手位移（`End` 前未出帧时兜底计入）。
+    finger_pending: f32,
+    /// 最近 ~100 ms 的跟手采样，用于估松手速度。
+    samples: Vec<FingerSample>,
+}
+
+/// 跟手速度采样：一次 `update` 内的位移与对应时长。
+#[derive(Debug, Clone, Copy)]
+struct FingerSample {
+    dt: f64,
+    delta: f32,
 }
 
 impl PartialEq for MetroScrollView {
@@ -78,9 +98,22 @@ impl Default for MetroScrollView {
             mode: ScrollMode::Auto,
             scrollbar_visibility: ScrollBarVisibility::Auto,
             smooth_scroll: true,
-            spring: MetroPresets::standard_interaction(),
+            wheel: new_wheel_anim(),
+            wheel_target: 0.0,
+            inertia: FrictionAnim::new(INERTIA_TAU_S as f64, INERTIA_STOP_VELOCITY as f64),
+            finger_pending: 0.0,
+            samples: Vec::new(),
         }
     }
+}
+
+/// 滚轮 / 键盘平滑追踪动画：`WHEEL_SMOOTH_MS` 的 UWP Quadratic 缓出（正典 §Ⅴ）。
+fn new_wheel_anim() -> MetroAnim {
+    MetroAnim::new(
+        WHEEL_SMOOTH_MS as f64 / 1000.0,
+        UwpEasing::Quadratic,
+        EasingMode::EaseOut,
+    )
 }
 
 impl MetroScrollView {
@@ -112,34 +145,68 @@ impl MetroScrollView {
         }
     }
 
-    /// 滚轮滚动（主轴；正 = 向下）。离散步 48px（正典 §Ⅴ）。Disabled 模式不滚。
+    /// 滚轮滚动（主轴；正 = 向下）。离散步 48px（正典 §Ⅴ）。
+    ///
+    /// 平滑开时按「目标累加 + 150 ms 缓出追目标」：连滚三格目标 +144、从中途当前呈现值接续；
+    /// 平滑关时瞬时定位（旧行为）。Disabled 模式不滚。
     pub fn scroll_wheel(&mut self, dy: f32) {
         if self.mode == ScrollMode::Disabled {
             return;
         }
-        self.scroll_to(self.offset + dy, false);
+        if !self.smooth_scroll {
+            self.scroll_to(self.offset + dy, false);
+            return;
+        }
+        let base = self.smooth_base();
+        self.begin_smooth(base + dy);
     }
 
-    /// 增量滚动（带平滑）。
+    /// 增量滚动（带平滑，对齐旧 `scroll_by` 语义）。
     pub fn scroll_by(&mut self, delta: f32) {
-        let target = (self.offset + delta).clamp(0.0, self.max_offset());
-        if self.smooth_scroll {
-            self.spring.set_target(target as f64);
-        } else {
-            self.offset = target;
+        if !self.smooth_scroll {
+            self.scroll_to(self.offset + delta, false);
+            return;
         }
+        self.begin_smooth(self.smooth_base() + delta);
     }
 
     /// 直接滚动到目标偏移（夹紧）。`animate=true` 时平滑过渡。
     pub fn scroll_to(&mut self, offset: f32, animate: bool) {
-        let target = offset.clamp(0.0, self.max_offset());
         if animate && self.smooth_scroll {
-            self.spring.set_target(target as f64);
-        } else {
-            self.offset = target;
-            self.spring.snap();
-            self.spring.set_target(target as f64);
+            self.begin_smooth(offset);
+            return;
         }
+        let target = offset.clamp(0.0, self.max_offset());
+        self.offset = target;
+        self.wheel.jump_to(target as f64);
+        self.wheel_target = target;
+        self.inertia.stop();
+        self.samples.clear();
+        self.finger_pending = 0.0;
+    }
+
+    /// 平滑追踪的起点：动画在跑时用累计目标（连滚不跳变），否则用当前呈现值。
+    fn smooth_base(&self) -> f32 {
+        if self.wheel.is_steady() {
+            self.offset
+        } else {
+            self.wheel_target
+        }
+    }
+
+    /// 启动 / 接续平滑追踪到 `target`（夹紧在可滚范围；打断惯性）。
+    fn begin_smooth(&mut self, target: f32) {
+        let target = target.clamp(0.0, self.max_offset());
+        if self.wheel.is_steady() {
+            // 从当前呈现值（可能来自惯性 / 跟手）接续，不跳变。
+            self.wheel.jump_to(self.offset as f64);
+        }
+        self.offset = self.wheel.value() as f32;
+        self.inertia.stop();
+        self.samples.clear();
+        self.finger_pending = 0.0;
+        self.wheel_target = target;
+        self.wheel.set_target(target as f64);
     }
 
     /// 跳到指定项（`item_main_pos` = 条目主轴起点，`item_extent` = 条目主轴长）。
@@ -156,17 +223,144 @@ impl MetroScrollView {
         self.scroll_to(target, animate);
     }
 
-    /// 每帧推进平滑滚动。
+    /// 每帧推进平滑滚动 / 惯性（真实时钟 `dt` 秒）。返回偏移是否变化。
     pub fn update(&mut self, dt: f64) {
-        if self.smooth_scroll {
-            self.spring.update(dt);
-            self.offset = self.spring.value() as f32;
+        self.step(dt);
+    }
+
+    /// 动画推进一步。返回偏移是否变化（调用方据此失效重画）。
+    fn step(&mut self, dt: f64) -> bool {
+        let before = self.offset;
+        // 跟手采样独立于动画：即使无动画也要把本帧累计位移计入速度估计。
+        self.record_finger_sample(dt);
+        if !self.smooth_scroll {
+            return self.offset != before;
+        }
+        if !self.inertia.is_steady() {
+            self.inertia.advance(dt);
+            let pos = self.inertia.value() as f32;
+            let clamped = pos.clamp(0.0, self.max_offset());
+            self.offset = clamped;
+            if (clamped - pos).abs() > f32::EPSILON {
+                // 撞边界即停（不做橡皮筋回弹；`w-comp-ref` §①）。
+                self.inertia.stop();
+            }
+        } else if !self.wheel.is_steady() {
+            self.wheel.update(dt);
+            self.offset = self.wheel.value() as f32;
+        }
+        self.offset != before
+    }
+
+    /// 是否正在动画（滚轮平滑追踪或惯性）。
+    pub fn is_animating(&self) -> bool {
+        self.smooth_scroll && (!self.wheel.is_steady() || !self.inertia.is_steady())
+    }
+
+    // ── 触控板：跟手 + 松手惯性 ──────────────────────────────────────────────
+
+    /// 触控板 / 连续源的位置增量：**跟手**（呈现值 1:1 直加，无动画），
+    /// 并累计本帧位移用于估松手速度。
+    pub fn scroll_finger(&mut self, dy: f32) {
+        if self.mode == ScrollMode::Disabled {
+            return;
+        }
+        // 新输入立即打断惯性与滚轮平滑追踪。
+        self.inertia.stop();
+        if !self.wheel.is_steady() {
+            self.wheel.jump_to(self.offset as f64);
+            self.wheel_target = self.offset;
+        }
+        let before = self.offset;
+        self.offset = (self.offset + dy).clamp(0.0, self.max_offset());
+        self.finger_pending += self.offset - before;
+    }
+
+    /// 手指离开（`End`）：按估计速度决定是否续惯性。
+    pub fn scroll_end(&mut self) {
+        // 未出帧的剩余位移按最近一次帧间隔兜底计入（否则松手速度偏小）。
+        if self.finger_pending != 0.0 {
+            let dt = self.samples.last().map(|s| s.dt).unwrap_or(1.0 / 60.0);
+            self.push_sample(dt);
+        }
+        let v = self.estimated_velocity();
+        // 撞边界由 `step` 夹紧后即停（`max_offset==0` 时不启动，无可滚空间）。
+        let start = self.smooth_scroll
+            && v.abs() > INERTIA_MIN_START_VELOCITY
+            && self.is_scrollable();
+        if start {
+            self.inertia.start(self.offset as f64, v as f64);
+        }
+        self.samples.clear();
+    }
+
+    /// 估计最近 ~100 ms 的跟手速度（px/s，正 = 向下）。
+    pub fn estimated_velocity(&self) -> f32 {
+        let total_dt: f64 = self.samples.iter().map(|s| s.dt).sum();
+        if total_dt <= 0.0 {
+            return 0.0;
+        }
+        let total: f32 = self.samples.iter().map(|s| s.delta).sum();
+        (total as f64 / total_dt) as f32
+    }
+
+    fn record_finger_sample(&mut self, dt: f64) {
+        if self.finger_pending != 0.0 {
+            self.push_sample(dt);
         }
     }
 
-    /// 是否正在平滑滚动。
-    pub fn is_animating(&self) -> bool {
-        !self.spring.is_steady()
+    fn push_sample(&mut self, dt: f64) {
+        let delta = std::mem::take(&mut self.finger_pending);
+        self.samples.push(FingerSample {
+            dt: dt.max(1e-6),
+            delta,
+        });
+        let window = FINGER_VELOCITY_WINDOW_MS as f64 / 1000.0;
+        let mut acc = 0.0;
+        let mut keep = self.samples.len();
+        for (i, s) in self.samples.iter().enumerate().rev() {
+            acc += s.dt;
+            if acc > window {
+                keep = i + 1;
+                break;
+            }
+        }
+        if keep < self.samples.len() {
+            self.samples.rotate_left(keep);
+            self.samples.truncate(self.samples.len() - keep);
+        }
+    }
+
+    // ── 键盘：PageUp / PageDown / Home / End ─────────────────────────────────
+
+    /// PageUp / PageDown：步长 = 视口高 − 一行（正典 §Ⅴ）。`dir` = ±1。
+    pub fn scroll_page(&mut self, dir: f32) {
+        let step = (self.viewport_size.height - SCROLL_WHEEL_STEP).max(0.0);
+        if !self.smooth_scroll {
+            self.scroll_to(self.offset + dir * step, false);
+        } else {
+            self.begin_smooth(self.smooth_base() + dir * step);
+        }
+    }
+
+    /// Home / End：绝对跳到顶 / 底，走与滚轮相同的平滑追踪。
+    pub fn scroll_home(&mut self) {
+        self.scroll_to_smooth(0.0);
+    }
+
+    /// End：底部。
+    pub fn scroll_end_key(&mut self) {
+        self.scroll_to_smooth(self.max_offset());
+    }
+
+    /// 平滑开时走平滑追踪，否则瞬时定位。
+    fn scroll_to_smooth(&mut self, target: f32) {
+        if self.smooth_scroll {
+            self.begin_smooth(target);
+        } else {
+            self.scroll_to(target, false);
+        }
     }
 
     /// 滚动条轨道矩形（主轴 = 垂直滚动条，右缘 8px 宽）。
@@ -274,35 +468,93 @@ impl kanesumi_element::Widget for MetroScrollView {
         scene.fill_rect(color, thumb);
     }
 
-    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
-        if let kanesumi_element::Event::Scroll { dy, .. } = event {
-            // 不可滚时不截停：滚动链交给外层容器（XAML ScrollChaining）。
-            if !self.is_scrollable() {
-                return;
+    fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &Event) {
+        match event {
+            Event::Scroll {
+                dy,
+                source,
+                phase,
+                ..
+            } => {
+                // 不可滚时不截停：滚动链交给外层容器（XAML ScrollChaining）。
+                if !self.is_scrollable() {
+                    return;
+                }
+                let before = self.offset;
+                // 跟手帧需下一帧 `update` 采样估速（`update` 只对本节点在 `anim` 时调用）。
+                let mut needs_tick = false;
+                match source {
+                    ScrollSource::Wheel { .. } => {
+                        if *phase == ScrollPhase::Update {
+                            self.scroll_wheel(*dy);
+                        }
+                    }
+                    ScrollSource::Finger | ScrollSource::Continuous => {
+                        if *phase == ScrollPhase::End {
+                            self.scroll_end();
+                        } else {
+                            self.scroll_finger(*dy);
+                            needs_tick = true;
+                        }
+                    }
+                }
+                if self.offset != before {
+                    ctx.invalidate_arrange();
+                    ctx.invalidate_paint();
+                    ctx.emit(ScrollOffsetChanged(self.offset));
+                }
+                if self.is_animating() || needs_tick {
+                    ctx.request_anim_frame();
+                }
+                ctx.set_handled();
             }
-            let before = self.offset;
-            self.scroll_wheel(*dy);
-            if self.offset != before {
-                ctx.invalidate_arrange();
-                ctx.invalidate_paint();
-                ctx.emit(ScrollOffsetChanged(self.offset));
+            Event::KeyDown { key, .. } if self.is_scrollable() => {
+                let handled = match key {
+                    Key::PageUp => {
+                        self.scroll_page(-1.0);
+                        true
+                    }
+                    Key::PageDown => {
+                        self.scroll_page(1.0);
+                        true
+                    }
+                    Key::Home => {
+                        self.scroll_home();
+                        true
+                    }
+                    Key::End => {
+                        self.scroll_end_key();
+                        true
+                    }
+                    _ => false,
+                };
+                if handled {
+                    ctx.invalidate_arrange();
+                    ctx.invalidate_paint();
+                    if self.is_animating() {
+                        ctx.request_anim_frame();
+                    }
+                    ctx.set_handled();
+                }
             }
-            ctx.set_handled();
+            _ => {}
         }
     }
 
-    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, _dt: f64) {
-        if !self.smooth_scroll || self.spring.is_steady() {
-            return;
-        }
+    fn update(&mut self, ctx: &mut kanesumi_element::UpdateCtx, dt: f64) {
         let before = self.offset;
-        // 统一动画入口：真实时钟推进 + 未稳态自动续帧（参 ELEMENT_TREE §帧调度）。
-        ctx.animate(&mut self.spring);
-        self.offset = self.spring.value() as f32;
+        self.step(dt);
         if self.offset != before {
             ctx.invalidate_arrange();
             ctx.invalidate_paint();
         }
+        if self.is_animating() {
+            ctx.request_anim_frame();
+        }
+    }
+
+    fn wants_anim(&self) -> bool {
+        self.is_animating()
     }
 
     fn scrolls_children(&self) -> bool {
@@ -337,7 +589,7 @@ mod tree_tests {
     use kanesumi_core::Point;
     use kanesumi_element::testing::TestHarness;
     use kanesumi_element::widgets::Stack;
-    use kanesumi_element::{Align, LayoutProps, Modifiers, WidgetId};
+    use kanesumi_element::{Align, Key, LayoutProps, Modifiers, ScrollInput, ScrollPhase, ScrollSource, WidgetId};
 
     /// 视口 200×100，内容 = 10 个 40 高的按钮（共 400）。
     fn harness() -> (TestHarness, WidgetId, Vec<WidgetId>) {
@@ -441,6 +693,98 @@ mod tree_tests {
             .rposition(|c| matches!(c, SceneCommand::Text { .. }))
             .unwrap();
         assert!(thumb > last_text, "拇指画在全部内容之后（叠在上层）");
+    }
+
+    // ── 元素树路径：`Tree::scroll` / `scroll_ex`（TestHarness 推进虚拟时钟）─────────
+
+    /// 视口 200×100、内容 400，平滑滚保持默认开（与 `harness` 相对）。
+    fn harness_smooth() -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(300.0, 300.0);
+        let sv = h.tree.insert_with(
+            h.root(),
+            MetroScrollView::default(),
+            LayoutProps {
+                width: Some(200.0),
+                height: Some(100.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        let col = h.tree.insert(sv, Stack::column());
+        for i in 0..10 {
+            h.tree.insert_with(
+                col,
+                MetroButton::new(format!("项 {i}")),
+                LayoutProps {
+                    height: Some(40.0),
+                    ..LayoutProps::default()
+                },
+            );
+        }
+        h.frame();
+        (h, sv)
+    }
+
+    /// 旧 `Tree::scroll` 走 `Wheel`/`Update`：经元素树平滑追踪，连滚三格到 144。
+    #[test]
+    fn tree_wheel_scroll_smooths_and_settles() {
+        let (mut h, sv) = harness_smooth();
+        for _ in 0..3 {
+            h.tree
+                .scroll(Point::new(50.0, 50.0), 0.0, 48.0, Modifiers::NONE);
+        }
+        h.settle();
+        let off = h.tree.get::<MetroScrollView>(sv).unwrap().offset;
+        assert!(
+            (off - 144.0).abs() < 1.0,
+            "连滚三格平滑到 144，实际 {off}"
+        );
+    }
+
+    /// `scroll_ex` 触控板跟手 1:1；`End` 后惯性继续前移（帧间采样估速）。
+    #[test]
+    fn tree_finger_then_release_inertia_extends_scroll() {
+        let (mut h, sv) = harness_smooth();
+        let p = Point::new(50.0, 50.0);
+        for _ in 0..4 {
+            h.tree.scroll_ex(
+                p,
+                ScrollInput::new(
+                    0.0,
+                    15.0,
+                    ScrollSource::Finger,
+                    ScrollPhase::Update,
+                    Modifiers::NONE,
+                ),
+            );
+            h.frame();
+        }
+        let at_end = h.tree.get::<MetroScrollView>(sv).unwrap().offset;
+        assert!((at_end - 60.0).abs() < 0.5, "跟手到 60，实际 {at_end}");
+        h.tree.scroll_ex(
+            p,
+            ScrollInput::end(ScrollSource::Finger, Modifiers::NONE),
+        );
+        h.settle();
+        let off = h.tree.get::<MetroScrollView>(sv).unwrap().offset;
+        assert!(off > at_end + 1.0, "松手惯性继续前移 {at_end} → {off}");
+    }
+
+    /// PageDown 键经焦点后代冒泡到滚动容器：位移 = 视口高 − 48。
+    #[test]
+    fn tree_page_down_key_scrolls_viewport_minus_line() {
+        let (mut h, sv, items) = harness();
+        h.tree.focus(items[0], true);
+        h.frame();
+        let handled = h.key(Key::PageDown);
+        assert!(handled, "PageDown 被滚动容器消费");
+        h.settle();
+        let off = h.tree.get::<MetroScrollView>(sv).unwrap().offset;
+        assert!(
+            (off - (100.0 - SCROLL_WHEEL_STEP)).abs() < 1.0,
+            "PageDown = 视口高 − 48，实际 {off}"
+        );
     }
 }
 
@@ -563,5 +907,178 @@ mod tests {
         sv.smooth_scroll = false;
         sv.scroll_to(100.0, false);
         assert_eq!(sv.content_offset(), -100.0);
+    }
+
+    // ── 滚动输入语义（k-scroll-input）：滚轮平滑 / 触控板跟手 + 惯性 / Page 键 ──
+
+    /// 连滚三格：目标累加 144，呈现值单调不回跳，150 ms（9 帧）后到位。
+    #[test]
+    fn wheel_three_steps_smooth_monotonic_to_144() {
+        let mut sv = MetroScrollView::new(Size::new(200.0, 300.0), Size::new(200.0, 100.0));
+        assert!(sv.smooth_scroll);
+        sv.scroll_wheel(48.0);
+        sv.scroll_wheel(48.0);
+        sv.scroll_wheel(48.0);
+        let mut prev = sv.offset;
+        let mut curve = vec![prev];
+        for _ in 0..9 {
+            sv.update(1.0 / 60.0);
+            assert!(
+                sv.offset >= prev - 1e-4,
+                "呈现值不得回跳：{prev} → {}",
+                sv.offset
+            );
+            prev = sv.offset;
+            curve.push(prev);
+        }
+        assert!(!sv.is_animating(), "150 ms 后应稳态");
+        assert!(
+            (sv.offset - 144.0).abs() < 0.5,
+            "连滚三格到 144，实际 {}",
+            sv.offset
+        );
+        assert!(
+            curve.windows(2).any(|w| w[1] > w[0]),
+            "缓出应有中间帧，曲线 {curve:?}"
+        );
+    }
+
+    /// 中途再滚：从当前呈现值接续（不跳变），目标继续累加。
+    #[test]
+    fn wheel_append_midway_continues_without_jump() {
+        let mut sv = MetroScrollView::new(Size::new(200.0, 300.0), Size::new(200.0, 100.0));
+        sv.scroll_wheel(48.0);
+        for _ in 0..3 {
+            sv.update(1.0 / 60.0);
+        }
+        let mid = sv.offset;
+        assert!(mid > 0.0 && mid < 48.0, "中途呈现值 {mid}");
+        sv.scroll_wheel(48.0);
+        assert!(sv.offset >= mid - 1e-4, "追加不回跳 {mid} → {}", sv.offset);
+        for _ in 0..12 {
+            sv.update(1.0 / 60.0);
+        }
+        assert!(
+            (sv.offset - 96.0).abs() < 0.5,
+            "追加后目标 96，实际 {}",
+            sv.offset
+        );
+    }
+
+    /// 触控板位置增量 1:1 跟手（无动画），并夹紧在可滚范围。
+    #[test]
+    fn finger_input_is_one_to_one() {
+        let mut sv = MetroScrollView::new(Size::new(200.0, 300.0), Size::new(200.0, 100.0));
+        sv.scroll_finger(7.0);
+        assert_eq!(sv.offset, 7.0, "跟手 1:1");
+        sv.scroll_finger(-3.0);
+        assert_eq!(sv.offset, 4.0);
+        sv.scroll_finger(-100.0);
+        assert_eq!(sv.offset, 0.0, "上界夹紧");
+        sv.scroll_finger(1000.0);
+        assert_eq!(sv.offset, sv.max_offset(), "下界夹紧");
+    }
+
+    /// 松手速度 > 阈值 → 惯性前移；速度越大距离越远（同 τ / 阈值）。
+    #[test]
+    fn finger_release_inertia_distance_monotonic_in_velocity() {
+        let travel = |per_frame: f32| {
+            let mut sv = MetroScrollView::new(Size::new(200.0, 100_000.0), Size::new(200.0, 100.0));
+            for _ in 0..4 {
+                sv.scroll_finger(per_frame);
+                sv.update(1.0 / 60.0);
+            }
+            let start = sv.offset;
+            sv.scroll_end();
+            assert!(sv.is_animating(), "松手速度 {per_frame}/帧 应启惯性");
+            for _ in 0..2000 {
+                sv.update(1.0 / 60.0);
+                if !sv.is_animating() {
+                    break;
+                }
+            }
+            sv.offset - start
+        };
+        let slow = travel(1.0);
+        let fast = travel(4.0);
+        assert!(slow > 0.0, "低速也要有惯性位移");
+        assert!(fast > slow, "惯性距离随速度单调：{slow} vs {fast}");
+    }
+
+    /// 松手速度低于 50 px/s 不启惯性（有意停住）。
+    #[test]
+    fn finger_release_below_threshold_no_inertia() {
+        let mut sv = MetroScrollView::new(Size::new(200.0, 100_000.0), Size::new(200.0, 100.0));
+        for _ in 0..4 {
+            sv.scroll_finger(0.5);
+            sv.update(1.0 / 60.0);
+        }
+        sv.scroll_end();
+        assert!(!sv.is_animating(), "30 px/s < 50 阈值，不启惯性");
+    }
+
+    /// 惯性撞边界即停（不做橡皮筋回弹）。
+    #[test]
+    fn inertia_stops_at_boundary() {
+        let mut sv = MetroScrollView::new(Size::new(200.0, 160.0), Size::new(200.0, 100.0));
+        sv.scroll_finger(50.0);
+        sv.update(1.0 / 60.0);
+        sv.scroll_finger(50.0);
+        sv.update(1.0 / 60.0);
+        sv.scroll_end();
+        for _ in 0..600 {
+            sv.update(1.0 / 60.0);
+            if !sv.is_animating() {
+                break;
+            }
+        }
+        assert!(!sv.is_animating(), "撞底后停");
+        assert_eq!(sv.offset, sv.max_offset(), "停在边界，不回弹");
+    }
+
+    /// 新输入立即打断惯性。
+    #[test]
+    fn new_input_interrupts_inertia() {
+        let mut sv = MetroScrollView::new(Size::new(200.0, 100_000.0), Size::new(200.0, 100.0));
+        for _ in 0..4 {
+            sv.scroll_finger(20.0);
+            sv.update(1.0 / 60.0);
+        }
+        sv.scroll_end();
+        assert!(sv.is_animating(), "惯性进行中");
+        sv.update(1.0 / 60.0);
+        sv.scroll_finger(5.0);
+        assert!(!sv.is_animating(), "跟手输入打断惯性");
+    }
+
+    /// PageDown 位移 = 视口高 − 一行（48）；Home / End 到顶底（走平滑追踪）。
+    #[test]
+    fn page_down_moves_viewport_minus_line() {
+        let mut sv = MetroScrollView::new(Size::new(200.0, 5000.0), Size::new(200.0, 100.0));
+        sv.scroll_page(1.0);
+        for _ in 0..12 {
+            sv.update(1.0 / 60.0);
+        }
+        assert!(
+            (sv.offset - (100.0 - SCROLL_WHEEL_STEP)).abs() < 0.5,
+            "PageDown = 视口高 − 48，实际 {}",
+            sv.offset
+        );
+        sv.scroll_end_key();
+        for _ in 0..600 {
+            sv.update(1.0 / 60.0);
+            if !sv.is_animating() {
+                break;
+            }
+        }
+        assert!((sv.offset - sv.max_offset()).abs() < 0.5, "End 到底");
+        sv.scroll_home();
+        for _ in 0..600 {
+            sv.update(1.0 / 60.0);
+            if !sv.is_animating() {
+                break;
+            }
+        }
+        assert!(sv.offset.abs() < 0.5, "Home 到顶");
     }
 }
