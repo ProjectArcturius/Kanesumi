@@ -26,7 +26,8 @@ use smithay_client_toolkit::{
         Capability, SeatHandler, SeatState,
         keyboard::{KeyEvent as SctkKeyEvent, KeyboardHandler, Keysym},
         pointer::{
-            BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, PointerEvent, PointerEventKind, PointerHandler,
+            AxisScroll, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, PointerEvent, PointerEventKind,
+            PointerHandler,
         },
     },
     shell::{
@@ -72,7 +73,8 @@ use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
 
 use crate::app::{
     AnchorKind, App, FloatingLayer, ImeAction, ImeContentHint, ImeContext, InputEvent, Key,
-    LayerKind, Modifiers, PendingImeBatch, PointerButton, compute_ime_action,
+    LayerKind, Modifiers, PendingImeBatch, PointerButton, ScrollInput, ScrollPhase, ScrollSource,
+    compute_ime_action,
 };
 use crate::appmenu::AppMenuHandle;
 use crate::context_menu::ContextMenuAction;
@@ -2723,6 +2725,73 @@ impl SeatHandler for Shell {
     }
 }
 
+/// 把 SCTK 的一次轴事件（含 `axis_source` / `axis_stop` / 离散步）汇成外壳 [`InputEvent`]。
+///
+/// 分流：离散滚轮 → 旧 [`InputEvent::Scroll`]（传统 App 行为不变，元素树 `TreeHost` 等价转
+/// `Wheel`/`Update` 平滑）；触控板 / 连续源 → [`InputEvent::ScrollInput`] 携带
+/// [`ScrollSource`]（跟手）；`axis_stop`（手指离开）→ `ScrollInput` 的 `End` 阶段（惯性起点）。
+/// 返回 `None` = 无位移且非停止，忽略。
+///
+/// 注：SCTK 0.19 未暴露 `wl_pointer.axis_value120`（高精度滚轮），高精度设备只能经
+/// `axis` 的 `absolute` / `discrete` 近似。本文件仅 Linux，**未在 Windows 编译**，待 Arch 验证。
+fn axis_to_input(
+    horizontal: &AxisScroll,
+    vertical: &AxisScroll,
+    source: Option<wl_pointer::AxisSource>,
+    modifiers: Modifiers,
+    step: f32,
+) -> Option<InputEvent> {
+    let has_discrete = vertical.discrete != 0 || horizontal.discrete != 0;
+    // `axis_source` 缺省（None）：带离散步按滚轮，否则按触控板连续。
+    let scroll_source = match source {
+        Some(wl_pointer::AxisSource::Finger) => ScrollSource::Finger,
+        Some(wl_pointer::AxisSource::Continuous) => ScrollSource::Continuous,
+        Some(_) => ScrollSource::Wheel { steps: 0.0 },
+        None if has_discrete => ScrollSource::Wheel { steps: 0.0 },
+        None => ScrollSource::Continuous,
+    };
+    let scroll_source = match scroll_source {
+        ScrollSource::Wheel { .. } => ScrollSource::Wheel {
+            steps: vertical.discrete as f32 + horizontal.discrete as f32,
+        },
+        other => other,
+    };
+    // 离散步优先（每格 = wheel_lines × 16，正典默认 48px），否则用连续像素。
+    let dy = if vertical.discrete != 0 {
+        vertical.discrete as f32 * step
+    } else {
+        vertical.absolute as f32
+    };
+    let dx = if horizontal.discrete != 0 {
+        horizontal.discrete as f32 * step
+    } else {
+        horizontal.absolute as f32
+    };
+    if vertical.stop || horizontal.stop {
+        return Some(InputEvent::ScrollInput(ScrollInput::end(
+            scroll_source,
+            modifiers,
+        )));
+    }
+    if dx == 0.0 && dy == 0.0 {
+        return None;
+    }
+    match scroll_source {
+        ScrollSource::Wheel { .. } => Some(InputEvent::Scroll {
+            x: dx,
+            y: dy,
+            modifiers,
+        }),
+        _ => Some(InputEvent::ScrollInput(ScrollInput::new(
+            dx,
+            dy,
+            scroll_source,
+            ScrollPhase::Update,
+            modifiers,
+        ))),
+    }
+}
+
 impl PointerHandler for Shell {
     fn pointer_frame(
         &mut self,
@@ -2755,11 +2824,14 @@ impl PointerHandler for Shell {
                         button: map_button(*button),
                         modifiers: self.modifiers,
                     }),
-                    PointerEventKind::Axis { vertical, horizontal, .. } => {
+                    PointerEventKind::Axis {
+                        vertical,
+                        horizontal,
+                        source,
+                        ..
+                    } => {
                         let step = self.interaction.wheel_step_px();
-                        let dy = if vertical.discrete != 0 { vertical.discrete as f32 * step } else { vertical.absolute as f32 };
-                        let dx = if horizontal.discrete != 0 { horizontal.discrete as f32 * step } else { horizontal.absolute as f32 };
-                        Some(InputEvent::Scroll { x: dx, y: dy, modifiers: self.modifiers })
+                        axis_to_input(horizontal, vertical, *source, self.modifiers, step)
                     }
                 };
                 if let Some(ev) = ev {
@@ -2825,32 +2897,16 @@ impl PointerHandler for Shell {
                 PointerEventKind::Axis {
                     horizontal,
                     vertical,
+                    source,
                     ..
                 } => {
-                    // 滚轮：优先离散步（每格 = wheel_lines × 16，正典默认 3 行 = 48px；
-                    // `input.toml` 可覆盖），触摸板用连续像素。
-                    // 正方向 = +y（表面坐标，下为正，与 motion 一致）；向下滚为正。
+                    // 滚轮 / 触控板分流见 `axis_to_input`：正方向 = +y（表面坐标，下为正）。
                     let step = self.interaction.wheel_step_px();
-                    let dy = if vertical.discrete != 0 {
-                        vertical.discrete as f32 * step
-                    } else {
-                        vertical.absolute as f32
-                    };
-                    let dx = if horizontal.discrete != 0 {
-                        horizontal.discrete as f32 * step
-                    } else {
-                        horizontal.absolute as f32
-                    };
-                    if dx != 0.0 || dy != 0.0 {
+                    if let Some(ev) =
+                        axis_to_input(horizontal, vertical, *source, self.modifiers, step)
+                    {
                         self.pointer_pos = pos;
-                        self.route_input(
-                            target,
-                            InputEvent::Scroll {
-                                x: dx,
-                                y: dy,
-                                modifiers: self.modifiers,
-                            },
-                        );
+                        self.route_input(target, ev);
                     }
                 }
             }

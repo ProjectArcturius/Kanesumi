@@ -17,8 +17,7 @@ use kanesumi_controls::{
 };
 use kanesumi_core::{Color, MetroTheme, Point, Rect, Size, TextStyle};
 use kanesumi_harness::{
-    App, AppConfig, AppMenuHandle, EtherRole, InputEvent,
-    PointerButton,
+    App, AppConfig, AppMenuHandle, EtherRole, InputEvent, PointerButton, ScrollInput,
 };
 use kanesumi_structure::TileWall;
 
@@ -2050,8 +2049,9 @@ impl App for GalleryApp {
                     self.release(Point::new(x, y));
                 }
             }
-            InputEvent::Scroll { y, .. } => {
-                // 滚轮：指针在列表视口上时滚动列表；否则无操作
+            InputEvent::Scroll { y, .. } | InputEvent::ScrollInput(ScrollInput { dy: y, .. }) => {
+                // 滚轮 / 触控板：指针在列表视口上时滚动列表；否则无操作。
+                // 触控板跟手惯性由元素树 `TreeApp` 承担，旧 App 沿用同一直跟路径。
                 let p = self.pointer_pos();
                 if self.page == GalleryPage::Input && self.virtual_list_rect().contains(p) {
                     self.virtual_list.viewport_size = self.virtual_list_rect().size;

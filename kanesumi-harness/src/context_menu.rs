@@ -204,9 +204,9 @@ impl ContextMenuState {
                 self.close();
                 ContextMenuAction::Consumed
             }
-            InputEvent::PointerReleased { .. } | InputEvent::Scroll { .. } => {
-                ContextMenuAction::Consumed
-            }
+            InputEvent::PointerReleased { .. }
+            | InputEvent::Scroll { .. }
+            | InputEvent::ScrollInput(_) => ContextMenuAction::Consumed,
             InputEvent::KeyPressed { key: Key::Escape, .. } => {
                 self.close();
                 ContextMenuAction::Consumed
