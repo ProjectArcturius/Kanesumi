@@ -407,6 +407,8 @@ impl<A: TreeApp> App for TreeHost<A> {
         };
         let dt = std::mem::take(&mut f.pending_dt);
         let out = f.tree.frame(engine, size, dt);
+        // 本帧产物即将提交：把进入提交的节点汇报给树（内容就绪门控就绪信号）。
+        f.tree.report_content_committed(&out.painted);
         f.damage = frame_damage(&out);
         out.scene
     }
@@ -625,6 +627,9 @@ impl<A: TreeApp> App for TreeHost<A> {
         crate::timeline::note_once("render_into_start");
         let dt = std::mem::take(&mut self.pending_dt);
         let frame = self.tree.frame(engine, size, dt);
+        // 本帧产物即将由外壳提交：汇报进入提交的节点（内容就绪门控就绪信号）。
+        // 平台提交点紧随本调用（platform.rs 主循环），故就绪与解挂同帧生效。
+        self.tree.report_content_committed(&frame.painted);
         // 弹层分离：本帧损伤（None = 全量）碰到的弹层要重画其表面。
         if self.tree.detached_popups() {
             for id in self.tree.popups().collect::<Vec<_>>() {

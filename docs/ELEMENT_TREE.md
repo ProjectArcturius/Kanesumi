@@ -305,6 +305,58 @@ pub fn on_layer_unsupported(&mut self);
   `LayerEvent::Unsupported` 映射到 `Tree::on_layer_unsupported`（撤层后节点回主场景的视觉终值，
   保持可见）。**元素树不依赖 harness**，故事件类型是元素侧 `LayerOutcome` 镜像。
 
+## §Ⅴ-quater 内容就绪与动画门控（2026-10-07 立，fp5）
+
+**病灶**：动画发起时不检查内容状态，首帧常落在空白 / 旧内容上（图片、文本由画布或解码
+异步填充），观感为「卡一下才开始滑入」（起跑卡，参 `SMOOTHNESS_PLAN` §Ⅲ-7）。本层让
+「内容没备好就不发动画」成为**机制**而非约定。
+
+### 就绪信号是事件，不是轮询
+
+- **客户端判据**：节点（含其子树任一节点）的绘制产物**首次进入提交的缓冲** = 该节点内容就绪。
+  `Image` 在解码未完成时 `paint` 返回空命令（`docs/CANVAS_PLAN.md` §Ⅳ C3），
+  故空命令不计内容；容器自身常无绘制，靠子内容**上溯**置位。
+- **状态**：`Tree` 记节点级单 bool（`Flags::content_ready`，单调、无每节点额外分配）；
+  缺省 `false`（从未提交过），首个内容提交后 `true` 且不复位。
+- **汇报**：`Tree::frame` 把本帧产生非空绘制的节点收进 `FrameOutput::painted`；外壳**提交**
+  本帧后调用 `Tree::report_content_committed(&painted)` 汇报。返回本次新就绪的节点
+  （`ContentReady` 内部事件）。测试夹具 `TestHarness::frame` 出帧即视为提交。
+- **为什么由外壳汇报**：是否真的进入提交缓冲是外壳（合成 / 光栅）的事；元素树只持有状态与
+  门控队列，保持纯逻辑、跨平台。
+
+### 门控语义
+
+- `play_transition` / `animate_layer` 对目标子树检查就绪；**未就绪 → 挂起（排队，不丢弃）**，
+  就绪事件到达后从当前呈现时刻起跑：`t = 0`（首帧即在起始位置，不跳变）。
+- **显式门**：`play_transition_gated_on(id, gate, …)` / `animate_layer_gated_on(id, gate, …)`
+  以**另一节点** `gate` 的就绪为前置 —— 用于「启动遮罩收起等首应用首帧内容」这类目标自身
+  已就绪、但要等别的节点的场景。
+- **占位纪律**：挂起期间显示旧内容或空档即可，**禁止**用占位色块冒充内容（同
+  `CANON_VS_TEMPORARY` 的临时值纪律）。
+- **超时解挂**：就绪迟迟不来（解码失败 / 死图 / 空内容）→ `kanesumi-core`
+  `CONTENT_READY_TIMEOUT_SECS = 1.0s`（**估值**，无一手源）后放行动画并记 WARN ——
+  失败不得把界面冻死。挂起期间 `needs_frame()` 为真，超时由帧推进结算（无新线程）。
+
+### API
+
+```rust
+pub fn content_ready(&self, id: WidgetId) -> bool;
+pub fn report_content_committed(&mut self, painted: &[WidgetId]) -> Vec<WidgetId>;
+pub fn play_transition(&mut self, id: WidgetId, t: Transition, p: TransitionParams) -> TransitionHandle;
+pub fn play_transition_gated_on(&mut self, id: WidgetId, gate: WidgetId, t: Transition, p: TransitionParams) -> TransitionHandle;
+pub fn animate_layer(&mut self, id: WidgetId, spec: LayerAnimSpec);
+pub fn animate_layer_gated_on(&mut self, id: WidgetId, gate: WidgetId, spec: LayerAnimSpec);
+```
+
+### 资源纪律与代价
+
+- **无轮询**：就绪来自提交事件，门控判据是 O(1) 的节点 bool；无每帧全树遍历。
+- **无每 widget 分配**：就绪位是节点内单 bool；挂起队列为 `BTreeMap<WidgetId, GatedStart>`，
+  常态为空（空表判断一次）。
+- **无新线程 / 异步运行时**：超时在既有帧调度里按 `frame_dt` 累加结算。
+- 就绪汇报为线性遍历「本帧非空绘制节点」（`painted` 列表，与 `paint_queue` 同源），
+  无额外分配增长。
+
 ## §Ⅵ 输入
 
 框架把外壳的 `InputEvent` 翻译为元素级 `Event` 并路由；App 不再写命中函数。

@@ -16,7 +16,7 @@ use crate::event::{Event, Key, Modifiers, PointerButton, ScrollInput};
 use crate::id::WidgetId;
 use crate::layer::{LayerAnimSpec, LayerOp, LayerState};
 use crate::ime::ImeContext;
-use crate::transitions::{ActiveTransition, PendingStart};
+use crate::transitions::{ActiveTransition, GatedAnim, GatedStart, PendingStart};
 use crate::props::{Align, LayoutProps};
 use crate::widget::{
     ArrangeCtx, ControlStates, EventCtx, MeasureCtx, PaintCtx, RealizeCtx, UpdateCtx, Widget,
@@ -97,6 +97,10 @@ pub struct FrameOutput {
     pub full: bool,
     /// 是否仍有动画在跑（外壳据此继续请求帧）。
     pub animating: bool,
+    /// 本帧产生了非空绘制产物的节点。外壳**提交**本帧后应把本表交给
+    /// [`Tree::report_content_committed`]（内容就绪门控的就绪信号）。
+    /// 参 `docs/ELEMENT_TREE.md`「内容就绪与动画门控」。
+    pub painted: Vec<WidgetId>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -109,6 +113,9 @@ struct Flags {
     /// 下一帧 measure 之前需要调用 `Widget::realize`（虚拟化容器增删子节点）。
     needs_realize: bool,
     disabled: bool,
+    /// 首个内容提交已合成（自身或子树任一节点）。内容就绪门控判据，单调置位。
+    /// 参 `docs/ELEMENT_TREE.md`「内容就绪与动画门控」。
+    content_ready: bool,
 }
 
 struct Node {
@@ -145,6 +152,7 @@ impl Node {
                 paint_queued: false,
                 needs_realize: true,
                 disabled: false,
+                content_ready: false,
             },
             desired: Size::ZERO,
             last_available: None,
@@ -236,6 +244,10 @@ pub struct Tree {
     pub(crate) transitions: std::collections::BTreeMap<WidgetId, ActiveTransition>,
     /// 图层尚未 Create 的转场起始命令（建层后发出）。
     pub(crate) pending_starts: std::collections::BTreeMap<WidgetId, PendingStart>,
+    /// 等待内容就绪的动画（门控挂起队列）。就绪事件 / 超时后解挂。参 transitions.rs。
+    pub(crate) gated_starts: std::collections::BTreeMap<WidgetId, GatedStart>,
+    /// 本帧绘制产物进入提交的节点（`paint_node` 收集，`FrameOutput::painted` 交给外壳汇报）。
+    frame_painted: Vec<WidgetId>,
     /// 转场动画序号（外壳按此回报 Done / Cancelled）。
     pub(crate) next_layer_serial: u32,
     /// compose 时允许进入的图层根：拼某图层内容时 = 该图层；拼主场景时 = None（跳过所有图层子树）。
@@ -282,6 +294,8 @@ impl Tree {
             layer_ops: Vec::new(),
             transitions: std::collections::BTreeMap::new(),
             pending_starts: std::collections::BTreeMap::new(),
+            gated_starts: std::collections::BTreeMap::new(),
+            frame_painted: Vec::new(),
             next_layer_serial: 1,
             compose_layer: std::cell::Cell::new(None),
             full_repaint: true,
@@ -841,7 +855,8 @@ impl Tree {
 
     /// 是否需要出新帧（有失效 / 动画 / 状态变化）。
     pub fn needs_frame(&self) -> bool {
-        self.dirty || !self.anim.is_empty()
+        // 有挂起动画时须持续出帧以推进超时（空表判断，非遍历）。
+        self.dirty || !self.anim.is_empty() || !self.gated_starts.is_empty()
     }
 
     fn add_damage(&mut self, r: Rect) {
@@ -930,6 +945,10 @@ impl Tree {
     pub fn frame(&mut self, engine: &TextEngine, size: Size, dt: f64) -> FrameOutput {
         let epoch0 = self.invalidate_epoch;
         self.frame_dt = dt;
+        self.frame_painted.clear();
+        // 内容就绪门控：推进挂起动画的等待时长，超时者解挂放行（早于 sync_layers，
+        // 解挂产生的 pending_starts 本帧即被 flush）。
+        self.tick_gated();
         if self.engine.is_none() {
             self.engine = Some(engine.clone());
         }
@@ -1031,6 +1050,7 @@ impl Tree {
             damage: frame_damage,
             full,
             animating: !self.anim.is_empty(),
+            painted: std::mem::take(&mut self.frame_painted),
         }
     }
 
@@ -1187,6 +1207,10 @@ impl Tree {
             self.add_damage(o);
         }
         self.add_damage(bounds);
+        // 非空绘制 = 本帧有内容进入提交缓冲。交给外壳提交后经 `report_content_committed` 汇报。
+        if !scene.commands.is_empty() || !after.commands.is_empty() {
+            self.frame_painted.push(id);
+        }
         if let Some(n) = self.node_mut(id) {
             n.widget = Some(w);
             n.paint = scene.commands;
@@ -2111,10 +2135,14 @@ impl Tree {
     pub fn set_layer(&mut self, id: WidgetId, on: bool) {
         if on {
             self.layers.entry(id).or_default();
-        } else if let Some(st) = self.layers.remove(&id)
-            && st.created
-        {
-            self.layer_ops.push(LayerOp::Remove { id });
+        } else {
+            // 取消图层：等待中的门控动画作废（目标已不再是图层）。
+            self.gated_starts.remove(&id);
+            if let Some(st) = self.layers.remove(&id)
+                && st.created
+            {
+                self.layer_ops.push(LayerOp::Remove { id });
+            }
         }
         self.full_repaint = true;
         self.invalidate_paint(id);
@@ -2129,8 +2157,65 @@ impl Tree {
         self.layers.get(&id).is_some_and(|st| st.created)
     }
 
+    // ── 内容就绪门控。参 transitions.rs / docs/ELEMENT_TREE.md「内容就绪与动画门控」──
+
+    /// 节点（含其子树）是否已提交过首个内容。
+    pub(crate) fn node_content_ready(&self, id: WidgetId) -> bool {
+        self.node(id).is_some_and(|n| n.flags.content_ready)
+    }
+
+    /// 置位节点就绪；已经就绪或节点不存在时返回 false。
+    pub(crate) fn mark_node_content_ready(&mut self, id: WidgetId) -> bool {
+        match self.node_mut(id) {
+            Some(n) if !n.flags.content_ready => {
+                n.flags.content_ready = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// 本帧该节点是否产出了非空绘制（就绪汇报的过滤条件）。
+    pub(crate) fn node_has_paint(&self, id: WidgetId) -> bool {
+        self.node(id)
+            .is_some_and(|n| !n.paint.is_empty() || !n.paint_after.is_empty())
+    }
+
+    /// 本帧真实经过时间（秒）。门控等待时长据此推进。
+    pub(crate) fn frame_dt(&self) -> f64 {
+        self.frame_dt
+    }
+
     /// 请求合成器动画（位移 / 不透明度）。动画期间树不重画、不量测；完成经外壳回报。
+    ///
+    /// **内容就绪门控**：目标子树尚未提交首个内容时挂起（排队，不丢弃），就绪 / 超时后
+    /// 从当前呈现时刻起跑。参 `docs/ELEMENT_TREE.md`「内容就绪与动画门控」。
     pub fn animate_layer(&mut self, id: WidgetId, spec: LayerAnimSpec) {
+        self.animate_layer_gated_on(id, id, spec);
+    }
+
+    /// 内容就绪门控的显式门版本：`id` 的动画以**另一节点** `gate` 的内容就绪为前置
+    /// （参 `play_transition_gated_on`）。
+    pub fn animate_layer_gated_on(&mut self, id: WidgetId, gate: WidgetId, spec: LayerAnimSpec) {
+        if !self.layers.contains_key(&id) {
+            return;
+        }
+        if !self.node_content_ready(gate) {
+            self.gated_starts.insert(
+                id,
+                GatedStart {
+                    anim: GatedAnim::Layer(spec),
+                    gate,
+                    age: 0.0,
+                },
+            );
+            return;
+        }
+        self.push_animate(id, spec);
+    }
+
+    /// 原样发出图层动画（不做就绪检查）。框架内部在门控已通过后使用。
+    pub(crate) fn push_animate(&mut self, id: WidgetId, spec: LayerAnimSpec) {
         if self.layers.contains_key(&id) {
             self.layer_ops.push(LayerOp::Animate { id, spec });
         }
