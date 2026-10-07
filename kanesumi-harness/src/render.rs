@@ -262,7 +262,7 @@ fn push_image(steps: &mut Vec<Step>, before: u32, after: u32, clip: Option<Rect>
 }
 
 
-fn scissor_rect(
+pub(crate) fn scissor_rect(
     clip: Option<Rect>,
     scale: f32,
     buffer_width: u32,
@@ -307,12 +307,12 @@ pub fn msaa_samples() -> u32 {
 /// Ether docs/GPU_COMPOSITION_PLAN.md §Ⅲ「G1 壳层 GPU 光栅」与 §Ⅳ「内存」。
 /// 惰性创建、初始化失败永久回落 CPU（platform 侧持有）。
 pub struct GpuContext {
-    instance: wgpu::Instance,
-    adapter: wgpu::Adapter,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    pub(crate) instance: wgpu::Instance,
+    pub(crate) adapter: wgpu::Adapter,
+    pub(crate) device: wgpu::Device,
+    pub(crate) queue: wgpu::Queue,
     /// 共享管线与配置统一使用的表面格式（sRGB 优先）。
-    format: wgpu::TextureFormat,
+    pub(crate) format: wgpu::TextureFormat,
 }
 
 /// 单个表面的 wgpu 光栅化器（present 直出）。持有自己的一份表面/顶点缓冲/字形缓存，
@@ -393,7 +393,7 @@ fn create_msaa_view(
 // 环形 query set（[`perf::TIMESTAMP_SLOTS`] 槽 × 2 时间戳），把查询结果 resolve 进 GPU 缓冲、
 // 再复制到 MAP_READ 缓冲，**滞后 [`perf::TIMESTAMP_LAG`] 帧**异步回读 —— 绝不 `Wait` 当帧。
 // 结果落到 `SurfacePerf::gpu`（p50/p95/max），写 `ether-harness-perf.log` 的 `gpu=` 字段。
-struct GpuTimer {
+pub(crate) struct GpuTimer {
     query_set: wgpu::QuerySet,
     /// QUERY_RESOLVE | COPY_SRC；每槽 256 字节对齐（QUERY_RESOLVE_BUFFER_ALIGNMENT）。
     resolve_buf: wgpu::Buffer,
@@ -425,7 +425,7 @@ const SLOT_STRIDE: u64 = 256;
 
 impl GpuTimer {
     /// 设备支持时间戳查询则建计时器；否则 None（静默不开）。
-    fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Self> {
+    pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Self> {
         let need =
             wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
         if !device.features().contains(need) {
@@ -471,7 +471,7 @@ impl GpuTimer {
     }
 
     /// 本帧的写槽（空闲时才写；被占用则该帧不采样）。
-    fn begin(&mut self) -> Option<usize> {
+    pub(crate) fn begin(&mut self) -> Option<usize> {
         let s = perf::timestamp_slot(self.frame, perf::TIMESTAMP_SLOTS);
         if self.slot_frame[s].is_some() {
             self.active = false;
@@ -483,15 +483,15 @@ impl GpuTimer {
     }
 
     /// 在 render pass 前后各写一个时间戳。
-    fn write_first(&self, encoder: &mut wgpu::CommandEncoder, slot: usize) {
+    pub(crate) fn write_first(&self, encoder: &mut wgpu::CommandEncoder, slot: usize) {
         encoder.write_timestamp(&self.query_set, slot as u32 * 2);
     }
-    fn write_last(&self, encoder: &mut wgpu::CommandEncoder, slot: usize) {
+    pub(crate) fn write_last(&self, encoder: &mut wgpu::CommandEncoder, slot: usize) {
         encoder.write_timestamp(&self.query_set, slot as u32 * 2 + 1);
     }
 
     /// 把本帧两枚时间戳 resolve 到回读缓冲（须在 `write_last` 之后、提交之前调用）。
-    fn encode_readback(&self, encoder: &mut wgpu::CommandEncoder, slot: usize) {
+    pub(crate) fn encode_readback(&self, encoder: &mut wgpu::CommandEncoder, slot: usize) {
         let base = slot as u64 * 2;
         encoder.resolve_query_set(
             &self.query_set,
@@ -510,7 +510,7 @@ impl GpuTimer {
 
     /// 提交后推进帧号：为滞后帧挂上非阻塞 `map_async`（回调把毫秒送回 `rx`），再看有无到位结果。
     /// `keep` = 本帧是否计入样本（跳过帧传 false，只回收槽）。
-    fn end(&mut self, device: &wgpu::Device, keep: bool) {
+    pub(crate) fn end(&mut self, device: &wgpu::Device, keep: bool) {
         if self.active {
             let s = perf::timestamp_slot(self.frame, perf::TIMESTAMP_SLOTS);
             self.slot_keep[s] = keep;
@@ -554,14 +554,14 @@ impl GpuTimer {
     }
 
     /// 取走已完成样本（平台层每帧收取，记进对应表面的 `SurfacePerf::gpu`）。
-    fn drain(&mut self) -> Vec<f32> {
+    pub(crate) fn drain(&mut self) -> Vec<f32> {
         std::mem::take(&mut self.pending)
     }
 }
 
 /// 从 wl_display / wl_surface 原始指针创建 wgpu 表面（同 launcher render.rs 模式）。
 /// 供 `GpuContext` 选适配器与 `Renderer` 建各自表面共用。
-fn create_wl_surface(
+pub(crate) fn create_wl_surface(
     instance: &wgpu::Instance,
     conn: &Connection,
     wl_surface: &WlSurface,
@@ -1903,7 +1903,7 @@ fn upload_vertices_solid<'a>(
 }
 
 /// 矩形求交（box 语义：内容裁剪到盒内）。不相交返回 None。
-fn intersect(a: Rect, b: Rect) -> Option<Rect> {
+pub(crate) fn intersect(a: Rect, b: Rect) -> Option<Rect> {
     let x0 = a.origin.x.max(b.origin.x);
     let y0 = a.origin.y.max(b.origin.y);
     let x1 = a.right().min(b.right());
@@ -1917,7 +1917,7 @@ fn intersect(a: Rect, b: Rect) -> Option<Rect> {
 
 /// 选呈现模式（G1）：优先 `Mailbox`（可丢旧帧、acquire 立返，避免 FIFO 的并发等待
 /// 把内容变化帧的「光栅耗时」抬到 ~16.7 ms），其次 `Immediate`，最后回落 `Fifo`。
-fn choose_present_mode(available: &[wgpu::PresentMode]) -> wgpu::PresentMode {
+pub(crate) fn choose_present_mode(available: &[wgpu::PresentMode]) -> wgpu::PresentMode {
     if available.contains(&wgpu::PresentMode::Mailbox) {
         wgpu::PresentMode::Mailbox
     } else if available.contains(&wgpu::PresentMode::Immediate) {

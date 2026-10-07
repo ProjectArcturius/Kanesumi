@@ -17,6 +17,7 @@ pub mod system_theme;
 pub mod timeline;
 pub mod tree_host;
 
+pub mod canvas_v2;
 pub mod cpu_raster;
 pub(crate) mod glyph_layout;
 

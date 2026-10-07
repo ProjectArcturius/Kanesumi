@@ -78,6 +78,127 @@ use crate::appmenu::AppMenuHandle;
 use crate::context_menu::ContextMenuAction;
 use crate::cpu_raster::CpuRenderer;
 use crate::render::{GpuContext, Renderer};
+
+/// 画布 v1/v2 选择：`KANESUMI_CANVAS=2` 走实例化批渲染画布（CanvasV2，无 MSAA），
+/// 其余（未设 / 其他值）保持 v1 `Renderer`（MSAA 4）。真机验证后由调度者翻缺省。
+/// 参 Ether docs/CANVAS_PLAN.md §Ⅳ C1、任务 c1-canvas-core。
+pub fn canvas_v2_enabled() -> bool {
+    std::env::var("KANESUMI_CANVAS").ok().as_deref() == Some("2")
+}
+
+/// 表面渲染器枚举：v1 / v2 对外接口对齐，创建处统一经 [`SurfaceRenderer::with_context`]。
+/// allow：v1 `Renderer` 自身 1560 字节（顶点缓冲句柄等），v2 已 Box 仍超 clippy 的
+/// 变体尺寸差阈值；v1 属存量实现不动，此处维持直存。
+#[allow(clippy::large_enum_variant)]
+pub enum SurfaceRenderer {
+    V1(Renderer),
+    /// Box：CanvasV2（图集 / 缓存字段多）远大于 V1，包一层减小枚举尺寸差。
+    V2(Box<crate::canvas_v2::CanvasV2>),
+}
+
+impl SurfaceRenderer {
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_context(
+        ctx: std::sync::Arc<GpuContext>,
+        conn: &Connection,
+        wl_surface: &wl_surface::WlSurface,
+        width: f32,
+        height: f32,
+        scale: f32,
+        transparent: bool,
+    ) -> Result<Self, crate::render::RendererError> {
+        if canvas_v2_enabled() {
+            crate::canvas_v2::CanvasV2::with_context(
+                ctx, conn, wl_surface, width, height, scale, transparent,
+            )
+            .map(|r| SurfaceRenderer::V2(Box::new(r)))
+        } else {
+            Renderer::with_context(ctx, conn, wl_surface, width, height, scale, transparent)
+                .map(SurfaceRenderer::V1)
+        }
+    }
+
+    pub fn render(
+        &mut self,
+        engine: &kanesumi_canvas::text::TextEngine,
+        scene: &kanesumi_canvas::Scene,
+    ) {
+        match self {
+            SurfaceRenderer::V1(r) => r.render(engine, scene),
+            SurfaceRenderer::V2(r) => r.render(engine, scene),
+        }
+    }
+
+    pub fn render_with_damage(
+        &mut self,
+        engine: &kanesumi_canvas::text::TextEngine,
+        scene: &kanesumi_canvas::Scene,
+        damage: Option<kanesumi_core::Rect>,
+    ) {
+        match self {
+            SurfaceRenderer::V1(r) => r.render_with_damage(engine, scene, damage),
+            SurfaceRenderer::V2(r) => r.render_with_damage(engine, scene, damage),
+        }
+    }
+
+    pub fn drain_gpu_samples(&mut self) -> Vec<f32> {
+        match self {
+            SurfaceRenderer::V1(r) => r.drain_gpu_samples(),
+            SurfaceRenderer::V2(r) => r.drain_gpu_samples(),
+        }
+    }
+
+    pub fn take_acquire_ms(&mut self) -> Option<f32> {
+        match self {
+            SurfaceRenderer::V1(r) => r.take_acquire_ms(),
+            SurfaceRenderer::V2(r) => r.take_acquire_ms(),
+        }
+    }
+
+    pub fn gpu_timing_supported(&self) -> bool {
+        match self {
+            SurfaceRenderer::V1(r) => r.gpu_timing_supported(),
+            SurfaceRenderer::V2(r) => r.gpu_timing_supported(),
+        }
+    }
+
+    pub fn physical_size(&self) -> (u32, u32) {
+        match self {
+            SurfaceRenderer::V1(r) => r.physical_size(),
+            SurfaceRenderer::V2(r) => r.physical_size(),
+        }
+    }
+
+    pub fn msaa_samples(&self) -> u32 {
+        match self {
+            SurfaceRenderer::V1(r) => r.msaa_samples(),
+            SurfaceRenderer::V2(r) => r.msaa_samples(),
+        }
+    }
+
+    pub fn resize(&mut self, width: f32, height: f32, scale: f32) {
+        match self {
+            SurfaceRenderer::V1(r) => r.resize(width, height, scale),
+            SurfaceRenderer::V2(r) => r.resize(width, height, scale),
+        }
+    }
+
+    pub fn diagnostics(&self) -> String {
+        match self {
+            SurfaceRenderer::V1(r) => r.diagnostics(),
+            SurfaceRenderer::V2(r) => r.diagnostics(),
+        }
+    }
+
+    /// 最近一帧绘制调用数（v2 记 `draws=`；v1 不统计 → None）。
+    pub fn last_draws(&self) -> Option<u32> {
+        match self {
+            SurfaceRenderer::V1(_) => None,
+            SurfaceRenderer::V2(r) => Some(r.last_draws()),
+        }
+    }
+}
+
 use crate::renderer_policy::{
     RendererKind, SurfaceClass, choose_renderer, default_expected_hz, gpu_kill_switch,
 };
@@ -524,7 +645,7 @@ pub(crate) struct Shell {
     keyboard: Option<wl_keyboard::WlKeyboard>,
 
     /// xdg-shell 直出渲染器（present 路径）。layer-shell 角色为 None（走 CPU）。
-    renderer: Option<Renderer>,
+    renderer: Option<SurfaceRenderer>,
     /// layer-shell CPU 光栅化器（Scene → SHM 像素，零 GPU 同步点）。
     /// 参 TOPBAR_RENDER_REFACTOR §4.1 / cpu_raster.rs。
     cpu: Option<CpuRenderer>,
@@ -894,7 +1015,7 @@ struct FloatingSurface {
     /// CPU 光栅化器（浮层走 layer-shell → SHM/dmabuf 提交）。与 `renderer` 二选一。
     cpu: Option<CpuRenderer>,
     /// wgpu 光栅化器（G1：大面积 / 高刷新浮层走 GPU 直出）。与 `cpu` 二选一。
-    renderer: Option<Renderer>,
+    renderer: Option<SurfaceRenderer>,
     width: f32,
     height: f32,
     configured: bool,
@@ -1378,7 +1499,7 @@ impl Shell {
         );
         if kind == RendererKind::Gpu
             && let Some(ctx) = self.ensure_gpu_context(&surf)
-            && let Ok(mut r) = Renderer::with_context(ctx, &self.conn, &surf, fw, fh, fscale, true)
+            && let Ok(mut r) = SurfaceRenderer::with_context(ctx, &self.conn, &surf, fw, fh, fscale, true)
         {
             // 预热：空场景提交一次，强制管线/着色器编译（消除 G0 测得的首帧 20~40 ms 尖峰）。
             r.render(&self.engine, &Scene::default());
@@ -1461,6 +1582,7 @@ impl Shell {
         let mut raster_ms = 0.0f32;
         let mut commit_ms = 0.0f32;
         let mut gpu_samples: Vec<f32> = Vec::new();
+            let mut draws: Option<u32> = None;
         if let Some(cpu) = f.cpu.as_mut() {
             let (pw, ph) = cpu.physical_size();
             let t = Instant::now();
@@ -1500,11 +1622,15 @@ impl Shell {
             r.render_with_damage(&self.engine, &scene, damage);
             raster_ms = t.elapsed().as_secs_f32() * 1000.0;
             gpu_samples = r.drain_gpu_samples();
+            draws = r.last_draws();
             self.floating_full[idx] = false;
             self.floating_raster_size[idx] = phys_now;
         }
         if let Some(p) = self.perf_floating.get_mut(idx) {
             p.record(render_ms, raster_ms, commit_ms);
+            if let Some(n) = draws {
+                p.record_draws(n);
+            }
             for ms in gpu_samples {
                 p.record_gpu(ms);
             }
@@ -1700,7 +1826,7 @@ impl Shell {
                 self.running = false;
                 return;
             };
-            match Renderer::with_context(
+            match SurfaceRenderer::with_context(
                 ctx,
                 &self.conn,
                 &wl_surface,
@@ -1747,7 +1873,7 @@ impl Shell {
         if kind == RendererKind::Gpu {
             let surf = self.surface.clone();
             if let Some(ctx) = self.ensure_gpu_context(&surf)
-                && let Ok(r) = Renderer::with_context(
+                && let Ok(r) = SurfaceRenderer::with_context(
                     ctx,
                     &self.conn,
                     &surf,
@@ -1940,6 +2066,7 @@ impl Shell {
         let mut commit_ms = 0.0f32;
         let mut gpu_samples: Vec<f32> = Vec::new();
         let mut acquire_ms: Option<f32> = None;
+        let mut draws: Option<u32> = None;
         if let Some(cpu) = self.cpu.as_mut() {
             let (pw, ph) = cpu.physical_size();
             let t = Instant::now();
@@ -1965,10 +2092,16 @@ impl Shell {
             raster_ms = t.elapsed().as_secs_f32() * 1000.0;
             gpu_samples = r.drain_gpu_samples();
             acquire_ms = r.take_acquire_ms();
+            if let Some(n) = r.last_draws() {
+                draws = Some(n);
+            }
         }
         // 时间线：首次提交（CPU 主表面 → SHM/dmabuf；xdg → wgpu present）。
         crate::timeline::note_once("first_commit");
         self.perf_main.record(render_ms, raster_ms, commit_ms);
+        if let Some(n) = draws {
+            self.perf_main.record_draws(n);
+        }
         if let Some(ms) = acquire_ms {
             self.perf_main.record_acquire(ms);
         }
@@ -2055,7 +2188,7 @@ impl Shell {
                         .iter()
                         .find_map(|f| f.renderer.as_ref().map(|r| r.msaa_samples()))
                 });
-            out.insert_str(0, &crate::perf::format_header(&proc, msaa, gpu_ok));
+            out.insert_str(0, &crate::perf::format_header(&proc, msaa, gpu_ok, crate::platform::canvas_v2_enabled()));
         }
         if let Some(path) = crate::perf::state_log_path("ether-harness-perf.log") {
             crate::perf::write_log(&path, &out);
