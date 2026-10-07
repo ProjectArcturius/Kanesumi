@@ -90,6 +90,8 @@ pub struct SurfacePerf {
     /// 取交换链纹理的阻塞墙钟（毫秒；仅 WGPU 路径）。它包含在 `raster` 里，单列出来区分
     /// 「画得慢」与「等合成器 / vblank 放缓冲」。空环 → 日志写 `acquire=n/a`。
     pub acquire: Ring,
+    /// 每帧绘制调用数（CanvasV2 记录；v1 / CPU 光栅不统计 → 空环 → `draws=n/a`）。
+    pub draws: Ring,
     pub frames: u64,
 }
 
@@ -101,6 +103,7 @@ impl SurfacePerf {
             commit: Ring::new(),
             gpu: Ring::new(),
             acquire: Ring::new(),
+            draws: Ring::new(),
             frames: 0,
         }
     }
@@ -120,6 +123,11 @@ impl SurfacePerf {
     /// 记一帧取交换链纹理的阻塞时长。
     pub fn record_acquire(&mut self, ms: f32) {
         self.acquire.record(ms);
+    }
+
+    /// 记一帧绘制调用数（CanvasV2）。
+    pub fn record_draws(&mut self, n: u32) {
+        self.draws.record(n as f32);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -150,8 +158,9 @@ pub fn format_line(proc: &str, role: &str, surface: &str, p: &SurfacePerf) -> St
     let gpu = if p.gpu.is_empty() { "n/a".to_string() } else { seg(&p.gpu) };
     // acquire 放行尾：既有解析脚本（tools/perf/gpu_t1_ab.py）按字段名取值，不受影响。
     let acquire = if p.acquire.is_empty() { "n/a".to_string() } else { seg(&p.acquire) };
+    let draws = if p.draws.is_empty() { "n/a".to_string() } else { seg(&p.draws) };
     format!(
-        "{proc} {role} t={secs} surface={surface} frames={} render={} raster={} commit={} gpu={gpu} acquire={acquire}\n",
+        "{proc} {role} t={secs} surface={surface} frames={} render={} raster={} commit={} gpu={gpu} draws={draws} acquire={acquire}\n",
         p.frames,
         seg(&p.render),
         seg(&p.raster),
@@ -163,7 +172,12 @@ pub fn format_line(proc: &str, role: &str, surface: &str, p: &SurfacePerf) -> St
 /// GPU 计时是否开启。多个进程共写同一日志文件，故必须带进程名才能归属。
 /// `msaa = None` 表示本进程无 GPU 光栅器（layer-shell / CPU 光栅角色）。
 /// 参 Ether docs/research/gpu_t1（任务 gpu-t1：MSAA 4 vs 1 与 GPU 帧耗时的 A/B 必须能从日志分辨档位）。
-pub fn format_header(proc: &str, msaa_samples: Option<u32>, gpu_supported: bool) -> String {
+pub fn format_header(
+    proc: &str,
+    msaa_samples: Option<u32>,
+    gpu_supported: bool,
+    canvas2: bool,
+) -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -172,7 +186,8 @@ pub fn format_header(proc: &str, msaa_samples: Option<u32>, gpu_supported: bool)
         .map(|n| n.to_string())
         .unwrap_or_else(|| "n/a".to_string());
     let gpu = if gpu_supported { "ts" } else { "n/a" };
-    format!("# kanesumi-harness proc={proc} t={secs} msaa={msaa} gpu={gpu}\n")
+    let canvas = if canvas2 { 2 } else { 1 };
+    format!("# kanesumi-harness proc={proc} t={secs} msaa={msaa} gpu={gpu} canvas={canvas}\n")
 }
 
 // ── GPU 时间戳环形缓冲的索引与换算（纯函数，单测覆盖）──
@@ -548,16 +563,16 @@ mod tests {
 
     #[test]
     fn header_records_msaa_and_gpu_support() {
-        let h = format_header("ether-settings", Some(1), false);
+        let h = format_header("ether-settings", Some(1), false, false);
         assert!(h.starts_with('#'), "首行以 # 开标注：{h}");
         assert!(h.contains("proc=ether-settings"), "{h}");
         assert!(h.contains("msaa=1"), "{h}");
         assert!(h.contains("gpu=n/a"), "{h}");
-        let h = format_header("ether-settings", Some(4), true);
+        let h = format_header("ether-settings", Some(4), true, false);
         assert!(h.contains("msaa=4") && h.contains("gpu=ts"), "{h}");
         assert!(h.ends_with('\n'));
         // 无 GPU 光栅器（layer-shell / CPU 角色）→ msaa=n/a。
-        let h = format_header("ether-settings", None, false);
+        let h = format_header("ether-settings", None, false, false);
         assert!(h.contains("msaa=n/a"), "{h}");
     }
 
