@@ -72,10 +72,13 @@ impl TestHarness {
         self.tree.root()
     }
 
-    /// 出一帧（dt = 1/60s）。
+    /// 出一帧（dt = 1/60s）。出帧即视为外壳提交本帧，随即汇报内容就绪。
     pub fn frame(&mut self) -> &FrameOutput {
         self.tree.tick_timers(1.0 / 60.0);
         self.last = self.tree.frame(&self.engine, self.size, 1.0 / 60.0);
+        let painted = std::mem::take(&mut self.last.painted);
+        self.tree.report_content_committed(&painted);
+        self.last.painted = painted;
         &self.last
     }
 
@@ -96,6 +99,9 @@ impl TestHarness {
         self.tree.tick_timers(secs);
         if self.tree.needs_frame() {
             self.last = self.tree.frame(&self.engine, self.size, secs);
+            let painted = std::mem::take(&mut self.last.painted);
+            self.tree.report_content_committed(&painted);
+            self.last.painted = painted;
         }
     }
 
