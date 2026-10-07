@@ -153,6 +153,9 @@ fn feed(t: &mut Tree, pointer: &mut Point, event: InputEvent) -> Option<(Key, Mo
         InputEvent::Scroll { x, y, modifiers } => {
             t.scroll(*pointer, x, y, modifiers);
         }
+        InputEvent::ScrollInput(input) => {
+            t.scroll_ex(*pointer, input);
+        }
         InputEvent::KeyPressed { key, modifiers } => {
             if !t.key_down(key, modifiers) {
                 return Some((key, modifiers));

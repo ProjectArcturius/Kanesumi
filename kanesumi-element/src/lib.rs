@@ -19,7 +19,7 @@ pub mod visual_state;
 pub mod widget;
 pub mod widgets;
 
-pub use event::{Event, Key, Modifiers, PointerButton};
+pub use event::{Event, Key, Modifiers, PointerButton, ScrollInput, ScrollPhase, ScrollSource};
 pub use id::WidgetId;
 pub use ime::{ImeContentHint, ImeContext};
 pub use layer::{LayerAnimSpec, LayerOp};

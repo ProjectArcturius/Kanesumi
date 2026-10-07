@@ -64,6 +64,35 @@ pub const WHEEL_STEP_PX: f32 = 48.0;
 /// 横向滚轮 / Shift+滚轮一格 = 3 字符宽 = 48 px（正典 §Ⅴ，`SPI_GETWHEELSCROLLCHARS`）。
 pub const WHEEL_STEP_X_PX: f32 = 48.0;
 
+/// 滚轮一格平滑过渡时长 150 ms（正典 §Ⅴ「每格约 150 ms 缓出、可中断、可累加」）。
+///
+/// 出处比照：`w-comp-ref` §⑤ 推荐「精确位移 + 长尾缓出」（指数衰减 τ ≈ 0.132 s，
+/// 5τ ≈ 0.66 s），与正典 150 ms 同量级；此处取时长驱动的 UWP 缓出实现。
+pub const WHEEL_SMOOTH_MS: u32 = 150;
+
+/// 触摸板松手惯性衰减率 0.95（每秒保留的速度比例）。
+///
+/// 出处：`w-comp-ref` §⑤ 引 WinUI `ScrollPresenter.cpp:31`
+/// `c_scrollPresenterDefaultInertiaDecayRate = 0.95f`；时间常数
+/// `τ = −1/ln(1−d)`（`w-comp-ref` §① 实测五档一致）。
+pub const INERTIA_DECAY_RATE: f32 = 0.95;
+
+/// 惯性衰减时间常数 τ（秒）= `−1/ln(1 − 0.95)` ≈ 0.3338（`w-comp-ref` §① 拟合）。
+///
+/// 数值写死为常量，避免在 `const` 上下文调用浮点 `ln`；与 [`INERTIA_DECAY_RATE`] 同源。
+pub const INERTIA_TAU_S: f32 = 0.3338;
+
+/// 惯性停止速度阈值 30 px/s。出处：`w-comp-ref` §① 实测 `v_stop ≈ 30.0`（五档一致）；
+/// WinUI `ScrollPresenter.cpp:6503` `s_minimumVelocity = 30.0f`。
+pub const INERTIA_STOP_VELOCITY: f32 = 30.0;
+
+/// 触发惯性的最小「松手」速度 50 px/s。正典 §Ⅴ 任务书取 50；低于此速度视为有意停住，
+/// 不启动惯性（`w-comp-ref` §⑤ 只给停止阈值 30，此为起甩门限，标估值）。
+pub const INERTIA_MIN_START_VELOCITY: f32 = 50.0;
+
+/// 触摸板速度估计窗口 100 ms（正典 §Ⅴ「最近 ~100 ms 的 delta / 时间估速度」）。
+pub const FINGER_VELOCITY_WINDOW_MS: u32 = 100;
+
 /// 焦点框内圈对比色：深色主题用黑、浅色主题用白（正典 §Ⅳ 双层焦点视觉）。
 ///
 /// ⚠ 正典未给一手源，取值登记为临时项 T23（`docs/CANON_VS_TEMPORARY.md`）。备选方案是
@@ -135,6 +164,22 @@ mod tests {
         assert_eq!(FOCUS_OUTER_PX, 2.0);
         assert_eq!(FOCUS_INNER_PX, 1.0);
         assert_eq!(WHEEL_STEP_PX, WHEEL_LINES as f32 * WHEEL_LINE_HEIGHT_PX);
+        assert_eq!(WHEEL_SMOOTH_MS, 150);
+        assert_eq!(INERTIA_DECAY_RATE, 0.95);
+        assert_eq!(INERTIA_STOP_VELOCITY, 30.0);
+        assert_eq!(INERTIA_MIN_START_VELOCITY, 50.0);
+        assert_eq!(FINGER_VELOCITY_WINDOW_MS, 100);
+    }
+
+    /// τ 与衰减率同源：`τ = −1/ln(1−d)`（`w-comp-ref` §① 律式，误差 < 1%）。
+    #[test]
+    fn inertia_tau_matches_decay_rate() {
+        let tau = -1.0_f32 / (1.0 - INERTIA_DECAY_RATE).ln();
+        assert!(
+            (tau - INERTIA_TAU_S).abs() < 0.001,
+            "τ 律式 {tau} vs 常量 {}",
+            INERTIA_TAU_S
+        );
     }
 
     #[test]

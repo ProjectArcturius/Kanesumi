@@ -15,7 +15,8 @@ use std::collections::{BTreeMap, HashSet};
 use kanesumi_canvas::Scene;
 use kanesumi_core::{Rect, Size};
 use kanesumi_element::{
-    ArrangeCtx, Event, EventCtx, MeasureCtx, PaintCtx, RealizeCtx, UpdateCtx, Widget, WidgetId,
+    ArrangeCtx, Event, EventCtx, MeasureCtx, PaintCtx, RealizeCtx, ScrollPhase, ScrollSource,
+    UpdateCtx, Widget, WidgetId,
 };
 
 use crate::repeater::MetroRepeater;
@@ -529,18 +530,43 @@ impl Widget for ItemsRepeater {
     }
 
     fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
-        if let Event::Scroll { dy, .. } = event {
+        if let Event::Scroll {
+            dy,
+            source,
+            phase,
+            ..
+        } = event
+        {
             // 不可滚不截停：滚动链交给外层容器（XAML ScrollChaining）。
             if self.count == 0 || self.content_length() <= self.viewport.height {
                 return;
             }
             let before = self.scroll.offset;
-            self.scroll.scroll_wheel(*dy);
+            let mut needs_tick = false;
+            match source {
+                ScrollSource::Wheel { .. } => {
+                    if *phase == ScrollPhase::Update {
+                        self.scroll.scroll_wheel(*dy);
+                    }
+                }
+                ScrollSource::Finger | ScrollSource::Continuous => {
+                    if *phase == ScrollPhase::End {
+                        self.scroll.scroll_end();
+                    } else {
+                        self.scroll.scroll_finger(*dy);
+                        needs_tick = true;
+                    }
+                }
+            }
             if self.scroll.offset != before {
                 ctx.invalidate_realize();
                 ctx.invalidate_arrange();
                 ctx.invalidate_paint();
                 ctx.emit(ScrollOffsetChanged(self.scroll.offset));
+            }
+            // 平滑追踪 / 惯性未结束，或跟手帧需采样估速：登记续帧，`update` 里逐帧推进。
+            if self.scroll.is_animating() || needs_tick {
+                ctx.request_anim_frame();
             }
             ctx.set_handled();
         }

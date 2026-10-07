@@ -8,6 +8,7 @@
 // harness 侧以 `pub use` 重导出同一类型，避免两套键定义（E2 接线时收敛）。
 
 use kanesumi_core::Point;
+use kanesumi_core::interaction::WHEEL_STEP_PX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerButton {
@@ -66,6 +67,86 @@ impl Modifiers {
     };
 }
 
+/// 滚动来源。参 `INTERACTION_CANON.md` §Ⅴ（滚轮离散 / 触控板连续 / 高精度连续）。
+///
+/// 区分来源是「跟手 + 松手惯性」的前提：滚轮走离散平滑追踪，触控板走像素精确直跟，
+/// 并在 `End` 后按估出的速度启动惯性（参 `docs/ELEMENT_TREE.md` 事件一节）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ScrollSource {
+    /// 鼠标滚轮 / 高精度滚轮：`steps` 以「格」计（正 = 向下 / 向右）。
+    /// 像素增量仍以 `dx`/`dy` 携带（Wheel 来源时 = `steps × WHEEL_STEP_PX`）。
+    Wheel { steps: f32 },
+    /// 触控板 / 触摸屏手指拖动：像素精确、连续、跟手。
+    Finger,
+    /// 其它连续源（合成器上报 `axis_source = continuous`）。
+    Continuous,
+}
+
+/// 滚动阶段。`End` = 手指离开（Wayland `wl_pointer.axis_stop`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollPhase {
+    /// 滚动进行中（位置增量）。
+    Update,
+    /// 手指离开 / 连续滚动结束 —— 宿主据此决定是否续惯性。
+    End,
+}
+
+/// 元素树滚动输入（来源 + 阶段 + 像素增量）。`Tree::scroll_ex` 的入参。
+///
+/// 旧 `Tree::scroll(pos, dx, dy, modifiers)` 等价于
+/// `Tree::scroll_ex(pos, ScrollInput::wheel(dx, dy, modifiers))`（`Wheel` / `Update`）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollInput {
+    /// 水平像素增量（正 = 向右）。
+    pub dx: f32,
+    /// 垂直像素增量（正 = 向下）。
+    pub dy: f32,
+    /// 来源。
+    pub source: ScrollSource,
+    /// 阶段。
+    pub phase: ScrollPhase,
+    /// 修饰键。
+    pub modifiers: Modifiers,
+}
+
+impl ScrollInput {
+    /// 完整构造。
+    pub fn new(
+        dx: f32,
+        dy: f32,
+        source: ScrollSource,
+        phase: ScrollPhase,
+        modifiers: Modifiers,
+    ) -> Self {
+        Self {
+            dx,
+            dy,
+            source,
+            phase,
+            modifiers,
+        }
+    }
+
+    /// 滚轮离散：由像素增量反推格数（主轴优先取 `dy`，横向取 `dx`）。
+    pub fn wheel(dx: f32, dy: f32, modifiers: Modifiers) -> Self {
+        let px = if dy != 0.0 { dy } else { dx };
+        Self::new(
+            dx,
+            dy,
+            ScrollSource::Wheel {
+                steps: px / WHEEL_STEP_PX,
+            },
+            ScrollPhase::Update,
+            modifiers,
+        )
+    }
+
+    /// 触控板 / 连续源的 `End`（手指离开），无位置增量。
+    pub fn end(source: ScrollSource, modifiers: Modifiers) -> Self {
+        Self::new(0.0, 0.0, source, ScrollPhase::End, modifiers)
+    }
+}
+
 /// 路由事件。坐标一律为表面本地逻辑坐标（控件用自身 `ctx.rect()` 换算局部坐标）。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
@@ -93,7 +174,16 @@ pub enum Event {
     /// 右键请求上下文菜单。目标 = 按下瞬间的命中元素（`ContextTarget` 一等语义，ROADMAP M3-4）。
     ContextRequested { pos: Point },
     /// 滚动（逻辑像素，正 = 向下 / 向右）。首个处理者截停。
-    Scroll { dx: f32, dy: f32, modifiers: Modifiers },
+    ///
+    /// `source` 区分滚轮 / 触控板 / 连续源，`phase` 区分进行中与结束（手指离开）。
+    /// `dx`/`dy` 保留原语义（Wheel 来源时 = `steps × WHEEL_STEP_PX`）。
+    Scroll {
+        dx: f32,
+        dy: f32,
+        source: ScrollSource,
+        phase: ScrollPhase,
+        modifiers: Modifiers,
+    },
     /// 键按下（焦点冒泡）。
     KeyDown { key: Key, modifiers: Modifiers },
     /// IME 组合态（焦点）。空串 = 清除。
@@ -121,5 +211,31 @@ impl Event {
                 | Event::FocusOut
                 | Event::PopupClosed { .. }
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 滚轮像素增量反推格数：48px = 1 格（正典 §Ⅴ「滚轮一格 48px」）。
+    #[test]
+    fn wheel_scroll_input_counts_steps() {
+        let w = ScrollInput::wheel(0.0, 96.0, Modifiers::NONE);
+        assert_eq!(w.source, ScrollSource::Wheel { steps: 2.0 });
+        assert_eq!(w.phase, ScrollPhase::Update);
+        assert_eq!(w.dy, 96.0);
+        // 纵向为 0 时按横向 dx 反推。
+        let h = ScrollInput::wheel(48.0, 0.0, Modifiers::NONE);
+        assert_eq!(h.source, ScrollSource::Wheel { steps: 1.0 });
+    }
+
+    /// `End` 无位置增量，阶段为结束（Wayland `axis_stop` / 手指离开）。
+    #[test]
+    fn end_has_no_delta_and_end_phase() {
+        let e = ScrollInput::end(ScrollSource::Finger, Modifiers::NONE);
+        assert_eq!(e.phase, ScrollPhase::End);
+        assert_eq!((e.dx, e.dy), (0.0, 0.0));
+        assert_eq!(e.source, ScrollSource::Finger);
     }
 }

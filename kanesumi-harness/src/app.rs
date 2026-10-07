@@ -119,7 +119,7 @@ impl AppConfig {
 /// 指针按钮 / 逻辑键 / 修饰键 —— 定义于元素树（`kanesumi-element`），此处重导出，
 /// 保证外壳、旧 App 与元素树只有**一套**键定义（参 docs/ELEMENT_TREE.md §Ⅵ）。
 /// 可打印字符（含 shift 符号 / 小键盘）→ `Key::Char`；控制键 → 具名变体；未分类 → `Unknown`。
-pub use kanesumi_element::{Key, Modifiers, PointerButton};
+pub use kanesumi_element::{Key, Modifiers, PointerButton, ScrollInput, ScrollPhase, ScrollSource};
 
 /// 输入事件 —— 纯数据、跨平台。`x/y` 为表面本地逻辑坐标（指针进入表面后有效）。
 /// 非 Copy（IME 变体含 `String`）；App 消费时按值 move。
@@ -159,6 +159,12 @@ pub enum InputEvent {
         y: f32,
         modifiers: Modifiers,
     },
+    /// 带来源 / 阶段的滚动（元素树 `Tree::scroll_ex`）。旧 [`InputEvent::Scroll`] 只表
+    /// 滚轮离散增量、无「手指离开」，无法驱动触控板跟手后的惯性；本变体由平台层从
+    /// `wl_pointer.axis_source` / `axis_stop` 汇成 [`ScrollInput`] 后投递，元素树据此分流。
+    /// 传统 App（只匹配 [`InputEvent::Scroll`]）忽略本变体即可，滚轮行为不变；
+    /// 触控板跟手需改用元素树 `TreeApp`（harness 平台层已接线，参 `platform.rs`）。
+    ScrollInput(kanesumi_element::ScrollInput),
     /// 键按下（表面持有键盘焦点时）。释放事件不推（App 一般只关心按下）。
     KeyPressed { key: Key, modifiers: Modifiers },
     /// 指针离开表面。

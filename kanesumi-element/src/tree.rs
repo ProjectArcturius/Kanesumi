@@ -11,7 +11,7 @@ use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, SceneCommand};
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
-use crate::event::{Event, Key, Modifiers, PointerButton};
+use crate::event::{Event, Key, Modifiers, PointerButton, ScrollInput};
 use crate::id::WidgetId;
 use crate::layer::{LayerAnimSpec, LayerOp, LayerState};
 use crate::ime::ImeContext;
@@ -1498,9 +1498,25 @@ impl Tree {
         }
     }
 
+    /// 滚动（旧签名）。等价于 `scroll_ex` 的 `Wheel` / `Update` 默认（像素增量）。
     pub fn scroll(&mut self, pos: Point, dx: f32, dy: f32, modifiers: Modifiers) {
+        self.scroll_ex(pos, ScrollInput::wheel(dx, dy, modifiers));
+    }
+
+    /// 带来源 / 阶段的滚动输入（触控板跟手 + 松手惯性、高精度滚轮）。命中目标后路由。
+    /// 派发路径与旧 `scroll` 完全一致（命中 → 冒泡 → 首个处理者截停）。
+    pub fn scroll_ex(&mut self, pos: Point, input: ScrollInput) {
         if let Some(t) = self.hit(pos) {
-            self.deliver(t, &Event::Scroll { dx, dy, modifiers });
+            self.deliver(
+                t,
+                &Event::Scroll {
+                    dx: input.dx,
+                    dy: input.dy,
+                    source: input.source,
+                    phase: input.phase,
+                    modifiers: input.modifiers,
+                },
+            );
         }
     }
 

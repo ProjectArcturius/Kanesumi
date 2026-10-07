@@ -44,7 +44,8 @@ pub use cpu_raster::CpuRenderer;
 
 pub use app::{
     AnchorKind, App, AppConfig, FloatingLayer, ImeAction, ImeContentHint, ImeContext, InputEvent,
-    Key, LayerKind, Modifiers, PendingImeBatch, PointerButton, PopupRequest, compute_ime_action,
+    Key, LayerKind, Modifiers, PendingImeBatch, PointerButton, PopupRequest, ScrollInput,
+    ScrollPhase, ScrollSource, compute_ime_action,
 };
 #[cfg(target_os = "linux")]
 pub use appmenu::install;
