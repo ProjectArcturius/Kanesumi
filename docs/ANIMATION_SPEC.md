@@ -206,6 +206,29 @@ C:\Program Files (x86)\Windows Kits\10\DesignTime\CommonConfiguration\
 **填表方式**：跑控件、掐时长，标注实测条件。
 **不要凭文档或记忆填** —— 这份表会被多平台实现照做，填错比留空代价大。
 
+### 转场缺省值（2026-10-07 新增）
+
+元素树主题转场库（`kanesumi-element/src/transitions.rs` 的 `TransitionParams` 常量）的缺省取值。
+**来源分级**：一手 = UWP SDK / 既有权威常量；旁证 = 兄弟仓已落地手写值；估值 = 无一手源、按量级取。
+
+| 转场 | 时长 | 延迟 | stagger | 位移 | 曲线 | 来源 |
+|---|---|---|---|---|---|---|
+| `Entrance` | 300 ms | 0 | 30 ms | 40 px（下移） | UWP 开曲线 | 旁证：Arch Settings `set-m1-motion`（入场 300 / stagger 30 / 下移 40）；曲线一手 |
+| `Content` | 300 ms | 0 | — | 16 px（下移） | UWP 开曲线 | 时长旁证（同 Entrance）；位移估值 |
+| `DrillIn` | 300 ms | 0 | — | 16 px（下移） | UWP 开曲线 | 时长旁证；位移估值（图层无缩放，位移 + 透明近似） |
+| `DrillOut` | 200 ms | 0 | — | 16 px（下移） | UWP 关曲线 | 估值（离场快于入场，同弹层开合比） |
+| `Reposition` | 150 ms | 0 | — | 由 `from` 求 | 立方缓出 | 一手：UWP `RepositionThemeAnimation` 0.15 s（参 CONTROL_SPEC §10）；曲线旁证 |
+| `PopIn` | 300 ms | 0 | — | 24 px（沿 `Edge`） | UWP 开曲线 | 一手：UWP CommandBarFlyout OpeningStoryboard 300 ms（参 `presets` `DURATION_SHEET_APPEAR`）；位移估值 |
+| `PopOut` | 150 ms | 0 | — | 24 px（沿 `Edge`） | UWP 关曲线 | 一手：同源 150 ms（参 `presets` `DURATION_SHEET_DISMISS`）；位移估值 |
+
+- **曲线**（一手，`UWP_PRIMARY_SOURCES.md`）：开 `[0.1, 0.9, 0.2, 1.0]`、关 `[0.7, 0.0, 1.0, 0.5]`；
+  Reposition 用立方缓出 `[0.33, 1.0, 0.68, 1.0]`（近似 `Cubic EaseOut`）。
+- **容器传播**：`Entrance { stagger: true }` 对 `id` 的**直接子项**依次发，第 i 个
+  `delay = min(i, STAGGER_MAX_ITEMS) × 30 ms`（`STAGGER_MAX_ITEMS = 10`，超出的与第 10 个同时）。
+  顺序 = children 顺序（§Ⅱ 实测提醒）。
+- 动画曲线 / 时长的**唯一真源仍是 `kanesumi-anim`**；本表只是转场参数对既有取值的绑定，
+  不新增动画原语。
+
 ---
 
 ## §Ⅵ 处置分歧的原则

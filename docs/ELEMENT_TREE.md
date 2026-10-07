@@ -261,6 +261,50 @@ pub trait Widget {
   `IDLE_MAX`（50ms）。修复前「只 `invalidate_paint`、不登记动画帧」的驱动在渲染后 `busy`
   转假 → 退到 50ms 档 → 动画只跑约 20fps，现由 Ⅴ-bis.2 + Ⅴ-bis.3 共同消除。
 
+## §Ⅴ-ter 主题转场（`transitions.rs`，2026-10-07）
+
+转场是「场景到动画的映射表」（`ANIMATION_SPEC` §Ⅱ），由框架发**图层命令**实现：给节点
+`set_layer`，放初值（`Offset` / `Opacity`），再 `animate_layer` 到终值；动画由合成器按自己的
+时钟推进，**期间树不重画、不量测**（参 `layer.rs`、`LAUNCHER` 磁贴分批入场先例）。
+
+### 什么时候用哪种（对照 ANIMATION_SPEC §Ⅱ 场景列）
+
+| 场景 | `Transition` | 说明 |
+|---|---|---|
+| 内容**首次**出现 | `Entrance { stagger }` | 下移 + 透明 → 原位；容器设 `stagger: true` 时子项依次错位 |
+| 内容**变化**（非首次） | `Content` | 同 Entrance，位移更小、无 stagger |
+| 逻辑层级**前进**（列表 → 详情） | `DrillIn` | 新内容略缩小 + 透明放大到位（图层无缩放，位移近似） |
+| 逻辑层级**后退**（返回） | `DrillOut` | 反向离场 |
+| 元素被移到**新位置** | `Reposition { from }` | 从旧位置平移到新位置（导航选中条、列表重排） |
+| 弹层**出现** | `PopIn { edge }` | 从锚点方位滑入 + 淡入 |
+| 弹层**关闭** | `PopOut { edge }` | 向锚点方位滑出 + 淡出 |
+
+> `AddDelete` / `Reorder` / `ConnectedAnimation` **不在本库**（列表虚拟化与跨视图连续性另立，
+> 参 `ANIMATION_SPEC` §Ⅳ）。`NavigationThemeTransition` 用默认参数下的 `Entrance` 等价替代。
+
+### API
+
+```rust
+pub fn play_transition(&mut self, id: WidgetId, t: Transition, p: TransitionParams) -> TransitionHandle;
+pub fn current_layer_visual(&self, id: WidgetId, now: Instant) -> (Point, f32);
+pub fn on_layer_event(&mut self, id: WidgetId, serial: u32, outcome: LayerOutcome);
+pub fn on_layer_unsupported(&mut self);
+```
+
+- `TransitionParams` 每种转场有 `const` 缺省（`TransitionParams::for_transition`）；取值逐条见
+  `ANIMATION_SPEC` §Ⅴ「转场缺省值」。`keep_layer: false`（默认）= 终态撤图层。
+- **容器传播**：`Entrance { stagger: true }` 对 `id` 的**直接子项**各建一层、依次错位
+  （`delay = min(i, STAGGER_MAX_ITEMS) × stagger_ms`），无子项时退回对 `id` 自身。
+- **不重画契约**：动画期间节点内容不变 → `sync_layers` 不再产 `Content`、`paint_queue` 为空，
+  子树绘制命令逐字节不变（单测 `transition_does_not_repaint_subtree`）。
+- **中断接续**：同一节点再次 `play_transition` 时，用 `kanesumi_anim::bezier_y` 反解已过时间的
+  缓动进度，算出当前呈现值作为新转场起点（同 Arch Settings `set-m1-motion` 的 `bezier_y`），
+  不跳变、不叠加；旧序号的迟到 `Done` / `Cancelled` 被忽略。
+- **生命周期**：外壳回报终态经 harness `TreeApp::on_layer_event` 转达 —— App 在
+  `on_layer_event` 里把 `LayerEvent::Done`/`Cancelled` 映射到 `Tree::on_layer_event`，
+  `LayerEvent::Unsupported` 映射到 `Tree::on_layer_unsupported`（撤层后节点回主场景的视觉终值，
+  保持可见）。**元素树不依赖 harness**，故事件类型是元素侧 `LayerOutcome` 镜像。
+
 ## §Ⅵ 输入
 
 框架把外壳的 `InputEvent` 翻译为元素级 `Event` 并路由；App 不再写命中函数。
