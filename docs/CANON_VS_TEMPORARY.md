@@ -41,7 +41,7 @@
 | T17 | 自定义的「Y 下沉」按压反馈（M6-1 计划） | 计划 100ms Y 下沉 | `kanesumi-anim`（未落地） | UWP 桌面语义是**缩小 + 倾斜**（写 `Projection`/`RenderTransform`），时长与幅度 OS 预置、XAML 读不到 | `UWP_PRIMARY_SOURCES.md` §Ⅲ.5 | **不得写成 UWP 规格**：若实现下沉，须在此登记为 Kanesumi 自定 |
 | T18 | ProgressRing 时长与角度 | 2.0s 循环 / 0→900° | `kanesumi-controls/src/progress.rs`（Ring 部分） | **UWP OS 一手值：3.47s / −110°→585°（净 +695°）/ 6 点 stagger 0.167s**（`generic.xaml` L12406-12506） | 同上 | 待裁定：现值为已丢弃快照的遗产，与其留一个来源不明的值，不如二选一后按 UWP 重定 |
 | T19 | 文本选区高亮 35% | `MetroColors::text_selection_tint` | `kanesumi-core/src/colors.rs` | UWP `TextControlSelectionHighlightColor` = `SystemControlHighlightAccentBrush` = **accent 100% 不透明**（`themeresources.xaml` L864→L282） | 同上 | **有意偏离候选**：accent 100% 叠在字形之下会压字，35% 是可读性与「看得出选中」的折中 —— 需一次真机确认后转 §二 正式登记 |
-| T20 | **强调色档位派生与 OS 不一致** | RGB 向白 lerp `[0.25,0.45,0.65]` / 向黑 lerp `[0.20,0.35,0.50]` | `kanesumi-core/src/accent.rs`（`LIGHT_MIX` / `DARK_MIX`） | OS 的真算法是 **HSV 明度缩放**：Light1/2/3 = V×1.17 / ×1.56 / ×1.925，Dark1/2/3 = V×0.905 / ×0.689 / ×0.49（越界后 V 饱和 + 饱和度下降） | **本机 WinRT 真值**（`UISettings.GetColorValue`，见 `WINDOWS_RESEARCH_BACKLOG.md` §B4）：以 `#0078D4` 为例，OS = `#0091F8`/`#4CC2FF`/`#99EBFF`/`#0067C0`/`#003E92`/`#001A68`，本仓 = `#409ADF`/`#73B5E7`/`#A6D0F0`/`#0060AA`/`#004E8A`/`#003C6A` | 待裁定：**原声明「档位对齐 Win10 SystemAccentColor」已证伪**（注释已改）。二选一：① 按 V 缩放模型改（`accent.rs` 一处 + 以上表为回归数据，约 30 分钟）；② 维持自定档位、把声明删干净。改则所有 hover/pressed/focus/on-accent 派生色随之变化，宜与 T9 真机确认同批 |
+| T20 | ~~强调色档位派生与 OS 不一致~~ **已解决（2026-10-07）** | 旧：RGB 向白 lerp `[0.25,0.45,0.65]` / 向黑 lerp `[0.20,0.35,0.50]`；新：**HSV 明度缩放** Light1/2/3 = V×1.17 / ×1.56 / ×1.925、Dark1/2/3 = V×0.905 / ×0.689 / ×0.49；越界（V>1）取 **S′ = S×(2−V′)** | `kanesumi-core/src/accent.rs`（`LIGHT_FACTORS` / `DARK_FACTORS` / `scale_value`）+ `colors.rs` + `theme.rs` | OS 真算法为 HSV 明度缩放、越界后饱和度下降；暗色主强调色取派生亮档 | **本机 WinRT 真值**（`UISettings.GetColorValue`，见 `WINDOWS_RESEARCH_BACKLOG.md` §B4）：以 `#0078D4` 为例 OS = `#0091F8` / `#4CC2FF` / `#99EBFF` / `#0067C0` / `#003E92` / `#001A68` | **已落地 ①**：越界规则 `S′ = S×(2−V′)` 由 Light2 R=76、Light3 R=153 两点反推（精确命中）；`#0078D4` 六档的**明度 / 下限分量**与 OS 逐档吻合（回归 `uwp_value_tiers_match_os_on_0078d4`）。暗色主档改取 **Light1**（暮蓝 Light1 `#3982FF` 最大通道误差 17，优于 Light2 `#7FAEFF` 的 53，更近期望图 `#4A86F0`）；库级缺省同步改浅（`ColorScheme::default() = Light`、`MetroTheme::default()`）。**残留已知边界**：OS 生成色阶时还会调整**色相**（微软声明算法闭源），本实现保持色相，故中间分量（蓝档 G）最大偏差 33 —— 属有意接受的近似 |
 
 > **已消除的临时项**（保留在此作为历史，避免再次被误认）：
 > - 「省略号未启用、超长文本硬裁切」——2026-09-22 已改默认 `Ellipsis` 并补 `label/paragraph`。
@@ -58,6 +58,8 @@
 > - 「列表行悬停 30%」——一手源证明 UWP 用 `ListLow`（10%）；30% 出自一个**从未被引用的** Win8 遗留键。
 > - 「按下 tint 22%」「BaseMediumHigh 90%」「BaseMediumLow 35%」「ComboBox 聚焦衬底 24% + 边框」
 >   「输入框悬停边框 ×90%」「弹窗收起 0.26s」——均于 2026-09-22 被一手源更正，见 `UWP_PRIMARY_SOURCES.md` §Ⅱ。
+> - 「强调色档位派生与 OS 不一致」（T20）——2026-10-07 改按 Win10 HSV 明度缩放模型，
+>   `#0078D4` 六档的明度 / 下限分量与 OS 真值对齐；同时库级缺省方案改浅色。
 
 ---
 

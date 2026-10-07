@@ -547,7 +547,7 @@ mod tests {
         let Some(SceneCommand::FillRect { rect: ind, .. }) = scene
             .commands
             .iter()
-            .find(|c| matches!(c, SceneCommand::FillRect { color, .. } if (color.r - theme.colors.primary.r).abs() < 0.1))
+            .find(|c| matches!(c, SceneCommand::FillRect { color, .. } if *color == theme.colors.primary))
         else {
             panic!("应有指示条");
         };
@@ -695,10 +695,10 @@ mod tests {
         }
         let mut scene = Scene::default();
         bar.render(&theme, &engine, Rect::new(0.0, 0.0, 200.0, 4.0), &mut scene);
-        // V18：过滤指示条（非灰轨道）。primary orange r≈0.9 > 0.5，
-        // surface_variant 灰 r≈0.18 < 0.5，可稳区分。
+        // V18：过滤指示条（非灰轨道）。轨道 `track_subtle` 的 alpha=0.6，
+        // 指示条 alpha≈1.0 —— 用 alpha 阈值稳区分，不依赖配色（暮蓝默认色 r 与灰轨道相近）。
         let ind_a = scene.commands.iter().find_map(|c| match c {
-            SceneCommand::FillRect { color, .. } if color.r > 0.5 => Some(color.a),
+            SceneCommand::FillRect { color, .. } if color.a > 0.8 => Some(color.a),
             _ => None,
         });
         assert!(ind_a.is_some());

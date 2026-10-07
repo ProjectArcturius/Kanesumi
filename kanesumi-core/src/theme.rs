@@ -76,11 +76,19 @@ impl MetroTheme {
     pub fn ether_dark() -> Self {
         Self::dark(Accent::default())
     }
+
+    /// 兼容别名：`MetroTheme::ether_light()` = 亮色 + 默认 accent。
+    ///
+    /// 库级缺省已改浅色（裁定参 `docs/CANON_VS_TEMPORARY.md` T20 附带），
+    /// 显式深色仍走 [`MetroTheme::ether_dark`]。
+    pub fn ether_light() -> Self {
+        Self::light(Accent::default())
+    }
 }
 
 impl Default for MetroTheme {
     fn default() -> Self {
-        Self::ether_dark()
+        Self::light(Accent::default())
     }
 }
 
@@ -89,11 +97,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ether_dark_is_default() {
+    fn ether_light_is_default() {
         let t = MetroTheme::default();
-        assert_eq!(t, MetroTheme::ether_dark());
-        assert_eq!(t.scheme, ColorScheme::Dark);
-        assert_eq!(t.colors.primary, MetroColors::ether_dark().primary);
+        assert_eq!(t, MetroTheme::ether_light());
+        assert_eq!(t.scheme, ColorScheme::Light);
+        assert_eq!(t.colors.primary, MetroColors::light(Accent::default()).primary);
     }
 
     /// 主题自洽：colors 的强调令牌、indication 的焦点描边、theme.accent 必须同源。
@@ -103,7 +111,7 @@ mod tests {
         for scheme in [ColorScheme::Dark, ColorScheme::Light] {
             let t = MetroTheme::for_scheme(scheme, accent);
             assert_eq!(t.accent.base, accent.base);
-            assert_eq!(t.colors.primary, accent.base);
+            assert_eq!(t.colors.primary, accent.primary_for(scheme));
             assert_eq!(t.colors.focus_stroke, t.indication.focus_stroke);
             assert_eq!(t.indication.focus_stroke, accent.focus_for(scheme));
         }
