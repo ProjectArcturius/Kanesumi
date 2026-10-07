@@ -16,6 +16,9 @@ pub enum EtherRole {
     Launcher,
     /// IME 候选窗 / 状态指示（layer-shell OVERLAY，跟随光标）。参 CEYBOARD_SPEC §Ⅱ。
     Candidate,
+    /// 锁屏客户端（ext-session-lock-v1）。参 docs/LOCKSCREEN_DESIGN.md §Ⅱ/§Ⅵ L2。
+    /// 不走 xdg/layer 主表面：经 `session_lock` 外壳为**每个输出**建锁屏表面。
+    Lock,
 }
 
 /// 角色解析失败。
@@ -33,6 +36,7 @@ impl FromStr for EtherRole {
             "dock" => Ok(EtherRole::Dock),
             "launcher" => Ok(EtherRole::Launcher),
             "candidate" => Ok(EtherRole::Candidate),
+            "lock" => Ok(EtherRole::Lock),
             _ => Err(RoleParseError),
         }
     }
@@ -52,6 +56,8 @@ pub enum SurfaceKind {
     LayerBottom,
     /// layer-shell OVERLAY。
     LayerOverlay,
+    /// ext-session-lock-v1 锁屏表面（每输出一个）。参 docs/LOCKSCREEN_DESIGN.md §Ⅱ。
+    SessionLock,
 }
 
 impl EtherRole {
@@ -74,6 +80,7 @@ impl EtherRole {
             EtherRole::Dock => SurfaceKind::LayerBottom,
             EtherRole::Launcher => SurfaceKind::LayerOverlay,
             EtherRole::Candidate => SurfaceKind::LayerOverlay,
+            EtherRole::Lock => SurfaceKind::SessionLock,
         }
     }
 }
@@ -90,6 +97,7 @@ mod tests {
         assert_eq!("dock".parse(), Ok(EtherRole::Dock));
         assert_eq!("launcher".parse(), Ok(EtherRole::Launcher));
         assert_eq!("candidate".parse(), Ok(EtherRole::Candidate));
+        assert_eq!("lock".parse(), Ok(EtherRole::Lock));
     }
 
     #[test]
@@ -133,5 +141,7 @@ mod tests {
             EtherRole::Desktop.surface_kind(),
             SurfaceKind::LayerBackground
         );
+        // 锁屏：ext-session-lock-v1（非 xdg/layer）。
+        assert_eq!(EtherRole::Lock.surface_kind(), SurfaceKind::SessionLock);
     }
 }

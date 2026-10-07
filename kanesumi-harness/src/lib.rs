@@ -36,6 +36,9 @@ pub use dmabuf::dmabuf_probe_entry;
 pub mod platform;
 
 #[cfg(target_os = "linux")]
+pub mod session_lock;
+
+#[cfg(target_os = "linux")]
 pub mod render;
 
 pub mod snapshot;
@@ -44,7 +47,8 @@ pub use cpu_raster::CpuRenderer;
 
 pub use app::{
     AnchorKind, App, AppConfig, FloatingLayer, ImeAction, ImeContentHint, ImeContext, InputEvent,
-    Key, LayerKind, Modifiers, PendingImeBatch, PointerButton, PopupRequest, compute_ime_action,
+    Key, LayerKind, LockEvent, Modifiers, PendingImeBatch, PointerButton, PopupRequest,
+    compute_ime_action,
 };
 #[cfg(target_os = "linux")]
 pub use appmenu::install;
