@@ -8,7 +8,10 @@ pub mod easings;
 pub mod presets;
 
 pub use animation::Animation;
-pub use easings::{metro_cubic, metro_default, metro_out_quart, metro_quintic, metro_sine};
+pub use easings::{
+    CURVE_EASE_OUT_CUBIC, CURVE_UWP_CLOSE, CURVE_UWP_OPEN, bezier_y, metro_cubic, metro_default,
+    metro_out_quart, metro_quintic, metro_sine,
+};
 pub use presets::{
     DURATION_COLOR_TRANSITION, DURATION_COVER_FADE, DURATION_DIALOG_ENTER, DURATION_DIALOG_FADE_IN,
     DURATION_DIALOG_FADE_OUT, DURATION_INDETERMINATE, DURATION_OVERLAY_CLOSE,
