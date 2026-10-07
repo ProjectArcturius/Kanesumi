@@ -13,6 +13,7 @@ pub mod ime;
 pub mod layer;
 pub mod props;
 pub mod testing;
+pub mod transitions;
 pub mod tree;
 pub mod visual_state;
 pub mod widget;
@@ -23,6 +24,9 @@ pub use id::WidgetId;
 pub use ime::{ImeContentHint, ImeContext};
 pub use layer::{LayerAnimSpec, LayerOp};
 pub use props::{Align, Insets, LayoutProps};
+pub use transitions::{
+    Edge, LayerOutcome, STAGGER_MAX_ITEMS, Transition, TransitionHandle, TransitionParams,
+};
 pub use tree::{Action, EditCtx, FrameOutput, PopupDismissed, PopupSide, PopupSpec, Tree};
 pub use visual_state::VisualState;
 pub use widget::{

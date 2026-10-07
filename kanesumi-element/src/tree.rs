@@ -15,6 +15,7 @@ use crate::event::{Event, Key, Modifiers, PointerButton};
 use crate::id::WidgetId;
 use crate::layer::{LayerAnimSpec, LayerOp, LayerState};
 use crate::ime::ImeContext;
+use crate::transitions::{ActiveTransition, PendingStart};
 use crate::props::{Align, LayoutProps};
 use crate::widget::{
     ArrangeCtx, ControlStates, EventCtx, MeasureCtx, PaintCtx, RealizeCtx, UpdateCtx, Widget,
@@ -230,6 +231,12 @@ pub struct Tree {
     layers: std::collections::BTreeMap<WidgetId, LayerState>,
     /// 待外壳取走的图层操作。
     layer_ops: Vec<LayerOp>,
+    /// 进行中的主题转场（中断 / 估算 / 生命周期）。参 transitions.rs。
+    pub(crate) transitions: std::collections::BTreeMap<WidgetId, ActiveTransition>,
+    /// 图层尚未 Create 的转场起始命令（建层后发出）。
+    pub(crate) pending_starts: std::collections::BTreeMap<WidgetId, PendingStart>,
+    /// 转场动画序号（外壳按此回报 Done / Cancelled）。
+    pub(crate) next_layer_serial: u32,
     /// compose 时允许进入的图层根：拼某图层内容时 = 该图层；拼主场景时 = None（跳过所有图层子树）。
     compose_layer: std::cell::Cell<Option<WidgetId>>,
 
@@ -272,6 +279,9 @@ impl Tree {
             damage_cull: false,
             layers: std::collections::BTreeMap::new(),
             layer_ops: Vec::new(),
+            transitions: std::collections::BTreeMap::new(),
+            pending_starts: std::collections::BTreeMap::new(),
+            next_layer_serial: 1,
             compose_layer: std::cell::Cell::new(None),
             full_repaint: true,
             dirty: true,
@@ -439,6 +449,7 @@ impl Tree {
             self.timers.retain(|(t, _)| t != cur);
             self.parked.retain(|p| p != cur);
             self.popups.retain(|(p, _)| p != cur);
+            self.drop_transition_state(*cur);
             let slot = cur.slot();
             self.nodes[slot] = None;
             self.gens[slot] = self.gens[slot].wrapping_add(1);
@@ -990,6 +1001,8 @@ impl Tree {
 
         // 5b. 图层：逐个拼子树内容，变了才产出 Content（内容只在真变化时重新提交）。
         self.sync_layers();
+        // 5c. 转场：图层建好后发出暂存的初值 + Animate（Create → 初值 → Animate）。
+        self.flush_pending_starts();
 
         // 6. 焦点控件的 IME 上下文（用本帧布局与排版）。
         self.ime = self.focus.and_then(|f| {
@@ -2083,6 +2096,11 @@ impl Tree {
 
     pub fn is_layer(&self, id: WidgetId) -> bool {
         self.layers.contains_key(&id)
+    }
+
+    /// 图层是否已向外壳发过 Create（转场起始命令要等建层后才能发）。参 transitions.rs。
+    pub(crate) fn layer_created(&self, id: WidgetId) -> bool {
+        self.layers.get(&id).is_some_and(|st| st.created)
     }
 
     /// 请求合成器动画（位移 / 不透明度）。动画期间树不重画、不量测；完成经外壳回报。
