@@ -98,16 +98,15 @@ fn vs(
     @location(4) color: vec4<f32>,
     @location(5) clip: vec4<f32>,
 ) -> VsOut {
-    // 六顶点展开（与旧 push_quad 同序）：rect 外扩 1 px 给抗锯齿过渡带。
-    let corners = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 0.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(0.0, 1.0),
+    // 六顶点展开（与旧 push_quad 同序：00,10,11 / 00,11,01）。naga 不允许
+    // 局部数组运行时索引，用算术展开：t = 三角形序，i = 三角形内顶点序。
+    let t = vi / 3u;
+    let i = vi % 3u;
+    // 顶点表：t=0 三角形 x=(0,1,1) y=(0,0,1)；t=1 三角形 x=(0,1,0) y=(0,1,1)。
+    let c = vec2<f32>(
+        select(f32(min(i, 1u)), f32(select(0u, 1u, i == 1u)), t == 1u),
+        select(f32(i / 2u), f32(min(i, 1u)), t == 1u),
     );
-    let c = corners[vi];
     let x0 = rect.x - 1.0;
     let y0 = rect.y - 1.0;
     let x1 = rect.x + rect.z + 1.0;

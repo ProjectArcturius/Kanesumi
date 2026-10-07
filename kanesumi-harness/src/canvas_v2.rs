@@ -404,8 +404,9 @@ fn encode_scene(&mut self, engine: &kanesumi_canvas::text::TextEngine, scene: &S
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
+                    // uniform（W/H/contrast/gamma）：vs 的 NDC 换算与 fs 的浓度补偿都用。
                     binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -430,9 +431,16 @@ fn encode_scene(&mut self, engine: &kanesumi_canvas::text::TextEngine, scene: &S
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Inst>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![
-                        0 => Uint32x2, 1 => Float32x4, 2 => Float32x4,
-                        3 => Float32x4, 4 => Float32x4, 5 => Float32x4
+                    // offset 显式对齐 `Inst` 真实布局（repr(C)，[f32;4] 对齐 4）：
+                    // kind+flags @0（8B）、rect@8、p@24、q@40、color@56、clip@72、_pad@88。
+                    // 用 `offset_of!` 断言守住（inst_布局大小与对齐 测试）。
+                    attributes: &[
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32x2, offset: std::mem::offset_of!(Inst, kind) as u64, shader_location: 0 },
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: std::mem::offset_of!(Inst, rect) as u64, shader_location: 1 },
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: std::mem::offset_of!(Inst, p) as u64, shader_location: 2 },
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: std::mem::offset_of!(Inst, q) as u64, shader_location: 3 },
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: std::mem::offset_of!(Inst, color) as u64, shader_location: 4 },
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: std::mem::offset_of!(Inst, clip) as u64, shader_location: 5 },
                     ],
                 }],
             },
@@ -699,9 +707,14 @@ impl ClipStack {
         self.stack.pop();
     }
 
-    /// 当前有效裁剪（物理整数边界 x0,y0,x1,y1）；None = 完全裁掉（本命令跳过）。
+    /// 当前有效裁剪（物理整数边界 x0,y0,x1,y1）。与 v1 语义一致：
+    /// 栈空 = 无裁剪（全表面可见）；顶层 `Some(None)`（空交集层）= 完全裁掉 → None。
     fn current(&self) -> Option<[f32; 4]> {
-        let clip = self.stack.last().copied().flatten()?;
+        let clip = match self.stack.last().copied() {
+            Some(Some(r)) => r,
+            Some(None) => return None,
+            None => self.surface,
+        };
         let eff = intersect(clip, self.surface)?;
         let (x, y, w, h) = scissor_rect(Some(eff), self.scale, 1 << 20, 1 << 20);
         Some([x as f32, y as f32, (x + w) as f32, (y + h) as f32])
@@ -1368,7 +1381,7 @@ fn upload_insts<'a>(
         *buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("kanesumi-c2-inst-buf"),
             size: *cap as u64 * std::mem::size_of::<Inst>() as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
     }
