@@ -313,13 +313,14 @@ impl DmabufBuffers {
 
     /// 尺寸变化或未建 → 重建双槽（新建 bo + create_immed 得 wl_buffer）。
     /// `recipe` 为崩溃安全探测**证明可用**的组合：分配方式（显式修饰符或 LINEAR 标志）
-    /// 与 fourcc 都按它来（未知组合一律由调用方回退 SHM，绝不在此硬编码推断）。
+    /// 按它来；fourcc 由 `choose_format` 协商选定（免 R/B 交换的 ABGR8888 优先）。
     fn ensure_slots(
         &mut self,
         dev: &Device<File>,
         width: u32,
         height: u32,
         recipe: ProbeRecipe,
+        fourcc: Format,
     ) -> Option<()> {
         let fresh = self.width != width || self.height != height || self.slots[0].is_none();
         if !fresh {
@@ -329,7 +330,6 @@ impl DmabufBuffers {
             *s = None;
         }
         for s in self.slots.iter_mut() {
-            let fourcc = recipe.fourcc();
             // LINEAR：保证 CPU 可 mmap 写。GL/drm 需 LINEAR 才允许 gbm_bo_map。
             // 探测证明只能用显式修饰符分配（部分 Mesa 对 LINEAR 标志分配会失败）→ 走
             // `create_buffer_object_with_modifiers(LINEAR)`；否则用历史 LINEAR 标志路径。
@@ -431,7 +431,7 @@ impl DmabufBuffers {
             self.unavailable = true;
             return CommitOutcome::Unavailable;
         };
-        if self.ensure_slots(&device, width, height, recipe).is_none() {
+        if self.ensure_slots(&device, width, height, recipe, choice.fourcc).is_none() {
             self.unavailable = true;
             return CommitOutcome::Unavailable;
         }
@@ -513,7 +513,7 @@ impl DmabufBuffers {
                 self.slots[other].as_mut().unwrap().partial = None;
             }
         }
-        if let Some(buffer) = self.ensure_buffer(qh, idx, dmabuf, recipe.fourcc()) {
+        if let Some(buffer) = self.ensure_buffer(qh, idx, dmabuf, choice.fourcc) {
             surface.attach(Some(&buffer), 0, 0);
             if surface.version() >= 4 {
                 surface.damage_buffer(cx0 as i32, cy0 as i32, cw as i32, ch as i32);
