@@ -5,6 +5,7 @@
 // 逐字一致：SOLID_SHADER 的 sRGB→线性 + 预乘输出、TEXT_SHADER 的浓度补偿
 // （与 CPU `TextRenderTuning::tune_coverage` 同公式，测试 `gpu_formula_matches_cpu_lut`
 // 守住）、IMAGE_SHADER 的 tint / opacity 规则。
+// C1.5 增量重画新增 kind 6（清除实例，走无混合管线）与 blit_vs / blit_fs（target 上屏）。
 // 描边语义核对（任务书要求）：`triangulate_stroke` 为**向内**描边（外沿 = 矩形边界，
 // 内沿 = 内缩 thickness），故 sd_stroke 用 max(d, −(d+t)) 原样成立；圆弧
 // `triangulate_arc` 的 radius 是**中心线**半径（内外各 t/2），故环带以 R 为中心线，
@@ -176,6 +177,11 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     } else if (kind == 2u) {
         // 圆弧环（中心在 p.xy、中心线半径 p.z、厚 p.w；起止角 q.xy 弧度）。
         cov = clamp(0.5 - sd_arc(in.pos.xy - in.p.xy, in.q.x, in.q.y, in.p.z, in.p.w), 0.0, 1.0);
+    } else if (kind == 6u) {
+        // C1.5 增量清除实例：覆盖损伤矩形 D，片元恒输出 0。
+        // 该 kind 走 `pipeline_replace`（blend: None）——直接写入 vec4(0) 而不与旧值混合，
+        // 等价于「只在 D 内做 LoadOp::Clear」；scissor 已限到 D，故只清 D。
+        return vec4<f32>(0.0);
     } else {
         // 三角形（p = p0.xy p1.xy，q.x/q.y = p2.xy；物理像素）。
         let p0 = vec2<f32>(in.p.x, in.p.y);
@@ -184,5 +190,28 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
         cov = clamp(0.5 - sd_triangle(in.pos.xy, p0, p1, p2), 0.0, 1.0);
     }
     return vec4<f32>(srgb_to_linear(in.color.rgb) * in.color.a * cov, in.color.a * cov);
+}
+
+// C1.5：blit 呈现路径 —— 交换链不支持 COPY_DST（无法 copy_texture_to_texture）时，
+// 用全屏三角形采样常驻 target 上屏。复用 binding 0（此处语义为 target 纹理），
+// 采样器仍是 binding 2；blit 绑定组由 CPU 侧构造（见 canvas_v2.rs `make_blit_bind_group`）。
+struct BlitOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+@vertex
+fn blit_vs(@builtin(vertex_index) vi: u32) -> BlitOut {
+    // 全屏三角形：vi=0 → (0,0) 左上，vi=1 → (2,0)，vi=2 → (0,2)。
+    let x = f32((vi << 1u) & 2u);
+    let y = f32(vi & 2u);
+    var out: BlitOut;
+    out.pos = vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
+    out.uv = vec2<f32>(x, y);
+    return out;
+}
+@fragment
+fn blit_fs(in: BlitOut) -> @location(0) vec4<f32> {
+    // target 与交换链同格式（sRGB）：采样解码 → 写入再编码，A/B 两档走同一往返，可逐位比较。
+    return textureSampleLevel(glyph_tex, samp, in.uv, 0.0);
 }
 "#;

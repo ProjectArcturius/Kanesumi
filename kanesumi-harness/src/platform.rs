@@ -199,6 +199,22 @@ impl SurfaceRenderer {
             SurfaceRenderer::V2(r) => Some(r.last_draws()),
         }
     }
+
+    /// 最近一帧 C1.5 保留画布统计（v2 记 (inc, dmg_pct, insts)；v1 → None）。
+    pub fn last_c15_stats(&self) -> Option<(bool, f32, u32)> {
+        match self {
+            SurfaceRenderer::V1(_) => None,
+            SurfaceRenderer::V2(r) => Some(r.last_c15_stats()),
+        }
+    }
+
+    /// 目标离屏缓冲 target 是否就绪且内容有效（v2 增量绘制使用；v1 恒 false）。
+    pub fn is_target_valid(&self) -> bool {
+        match self {
+            SurfaceRenderer::V1(_) => false,
+            SurfaceRenderer::V2(r) => r.is_target_valid(),
+        }
+    }
 }
 
 use crate::renderer_policy::{
@@ -1851,6 +1867,9 @@ impl Shell {
             ) {
                 Ok(r) => {
                     log::info!("wgpu 渲染器已创建（{:.0}x{:.0}）", self.width, self.height);
+                    if matches!(r, SurfaceRenderer::V2(_)) && !crate::canvas_v2::canvas_full_forced() {
+                        self.app.set_damage_cull(true);
+                    }
                     self.renderer = Some(r);
                     crate::timeline::note_once("renderer_ready");
                 }
@@ -1898,6 +1917,9 @@ impl Shell {
                 )
             {
                 log::info!("主表面 wgpu 渲染器已创建（{}）", r.diagnostics());
+                if matches!(r, SurfaceRenderer::V2(_)) && !crate::canvas_v2::canvas_full_forced() {
+                    self.app.set_damage_cull(true);
+                }
                 self.renderer = Some(r);
                 crate::timeline::note_once("renderer_ready");
                 return;
@@ -2036,6 +2058,19 @@ impl Shell {
             log::info!("{}", lines.trim_end());
         }
 
+        let target_valid = match self.renderer.as_ref() {
+            Some(SurfaceRenderer::V2(r)) => r.is_target_valid(),
+            Some(SurfaceRenderer::V1(_)) => false,
+            None => true,
+        };
+        // 参 ELEMENT_TREE「compose 剔除」。CanvasV2 由 canvas_v2 的 inst_intersects 做物理损伤剔除
+        // （含 1 px AA 外扩）；若在 Tree 层提前按未外扩的逻辑损伤剔除，外扩环带内的邻接图元会被
+        // 丢掉，增量清除 D 后环带出现空洞，与整幅重画对拍 mismatch。非 V2（CPU / V1）保持既有语义。
+        let is_v2 = matches!(self.renderer.as_ref(), Some(SurfaceRenderer::V2(_)));
+        let damage_cull_active =
+            damage_cull_active_for(is_v2, target_valid, crate::canvas_v2::canvas_full_forced());
+        self.app.set_damage_cull(damage_cull_active);
+
         let size = self.size();
         // 主表面 Scene 复用缓冲（egui PaintList）：App::render_into 就地清空重建，
         // 复用 Vec 容量，不做每帧 `Scene::default()` + 逐 push 重分配。
@@ -2071,7 +2106,10 @@ impl Shell {
 
         // 输出分派：layer-shell → CPU 光栅化 + SHM 提交；xdg-shell → wgpu 直出。
         // S4：本帧局部损坏矩形（CPU 光栅只重绘该区；GPU 直出全量，恒定消费）。
-        let damage = self.take_damage();
+        let mut damage = self.take_damage();
+        if !target_valid {
+            damage = None;
+        }
         // 零面积 = 这一帧什么都没变（元素树报告）：CPU 表面不光栅、不提交。
         if self.cpu.is_some() && damage.is_some_and(|d| d.size.width <= 0.0 || d.size.height <= 0.0) {
             return;
@@ -2102,12 +2140,24 @@ impl Shell {
             commit_ms = t.elapsed().as_secs_f32() * 1000.0;
         } else if let Some(r) = self.renderer.as_mut() {
             let t = Instant::now();
-            r.render(&self.engine, &self.scene_buf);
+            r.render_with_damage(&self.engine, &self.scene_buf, damage);
             raster_ms = t.elapsed().as_secs_f32() * 1000.0;
             gpu_samples = r.drain_gpu_samples();
             acquire_ms = r.take_acquire_ms();
             if let Some(n) = r.last_draws() {
                 draws = Some(n);
+            }
+            if let Some((inc, dmg_pct, insts)) = r.last_c15_stats() {
+                self.perf_main.record_c15(inc, dmg_pct, insts);
+            }
+            #[cfg(debug_assertions)]
+            if crate::canvas_v2::canvas_verify_enabled() {
+                match r {
+                    SurfaceRenderer::V2(v2) if v2.should_verify() => {
+                        v2.verify_target_against_full(&self.engine, &self.scene_buf, damage);
+                    }
+                    _ => {}
+                }
             }
         }
         // 时间线：首次提交（CPU 主表面 → SHM/dmabuf；xdg → wgpu present）。
@@ -4047,6 +4097,21 @@ fn compute_write_region(
     }
 }
 
+/// 主表面是否开启元素树损伤剔除（`App::set_damage_cull`）。
+///
+/// 参 ELEMENT_TREE「compose 剔除」。CanvasV2 恒为 `false`：其损伤剔除在 `canvas_v2` 内按
+/// **物理**损伤 `damage_phys_rect`（含 1 px AA 外扩）经 `inst_intersects` 完成；若在 Tree 层
+/// 提前按**未外扩**的逻辑损伤剔除，外扩环带内的邻接图元会被丢掉 —— 增量清除 D 后该环带
+/// 出现空洞，与整幅重画对拍 mismatch（参报告 §三.1、§七）。
+/// 非 V2（CPU / V1）路径不涉及外扩，保持既有语义 `target_valid && !canvas_full_forced()` 不变。
+fn damage_cull_active_for(is_v2: bool, target_valid: bool, full_forced: bool) -> bool {
+    if is_v2 {
+        false
+    } else {
+        target_valid && !full_forced
+    }
+}
+
 fn commit_shm_buffers(
     shm: &wl_shm::WlShm,
     qh: &QueueHandle<Shell>,
@@ -4301,6 +4366,26 @@ mod tests {
     #[test]
     fn write_region_full_frame_is_full() {
         assert_eq!(compute_write_region(false, false, None, Some(r(0.0, 0.0, 8.0, 8.0))), None);
+    }
+
+    /// 主表面 Tree 损伤剔除开关：V2 一律关闭（改由 canvas_v2 物理剔除 + 1 px AA 外扩承担）。
+    #[test]
+    fn damage_cull_v2_disabled() {
+        assert!(!damage_cull_active_for(true, true, false), "V2 目标有效也必须关闭 Tree 剔除");
+        assert!(!damage_cull_active_for(true, false, false), "V2 目标失效同样关闭");
+        assert!(!damage_cull_active_for(true, true, true), "V2 强制整幅同样关闭");
+        assert!(!damage_cull_active_for(true, false, true), "V2 强制整幅且失效同样关闭");
+    }
+
+    /// 非 V2（CPU / V1）路径保持既有语义 `target_valid && !canvas_full_forced()`，不受本任务影响。
+    #[test]
+    fn damage_cull_non_v2_unchanged() {
+        // CPU 路径（target_valid = true）：仅强制整幅开关能关闭。
+        assert!(damage_cull_active_for(false, true, false), "CPU 局部帧应开启 Tree 剔除");
+        assert!(!damage_cull_active_for(false, true, true), "CPU 强制整幅应关闭 Tree 剔除");
+        // V1 路径（target_valid = false）：恒关闭，与整幅开关无关。
+        assert!(!damage_cull_active_for(false, false, false), "V1 恒关闭 Tree 剔除");
+        assert!(!damage_cull_active_for(false, false, true), "V1 恒关闭 Tree 剔除");
     }
 
     /// 具名键映射：PageUp/PageDown（含 Prior/Next 别名）、Insert、F1..F12。
