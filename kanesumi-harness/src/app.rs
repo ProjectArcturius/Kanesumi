@@ -181,6 +181,45 @@ pub enum InputEvent {
     DeleteSurrounding { before_bytes: u32, after_bytes: u32 },
 }
 
+/// 锁屏外壳（`crate::session_lock`）→ 应用的事件。参 docs/LOCKSCREEN_DESIGN.md §Ⅱ。
+///
+/// 锁屏客户端经 `ETHER_ROLE=lock` 走 session_lock 外壳，不建 xdg/layer 主表面；
+/// 应用据此知道锁是否确认、输出如何变化。
+#[derive(Debug, Clone, PartialEq)]
+pub enum LockEvent {
+    /// 合成器确认锁定（收到协议 `locked`）——自此才允许画锁屏表面。
+    /// `lock_confirm_ms` = 外壳发起 `lock()` 到收到 `locked` 的毫秒数（自证日志用）。
+    Locked {
+        /// `lock()` → `locked` 的耗时（毫秒）。
+        lock_confirm_ms: u64,
+    },
+    /// 首个锁屏表面缓冲已提交。`first_frame_ms` = 进程启动到首帧的毫秒数。
+    FirstFrame {
+        /// 启动 → 首帧的耗时（毫秒）。
+        first_frame_ms: u64,
+    },
+    /// 合成器拒绝锁定 / 强制解锁（协议 `finished`）。应用应准备退出，**不得**解锁。
+    Finished,
+    /// 某输出可用于建锁屏表面。
+    OutputAdded {
+        /// 输出序号（0 = 主输出）。
+        index: u32,
+        /// 输出名（如 `main`）。
+        name: String,
+        /// 逻辑尺寸。
+        logical: (i32, i32),
+        /// 输出缩放（整数）。
+        scale: i32,
+        /// 是否主输出。
+        primary: bool,
+    },
+    /// 输出移除，锁屏表面已销毁。
+    OutputRemoved {
+        /// 原输出序号。
+        index: u32,
+    },
+}
+
 /// Kanesumi 应用入口 trait —— 把 Kanesumi 变成应用 SDK 的契约。
 ///
 /// 状态驱动渲染（参 PLAN.md §4-1 / AnimationRules.md §III）：
@@ -507,6 +546,26 @@ pub trait App {
     fn render_into(&mut self, engine: &TextEngine, size: Size, out: &mut Scene) {
         *out = self.render(engine, size);
     }
+
+    // ── 锁屏表面（session_lock 外壳；非锁屏应用用默认实现，行为不变） ──────────
+
+    /// 渲染锁屏表面。`primary=false` 的输出只需画背板（其余输出不画完整界面）。
+    /// 默认委托 [`App::render`]（非锁屏应用无影响）。参 docs/LOCKSCREEN_DESIGN.md §Ⅳ。
+    fn render_lock(&mut self, engine: &TextEngine, size: Size, _primary: bool) -> Scene {
+        self.render(engine, size)
+    }
+
+    /// 锁屏外壳事件（锁确认 / 拒绝 / 输出增删）。
+    fn on_lock_event(&mut self, _event: LockEvent) {}
+
+    /// 应用请求解锁（认证成功）。锁屏外壳据此发 `unlock_and_destroy` → roundtrip → 退出。
+    /// **认证成功前必须返回 false**（安全不变量：绝不提前解锁）。默认 false。
+    fn lock_unlock_requested(&self) -> bool {
+        false
+    }
+
+    /// 大写锁定状态变化（锁屏状态行提示用）。默认忽略。
+    fn lock_caps_lock_changed(&mut self, _caps: bool) {}
 }
 
 /// harness `Key` → 控件层 `TextInputKey` 转换（TextBox 等文本控件路由用）。

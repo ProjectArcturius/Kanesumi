@@ -437,6 +437,13 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         );
     }
 
+    // 锁屏角色：ext-session-lock-v1 与 xdg/layer 单主表面模型不同 —— 交 `session_lock`
+    // 外壳（每输出一个锁屏表面，锁确认前不画内容）。参 docs/LOCKSCREEN_DESIGN.md §Ⅱ/§Ⅵ。
+    // `session_lock::run` 不返回（退出由锁协议事件驱动）。
+    if role.surface_kind() == SurfaceKind::SessionLock {
+        crate::session_lock::run(app, engine);
+    }
+
     let mut shell = Shell::new(app, engine, &conn, &globals, &qh, role)?;
     // 预载的 GPU 上下文交给外壳（None → 首个 configure 照旧惰性创建）。
     shell.gpu = preloaded_gpu;
@@ -1160,6 +1167,11 @@ impl Shell {
                         .map_err(|e| log::warn!("xdg_wm_base 不可用，子弹层停用：{e}"))
                         .ok();
                 }
+            }
+            // 锁屏表面：不经 xdg/layer 单主表面模型，由 `crate::session_lock` 外壳接管。
+            // run_inner 已在建 Shell 前分流（此处仅保证枚举穷尽）。
+            SurfaceKind::SessionLock => {
+                return Err("锁屏角色由 session_lock 外壳处理（run_inner 已分流）".into());
             }
         }
 
@@ -3262,7 +3274,7 @@ impl KeyboardHandler for Shell {
 /// 空格键**不**走具名变体：其 utf8 是 `" "`，必须落 `Char(' ')` 才能让 TextBox 与
 /// 所有「Space 激活」控件照旧工作（参 `Key::Space` 注释）。PageUp/PageDown/Insert/
 /// F1..F12 无 utf8，由本表语义化；F13+ 落 `Unknown`。
-fn map_key(keysym: Keysym, utf8: Option<String>) -> Key {
+pub(crate) fn map_key(keysym: Keysym, utf8: Option<String>) -> Key {
     use xkeysym::key;
     match keysym.raw() {
         key::Return | key::KP_Enter => return Key::Enter,
