@@ -271,9 +271,17 @@ pub trait Widget {
 | `PointerEnter/Leave` | 框架比对前后 hover 链，差集发 Enter/Leave；同时维护 `state.hovered` 并自动 `invalidate_paint` —— **`hover_signature` 退役** |
 | `Click` | 框架合成：同一目标上 Down→Up 且未移出 → `Click`（控件多数只需要这一个） |
 | `ContextRequested` | 右键按下时框架记录命中目标（`ContextTarget` 一等语义，`ROADMAP` M3-4）；菜单只能读它 |
-| `Scroll` | 指针下目标冒泡，首个处理者（ScrollViewer）截停 |
+| `Scroll` | 指针下目标冒泡，首个处理者（ScrollViewer）截停。`Event::Scroll` 携带 `source`（`Wheel { steps }` / `Finger` / `Continuous`）与 `phase`（`Update` / `End`）：旧 `Tree::scroll(pos, dx, dy, mods)` 等价 `Wheel` + `Update`，新 `Tree::scroll_ex(pos, ScrollInput)` 传来源与阶段 |
 | `Key` / `Text` / `Preedit` / `Commit` | 投给焦点节点并冒泡；Tab/Shift+Tab 在冒泡到根仍未处理时由框架消费 |
 | `FocusIn/Out` | 框架聚焦变化时发出 |
+
+**滚动语义**（`INTERACTION_CANON.md` §Ⅴ）：滚轮一格 48px，`Wheel` 走
+`WHEEL_SMOOTH_MS = 150ms` 的 UWP 缓出追目标（目标可累加、可中断、从当前呈现值接续，不跳变）；
+`Finger` / `Continuous` 跟手 1:1 直加；`End`（手指离开 / Wayland `axis_stop`）后按最近 ~100ms
+位移与时间估速启动摩擦惯性（低于阈值不启、撞边界即停不做回弹、新输入立即打断）；
+`PageUp` / `PageDown` = 视口高 − 一行，`Home` / `End` 到顶底，走与滚轮相同的平滑追踪。
+常量集中在 `kanesumi-core/src/interaction.rs`，衰减原语为 `kanesumi-anim` 的 `FrictionAnim`
+（WinUI `InteractionTracker` 一阶指数衰减）。
 
 **焦点**（`ROADMAP` M3-1）：Tab 顺序 = 树的先序中 `focusable && !disabled && visible` 的节点，
 **由树派生，不需要每帧登记**；覆盖层有模态内容时 Tab 被限制在覆盖层内（焦点陷阱）。
