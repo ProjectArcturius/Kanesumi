@@ -280,12 +280,13 @@ pub fn write_log(path: &Path, content: &str) {
 /// 掉帧判定倍率：间隔严格大于 1.5 × 刷新周期才算。
 pub const DROP_FACTOR: f32 = 1.5;
 
-/// 刷新周期毫秒（默认 60 Hz；`ETHER_REFRESH_HZ` 可覆盖）。
+/// 刷新周期毫秒（默认 60 Hz；`ETHER_REFRESH_HZ` 或 `ETHER_HEADLESS_HZ` 可覆盖）。
 pub fn refresh_period_ms() -> f32 {
     use std::sync::OnceLock;
     static HZ: OnceLock<f32> = OnceLock::new();
     let hz = *HZ.get_or_init(|| {
         std::env::var("ETHER_REFRESH_HZ")
+            .or_else(|_| std::env::var("ETHER_HEADLESS_HZ"))
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
             .filter(|h| *h > 0.0)
@@ -307,6 +308,9 @@ pub fn count_dropped(intervals_ms: &[f32], refresh_ms: f32) -> u32 {
     intervals_ms.iter().filter(|&&d| is_dropped(d, refresh_ms)).count() as u32
 }
 
+/// 采样误差样本环容量（每段动画）。
+pub const SAMPLE_ERR_CAP: usize = 512;
+
 /// 一段进行中的动画。`trigger` = 触发时刻（动画推进开始）。
 #[derive(Debug, Clone)]
 struct Activity {
@@ -318,6 +322,10 @@ struct Activity {
     frames: u32,
     drops: u32,
     max_interval_ms: f32,
+    hitch_ms: f32,
+    sample_err_us: Vec<f32>,
+    feedback_count: u32,
+    intervals_ms: Vec<f32>,
 }
 
 /// 客户端动画掉帧追踪器（纯逻辑，便于单测；运行期由 thread_local 持有）。
@@ -343,6 +351,13 @@ impl FramePacing {
         Self { refresh_ms, ..Self::new() }
     }
 
+    /// 更新当前名义刷新周期（毫秒）。
+    pub fn set_refresh_period(&mut self, period_ms: f32) {
+        if period_ms > 0.0 {
+            self.refresh_ms = period_ms;
+        }
+    }
+
     /// 开始一段动画。同名已存在则重置计数（重新起跑）。
     pub fn begin(&mut self, name: &str, trigger: std::time::Instant) {
         if let Some(a) = self.activities.iter_mut().find(|a| a.name == name) {
@@ -352,6 +367,10 @@ impl FramePacing {
             a.frames = 0;
             a.drops = 0;
             a.max_interval_ms = 0.0;
+            a.hitch_ms = 0.0;
+            a.sample_err_us.clear();
+            a.feedback_count = 0;
+            a.intervals_ms.clear();
             return;
         }
         self.activities.push(Activity {
@@ -362,6 +381,10 @@ impl FramePacing {
             frames: 0,
             drops: 0,
             max_interval_ms: 0.0,
+            hitch_ms: 0.0,
+            sample_err_us: Vec::new(),
+            feedback_count: 0,
+            intervals_ms: Vec::new(),
         });
     }
 
@@ -405,14 +428,32 @@ impl FramePacing {
             a.frames = a.frames.saturating_add(1);
             if let Some(last) = a.last_present {
                 let d = now.saturating_duration_since(last).as_secs_f32() * 1000.0;
+                if a.intervals_ms.len() < SAMPLE_ERR_CAP {
+                    a.intervals_ms.push(d);
+                }
                 if d > a.max_interval_ms {
                     a.max_interval_ms = d;
                 }
                 if is_dropped(d, refresh_ms) {
                     a.drops = a.drops.saturating_add(1);
                 }
+                if d > refresh_ms {
+                    a.hitch_ms += d - refresh_ms;
+                }
             }
             a.last_present = Some(now);
+        }
+    }
+
+    /// 记一次指定动画的 wp_presentation 回执采样误差（µs）。
+    pub fn record_feedback(&mut self, name: &str, err_us: f32) {
+        for a in &mut self.activities {
+            if a.name == name {
+                a.feedback_count = a.feedback_count.saturating_add(1);
+                if a.sample_err_us.len() < SAMPLE_ERR_CAP {
+                    a.sample_err_us.push(err_us);
+                }
+            }
         }
     }
 
@@ -422,24 +463,102 @@ impl FramePacing {
         let a = self.activities.remove(i);
         let first = a.first_present?;
         let latency = first.saturating_duration_since(a.trigger).as_secs_f32() * 1000.0;
-        Some(format_pacing_line(&a.name, latency, a.frames, a.drops, a.max_interval_ms))
+        let duration_ms = a
+            .last_present
+            .map_or(0.0, |last| last.saturating_duration_since(first).as_secs_f32() * 1000.0);
+        let hitch_ratio = if duration_ms > 0.0 {
+            a.hitch_ms * 1000.0 / duration_ms
+        } else {
+            0.0
+        };
+        let sample_err = summarize(&a.sample_err_us);
+        let fb_coverage = if a.frames > 0 {
+            (a.feedback_count as f32 / a.frames as f32).min(1.0)
+        } else {
+            0.0
+        };
+        let hz = if self.refresh_ms > 0.0 { 1000.0 / self.refresh_ms } else { 0.0 };
+        let interval_cv = if a.intervals_ms.len() >= 2 {
+            let n = a.intervals_ms.len() as f32;
+            let mean = a.intervals_ms.iter().sum::<f32>() / n;
+            if mean > 0.0 {
+                let var = a.intervals_ms.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / (n - 1.0);
+                var.sqrt() / mean
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+        Some(format_pacing_line(&PacingReport {
+            name: a.name,
+            start_latency_ms: latency,
+            frames: a.frames,
+            drops: a.drops,
+            max_interval_ms: a.max_interval_ms,
+            hitch_ms: a.hitch_ms,
+            hitch_ratio_ms_per_s: hitch_ratio,
+            sample_err_us: sample_err,
+            hz,
+            fb_coverage,
+            interval_cv,
+        }))
     }
 }
 
-/// 一行掉帧日志（纯函数）：动画名、起跑延迟、总帧数、掉帧数、最长帧间隔。与合成器同格式。
-pub fn format_pacing_line(
-    name: &str,
-    start_latency_ms: f32,
-    frames: u32,
-    drops: u32,
-    max_interval_ms: f32,
-) -> String {
+/// 一组样本的 (p50, p99, max)；空 → None。
+fn summarize(v: &[f32]) -> Option<(f32, f32, f32)> {
+    if v.is_empty() {
+        return None;
+    }
+    let mut s = v.to_vec();
+    s.sort_by(|a, b| a.total_cmp(b));
+    let at = |q: f32| s[((s.len() - 1) as f32 * q).round() as usize];
+    Some((at(0.5), at(0.99), s[s.len() - 1]))
+}
+
+/// 一段动画的掉帧报表（纯数据，便于单测）。
+#[derive(Debug, Clone)]
+pub struct PacingReport {
+    pub name: String,
+    pub start_latency_ms: f32,
+    pub frames: u32,
+    pub drops: u32,
+    pub max_interval_ms: f32,
+    pub hitch_ms: f32,
+    pub hitch_ratio_ms_per_s: f32,
+    pub sample_err_us: Option<(f32, f32, f32)>,
+    pub hz: f32,
+    pub fb_coverage: f32,
+    pub interval_cv: f32,
+}
+
+/// 一行掉帧日志（纯函数）：动画名、起跑延迟、总帧数、掉帧数、最长帧间隔，
+/// 以及 F1/F3 追加的量尺字段（hitch_ms / hitch_ratio / sample_err_us / hz / fb / cv）。
+pub fn format_pacing_line(r: &PacingReport) -> String {
     let ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
+    let err = match r.sample_err_us {
+        Some((p50, p99, max)) => format!("{p50:.0}/{p99:.0}/{max:.0}"),
+        None => "n/a".to_string(),
+    };
     format!(
-        "t={ms} name=\"{name}\" start_latency_ms={start_latency_ms:.1} frames={frames} drops={drops} max_interval_ms={max_interval_ms:.1}\n"
+        "t={ms} name=\"{}\" start_latency_ms={:.1} frames={} drops={} max_interval_ms={:.1} \
+         hitch_ms={:.1} hitch_ratio={:.1} sample_err_us={} hz={:.1} fb={:.2} cv={:.3}\n",
+        r.name,
+        r.start_latency_ms,
+        r.frames,
+        r.drops,
+        r.max_interval_ms,
+        r.hitch_ms,
+        r.hitch_ratio_ms_per_s,
+        err,
+        r.hz,
+        r.fb_coverage,
+        r.interval_cv,
     )
 }
 
@@ -468,6 +587,17 @@ pub fn pacing_present(now: std::time::Instant) {
 /// 指定动画的一帧提交（多表面进程按表面分别记，避免互相污染间隔）。
 pub fn pacing_present_named(name: &str, now: std::time::Instant) {
     PACING.with(|p| p.borrow_mut().record_present(name, now));
+}
+
+/// 更新名义刷新周期。
+pub fn pacing_set_period(period: std::time::Duration) {
+    let ms = period.as_secs_f32() * 1000.0;
+    PACING.with(|p| p.borrow_mut().set_refresh_period(ms));
+}
+
+/// 记一次 wp_presentation 回执的采样误差（µs）。
+pub fn pacing_feedback(name: &str, err_us: f32) {
+    PACING.with(|p| p.borrow_mut().record_feedback(name, err_us));
 }
 
 /// 追加掉帧日志并 1 MB 轮转（现文件改名 `.1`）。
@@ -708,5 +838,35 @@ mod tests {
         let t0 = Instant::now();
         p.begin("x", t0);
         assert!(p.finish("x", t0 + Duration::from_millis(5)).is_none());
+    }
+
+    #[test]
+    fn pacing_line_reports_sample_err_and_fb_coverage() {
+        use std::time::{Duration, Instant};
+        let r = 1000.0 / 60.0;
+        let mut p = FramePacing::with_refresh(r);
+        let t0 = Instant::now();
+        p.begin("Settings:main", t0);
+        p.on_present(t0 + Duration::from_millis(16));
+        p.record_feedback("Settings:main", 150.0);
+        p.on_present(t0 + Duration::from_millis(32));
+        p.record_feedback("Settings:main", 200.0);
+        let line = p.finish("Settings:main", t0 + Duration::from_millis(32)).unwrap();
+        assert!(line.contains("sample_err_us=200/200/200"), "{line}");
+        assert!(line.contains("fb=1.00"), "{line}");
+    }
+
+    #[test]
+    fn pacing_line_reports_interval_cv() {
+        use std::time::{Duration, Instant};
+        let r = 1000.0 / 60.0;
+        let mut p = FramePacing::with_refresh(r);
+        let t0 = Instant::now();
+        p.begin("Settings:main", t0);
+        p.on_present(t0 + Duration::from_millis(16));
+        p.on_present(t0 + Duration::from_millis(32));
+        p.on_present(t0 + Duration::from_millis(48));
+        let line = p.finish("Settings:main", t0 + Duration::from_millis(48)).unwrap();
+        assert!(line.contains("cv=0.000"), "{line}");
     }
 }
