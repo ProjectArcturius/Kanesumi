@@ -92,6 +92,12 @@ pub struct SurfacePerf {
     pub acquire: Ring,
     /// 每帧绘制调用数（CanvasV2 记录；v1 / CPU 光栅不统计 → 空环 → `draws=n/a`）。
     pub draws: Ring,
+    /// C1.5：最近一窗是否增量帧（1.0 增量 / 0.0 全幅；空环 → `inc=n/a`）。
+    pub inc: Ring,
+    /// C1.5：最近一窗物理损伤面积占表面比例（%；空环 → `dmg_pct=n/a`）。
+    pub dmg_pct: Ring,
+    /// C1.5：最近一窗实际画出的实例数（空环 → `insts=n/a`）。
+    pub insts: Ring,
     pub frames: u64,
 }
 
@@ -104,6 +110,9 @@ impl SurfacePerf {
             gpu: Ring::new(),
             acquire: Ring::new(),
             draws: Ring::new(),
+            inc: Ring::new(),
+            dmg_pct: Ring::new(),
+            insts: Ring::new(),
             frames: 0,
         }
     }
@@ -130,6 +139,13 @@ impl SurfacePerf {
         self.draws.record(n as f32);
     }
 
+    /// 记一帧 C1.5 保留画布统计（增量标志、损伤面积占比 %、实际绘制实例数）。
+    pub fn record_c15(&mut self, inc: bool, dmg_pct: f32, insts: u32) {
+        self.inc.record(if inc { 1.0 } else { 0.0 });
+        self.dmg_pct.record(dmg_pct);
+        self.insts.record(insts as f32);
+    }
+
     pub fn is_empty(&self) -> bool {
         self.frames == 0
     }
@@ -142,6 +158,7 @@ impl SurfacePerf {
 
 /// 一行日志：行首 = 进程名 + 角色 + 时间（unix 秒），后接帧数与 render / raster / commit /
 /// gpu 四段的 p50/p95/max。GPU 无样本（设备不支持时间戳查询，或尚未回读）写 `gpu=n/a`。
+/// C1.5 追加 `inc=<0|1>`、`dmg_pct=`、`insts=`。
 pub fn format_line(proc: &str, role: &str, surface: &str, p: &SurfacePerf) -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -156,11 +173,20 @@ pub fn format_line(proc: &str, role: &str, surface: &str, p: &SurfacePerf) -> St
         )
     };
     let gpu = if p.gpu.is_empty() { "n/a".to_string() } else { seg(&p.gpu) };
+    let draws = if p.draws.is_empty() { "n/a".to_string() } else { seg(&p.draws) };
+    let inc = if p.inc.is_empty() {
+        "n/a".to_string()
+    } else if p.inc.percentile(0.5) >= 0.5 {
+        "1".to_string()
+    } else {
+        "0".to_string()
+    };
+    let dmg_pct = if p.dmg_pct.is_empty() { "n/a".to_string() } else { seg(&p.dmg_pct) };
+    let insts = if p.insts.is_empty() { "n/a".to_string() } else { seg(&p.insts) };
     // acquire 放行尾：既有解析脚本（tools/perf/gpu_t1_ab.py）按字段名取值，不受影响。
     let acquire = if p.acquire.is_empty() { "n/a".to_string() } else { seg(&p.acquire) };
-    let draws = if p.draws.is_empty() { "n/a".to_string() } else { seg(&p.draws) };
     format!(
-        "{proc} {role} t={secs} surface={surface} frames={} render={} raster={} commit={} gpu={gpu} draws={draws} acquire={acquire}\n",
+        "{proc} {role} t={secs} surface={surface} frames={} render={} raster={} commit={} gpu={gpu} draws={draws} inc={inc} dmg_pct={dmg_pct} insts={insts} acquire={acquire}\n",
         p.frames,
         seg(&p.render),
         seg(&p.raster),
@@ -559,6 +585,25 @@ mod tests {
         }
         let line = format_line("ether-settings", "Browser", "main", &p);
         assert!(line.contains("acquire=17.00/33.00/33.00"), "{line}");
+    }
+
+    /// C1.5 字段：空环时写 n/a，记录后写 inc=1/0 与 dmg_pct / insts 分位数。
+    #[test]
+    fn format_line_c15_fields() {
+        let mut p = SurfacePerf::new();
+        p.record(1.0, 2.0, 3.0);
+        let line = format_line("ether-settings", "Settings", "main", &p);
+        assert!(line.contains("inc=n/a"), "{line}");
+        assert!(line.contains("dmg_pct=n/a"), "{line}");
+        assert!(line.contains("insts=n/a"), "{line}");
+
+        // 记两帧增量（inc=true, dmg=2.5%, insts=42）。
+        p.record_c15(true, 2.5, 42);
+        p.record_c15(true, 3.0, 48);
+        let line = format_line("ether-settings", "Settings", "main", &p);
+        assert!(line.contains("inc=1"), "多数为增量帧写 1：{line}");
+        assert!(line.contains("dmg_pct=3.00/3.00/3.00"), "{line}");
+        assert!(line.contains("insts=48.00/48.00/48.00"), "{line}");
     }
 
     #[test]
