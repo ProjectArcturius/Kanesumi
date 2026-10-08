@@ -7,6 +7,7 @@
 pub mod app;
 pub mod appmenu;
 pub mod context_menu;
+pub mod frame_clock;
 pub mod idle;
 pub mod input_config;
 pub mod layers;
@@ -55,6 +56,7 @@ pub use app::{
 pub use appmenu::install;
 pub use appmenu::{AppMenuHandle, MenuItem, MenuTree, MenuUpdate, ToggleType};
 pub use context_menu::{ContextMenuAction, ContextMenuState};
+pub use frame_clock::{FrameClock, InputCoalescer, MonoBase, PacingThrottle, monotonic_now};
 pub use renderer_policy::{RendererKind, SurfaceClass, choose_renderer};
 pub use role::{EtherRole, RoleParseError, SurfaceKind};
 pub use tree_host::{TreeApp, TreeHost};
