@@ -522,6 +522,9 @@ pub trait App {
     /// 更新菜单勾选 / 结构（`AppMenuHandle::set_check` / `update_tree`，主题切换等）。
     fn set_appmenu_handle(&mut self, _handle: AppMenuHandle) {}
 
+    /// 解码完成通知（参 SMOOTHNESS_PLAN §Ⅲ-3、裁定 §122）。元素树实现（`TreeHost`）将键转交树。
+    fn on_decode_ready(&mut self, _keys: &[kanesumi_canvas::decode::DecodeKey]) {}
+
     /// 右键菜单内容。`(x, y)` 为表面本地逻辑坐标（右键按下点）。
     /// 返回 `Some(items)` = harness 接管右键路由，在指针位置弹出右键菜单（该右键
     /// 事件不再投递 `handle_input`）；`None` = 无右键菜单，事件照常投递（默认）。

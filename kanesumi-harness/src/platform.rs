@@ -56,6 +56,10 @@ use wayland_protocols::wp::text_input::zv3::client::{
 use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
 };
+use wayland_protocols::wp::presentation_time::client::{
+    wp_presentation, wp_presentation_feedback,
+};
+use crate::frame_clock::{FrameClock, InputCoalescer, PacingThrottle};
 // input-method-v2 引擎宿主（Ceyboard 作为 IME 引擎连接合成器）。参 CEYBOARD_SPEC §Ⅴ。
 use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_keyboard_grab_v2::{
@@ -382,6 +386,33 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         .insert(event_loop.handle())
         .map_err(|e| format!("WaylandSource 插入失败：{e}"))?;
 
+    // 解码就绪事件唤醒（F3 第 6 条）：calloop ping 桥接工作线程完成信号，唤醒后 poll 并通知元素树。
+    let (ping, ping_source) =
+        smithay_client_toolkit::reexports::calloop::ping::make_ping()
+            .map_err(|e| format!("calloop ping source 创建失败：{e}"))?;
+    event_loop
+        .handle()
+        .insert_source(ping_source, |(), _, shell: &mut Shell| {
+            let ready = kanesumi_canvas::decode::poll_ready();
+            if !ready.is_empty() {
+                shell.app.on_decode_ready(&ready);
+                shell.dirty = true;
+            }
+        })
+        .map_err(|e| format!("ping_source 插入失败：{e}"))?;
+
+    let ping_clone = ping.clone();
+    kanesumi_canvas::decode::set_ready_hook(Box::new(move || {
+        ping_clone.ping();
+    }));
+    struct ReadyHookGuard;
+    impl Drop for ReadyHookGuard {
+        fn drop(&mut self) {
+            kanesumi_canvas::decode::clear_ready_hook();
+        }
+    }
+    let _hook_guard = ReadyHookGuard;
+
     let role = EtherRole::from_env();
 
     // 字体：App 指定优先，否则环境变量 / 系统字体（SD §IX 禁止静默回退）。
@@ -485,8 +516,15 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         // 空闲唤醒：仅在确有待渲染内容（脏 / 浮层脏 / 动画推进中）时保留 16ms 帧兜底
         // （I-2 不冻结）；否则阻塞到「最近定时器」与「主题检测节流点」较早者，
         // 两者皆无则交给 Wayland 事件唤醒。参 crate::idle。
-        let busy =
-            shell.dirty || shell.floating_dirty.iter().any(|d| *d) || shell.app.needs_redraw();
+        let now = Instant::now();
+        let main_anim = shell.app.needs_redraw();
+        let (can_render_main, _) = shell.main_throttle.can_render(now, main_anim);
+        let can_render_any_floating = shell.floating.iter().enumerate().any(|(i, _)| {
+            let anim = shell.app.floating_needs_redraw(i);
+            let (can, _) = shell.floating_throttle.get_mut(i).map(|t| t.can_render(now, anim)).unwrap_or((true, false));
+            can && (shell.floating_dirty[i] || anim)
+        });
+        let busy = (shell.dirty || main_anim) && can_render_main || can_render_any_floating;
         let theme_after = shell
             .next_theme_check
             .saturating_duration_since(Instant::now());
@@ -505,11 +543,9 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         // 脏 → 渲染 + commit（I-1：CPU 缓冲恒就绪，无条件成功）。
         if shell.dirty {
             shell.render_and_commit(&qh);
-            shell.dirty = false;
         }
         for i in 0..shell.floating.len() {
             if shell.floating_dirty[i] {
-                shell.floating_dirty[i] = false;
                 shell.render_floating_frame(i, &qh);
             }
         }
@@ -710,6 +746,16 @@ pub(crate) struct Shell {
     running: bool,
     /// 已请求主表面 frame callback 但尚未到达（去重，避免一帧多请求）。
     frame_pending: bool,
+    /// wp_presentation 全局对象（合成器提供 → Some；F1/F3 时钟采样）。
+    presentation: Option<wp_presentation::WpPresentation>,
+    /// 客户端呈现帧时钟（F3：按 wp_presentation 回执 / frame 回调预测下一次呈现）。
+    frame_clock: FrameClock,
+    /// 主表面出帧节流状态机（F3：一个回调一帧 / 100ms 超时防冻结）。
+    main_throttle: PacingThrottle,
+    /// 各浮层表面出帧节流状态机（与 `floating` 等长）。
+    floating_throttle: Vec<PacingThrottle>,
+    /// 输入按帧合并队列（移动 / 滚动合并，出帧前一次性交付）。
+    coalescer: InputCoalescer,
     pointer_pos: (f32, f32),
     /// 当前按下的指针键数（S1 输入门控：按键期间 Move 恒置脏，拖拽/滑动逐帧回馈）。
     pointer_buttons: u32,
@@ -1082,6 +1128,12 @@ impl Shell {
             .bind::<WpFractionalScaleManagerV1, Self, ()>(qh, 1..=1, ())
             .ok();
         let viewporter = globals.bind::<WpViewporter, Self, ()>(qh, 1..=1, ()).ok();
+        let presentation = globals
+            .bind::<wp_presentation::WpPresentation, Self, ()>(qh, 1..=1, ())
+            .ok();
+        if presentation.is_some() {
+            log::info!("wp_presentation 协议已绑定");
+        }
         let fractional_supported = fractional_scale_manager.is_some() && viewporter.is_some();
         let fractional_scale = fractional_supported.then(|| {
             fractional_scale_manager
@@ -1391,6 +1443,11 @@ impl Shell {
             configured: false,
             running: true,
             frame_pending: false,
+            presentation,
+            frame_clock: FrameClock::default(),
+            main_throttle: PacingThrottle::new(),
+            floating_throttle: vec![PacingThrottle::new(); floating.len()],
+            coalescer: InputCoalescer::new(),
             pointer_pos: (-1.0, -1.0),
             pointer_buttons: 0,
             pending_damage: None,
@@ -1554,6 +1611,23 @@ impl Shell {
         if self.floating.get(idx).map(|f| !f.configured).unwrap_or(true) {
             return;
         }
+        let (can_render, is_timeout) = if idx < self.floating_throttle.len() {
+            self.floating_throttle[idx]
+                .can_render(Instant::now(), self.app.floating_needs_redraw(idx))
+        } else {
+            (true, false)
+        };
+        if !can_render {
+            return;
+        }
+        if is_timeout {
+            log::warn!("frame_cb_timeout: 浮层 {idx} 100ms 未收到 frame 回调，强制渲染");
+            write_diag(
+                "ether-harness-trace.log",
+                &format!("frame_cb_timeout: floating {idx}\n"),
+            );
+        }
+        self.floating_dirty[idx] = false;
         self.ensure_floating_renderer(idx);
         let (app, floating) = (&mut self.app, &mut self.floating);
         let Some(f) = floating.get_mut(idx) else {
@@ -1607,14 +1681,10 @@ impl Shell {
         };
         let render_ms = t_render.elapsed().as_secs_f32() * 1000.0;
         let s = f.surface.clone();
-        // 按需重绘：浮层动画跑完即停（floating_needs_redraw false → 不请求下一帧）。
-        if app.floating_needs_redraw(idx) {
-            s.frame(qh, s.clone());
-        }
         let mut raster_ms = 0.0f32;
         let mut commit_ms = 0.0f32;
         let mut gpu_samples: Vec<f32> = Vec::new();
-            let mut draws: Option<u32> = None;
+        let mut draws: Option<u32> = None;
         if let Some(cpu) = f.cpu.as_mut() {
             let (pw, ph) = cpu.physical_size();
             let t = Instant::now();
@@ -1627,6 +1697,17 @@ impl Shell {
             raster_ms = t.elapsed().as_secs_f32() * 1000.0;
             // 浮层同样走 dmabuf 直通（默认）—— 控制面板 / Launcher / 菜单等浮层一并受益。
             let scale = f.scale;
+            s.frame(qh, s.clone());
+            if idx < self.floating_throttle.len() {
+                self.floating_throttle[idx].on_request_callback(Instant::now());
+            }
+            send_presentation_feedback(
+                self.presentation.as_ref(),
+                self.frame_clock.current_predicted_present(),
+                idx + 1,
+                &s,
+                qh,
+            );
             let t = Instant::now();
             self.floating_out[idx].commit(
                 qh,
@@ -1640,6 +1721,9 @@ impl Shell {
                 damage,
             );
             commit_ms = t.elapsed().as_secs_f32() * 1000.0;
+            if idx < self.floating_throttle.len() {
+                self.floating_throttle[idx].on_frame_rendered();
+            }
             self.floating_full[idx] = false;
             self.floating_raster_size[idx] = phys_now;
         } else if let Some(r) = f.renderer.as_mut() {
@@ -1650,9 +1734,23 @@ impl Shell {
                 self.floating_full[idx] = false;
                 return;
             }
+            s.frame(qh, s.clone());
+            if idx < self.floating_throttle.len() {
+                self.floating_throttle[idx].on_request_callback(Instant::now());
+            }
+            send_presentation_feedback(
+                self.presentation.as_ref(),
+                self.frame_clock.current_predicted_present(),
+                idx + 1,
+                &s,
+                qh,
+            );
             let t = Instant::now();
             r.render_with_damage(&self.engine, &scene, damage);
             raster_ms = t.elapsed().as_secs_f32() * 1000.0;
+            if idx < self.floating_throttle.len() {
+                self.floating_throttle[idx].on_frame_rendered();
+            }
             gpu_samples = r.drain_gpu_samples();
             draws = r.last_draws();
             self.floating_full[idx] = false;
@@ -1688,8 +1786,21 @@ impl Shell {
         }
     }
 
-    /// 输入路由：`Some(i)` → 浮层 `i`；`None` → 主表面。
+    /// 输入路由：按帧排队合并（F3），出帧前统一交付。
     fn route_input(&mut self, idx: Option<usize>, event: InputEvent) {
+        self.coalescer.push(idx, event);
+    }
+
+    /// 排干累积的指针移动 / 滚动输入到 App。
+    fn drain_coalesced_inputs(&mut self) {
+        let events = self.coalescer.drain();
+        for (target, ev) in events {
+            self.route_input_immediate(target, ev);
+        }
+    }
+
+    /// 立即交付单个输入事件。
+    fn route_input_immediate(&mut self, idx: Option<usize>, event: InputEvent) {
         match idx {
             Some(i) => self.emit_floating_input(i, event),
             None => self.emit_input(event),
@@ -1948,22 +2059,35 @@ impl Shell {
         if !self.configured {
             return;
         }
-        crate::timeline::note_once("step_start");
-        // 合成器时钟（PLAN §4.2）：真实经过时间给动画（advance_clock），限幅 dt 给非动画逻辑
-        //（防卡顿后跳变，§4.1 不变量 2）。参 ELEMENT_TREE §帧调度。
         let now = Instant::now();
-        let real_dt = now.duration_since(self.last_update).as_secs_f64();
-        let dt = real_dt.min(0.05);
+        let can_render_main = self.main_throttle.can_render(now, self.app.needs_redraw()).0;
+        let can_render_floating = self.floating.iter().enumerate().any(|(i, _)| {
+            self.floating_throttle
+                .get_mut(i)
+                .map(|t| t.can_render(now, self.app.floating_needs_redraw(i)).0)
+                .unwrap_or(true)
+        });
+        if !can_render_main && !can_render_floating {
+            return;
+        }
+
+        crate::timeline::note_once("step_start");
+        // 呈现时钟采样（F3）：由 FrameClock 预测下一次呈现并计算 dt（夹在 [0, 0.05 s]），
+        // 动画按这一帧将显示的时刻推进。
+        let clock_dt = self.frame_clock.advance_frame(now);
         self.last_update = now;
 
         // 全局菜单命令（App::on_menu_command）：在 App::update 之前派发，
         // 保证菜单触发的状态变更当帧生效。
         self.drain_menu_commands();
 
+        // 输入按帧合并（F3）：出帧前一次性将累积的指针移动 / 轴事件交付给 App。
+        self.drain_coalesced_inputs();
+
         // 错误边界：App update panic 不杀进程（§4.1 鲁棒性）。
         let update_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.app.advance_clock(real_dt);
-            self.app.update(dt);
+            self.app.advance_clock(clock_dt);
+            self.app.update(clock_dt);
             // 主题变更检测（节流）：Chorus 改了 accent / scheme 后自动跟随。
             self.maybe_reload_system_theme();
         }))
@@ -1975,7 +2099,7 @@ impl Shell {
         // 合成图层命令（G3-b）：App 本帧推的建层 / 内容 / 动画请求。
         self.process_layer_commands(qh);
         // 右键菜单动画 tick（弹出/关闭轨道，与 App 状态解耦）。
-        self.ctx_menu.update(dt);
+        self.ctx_menu.update(clock_dt);
 
         // 动态高度同步：App update 后可能请求展开/收起（TopBar 面板）。
         self.sync_preferred_height();
@@ -2028,6 +2152,16 @@ impl Shell {
         if !self.configured {
             return;
         }
+        let (can_render, is_timeout) =
+            self.main_throttle.can_render(Instant::now(), self.app.needs_redraw());
+        if !can_render {
+            return;
+        }
+        if is_timeout {
+            log::warn!("frame_cb_timeout: 主表面 100ms 未收到 frame 回调，强制渲染");
+            write_diag("ether-harness-trace.log", "frame_cb_timeout\n");
+        }
+        self.dirty = false;
         // 诊断：帧计数 + needs_redraw + frame_pending。落持久路径（write_diag），不用裸 /tmp。
         self.frame_count += 1;
         if self.frame_count <= 20 || self.frame_count % 30 == 0 {
@@ -2100,12 +2234,6 @@ impl Shell {
         // 时间线：首帧 Scene 渲染完成（App::render_into 返回）。
         crate::timeline::note_once("first_frame_rendered");
 
-        // 渲染后仍在动画 → 请求下一帧（vsync 提示，I-2）。App 在 render() 内清除
-        // 自身脏标记（契约），此处的 needs_redraw = 动画推进中。
-        if self.app.needs_redraw() {
-            self.request_next_frame(qh);
-        }
-
         // 输出分派：layer-shell → CPU 光栅化 + SHM 提交；xdg-shell → wgpu 直出。
         // S4：本帧局部损坏矩形（CPU 光栅只重绘该区；GPU 直出全量，恒定消费）。
         let mut damage = self.take_damage();
@@ -2116,6 +2244,8 @@ impl Shell {
         if self.cpu.is_some() && damage.is_some_and(|d| d.size.width <= 0.0 || d.size.height <= 0.0) {
             return;
         }
+        self.request_next_frame(qh);
+        self.request_presentation_feedback(0, &self.surface.clone(), qh);
         let mut raster_ms = 0.0f32;
         let mut commit_ms = 0.0f32;
         let mut gpu_samples: Vec<f32> = Vec::new();
@@ -2140,10 +2270,12 @@ impl Shell {
                 damage,
             );
             commit_ms = t.elapsed().as_secs_f32() * 1000.0;
+            self.main_throttle.on_frame_rendered();
         } else if let Some(r) = self.renderer.as_mut() {
             let t = Instant::now();
             r.render_with_damage(&self.engine, &self.scene_buf, damage);
             raster_ms = t.elapsed().as_secs_f32() * 1000.0;
+            self.main_throttle.on_frame_rendered();
             gpu_samples = r.drain_gpu_samples();
             acquire_ms = r.take_acquire_ms();
             if let Some(n) = r.last_draws() {
@@ -2261,6 +2393,22 @@ impl Shell {
         }
     }
 
+    /// 为表面请求下一次提交的 wp_presentation feedback。
+    fn request_presentation_feedback(
+        &self,
+        surface_id: usize,
+        surface: &wl_surface::WlSurface,
+        qh: &QueueHandle<Self>,
+    ) {
+        send_presentation_feedback(
+            self.presentation.as_ref(),
+            self.frame_clock.current_predicted_present(),
+            surface_id,
+            surface,
+            qh,
+        );
+    }
+
     /// 请求下一帧 callback（须在 commit 之前，与本次提交对应）。去重：一帧只注册
     /// 一个 callback，`frame_pending` 标记，`CompositorHandler::frame` 到达时清除。
     /// ⚠ 回调仅作 vsync 提示（置 dirty）；丢失不再致命（TOPBAR_RENDER_REFACTOR I-2）。
@@ -2271,6 +2419,7 @@ impl Shell {
         let s = self.surface.clone();
         s.frame(qh, s.clone());
         self.frame_pending = true;
+        self.main_throttle.on_request_callback(Instant::now());
     }
 
     /// 主表面输入：右键菜单优先路由（参 CONTEXT_MENU_SPEC §Ⅵ.2）→ 未消费才投给 App。
@@ -2591,6 +2740,88 @@ impl Dispatch<WpViewport, ()> for Shell {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PresentationFeedbackData {
+    pub surface_id: usize, // 0 = main, 1.. = floating (index + 1)
+    pub target: Option<Instant>,
+}
+
+fn send_presentation_feedback(
+    pres: Option<&wp_presentation::WpPresentation>,
+    target: Option<Instant>,
+    surface_id: usize,
+    surface: &wl_surface::WlSurface,
+    qh: &QueueHandle<Shell>,
+) {
+    if let Some(pres) = pres {
+        let data = PresentationFeedbackData {
+            surface_id,
+            target,
+        };
+        pres.feedback(surface, qh, data);
+    }
+}
+
+impl Dispatch<wp_presentation::WpPresentation, ()> for Shell {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wp_presentation::WpPresentation,
+        _event: <wp_presentation::WpPresentation as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, PresentationFeedbackData> for Shell {
+    fn event(
+        st: &mut Self,
+        _proxy: &wp_presentation_feedback::WpPresentationFeedback,
+        ev: <wp_presentation_feedback::WpPresentationFeedback as Proxy>::Event,
+        data: &PresentationFeedbackData,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match ev {
+            wp_presentation_feedback::Event::Presented {
+                tv_sec_hi,
+                tv_sec_lo,
+                tv_nsec,
+                refresh,
+                ..
+            } => {
+                let sec = ((tv_sec_hi as u64) << 32) | (tv_sec_lo as u64);
+                let mono = std::time::Duration::new(sec, tv_nsec);
+                let presented_at = st.frame_clock.mono_base().instant_of(mono);
+                st.frame_clock.on_presented(presented_at, refresh);
+                if refresh > 0 {
+                    crate::perf::pacing_set_period(std::time::Duration::from_nanos(refresh as u64));
+                }
+                let err_us = if let Some(target) = data.target {
+                    if presented_at >= target {
+                        presented_at.duration_since(target).as_secs_f64() * 1_000_000.0
+                    } else {
+                        target.duration_since(presented_at).as_secs_f64() * 1_000_000.0
+                    }
+                } else {
+                    0.0
+                };
+                let surface_name = if data.surface_id == 0 {
+                    st.pacing_main_name()
+                } else {
+                    st.pacing_floating_name(data.surface_id - 1)
+                };
+                crate::perf::pacing_feedback(&surface_name, err_us as f32);
+            }
+            wp_presentation_feedback::Event::Discarded => {
+                st.frame_clock.on_discarded();
+            }
+            _ => {}
+        }
+    }
+}
+
 // ── CompositorHandler ────────────────────────────────────────────────────
 
 impl CompositorHandler for Shell {
@@ -2629,13 +2860,22 @@ impl CompositorHandler for Shell {
         surface: &wl_surface::WlSurface,
         _time: u32,
     ) {
-        // vsync 提示（I-2）：frame 回调**不驱动渲染**，只置脏标记 → 主循环下一迭代
-        // 渲染 + commit。回调丢失绝不冻结：主循环 16ms 超时兜底（TOPBAR_RENDER_REFACTOR §4.6）。
+        // vsync 提示（I-2 / F3 帧时钟采样与节流）：
+        // - 记录回调时刻供 FrameClock 预测下一次呈现；
+        // - 状态机置位 callback_received 放行下一帧，一个回调最多一帧。
+        let now = Instant::now();
         if *surface == self.surface {
             self.frame_pending = false;
-            self.dirty = true;
+            self.frame_clock.on_frame_callback(now);
+            self.main_throttle.on_frame_callback();
+            self.dirty = self.dirty || self.app.needs_redraw() || !self.coalescer.is_empty();
         } else if let Some(idx) = self.floating_idx(surface) {
-            self.floating_dirty[idx] = true;
+            if idx < self.floating_throttle.len() {
+                self.floating_throttle[idx].on_frame_callback();
+            }
+            self.floating_dirty[idx] = self.floating_dirty[idx]
+                || self.app.floating_needs_redraw(idx)
+                || !self.coalescer.is_empty();
         }
     }
 
@@ -4317,10 +4557,8 @@ impl Dispatch<wl_buffer::WlBuffer, ()> for Shell {
             if state.popup_buffer_released(proxy) {
                 return;
             }
-            if let Some(popup) = state.im_popup.as_mut()
-                && popup.out.mark_released(proxy)
-            {
-                return;
+            if let Some(popup) = state.im_popup.as_mut() {
+                popup.out.mark_released(proxy);
             }
         }
     }

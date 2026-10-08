@@ -10,13 +10,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use kanesumi_canvas::geometry::{Triangle, triangulate_arc, triangulate_fill, triangulate_stroke};
-use kanesumi_canvas::text::{TextEngine, TextLayoutOptions};
+use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, SceneCommand, TextAlign};
 use kanesumi_core::{Color, Rect, TextStyle};
 
 use crate::glyph_layout::{
-    GlyphKey, PlacedGlyph, TextRenderTuning, glyph_key, layout_text_glyphs,
-    layout_text_glyphs_tuned,
+    GlyphKey, TextRenderTuning, layout_text_glyphs, layout_text_glyphs_tuned,
 };
 use crate::perf;
 use wayland_client::protocol::wl_surface::WlSurface;
@@ -1915,9 +1914,29 @@ pub(crate) fn intersect(a: Rect, b: Rect) -> Option<Rect> {
     }
 }
 
-/// 选呈现模式（G1）：优先 `Mailbox`（可丢旧帧、acquire 立返，避免 FIFO 的并发等待
-/// 把内容变化帧的「光栅耗时」抬到 ~16.7 ms），其次 `Immediate`，最后回落 `Fifo`。
+/// 选呈现模式（G1 / SMOOTHNESS_PLAN §Ⅲ-3）：支持 `KANESUMI_PRESENT=fifo|mailbox` 显式选定；
+/// 缺省优先 `Mailbox`（可丢旧帧、acquire 立返，避免 FIFO 的并发等待把内容变化帧的
+/// 「光栅耗时」抬到 ~16.7 ms），其次 `Immediate`，最后回落 `Fifo`。
 pub(crate) fn choose_present_mode(available: &[wgpu::PresentMode]) -> wgpu::PresentMode {
+    let ov = std::env::var("KANESUMI_PRESENT").ok();
+    choose_present_mode_from(available, ov.as_deref())
+}
+
+pub(crate) fn choose_present_mode_from(
+    available: &[wgpu::PresentMode],
+    override_mode: Option<&str>,
+) -> wgpu::PresentMode {
+    if let Some(val) = override_mode {
+        match val.to_ascii_lowercase().trim() {
+            "fifo" if available.contains(&wgpu::PresentMode::Fifo) => {
+                return wgpu::PresentMode::Fifo;
+            }
+            "mailbox" if available.contains(&wgpu::PresentMode::Mailbox) => {
+                return wgpu::PresentMode::Mailbox;
+            }
+            _ => {}
+        }
+    }
     if available.contains(&wgpu::PresentMode::Mailbox) {
         wgpu::PresentMode::Mailbox
     } else if available.contains(&wgpu::PresentMode::Immediate) {
@@ -2088,5 +2107,13 @@ mod tests {
         assert_eq!(choose_present_mode(&[Fifo]), Fifo);
         // 空表（异常输入）→ Fifo。
         assert_eq!(choose_present_mode(&[]), Fifo);
+
+        // 显式 KANESUMI_PRESENT=fifo 覆盖（SMOOTHNESS_PLAN §Ⅲ-3）
+        assert_eq!(choose_present_mode_from(&[Mailbox, Fifo], Some("fifo")), Fifo);
+        assert_eq!(choose_present_mode_from(&[Mailbox, Fifo], Some("FIFO")), Fifo);
+        // 显式 KANESUMI_PRESENT=mailbox 覆盖
+        assert_eq!(choose_present_mode_from(&[Fifo, Mailbox], Some("mailbox")), Mailbox);
+        // 不支持 mailbox 时回落
+        assert_eq!(choose_present_mode_from(&[Fifo], Some("mailbox")), Fifo);
     }
 }

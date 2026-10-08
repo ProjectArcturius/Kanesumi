@@ -235,6 +235,8 @@ pub struct DecodeService {
     latency: Mutex<Vec<f32>>,
     /// 落盘进程名；`None` = 不写日志（测试进程默认如此）。
     perf_proc: Mutex<Option<&'static str>>,
+    /// 解码完成通知钩子（进程内一个钩子，工作线程完成一项即调用）。
+    ready_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Default for DecodeService {
@@ -262,7 +264,24 @@ impl DecodeService {
             flushed_requests: AtomicU64::new(0),
             latency: Mutex::new(Vec::new()),
             perf_proc: Mutex::new(None),
+            ready_hook: Mutex::new(None),
         }
+    }
+
+    /// 设置解码就绪回调（进程内单个钩子，工作线程完成一项即调用）。参 SMOOTHNESS_PLAN §Ⅲ-3。
+    pub fn set_ready_hook(&self, hook: Box<dyn Fn() + Send + Sync>) {
+        let arc: Arc<dyn Fn() + Send + Sync> = Arc::from(hook);
+        *self.ready_hook.lock().unwrap() = Some(arc);
+    }
+
+    /// 是否已安装就绪钩子。
+    pub fn has_ready_hook(&self) -> bool {
+        self.ready_hook.lock().unwrap().is_some()
+    }
+
+    /// 清空就绪回调。
+    pub fn clear_ready_hook(&self) {
+        *self.ready_hook.lock().unwrap() = None;
     }
 
     /// 缓存上限（字节）。
@@ -345,6 +364,11 @@ impl DecodeService {
         inner.pending.remove(key);
         inner.ready.push(key.clone());
         self.idle.notify_all();
+        drop(inner);
+        let hook = self.ready_hook.lock().unwrap().clone();
+        if let Some(h) = hook {
+            h();
+        }
         out
     }
 
@@ -488,6 +512,26 @@ pub fn global() -> &'static Arc<DecodeService> {
     DecodeService::global()
 }
 
+/// 设置解码就绪回调（进程内单个钩子，工作线程完成一项即调用）。
+pub fn set_ready_hook(hook: Box<dyn Fn() + Send + Sync>) {
+    global().set_ready_hook(hook);
+}
+
+/// 下拉式取走全局就绪队列中已完成的键（取走后不再重复给出）。
+pub fn poll_ready() -> Vec<DecodeKey> {
+    global().poll_ready()
+}
+
+/// 是否已安装解码就绪钩子。
+pub fn has_ready_hook() -> bool {
+    global().has_ready_hook()
+}
+
+/// 清除解码就绪钩子。
+pub fn clear_ready_hook() {
+    global().clear_ready_hook();
+}
+
 fn worker_loop(svc: &Arc<DecodeService>, rx: Arc<Mutex<Receiver<(DecodeKey, Job)>>>) {
     loop {
         let job = { rx.lock().unwrap().recv() };
@@ -500,6 +544,11 @@ fn worker_loop(svc: &Arc<DecodeService>, rx: Arc<Mutex<Receiver<(DecodeKey, Job)
         inner.insert(key.clone(), out, svc.cap.load(Ordering::Relaxed));
         inner.ready.push(key);
         svc.idle.notify_all();
+        drop(inner);
+        let hook = svc.ready_hook.lock().unwrap().clone();
+        if let Some(h) = hook {
+            h();
+        }
     }
 }
 
@@ -725,5 +774,34 @@ mod tests {
         assert!(line.contains("cache_bytes=4096"), "{line}");
         assert!(line.ends_with('\n'));
         assert_eq!(percentiles(&[]), (0.0, 0.0, 0.0));
+    }
+
+    /// 解码就绪钩子触发测试（参 SMOOTHNESS_PLAN §Ⅲ-3、裁定 §122）。
+    #[test]
+    fn ready_hook_called_on_decode_completion() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let svc = Arc::new(DecodeService::new());
+        assert!(!svc.has_ready_hook());
+
+        static HOOK_CALLS: AtomicUsize = AtomicUsize::new(0);
+        HOOK_CALLS.store(0, Ordering::SeqCst);
+        svc.set_ready_hook(Box::new(|| {
+            HOOK_CALLS.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert!(svc.has_ready_hook());
+
+        let key = DecodeKey::custom("test", "hook_key", (10, 10));
+        let out = svc.get_or_decode(&key, || {
+            Some(DecodeOutput::new(Icon {
+                rgba: vec![0xff; 400].into(),
+                width: 10,
+                height: 10,
+            }))
+        });
+        assert!(out.is_some());
+        assert_eq!(HOOK_CALLS.load(Ordering::SeqCst), 1, "get_or_decode 完成应触发钩子");
+
+        svc.clear_ready_hook();
+        assert!(!svc.has_ready_hook());
     }
 }

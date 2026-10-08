@@ -617,6 +617,13 @@ impl<A: TreeApp> App for TreeHost<A> {
         self.app.set_appmenu_handle(handle);
     }
 
+    fn on_decode_ready(&mut self, keys: &[kanesumi_canvas::decode::DecodeKey]) {
+        self.tree.on_decode_ready(keys);
+        for f in &mut self.floating {
+            f.tree.on_decode_ready(keys);
+        }
+    }
+
     fn render(&mut self, engine: &TextEngine, size: Size) -> Scene {
         let mut out = Scene::default();
         self.render_into(engine, size, &mut out);
