@@ -264,6 +264,8 @@ pub struct Tree {
     tooltip_popup: Option<WidgetId>,
     /// 正在显示的提示距自动消失（5 s）的剩余秒数。
     tooltip_hide: Option<f64>,
+    /// 等待解码完成的节点登记表（键 → 节点 id 列表，一对多）。参 SMOOTHNESS_PLAN §Ⅲ-3、裁定 §122。
+    decode_waiters: std::collections::HashMap<DecodeKey, Vec<WidgetId>>,
 }
 
 impl Tree {
@@ -312,6 +314,7 @@ impl Tree {
             tooltip_anchor: None,
             tooltip_popup: None,
             tooltip_hide: None,
+            decode_waiters: std::collections::HashMap::new(),
         };
         tree.root = tree.alloc(Box::new(ZStack), None, LayoutProps::default());
         tree.overlay = tree.alloc(Box::new(OverlayRoot), None, LayoutProps::default());
@@ -750,6 +753,30 @@ impl Tree {
         self.queue_paint(id);
     }
 
+    /// 登记一个节点等待解码就绪（参 SMOOTHNESS_PLAN §Ⅲ-3、裁定 §122）。
+    pub fn wait_for_decode(&mut self, id: WidgetId, key: DecodeKey) {
+        let waiters = self.decode_waiters.entry(key).or_default();
+        if !waiters.contains(&id) {
+            waiters.push(id);
+        }
+    }
+
+    /// 解码就绪批量通知：仅让等待这些键的节点 `invalidate_paint`。
+    pub fn on_decode_ready(&mut self, keys: &[DecodeKey]) {
+        if keys.is_empty() {
+            return;
+        }
+        for key in keys {
+            if let Some(waiters) = self.decode_waiters.remove(key) {
+                for id in waiters {
+                    if self.contains(id) {
+                        self.invalidate_paint(id);
+                    }
+                }
+            }
+        }
+    }
+
     /// 只标记 arrange 失效、不置脏。帧内强制重排（弹层位置跟随锚点）用：结果被本帧
     /// arrange 消费，不应触发额外帧。参 `frame` 第 3 步。
     fn invalidate_arrange_quiet(&mut self, id: WidgetId) {
@@ -857,6 +884,11 @@ impl Tree {
     pub fn needs_frame(&self) -> bool {
         // 有挂起动画时须持续出帧以推进超时（空表判断，非遍历）。
         self.dirty || !self.anim.is_empty() || !self.gated_starts.is_empty()
+    }
+
+    /// 节点是否标记为待绘（paint dirty）。
+    pub fn is_paint_dirty(&self, id: WidgetId) -> bool {
+        self.node(id).is_some_and(|n| n.flags.needs_paint)
     }
 
     fn add_damage(&mut self, r: Rect) {

@@ -208,10 +208,15 @@ impl Widget for Image {
             }
         };
         let Some(icon) = icon else {
-            // 未就绪：本帧什么都不画（尺寸已由 measure 占好，不跳）。登记短定时器，
-            // 就绪后 `update` 令本节点重画。
+            // 未就绪：本帧什么都不画（尺寸已由 measure 占好，不跳）。
+            // 登记等待解码键；若已安装钩子则由钩子唤醒，未安装则退回短定时器轮询（参 SMOOTHNESS_PLAN §Ⅲ-3、裁定 §122）。
             self.pending = requested;
-            ctx.request_timer(DECODE_POLL_SECS);
+            if let Some((ref key, _)) = self.pending {
+                ctx.tree.wait_for_decode(ctx.id, key.clone());
+            }
+            if !decode::has_ready_hook() {
+                ctx.request_timer(DECODE_POLL_SECS);
+            }
             return;
         };
         self.pending = None;
@@ -222,7 +227,7 @@ impl Widget for Image {
         scene.pop_clip();
     }
 
-    /// 就绪轮询：解码好了就令自己重画（元素树既有失效机制）；没好继续等一个间隔。
+    /// 就绪轮询：解码好了就令自己重画（元素树既有失效机制）；没好继续等一个间隔（无钩子退回路径）。
     fn update(&mut self, ctx: &mut UpdateCtx, _dt: f64) {
         let Some((key, px)) = self.pending.clone() else {
             return;
@@ -232,13 +237,19 @@ impl Widget for Image {
                 self.pending = None;
                 ctx.invalidate_paint();
             }
-            Peek::Pending => ctx.request_timer(DECODE_POLL_SECS),
+            Peek::Pending => {
+                if !decode::has_ready_hook() {
+                    ctx.request_timer(DECODE_POLL_SECS);
+                }
+            }
             // 缓存被清（主题切换 / 显式 clear）→ 重新提交，别永远等下去。
             Peek::Missing => {
                 if let ImageSource::Svg { path, .. } = &self.source {
                     decode::global().request_svg_longest(path.clone(), px);
                 }
-                ctx.request_timer(DECODE_POLL_SECS);
+                if !decode::has_ready_hook() {
+                    ctx.request_timer(DECODE_POLL_SECS);
+                }
             }
         }
     }
@@ -355,6 +366,8 @@ mod tests {
     use kanesumi_canvas::SceneCommand;
     use kanesumi_core::{Color, MetroTheme, ThemeColor};
 
+    static HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn dest() -> Rect {
         Rect::new(10.0, 20.0, 100.0, 60.0)
     }
@@ -413,6 +426,7 @@ mod tests {
     /// SVG 光栅像素随 `scale` 变化（scope 改变 → 服务按新像素出图，2× 下不糊）。
     #[test]
     fn svg_rerasterizes_on_scale_change() {
+        let _lock = HOOK_TEST_LOCK.lock().unwrap();
         let Some(path) = svg_24() else { return };
         let mut h = TestHarness::new(200.0, 200.0);
         let id = h.tree.insert_with(
@@ -437,6 +451,7 @@ mod tests {
     /// 占位：解码就绪之前不画图，**但尺寸照旧占好**（measure 与解码无关，不跳）。
     #[test]
     fn placeholder_paints_nothing_but_keeps_measure() {
+        let _lock = HOOK_TEST_LOCK.lock().unwrap();
         let Some(path) = svg_24() else { return };
         let mut h = TestHarness::new(200.0, 200.0);
         let id = h.tree.insert_with(
@@ -471,6 +486,7 @@ mod tests {
     /// 就绪后节点经元素树既有失效机制重画（定时器 → update → invalidate_paint）。
     #[test]
     fn node_repaints_after_decode_ready() {
+        let _lock = HOOK_TEST_LOCK.lock().unwrap();
         let Some(path) = svg_24() else { return };
         let mut h = TestHarness::new(200.0, 200.0);
         let id = h.tree.insert_with(
@@ -598,5 +614,81 @@ mod tests {
         );
         h.frame();
         assert_eq!(h.rect(id).size, Size::new(12.0, 9.0));
+    }
+
+    /// 解码就绪钩子触发：只失效等待该键的节点（参 SMOOTHNESS_PLAN §Ⅲ-3、裁定 §122）。
+    #[test]
+    fn hook_triggers_invalidation_only_for_waiting_node() {
+        struct HookGuard;
+        impl Drop for HookGuard {
+            fn drop(&mut self) {
+                decode::clear_ready_hook();
+            }
+        }
+
+        let _lock = HOOK_TEST_LOCK.lock().unwrap();
+        decode::set_ready_hook(Box::new(|| {}));
+        let _guard = HookGuard;
+
+        let path1 = std::env::temp_dir().join("kanesumi_hook_test_1.svg");
+        let path2 = std::env::temp_dir().join("kanesumi_hook_test_2.svg");
+        let _ = std::fs::write(&path1, r#"<svg width="20" height="20"></svg>"#);
+        let _ = std::fs::write(&path2, r#"<svg width="20" height="20"></svg>"#);
+
+        let mut h = TestHarness::new(200.0, 200.0);
+        let props = LayoutProps {
+            width: Some(20.0),
+            height: Some(20.0),
+            h_align: Align::Start,
+            v_align: Align::Start,
+            ..LayoutProps::default()
+        };
+        let id1 = h.tree.insert_with(
+            h.root(),
+            Image::svg(&path1).size(20.0, 20.0),
+            props,
+        );
+        let id2 = h.tree.insert_with(
+            h.root(),
+            Image::svg(&path2).size(20.0, 20.0),
+            props,
+        );
+
+        // 渲染首帧：两个 Image 都未就绪；有钩子安装时，不得设置轮询定时器。
+        h.frame();
+        assert!(h.tree.next_timer().is_none(), "安装钩子后不得设置轮询定时器");
+        assert!(!h.tree.is_paint_dirty(id1));
+        assert!(!h.tree.is_paint_dirty(id2));
+
+        // 仅通知 key1 就绪：只有 id1 被标记待绘，id2 保持不动。
+        let key1 = DecodeKey::svg_longest(&path1, 20);
+        h.tree.on_decode_ready(&[key1]);
+        assert!(h.tree.is_paint_dirty(id1), "等待该键的节点必须失效");
+        assert!(!h.tree.is_paint_dirty(id2), "未等待该键的节点不得失效");
+
+        let _ = std::fs::remove_file(&path1);
+        let _ = std::fs::remove_file(&path2);
+    }
+
+    /// 无钩子退回路径：未安装钩子时退回既有定时器轮询（参 SMOOTHNESS_PLAN §Ⅲ-3）。
+    #[test]
+    fn fallback_to_timer_when_no_hook() {
+        let _lock = HOOK_TEST_LOCK.lock().unwrap();
+        decode::clear_ready_hook();
+        let path = std::env::temp_dir().join("kanesumi_fallback_timer.svg");
+        let _ = std::fs::write(&path, r#"<svg width="20" height="20"></svg>"#);
+
+        let mut h = TestHarness::new(200.0, 200.0);
+        let _id = h.tree.insert_with(
+            h.root(),
+            Image::svg(&path).size(20.0, 20.0),
+            LayoutProps::default(),
+        );
+        h.frame();
+
+        // 无钩子时必须登记定时器轮询
+        assert!(h.tree.next_timer().is_some(), "无钩子时必须退回定时器");
+
+        let _ = std::fs::remove_file(&path);
     }
 }
