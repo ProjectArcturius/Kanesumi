@@ -254,7 +254,7 @@ fn upload_entry(
 // ── 渲染器 ───────────────────────────────────────────────────────────────
 
 /// 单表面的实例化批渲染光栅化器。对外接口与 v1 `Renderer` 对齐，platform 侧经
-/// [`crate::platform::SurfaceRenderer`] 分派。
+/// `SurfaceRenderer`（位于 harness 平台层）分派。
 pub struct CanvasV2 {
     ctx: Arc<GpuContext>,
     surface: Option<wgpu::Surface<'static>>,
@@ -1074,7 +1074,11 @@ impl CanvasV2 {
             let Some((ax, ay, bw, bh)) = self.glyph_slot(g.key) else {
                 continue; // 图集放不下：本帧该字形不画（warn 在 glyph_slot 里记一次）
             };
-            let (x0, y0) = ((rect.origin.x + g.x) * s, (rect.origin.y + g.y) * s);
+            let (x0, y0) = (
+                ((rect.origin.x + g.x) * s).round(),
+                ((rect.origin.y + g.y) * s).round(),
+            );
+            let (gw, gh) = ((g.w * s).round(), (g.h * s).round());
             let (pw, ph) = (
                 self.glyphs.page.atlas.width() as f32,
                 self.glyphs.page.atlas.height() as f32,
@@ -1082,7 +1086,7 @@ impl CanvasV2 {
             push_inst(insts, Inst {
                 kind: KIND_GLYPH,
                 flags: 0,
-                rect: [x0, y0, g.w * s, g.h * s],
+                rect: [x0, y0, gw, gh],
                 p: [0.0; 4],
                 q: [
                     ax as f32 / pw,

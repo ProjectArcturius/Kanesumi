@@ -96,8 +96,8 @@ fn lerp_u8(v0: u8, v1: f32, t: f32) -> u8 {
 /// 逐像素混合（复刻 GPU MSAA 语义）：
 /// - `color`：sRGB 直通 + alpha（Scene 命令颜色）。
 /// - `cov`：覆盖率 0..=1（超采样计数 / 4 或字形位图 / 255）。
-/// 不透明（a==1）：编码空间 lerp（= MSAA resolve 对编码值的平均）。
-/// 半透明：逐样本线性预乘 → sRGB 编码 → 与未覆盖样本平均。
+///   不透明（a==1）：编码空间 lerp（= MSAA resolve 对编码值的平均）。
+///   半透明：逐样本线性预乘 → sRGB 编码 → 与未覆盖样本平均。
 #[inline]
 fn blend_px(px: &mut [u8; 4], color: [f32; 4], cov: f32) {
     if cov <= 0.0 {
@@ -137,6 +137,8 @@ fn blend_px(px: &mut [u8; 4], color: [f32; 4], cov: f32) {
 
 // ── 光栅化器 ───────────────────────────────────────────────────────────────
 
+type ScaledImageKey = (usize, usize, u64, u32, u32);
+
 /// CPU 光栅化器：物理像素 RGBA（sRGB 编码，与 wgpu Bgra8UnormSrgb 附件存储同语义）。
 /// 输出缓冲为 RGBA 序（复刻旧 wgpu 读回），commit_shm_buffers 的 R/B 交换路径不变。
 pub struct CpuRenderer {
@@ -162,9 +164,9 @@ pub struct CpuRenderer {
     /// 缩放图缓存：(源地址, 源长度, 指纹, 目标宽, 目标高) → 目标尺寸 sRGB 直通 RGBA。
     /// 低分辨率亚克力背板放大到整屏、每帧逐像素双线性一帧 80+ ms；缓存后走 1:1 拷贝快路径。
     /// 本帧 ∪ 上帧用过的保留，其余淘汰（同 layout_cache 的 generation GC）。
-    scaled: HashMap<(usize, usize, u64, u32, u32), Arc<[u8]>>,
-    scaled_used: HashSet<(usize, usize, u64, u32, u32)>,
-    scaled_prev_used: HashSet<(usize, usize, u64, u32, u32)>,
+    scaled: HashMap<ScaledImageKey, Arc<[u8]>>,
+    scaled_used: HashSet<ScaledImageKey>,
+    scaled_prev_used: HashSet<ScaledImageKey>,
     /// 布局 miss 计数（诊断/测试：静态文本重复渲染应不增长）。
     layout_misses: u64,
     /// 文字浓度旋钮（§112 生产默认 contrast 0.2 / gamma 1.0；恒等档见
@@ -437,10 +439,10 @@ impl CpuRenderer {
     /// 顶栏背景等大面积不透明矩形走这里，避免 4× 超采样。
     fn fill_rect(&mut self, rect: Rect, radius: f32, color: Color, clip: Option<Rect>) {
         if radius <= 0.5 {
-            let x0 = (rect.origin.x * self.scale) as f32;
-            let y0 = (rect.origin.y * self.scale) as f32;
-            let x1 = (rect.right() * self.scale) as f32;
-            let y1 = (rect.bottom() * self.scale) as f32;
+            let x0 = rect.origin.x * self.scale;
+            let y0 = rect.origin.y * self.scale;
+            let x1 = rect.right() * self.scale;
+            let y1 = rect.bottom() * self.scale;
             self.fill_rect_aa(x0, y0, x1, y1, color, clip);
         } else {
             let pts = rounded_rect_polygon(rect, radius, 12);
@@ -694,6 +696,7 @@ impl CpuRenderer {
                 v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
                 let mut out: Vec<(f32, f32, f32)> = Vec::new();
                 for s in v.drain(..) {
+                    #[allow(clippy::collapsible_if)]
                     if let Some(last) = out.last_mut() {
                         if s.0 <= last.1 {
                             last.1 = last.1.max(s.1);
@@ -738,8 +741,8 @@ impl CpuRenderer {
                     if inside_row {
                         for (xl, xr, ms) in &centers {
                             let ext = ((ms * 0.25).ceil() as i64 + 1).max(1);
-                            if (px as i64) >= (xl.ceil() as i64) + ext
-                                && (px as i64) + 1 <= (xr.floor() as i64) - ext
+                            if px >= (xl.ceil() as i64) + ext
+                                && px < (xr.floor() as i64) - ext
                             {
                                 internal = true;
                                 break;
@@ -921,7 +924,8 @@ impl CpuRenderer {
                     self.buf[idx + 2],
                     self.buf[idx + 3],
                 ];
-                blend_px(&mut px4, color, cov);
+                let eff_color = [color[0], color[1], color[2], color[3] * cov];
+                blend_px(&mut px4, eff_color, 1.0);
                 self.buf[idx..idx + 4].copy_from_slice(&px4);
             }
         }
@@ -1511,7 +1515,7 @@ mod tests {
         let mut outside = 0;
         for py in 0..32u32 {
             for px in 0..64u32 {
-                if !(px >= 2 && px < 58 && py >= 4 && py < 28) {
+                if !((2..58).contains(&px) && (4..28).contains(&py)) {
                     let idx = (py * 64 + px) as usize * 4;
                     if r.buf[idx + 3] != 0 {
                         outside += 1;
