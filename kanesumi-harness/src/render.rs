@@ -17,7 +17,6 @@ use kanesumi_core::{Color, Rect, TextStyle};
 use crate::glyph_layout::{
     GlyphKey, TextRenderTuning, layout_text_glyphs, layout_text_glyphs_tuned,
 };
-use crate::perf;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{Connection, Proxy};
 // 顶点持久化使用 write_buffer；无 create_buffer_init（DeviceExt 不再需要）。
@@ -261,25 +260,10 @@ fn push_image(steps: &mut Vec<Step>, before: u32, after: u32, clip: Option<Rect>
 }
 
 
-pub(crate) fn scissor_rect(
-    clip: Option<Rect>,
-    scale: f32,
-    buffer_width: u32,
-    buffer_height: u32,
-) -> (u32, u32, u32, u32) {
-    let max_x = buffer_width.max(1) as f32;
-    let max_y = buffer_height.max(1) as f32;
-    match clip {
-        Some(clip) => {
-            let x = (clip.origin.x * scale).floor().clamp(0.0, max_x - 1.0) as u32;
-            let y = (clip.origin.y * scale).floor().clamp(0.0, max_y - 1.0) as u32;
-            let right = (clip.right() * scale).ceil().clamp(x as f32 + 1.0, max_x) as u32;
-            let bottom = (clip.bottom() * scale).ceil().clamp(y as f32 + 1.0, max_y) as u32;
-            (x, y, right - x, bottom - y)
-        }
-        None => (0, 0, buffer_width.max(1), buffer_height.max(1)),
-    }
-}
+pub use kanesumi_render::{
+    choose_present_mode, choose_present_mode_from, damage_clip, intersect, scissor_rect,
+    GpuContext, GpuTimer, RendererError,
+};
 
 // ── 光栅化器 ─────────────────────────────────────────────────────────────
 
@@ -297,21 +281,6 @@ pub fn msaa_samples() -> u32 {
         Ok(v) if v.trim() == "1" => 1,
         _ => MSAA_SAMPLES_DEFAULT,
     })
-}
-
-/// 进程共享的 wgpu 上下文（G1）：instance / adapter / device / queue 与选定的表面格式。
-///
-/// 主表面与各浮层共用一份 —— G0 实测「每个用 wgpu 的进程 RSS +55~75 MB」，共享设备
-/// 把这份开销从「每表面一份」降为「每进程一份」。参
-/// Ether docs/GPU_COMPOSITION_PLAN.md §Ⅲ「G1 壳层 GPU 光栅」与 §Ⅳ「内存」。
-/// 惰性创建、初始化失败永久回落 CPU（platform 侧持有）。
-pub struct GpuContext {
-    pub(crate) instance: wgpu::Instance,
-    pub(crate) adapter: wgpu::Adapter,
-    pub(crate) device: wgpu::Device,
-    pub(crate) queue: wgpu::Queue,
-    /// 共享管线与配置统一使用的表面格式（sRGB 优先）。
-    pub(crate) format: wgpu::TextureFormat,
 }
 
 /// 单个表面的 wgpu 光栅化器（present 直出）。持有自己的一份表面/顶点缓冲/字形缓存，
@@ -386,178 +355,6 @@ fn create_msaa_view(
     tex.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-// ── GPU 时间戳计时（WGPU 路径）── 参 Ether docs/research/gpu_t1（任务 gpu-t1-frame-timing）。
-//
-// 设备支持 `TIMESTAMP_QUERY_INSIDE_ENCODERS` 时启用：每帧在 render pass 前后各写一个时间戳，
-// 环形 query set（[`perf::TIMESTAMP_SLOTS`] 槽 × 2 时间戳），把查询结果 resolve 进 GPU 缓冲、
-// 再复制到 MAP_READ 缓冲，**滞后 [`perf::TIMESTAMP_LAG`] 帧**异步回读 —— 绝不 `Wait` 当帧。
-// 结果落到 `SurfacePerf::gpu`（p50/p95/max），写 `ether-harness-perf.log` 的 `gpu=` 字段。
-pub(crate) struct GpuTimer {
-    query_set: wgpu::QuerySet,
-    /// QUERY_RESOLVE | COPY_SRC；每槽 256 字节对齐（QUERY_RESOLVE_BUFFER_ALIGNMENT）。
-    resolve_buf: wgpu::Buffer,
-    /// 每槽一份 MAP_READ | COPY_DST 回读缓冲（16 字节 = 两个 u64 时间戳）。
-    read_bufs: Vec<Arc<wgpu::Buffer>>,
-    /// 每 tick 纳秒数（`Queue::get_timestamp_period`）。
-    period_ns: f32,
-    /// 已提交的帧序号（决定当前写槽）。
-    frame: u64,
-    /// 槽状态：None = 空闲可写；Some(frame) = 该槽已写、等待回读。
-    slot_frame: [Option<u64>; perf::TIMESTAMP_SLOTS as usize],
-    /// 槽是否已挂上 `map_async`（挂上后同一槽不得重复挂，否则 wgpu 断言已映射）。
-    slot_mapped: [bool; perf::TIMESTAMP_SLOTS as usize],
-    /// 槽在回读后是否计入样本（跳过帧记 false，只回收槽不记数）。
-    slot_keep: [bool; perf::TIMESTAMP_SLOTS as usize],
-    /// 本帧是否真的写入了时间戳（槽被占用时跳过）。
-    active: bool,
-    /// 回读结果的发送端（回调线程 → 主线程）。
-    tx: std::sync::mpsc::Sender<(usize, f32)>,
-    rx: std::sync::mpsc::Receiver<(usize, f32)>,
-    /// 已完成、待取走的样本（毫秒）。有上限，后端不取也不无界增长。
-    pending: Vec<f32>,
-}
-
-/// 回读样本上限（每槽一次一帧，够 10 s 窗口用；后端取走后清零）。
-const GPU_PENDING_CAP: usize = 4096;
-/// 每槽 resolve 区大小（256 字节对齐要求；实际用 16 字节）。
-const SLOT_STRIDE: u64 = 256;
-
-impl GpuTimer {
-    /// 设备支持时间戳查询则建计时器；否则 None（静默不开）。
-    pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Self> {
-        let need =
-            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
-        if !device.features().contains(need) {
-            return None;
-        }
-        let slots = perf::TIMESTAMP_SLOTS as u32;
-        let query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
-            label: Some("kanesumi-gpu-timer"),
-            ty: wgpu::QueryType::Timestamp,
-            count: slots * 2,
-        });
-        let resolve_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("kanesumi-gpu-timer-resolve"),
-            size: SLOT_STRIDE * slots as u64,
-            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let read_bufs = (0..slots)
-            .map(|i| {
-                Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some(&format!("kanesumi-gpu-timer-read-{i}")),
-                    size: 16,
-                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }))
-            })
-            .collect();
-        let (tx, rx) = std::sync::mpsc::channel();
-        Some(Self {
-            query_set,
-            resolve_buf,
-            read_bufs,
-            period_ns: queue.get_timestamp_period(),
-            frame: 0,
-            slot_frame: [None; perf::TIMESTAMP_SLOTS as usize],
-            slot_mapped: [false; perf::TIMESTAMP_SLOTS as usize],
-            slot_keep: [true; perf::TIMESTAMP_SLOTS as usize],
-            active: false,
-            tx,
-            rx,
-            pending: Vec::new(),
-        })
-    }
-
-    /// 本帧的写槽（空闲时才写；被占用则该帧不采样）。
-    pub(crate) fn begin(&mut self) -> Option<usize> {
-        let s = perf::timestamp_slot(self.frame, perf::TIMESTAMP_SLOTS);
-        if self.slot_frame[s].is_some() {
-            self.active = false;
-            return None;
-        }
-        self.slot_frame[s] = Some(self.frame);
-        self.active = true;
-        Some(s)
-    }
-
-    /// 在 render pass 前后各写一个时间戳。
-    pub(crate) fn write_first(&self, encoder: &mut wgpu::CommandEncoder, slot: usize) {
-        encoder.write_timestamp(&self.query_set, slot as u32 * 2);
-    }
-    pub(crate) fn write_last(&self, encoder: &mut wgpu::CommandEncoder, slot: usize) {
-        encoder.write_timestamp(&self.query_set, slot as u32 * 2 + 1);
-    }
-
-    /// 把本帧两枚时间戳 resolve 到回读缓冲（须在 `write_last` 之后、提交之前调用）。
-    pub(crate) fn encode_readback(&self, encoder: &mut wgpu::CommandEncoder, slot: usize) {
-        let base = slot as u64 * 2;
-        encoder.resolve_query_set(
-            &self.query_set,
-            base as u32..(base + 2) as u32,
-            &self.resolve_buf,
-            slot as u64 * SLOT_STRIDE,
-        );
-        encoder.copy_buffer_to_buffer(
-            &self.resolve_buf,
-            slot as u64 * SLOT_STRIDE,
-            &self.read_bufs[slot],
-            0,
-            16,
-        );
-    }
-
-    /// 提交后推进帧号：为滞后帧挂上非阻塞 `map_async`（回调把毫秒送回 `rx`），再看有无到位结果。
-    /// `keep` = 本帧是否计入样本（跳过帧传 false，只回收槽）。
-    pub(crate) fn end(&mut self, device: &wgpu::Device, keep: bool) {
-        if self.active {
-            let s = perf::timestamp_slot(self.frame, perf::TIMESTAMP_SLOTS);
-            self.slot_keep[s] = keep;
-        }
-        self.frame += 1;
-        // 为 LAG 帧前写下的槽挂回读（每个槽在回到可写前只挂一次）。
-        if let Some(s) = perf::readback_slot_for(self.frame, perf::TIMESTAMP_SLOTS, perf::TIMESTAMP_LAG)
-            && let Some(written) = self.slot_frame[s]
-            && !self.slot_mapped[s]
-            && self.frame >= written + perf::TIMESTAMP_LAG
-        {
-            self.slot_mapped[s] = true;
-            let buf = self.read_bufs[s].clone();
-            let reader = buf.clone();
-            let period = self.period_ns;
-            let tx = self.tx.clone();
-            buf.slice(0..16).map_async(wgpu::MapMode::Read, move |res| {
-                if res.is_ok() {
-                    let data = reader.slice(0..16).get_mapped_range();
-                    let start = u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
-                    let end = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
-                    drop(data);
-                    let _ = tx.send((s, perf::ticks_to_ms(start, end, period)));
-                } else {
-                    let _ = tx.send((s, f32::NAN));
-                }
-            });
-        }
-        // 非阻塞轮询：让已完成的 map 回调跑起来（不等待当帧 GPU）。
-        let _ = device.poll(wgpu::Maintain::Poll);
-        // 收结果：槽 → 空闲；keep 的样本计入。
-        while let Ok((s, ms)) = self.rx.try_recv() {
-            let keep = std::mem::replace(&mut self.slot_keep[s], true);
-            self.slot_frame[s] = None;
-            self.slot_mapped[s] = false;
-            self.read_bufs[s].unmap();
-            if keep && ms.is_finite() && self.pending.len() < GPU_PENDING_CAP {
-                self.pending.push(ms);
-            }
-        }
-    }
-
-    /// 取走已完成样本（平台层每帧收取，记进对应表面的 `SurfacePerf::gpu`）。
-    pub(crate) fn drain(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.pending)
-    }
-}
-
 /// 从 wl_display / wl_surface 原始指针创建 wgpu 表面（同 launcher render.rs 模式）。
 /// 供 `GpuContext` 选适配器与 `Renderer` 建各自表面共用。
 pub(crate) fn create_wl_surface(
@@ -587,128 +384,29 @@ pub(crate) fn create_wl_surface(
     }
 }
 
-/// 渲染器初始化错误。
-#[derive(Debug)]
-pub enum RendererError {
-    Surface(wgpu::CreateSurfaceError),
-    Adapter,
-    Device(wgpu::RequestDeviceError),
-    /// 共享上下文的表面格式不被目标表面支持（同一合成器下不应发生）。
-    IncompatibleFormat { wanted: wgpu::TextureFormat },
-}
-
-impl GpuContext {
+pub trait GpuContextExt {
     /// 进程共享上下文：挨个后端候选（主→备）建 instance/device/queue 与选定格式。
     /// `wl_surface` 仅用于挑一个与该表面兼容的适配器，函数返回后临时表面即丢弃。
-    pub fn new(
+    #[allow(clippy::new_ret_no_self)]
+    fn new(
         conn: &Connection,
         wl_surface: &WlSurface,
         backends: &[wgpu::Backends],
-    ) -> Result<Arc<Self>, RendererError> {
-        for (i, backend) in backends.iter().enumerate() {
-            match Self::new_with_backend(conn, wl_surface, *backend) {
-                Ok(c) => return Ok(c),
-                Err(e) if i + 1 < backends.len() => {
-                    log::warn!("wgpu 后端 {:?} 初始化失败（{e:?}），尝试下一候选", backend);
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        unreachable!("backends 非空")
-    }
+    ) -> Result<Arc<GpuContext>, RendererError>;
+}
 
-    fn new_with_backend(
+impl GpuContextExt for GpuContext {
+    fn new(
         conn: &Connection,
         wl_surface: &WlSurface,
-        backend: wgpu::Backends,
-    ) -> Result<Arc<Self>, RendererError> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: backend,
-            ..Default::default()
-        });
-        // 拉起时间线：Vulkan/WGPU 实例创建（ICD 扫描）。
+        backends: &[wgpu::Backends],
+    ) -> Result<Arc<GpuContext>, RendererError> {
         crate::timeline::note_once("gpu_instance");
-        let surface =
-            create_wl_surface(&instance, conn, wl_surface).map_err(RendererError::Surface)?;
-
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-        }))
-        .or_else(|| {
-            // 兼容 surface 失败（SURFACE_LOST）→ 试无 surface 约束的适配器。
-            // ⚠ 不用 force_fallback_adapter=true：会选 lavapipe 软件 Vulkan，request_device
-            //   慢到卡死（settings 在 Ether 里等几分钟无输出的元凶）。
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::LowPower,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            }))
-        })
-        .ok_or(RendererError::Adapter)?;
-        // 拉起时间线：适配器选定（此前的实例 / 表面 / 适配器枚举一起计时）。
-        crate::timeline::note_once("gpu_adapter");
-
-        // GPU 时间戳查询（帧耗时实测）：请求失败则静默重试无特性设备，GPU 计时关闭。
-        // ⚠ 必须同时请求 `TIMESTAMP_QUERY`（查询类型许可）与 `..._INSIDE_ENCODERS`（允许在
-        //   命令编码器里写时间戳）—— 二者是独立的特性位，只请求后者会在 create_query_set
-        //   时校验失败（Features(TIMESTAMP_QUERY) are required but not enabled）。
-        // 参 Ether docs/research/gpu_t1（任务 gpu-t1-frame-timing）。
-        let want =
-            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
-        let (device, queue) = match pollster::block_on(
-            adapter.request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("kanesumi-device"),
-                    required_features: want,
-                    ..Default::default()
-                },
-                None,
-            ),
-        ) {
-            Ok(dq) => dq,
-            Err(e) => {
-                log::info!("时间戳查询特性请求失败（{e}），GPU 计时关闭");
-                pollster::block_on(
-                    adapter.request_device(&wgpu::DeviceDescriptor::default(), None),
-                )
-                .map_err(RendererError::Device)?
-            }
-        };
+        let ctx = GpuContext::with_surface_creator(backends, |inst| {
+            create_wl_surface(inst, conn, wl_surface)
+        })?;
         crate::timeline::note_once("gpu_device");
-
-        let caps = surface.get_capabilities(&adapter);
-        // 诊断：surface capabilities 的 alpha_modes / formats（排查「主表面无法透明」）。
-        log::warn!(
-            "kanesumi surface caps: alpha_modes={:?} formats={:?}",
-            caps.alpha_modes,
-            caps.formats,
-        );
-        // 用 sRGB 格式：与 eframe（librarian 可见）对齐。⚠ 合成器（GLES）import 非 sRGB
-        // dmabuf（XRGB8888，无 alpha）时 alpha 通道读 0 → 整个 buffer 透明（背景消失、
-        // 文字浮空）；sRGB（ARGB8888，有 alpha）→ 可见。参 session.log + Known Issue #8。
-        let format = caps
-            .formats
-            .iter()
-            .find(|f| f.is_srgb())
-            .copied()
-            .unwrap_or(caps.formats[0]);
-        // 临时表面仅用于挑适配器；真实表面由各 Renderer 自建（`with_context`）。
-        drop(surface);
-
-        Ok(Arc::new(Self {
-            instance,
-            adapter,
-            device,
-            queue,
-            format,
-        }))
-    }
-
-    /// 共享管线/配置使用的表面格式。
-    pub fn format(&self) -> wgpu::TextureFormat {
-        self.format
+        Ok(ctx)
     }
 }
 
@@ -1899,62 +1597,6 @@ fn upload_vertices_solid<'a>(
         queue.write_buffer(buf, 0, bytemuck::cast_slice(verts));
     }
     buf
-}
-
-/// 矩形求交（box 语义：内容裁剪到盒内）。不相交返回 None。
-pub(crate) fn intersect(a: Rect, b: Rect) -> Option<Rect> {
-    let x0 = a.origin.x.max(b.origin.x);
-    let y0 = a.origin.y.max(b.origin.y);
-    let x1 = a.right().min(b.right());
-    let y1 = a.bottom().min(b.bottom());
-    if x1 <= x0 || y1 <= y0 {
-        None
-    } else {
-        Some(Rect::new(x0, y0, x1 - x0, y1 - y0))
-    }
-}
-
-/// 选呈现模式（G1 / SMOOTHNESS_PLAN §Ⅲ-3）：支持 `KANESUMI_PRESENT=fifo|mailbox` 显式选定；
-/// 缺省优先 `Mailbox`（可丢旧帧、acquire 立返，避免 FIFO 的并发等待把内容变化帧的
-/// 「光栅耗时」抬到 ~16.7 ms），其次 `Immediate`，最后回落 `Fifo`。
-pub(crate) fn choose_present_mode(available: &[wgpu::PresentMode]) -> wgpu::PresentMode {
-    let ov = std::env::var("KANESUMI_PRESENT").ok();
-    choose_present_mode_from(available, ov.as_deref())
-}
-
-pub(crate) fn choose_present_mode_from(
-    available: &[wgpu::PresentMode],
-    override_mode: Option<&str>,
-) -> wgpu::PresentMode {
-    if let Some(val) = override_mode {
-        match val.to_ascii_lowercase().trim() {
-            "fifo" if available.contains(&wgpu::PresentMode::Fifo) => {
-                return wgpu::PresentMode::Fifo;
-            }
-            "mailbox" if available.contains(&wgpu::PresentMode::Mailbox) => {
-                return wgpu::PresentMode::Mailbox;
-            }
-            _ => {}
-        }
-    }
-    if available.contains(&wgpu::PresentMode::Mailbox) {
-        wgpu::PresentMode::Mailbox
-    } else if available.contains(&wgpu::PresentMode::Immediate) {
-        wgpu::PresentMode::Immediate
-    } else {
-        wgpu::PresentMode::Fifo
-    }
-}
-
-/// 合并全局损伤裁剪与步骤裁剪（G1 损伤感知）。
-/// 返回 `Some(None)` = 全表面（无损伤且步骤无裁剪）；`Some(Some(r))` = 裁剪到 r；
-/// `None` = 两者无交集 → 该步整步跳过（不动颜色）。
-fn damage_clip(damage: Option<Rect>, clip: Option<Rect>) -> Option<Option<Rect>> {
-    match (damage, clip) {
-        (None, c) => Some(c),
-        (Some(d), None) => Some(Some(d)),
-        (Some(d), Some(c)) => intersect(c, d).map(Some),
-    }
 }
 
 /// 推入一个 quad（两三角形）。

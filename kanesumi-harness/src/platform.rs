@@ -83,7 +83,7 @@ use crate::app::{
 use crate::appmenu::AppMenuHandle;
 use crate::context_menu::ContextMenuAction;
 use crate::cpu_raster::CpuRenderer;
-use crate::render::{GpuContext, Renderer};
+use crate::render::{GpuContext, GpuContextExt, Renderer};
 
 /// 画布 v1/v2 选择：`KANESUMI_CANVAS=2` 走实例化批渲染画布（CanvasV2，无 MSAA），
 /// 其余（未设 / 其他值）保持 v1 `Renderer`（MSAA 4）。真机验证后由调度者翻缺省。

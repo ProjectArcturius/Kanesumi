@@ -19,11 +19,11 @@ pub mod timeline;
 pub mod tree_host;
 
 pub mod canvas_v2;
-pub mod cpu_raster;
-pub(crate) mod glyph_layout;
+pub use kanesumi_render::cpu_raster;
+pub(crate) use kanesumi_render::glyph_layout;
 
 /// 文字浓度实验旋钮（tx1 spike）。经 `CpuRenderer::set_text_tuning` 传入。
-pub use glyph_layout::TextRenderTuning;
+pub use kanesumi_render::TextRenderTuning;
 
 #[cfg(target_os = "linux")]
 pub mod dmabuf;
