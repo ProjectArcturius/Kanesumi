@@ -1208,6 +1208,7 @@ dependencies = [
  "kanesumi-controls",
  "kanesumi-core",
  "kanesumi-element",
+ "kanesumi-render",
  "kanesumi-structure",
  "libc",
  "log",
@@ -1224,6 +1225,19 @@ dependencies = [
  "wgpu",
  "xkbcommon",
  "xkeysym",
+]
+
+[[package]]
+name = "kanesumi-render"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "kanesumi-canvas",
+ "kanesumi-core",
+ "log",
+ "pollster",
+ "resvg",
+ "wgpu",
 ]
 
 [[package]]

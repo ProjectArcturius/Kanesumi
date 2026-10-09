@@ -1,0 +1,18 @@
+[package]
+name = "kanesumi-render"
+description = "Kanesumi（矩隅）· 平台无关渲染基座：实例化批渲染 GPU 画布（v2）/ 字形排版 / CPU 光栅器 / 离屏渲染"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["Project Arcturius"]
+
+[dependencies]
+kanesumi-core = { path = "../kanesumi-core" }
+kanesumi-canvas = { path = "../kanesumi-canvas" }
+wgpu = { version = "22", features = ["vulkan-portability"] }
+pollster = "0.3"
+bytemuck = { version = "1", features = ["derive"] }
+log = "0.4"
+
+[dev-dependencies]
+resvg = "0.44"

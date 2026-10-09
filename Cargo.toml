@@ -3,6 +3,7 @@ members = [
     "kanesumi-core",
     "kanesumi-anim",
     "kanesumi-canvas",
+    "kanesumi-render",
     "kanesumi-element",
     "kanesumi-structure",
     "kanesumi-controls",

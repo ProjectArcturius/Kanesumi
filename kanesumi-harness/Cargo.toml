@@ -9,6 +9,7 @@ authors = ["Project Arcturius"]
 [dependencies]
 kanesumi-core = { path = "../kanesumi-core" }
 kanesumi-canvas = { path = "../kanesumi-canvas" }
+kanesumi-render = { path = "../kanesumi-render" }
 kanesumi-anim = { path = "../kanesumi-anim" }
 kanesumi-structure = { path = "../kanesumi-structure" }
 kanesumi-controls = { path = "../kanesumi-controls" }

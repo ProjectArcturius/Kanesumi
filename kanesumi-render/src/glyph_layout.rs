@@ -136,14 +136,14 @@ fn darken_amount_for_size(base_px: f32, size_px: f32) -> f32 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct GlyphKey {
-    pub(crate) engine_id: u64,
-    pub(crate) font_id: u32,
-    pub(crate) glyph_id: u16,
-    pub(crate) size_bits: u32,
+pub struct GlyphKey {
+    pub engine_id: u64,
+    pub font_id: u32,
+    pub glyph_id: u16,
+    pub size_bits: u32,
 }
 
-pub(crate) fn glyph_key(engine_id: u64, font_id: u32, glyph_id: u16, size_px: f32) -> GlyphKey {
+pub fn glyph_key(engine_id: u64, font_id: u32, glyph_id: u16, size_px: f32) -> GlyphKey {
     GlyphKey {
         engine_id,
         font_id,
@@ -153,7 +153,7 @@ pub(crate) fn glyph_key(engine_id: u64, font_id: u32, glyph_id: u16, size_px: f3
 }
 
 /// 一段排版后的字形放置记录（逻辑坐标）。GPU（emit_text）与 CPU（cpu_raster）共用。
-pub(crate) struct PlacedGlyph {
+pub struct PlacedGlyph {
     pub key: GlyphKey,
     /// 字形位图左上角（逻辑坐标）。
     pub x: f32,
@@ -171,7 +171,7 @@ pub(crate) struct PlacedGlyph {
 ///   中线对齐矩形中线 / 下沿贴矩形下沿。矩形矮于一行时 Center 上下溢出
 ///   （行盒比矩形高 → 裁剪范围反而扩大，字不被裁）。
 /// - 多行路径（paragraph / 自动换行）原样返回，纵排语义不变。
-pub(crate) fn text_rect_with_valign(
+pub fn text_rect_with_valign(
     rect: Rect,
     style: TextStyle,
     wrap: bool,
@@ -193,7 +193,7 @@ pub(crate) fn text_rect_with_valign(
 /// 字形位图缓存：miss 才 rasterize 入库（静态文本零重栅格化）。
 /// 生产（GPU / CPU）路径用本入口 —— 等价于「全默认旋钮」。
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn layout_text_glyphs(
+pub fn layout_text_glyphs(
     engine: &TextEngine,
     glyph_bitmaps: &mut HashMap<GlyphKey, (kanesumi_canvas::text::GlyphMetrics, Vec<u8>)>,
     content: &str,
@@ -224,7 +224,7 @@ pub(crate) fn layout_text_glyphs(
 /// 加粗会改变字形位图与放置用的 metrics（四周补偿 pad），故旋钮变化时调用方必须
 /// 清空字形与布局缓存（见 `CpuRenderer::set_text_tuning`）。
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn layout_text_glyphs_tuned(
+pub fn layout_text_glyphs_tuned(
     engine: &TextEngine,
     glyph_bitmaps: &mut HashMap<GlyphKey, (kanesumi_canvas::text::GlyphMetrics, Vec<u8>)>,
     content: &str,
