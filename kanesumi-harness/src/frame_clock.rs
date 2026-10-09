@@ -67,6 +67,7 @@ pub struct FrameClock {
     last_feedback_presented: Option<Instant>,
     fresh_feedback: bool,
     last_feedback_discarded: bool,
+    grid_anchor: Option<Instant>,
     last_frame_callback: Option<Instant>,
     fresh_frame_callback: bool,
     last_predicted_present: Option<Instant>,
@@ -87,6 +88,7 @@ impl FrameClock {
             last_feedback_presented: None,
             fresh_feedback: false,
             last_feedback_discarded: false,
+            grid_anchor: None,
             last_frame_callback: None,
             fresh_frame_callback: false,
             last_predicted_present: None,
@@ -110,18 +112,44 @@ impl FrameClock {
 
     /// 收到 `wp_presentation_feedback.presented`：更新周期并记下实际上屏时刻。
     pub fn on_presented(&mut self, presented_at: Instant, refresh_ns: u32) {
-        if refresh_ns > 0 {
-            self.period = Duration::from_nanos(refresh_ns as u64);
-        }
+        let new_period = if refresh_ns > 0 {
+            Duration::from_nanos(refresh_ns as u64)
+        } else {
+            self.period
+        };
+        let period_changed = new_period != self.period;
+        self.period = new_period;
         self.last_feedback_presented = Some(presented_at);
         self.fresh_feedback = true;
         self.last_feedback_discarded = false;
+
+        let p_nanos = self.period.as_nanos().max(1);
+        match self.grid_anchor {
+            Some(anchor) if !period_changed => {
+                // 如果当前硬件呈现时刻与现有网格相差超过半个周期（发生跳相或丢帧重置），重置锚点；
+                // 否则保留当前锚点，保持网格相位严格稳定（消除调度/休眠抖动造成的网格漂移）。
+                let diff_nanos = if presented_at >= anchor {
+                    let rem = presented_at.duration_since(anchor).as_nanos() % p_nanos;
+                    rem.min(p_nanos - rem)
+                } else {
+                    let rem = anchor.duration_since(presented_at).as_nanos() % p_nanos;
+                    rem.min(p_nanos - rem)
+                };
+                if diff_nanos >= p_nanos / 2 {
+                    self.grid_anchor = Some(presented_at);
+                }
+            }
+            _ => {
+                self.grid_anchor = Some(presented_at);
+            }
+        }
     }
 
     /// 收到 `wp_presentation_feedback.discarded`：丢弃当前回执预期。
     pub fn on_discarded(&mut self) {
         self.fresh_feedback = false;
         self.last_feedback_discarded = true;
+        self.grid_anchor = None;
     }
 
     /// 收到 Wayland `wl_surface.frame` 回调。
@@ -130,29 +158,25 @@ impl FrameClock {
         self.fresh_frame_callback = true;
     }
 
-    /// 预测下一帧的目标呈现时刻（退回层次：回执 → 回调 → now）。
+    /// 预测下一帧的目标呈现时刻（退回层次：回执网格 → 回调网格 → now）。
     pub fn predict_next_present(&mut self, now: Instant) -> Instant {
-        if self.fresh_feedback && !self.last_feedback_discarded && let Some(t) = self.last_feedback_presented {
-            self.fresh_feedback = false;
-            let mut next = t + self.period;
-            if now > next {
-                let p = self.period.as_nanos().max(1);
-                let elapsed = now.saturating_duration_since(t).as_nanos();
-                let k = (elapsed.div_ceil(p)).max(1) as u32;
-                next = t + self.period.saturating_mul(k);
+        if !self.last_feedback_discarded && let Some(anchor) = self.grid_anchor {
+            let p = self.period.as_nanos().max(1);
+            if now <= anchor {
+                return anchor + self.period;
             }
-            return next;
+            let elapsed = now.saturating_duration_since(anchor).as_nanos();
+            let k = (elapsed / p + 1) as u32;
+            return anchor + self.period.saturating_mul(k);
         }
         if let Some(cb) = self.last_frame_callback {
-            self.fresh_frame_callback = false;
-            let mut next = cb + self.period;
-            if now > next {
-                let p = self.period.as_nanos().max(1);
-                let elapsed = now.saturating_duration_since(cb).as_nanos();
-                let k = (elapsed.div_ceil(p)).max(1) as u32;
-                next = cb + self.period.saturating_mul(k);
+            let p = self.period.as_nanos().max(1);
+            if now <= cb {
+                return cb + self.period;
             }
-            return next;
+            let elapsed = now.saturating_duration_since(cb).as_nanos();
+            let k = (elapsed / p + 1) as u32;
+            return cb + self.period.saturating_mul(k);
         }
         now
     }
@@ -489,6 +513,40 @@ mod tests {
                 modifiers: Modifiers::default()
             }
         );
+    }
+
+    #[test]
+    fn test_frame_clock_periodic_phase_alignment() {
+        let t0 = Instant::now();
+        let p60 = Duration::from_nanos(16_666_667);
+        let mut clock = FrameClock::new(p60);
+        clock.on_presented(t0, 16_666_667);
+
+        // 模拟连续 60 帧动画，并在两帧之间偶发微小的调度/休眠抖动（50-100µs）
+        let mut predicted_times = Vec::new();
+        for k in 0..60 {
+            let jitter = Duration::from_micros((k * 17 % 80) as u64);
+            let frame_now = t0 + p60 * k + jitter;
+            // 收到上屏回执
+            clock.on_presented(t0 + p60 * k + jitter, 16_666_667);
+            let _dt = clock.advance_frame(frame_now);
+            predicted_times.push(clock.current_predicted_present().unwrap());
+        }
+
+        let first = predicted_times[0];
+        let p_sec = p60.as_secs_f64();
+        let mut hits = 0;
+        for &t in &predicted_times {
+            let diff = t.duration_since(first).as_secs_f64();
+            let ratio = diff / p_sec;
+            let nearest = ratio.round();
+            if (ratio - nearest).abs() < 0.01 {
+                hits += 1;
+            }
+        }
+        let hit_ratio = hits as f64 / predicted_times.len() as f64;
+        assert!(hit_ratio >= 0.99, "周期整数倍命中率须 >= 99%：{hit_ratio}");
+        assert_eq!(hit_ratio, 1.0, "网格锚定应达到 100% 整数倍命中");
     }
 }
 
