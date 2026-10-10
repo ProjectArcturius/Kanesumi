@@ -4355,7 +4355,13 @@ impl Shell {
             let hz = default_expected_hz(class);
             let gpu_ok = self.gpu_available();
             let one_canvas = crate::renderer_policy::one_canvas();
-            let kind = choose_renderer(class, area, hz, gpu_ok, one_canvas);
+            let kind =
+                crate::renderer_policy::choose_ime_popup_renderer(area, hz, gpu_ok, one_canvas);
+            let reason = if one_canvas {
+                crate::renderer_policy::decision_reason(class, area, hz, gpu_ok, one_canvas)
+            } else {
+                "KANESUMI_ONE_CANVAS 关闭，保留候选窗恒 CPU 接线".to_string()
+            };
             log::info!(
                 "渲染器选择：候选窗（{:.0}x{:.0}，scale {}）area={}px² hz={:.1} → {:?}（{}）",
                 pw,
@@ -4364,7 +4370,7 @@ impl Shell {
                 area,
                 hz,
                 kind,
-                crate::renderer_policy::decision_reason(class, area, hz, gpu_ok, one_canvas),
+                reason,
             );
             if kind == RendererKind::Gpu {
                 if let Some(ctx) = self.ensure_gpu_context(&surf) {

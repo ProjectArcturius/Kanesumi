@@ -95,6 +95,27 @@ pub fn choose_renderer(
     }
 }
 
+/// 候选窗接线保留旧的恒 CPU 路径；仅显式开启一张画布后才允许 GPU。
+/// 不能直接用面积策略替代旧接线，否则大候选窗会在缺省关闭时新建 GPU。
+/// 参 Ether tools/dispatch/tasks/c2-one-canvas.md §设计。
+pub(crate) fn choose_ime_popup_renderer(
+    physical_area_px2: u64,
+    expected_hz: f32,
+    gpu_available: bool,
+    one_canvas: bool,
+) -> RendererKind {
+    if !one_canvas {
+        return RendererKind::Cpu;
+    }
+    choose_renderer(
+        SurfaceClass::ImePopup,
+        physical_area_px2,
+        expected_hz,
+        gpu_available,
+        one_canvas,
+    )
+}
+
 /// 决策的人类可读理由（日志用；与选择结果一并记一次）。
 pub fn decision_reason(
     class: SurfaceClass,
@@ -200,6 +221,33 @@ mod tests {
                 choose_renderer(class, 5_898_240, 60.0, false, true),
                 RendererKind::Cpu,
                 "{class:?} 在 GPU 不可用时即使 one_canvas 开启也必须 CPU"
+            );
+        }
+    }
+
+    #[test]
+    fn 候选窗关闭一张画布时保留恒_cpu_接线() {
+        for area in [0, 200_000, GPU_MIN_AREA_PX2, 5_898_240, u64::MAX] {
+            for gpu_available in [false, true] {
+                assert_eq!(
+                    choose_ime_popup_renderer(area, 10.0, gpu_available, false),
+                    RendererKind::Cpu,
+                    "缺省关闭时不得因候选窗面积 {area} 新建 GPU"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn 候选窗开启一张画布时仍尊重_gpu_可用性() {
+        for area in [0, 200_000, GPU_MIN_AREA_PX2, 5_898_240] {
+            assert_eq!(
+                choose_ime_popup_renderer(area, 10.0, true, true),
+                RendererKind::Gpu
+            );
+            assert_eq!(
+                choose_ime_popup_renderer(area, 10.0, false, true),
+                RendererKind::Cpu
             );
         }
     }
