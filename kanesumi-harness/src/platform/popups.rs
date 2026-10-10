@@ -10,7 +10,13 @@
 //
 // xdg-shell 约束：抓取弹层必须叠在最上层抓取弹层之上（父 = 当前最上层抓取弹层），
 // 且只能自顶向下销毁 —— 所以任何一层失效时，连同其上各层一起按逆序销毁再重建。
+//
+// C2 一张画布：控制面板 / TopBar 与 Dock 菜单等小表面按 `KANESUMI_ONE_CANVAS=1` 走进程共享
+// 的 v2 GPU 画布（逐表面 CPU 回退）；开关关闭维持既有 CPU 光栅路径。参 docs/CANVAS_PLAN.md §Ⅳ C2。
 
+use std::time::Instant;
+
+use kanesumi_canvas::Scene;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_core::{Rect, Size};
 use smithay_client_toolkit::compositor::Surface;
@@ -22,9 +28,10 @@ use wayland_protocols::xdg::shell::client::xdg_positioner::{
     Anchor as PosAnchor, ConstraintAdjustment, Gravity,
 };
 
-use super::{Shell, SurfaceOutput, guard};
+use super::{Shell, SurfaceOutput, SurfaceRenderer, guard};
 use crate::app::{InputEvent, PopupRequest};
 use crate::cpu_raster::CpuRenderer;
+use crate::renderer_policy::{RendererKind, SurfaceClass, choose_renderer, default_expected_hz};
 use crate::role::SurfaceKind;
 
 /// 一个已开出的子弹层表面。
@@ -37,7 +44,10 @@ pub(super) struct HostedPopup {
     size: Size,
     grab: bool,
     configured: bool,
+    /// CPU 光栅化器（子弹层走 SHM/dmabuf 提交）。与 `renderer` 二选一。
     cpu: Option<CpuRenderer>,
+    /// wgpu 光栅化器（C2 一张画布：控制面板 / TopBar / Dock 菜单走 GPU 直出）。与 `cpu` 二选一。
+    pub(super) renderer: Option<SurfaceRenderer>,
     scale: f32,
     pub(super) out: SurfaceOutput,
     dirty: bool,
@@ -198,13 +208,72 @@ impl Shell {
             grab: req.grab,
             configured: false,
             cpu: None,
+            renderer: None,
             scale,
             out,
             dirty: true,
         });
     }
 
-    /// 渲染脏弹层：App::render_popup → CPU 光栅 → 提交。
+    /// 子弹层渲染器惰性创建（C2）：按策略选 GPU / CPU；GPU 不可用或创建失败 → CPU。
+    ///
+    /// 子弹层 = 控制面板 / TopBar 菜单 / Dock 子菜单等**小表面**。缺省（开关关）维持既有 CPU
+    /// 光栅；`KANESUMI_ONE_CANVAS=1` 且 GPU 可用时与主表面 / 浮层 / 候选窗同走一份 v2 GPU
+    /// 画布（见下方 gpu_ok 门控）。参 docs/CANVAS_PLAN.md §Ⅳ C2。
+    fn ensure_popup_renderer(&mut self, i: usize) {
+        let Some((pw, ph, pscale, surf)) = self.popups.get(i).and_then(|p| {
+            (p.cpu.is_none() && p.renderer.is_none())
+                .then(|| (p.size.width, p.size.height, p.scale, p.popup.wl_surface().clone()))
+        }) else {
+            return;
+        };
+        let class = SurfaceClass::Floating;
+        let area = ((pw * pscale).max(0.0) * (ph * pscale).max(0.0)) as u64;
+        let hz = default_expected_hz(class);
+        // 子弹层（控制面板 / 菜单）是 C2 授权扩展的第四类表面：此前固定 CPU 光栅，不参与
+        // 面积阈值决策；开关关闭时必须逐字节保持既有 CPU 路径，故把「开关开启」与 GPU 可用
+        // 相与后传给决策函数（关闭 → gpu_available=false → 必返 CPU）。参 CANVAS_PLAN §Ⅳ C2。
+        let gpu_ok = self.gpu_available();
+        let one_canvas = crate::renderer_policy::one_canvas();
+        let kind = choose_renderer(class, area, hz, gpu_ok && one_canvas, one_canvas);
+        log::info!(
+            "渲染器选择：子弹层 #{}（{:.0}x{:.0}，scale {}）area={}px² hz={:.1} → {:?}（{}）",
+            i,
+            pw,
+            ph,
+            pscale,
+            area,
+            hz,
+            kind,
+            if one_canvas {
+                crate::renderer_policy::decision_reason(class, area, hz, gpu_ok, one_canvas)
+            } else {
+                "子弹层缺省 CPU 光栅（KANESUMI_ONE_CANVAS 关闭）".to_string()
+            },
+        );
+        if kind == RendererKind::Gpu {
+            if let Some(ctx) = self.ensure_gpu_context(&surf) {
+                match SurfaceRenderer::with_context(ctx, &self.conn, &surf, pw, ph, pscale, true) {
+                    Ok(mut r) => {
+                        // 预热：空场景提交一次，强制管线/着色器编译（消除首帧尖峰）。
+                        r.render(&self.engine, &Scene::default());
+                        log::info!("子弹层 wgpu 渲染器已创建（{}）", r.diagnostics());
+                        self.popups[i].renderer = Some(r);
+                        return;
+                    }
+                    Err(e) => {
+                        log::warn!("子弹层 wgpu 渲染器创建失败（{e:?}），回退 CPU");
+                    }
+                }
+            } else {
+                log::warn!("子弹层 wgpu 共享上下文不可用，回退 CPU");
+            }
+        }
+        log::info!("子弹层 CPU 光栅化器已创建（{:.0}x{:.0}）", pw, ph);
+        self.popups[i].cpu = Some(CpuRenderer::new(pw, ph, pscale));
+    }
+
+    /// 渲染脏弹层：App::render_popup → 光栅（GPU 直出 / CPU→dmabuf）→ 提交。
     pub(super) fn render_popups(&mut self, qh: &QueueHandle<Self>) {
         for i in 0..self.popups.len() {
             let key = self.popups[i].key;
@@ -212,34 +281,75 @@ impl Shell {
                 let app = &self.app;
                 guard("popup_needs_redraw", || app.popup_needs_redraw(key)).unwrap_or(false)
             };
-            let p = &mut self.popups[i];
-            if !p.configured || !(p.dirty || wants) {
+            if !self.popups[i].configured || !(self.popups[i].dirty || wants) {
                 continue;
             }
-            p.dirty = false;
-            let size = p.size;
-            let cpu = p
-                .cpu
-                .get_or_insert_with(|| CpuRenderer::new(size.width, size.height, p.scale));
+            self.popups[i].dirty = false;
+            // 惰性创建渲染器：GPU 一张画布优先，失败回退 CPU（逐表面）。
+            self.ensure_popup_renderer(i);
+            let size = self.popups[i].size;
+            let t_render = Instant::now();
             let engine: &TextEngine = &self.engine;
             let app = &mut self.app;
             let scene = match guard("render_popup", || app.render_popup(engine, key, size)) {
                 Some(s) => s,
                 None => continue,
             };
-            let (pw, ph) = cpu.physical_size();
-            let rgba = cpu.render(engine, &scene, None);
-            let surface = p.popup.wl_surface().clone();
-            p.out.commit(
-                qh,
-                self.shm.as_ref(),
-                &self.dmabuf,
-                &surface,
-                pw,
-                ph,
-                rgba,
-                p.scale,
-                None,
+            let render_ms = t_render.elapsed().as_secs_f32() * 1000.0;
+            let p = &mut self.popups[i];
+            let mut raster_ms = 0.0f32;
+            let mut commit_ms = 0.0f32;
+            let mut gpu_samples = Vec::new();
+            let mut draws = None;
+            let mut acquire_ms = None;
+            let mut c15_stats = None;
+            if let Some(cpu) = p.cpu.as_mut() {
+                let (pw, ph) = cpu.physical_size();
+                let t = Instant::now();
+                let rgba = cpu.render(engine, &scene, None);
+                raster_ms = t.elapsed().as_secs_f32() * 1000.0;
+                // 子弹层同主表面 / 浮层走 dmabuf 直通（SHM 为回退）。
+                let t = Instant::now();
+                let surface = p.popup.wl_surface().clone();
+                p.out.commit(
+                    qh,
+                    self.shm.as_ref(),
+                    &self.dmabuf,
+                    &surface,
+                    pw,
+                    ph,
+                    rgba,
+                    p.scale,
+                    None,
+                );
+                commit_ms = t.elapsed().as_secs_f32() * 1000.0;
+            } else if let Some(r) = p.renderer.as_mut() {
+                // GPU（C2）：v2 增量画布整幅提交（子弹层仅在脏帧渲染，无损伤裁剪需求）。
+                let t = Instant::now();
+                r.render_with_damage(engine, &scene, None);
+                raster_ms = t.elapsed().as_secs_f32() * 1000.0;
+                gpu_samples = r.drain_gpu_samples();
+                draws = r.last_draws();
+                acquire_ms = r.take_acquire_ms();
+                c15_stats = r.last_c15_stats();
+            }
+            self.perf_popup.record(render_ms, raster_ms, commit_ms);
+            if let Some(n) = draws {
+                self.perf_popup.record_draws(n);
+            }
+            if let Some(ms) = acquire_ms {
+                self.perf_popup.record_acquire(ms);
+            }
+            for ms in gpu_samples {
+                self.perf_popup.record_gpu(ms);
+            }
+            if let Some((inc, dmg_pct, insts)) = c15_stats {
+                self.perf_popup.record_c15(inc, dmg_pct, insts);
+            }
+            crate::perf::pacing_present_named(
+                &format!("{:?}:popup", self.role),
+                Instant::now(),
+                self.frame_clock.current_predicted_present(),
             );
         }
     }
@@ -287,6 +397,9 @@ impl PopupHandler for Shell {
                 p.size = size;
                 if let Some(cpu) = p.cpu.as_mut() {
                     cpu.resize(size.width, size.height, p.scale);
+                }
+                if let Some(r) = p.renderer.as_mut() {
+                    r.resize(size.width, size.height, p.scale);
                 }
             }
         }

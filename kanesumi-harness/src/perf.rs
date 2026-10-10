@@ -203,6 +203,7 @@ pub fn format_header(
     msaa_samples: Option<u32>,
     gpu_supported: bool,
     canvas2: bool,
+    one_canvas: bool,
 ) -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -212,8 +213,9 @@ pub fn format_header(
         .map(|n| n.to_string())
         .unwrap_or_else(|| "n/a".to_string());
     let gpu = if gpu_supported { "ts" } else { "n/a" };
-    let canvas = if canvas2 { 2 } else { 1 };
-    format!("# kanesumi-harness proc={proc} t={secs} msaa={msaa} gpu={gpu} canvas={canvas}\n")
+    let canvas = if canvas2 || one_canvas { 2 } else { 1 };
+    let oc = if one_canvas { "on" } else { "off" };
+    format!("# kanesumi-harness proc={proc} t={secs} msaa={msaa} gpu={gpu} canvas={canvas} one_canvas={oc}\n")
 }
 
 // ── GPU 时间戳环形缓冲的索引与换算（纯函数，单测覆盖）──
@@ -818,16 +820,17 @@ mod tests {
 
     #[test]
     fn header_records_msaa_and_gpu_support() {
-        let h = format_header("ether-settings", Some(1), false, false);
+        let h = format_header("ether-settings", Some(1), false, false, false);
         assert!(h.starts_with('#'), "首行以 # 开标注：{h}");
         assert!(h.contains("proc=ether-settings"), "{h}");
         assert!(h.contains("msaa=1"), "{h}");
         assert!(h.contains("gpu=n/a"), "{h}");
-        let h = format_header("ether-settings", Some(4), true, false);
-        assert!(h.contains("msaa=4") && h.contains("gpu=ts"), "{h}");
+        assert!(h.contains("one_canvas=off"), "{h}");
+        let h = format_header("ether-settings", Some(4), true, false, true);
+        assert!(h.contains("msaa=4") && h.contains("gpu=ts") && h.contains("one_canvas=on"), "{h}");
         assert!(h.ends_with('\n'));
         // 无 GPU 光栅器（layer-shell / CPU 角色）→ msaa=n/a。
-        let h = format_header("ether-settings", None, false, false);
+        let h = format_header("ether-settings", None, false, false, false);
         assert!(h.contains("msaa=n/a"), "{h}");
     }
 
