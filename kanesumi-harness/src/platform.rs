@@ -4306,6 +4306,14 @@ impl Shell {
                 p.width = pw;
                 p.height = ph;
             }
+            // 自证候选面**最终**逻辑尺寸：验收取 ROI 必须用它（× scale 得物理），
+            // 不得用创建时尺寸 —— 候选数变化会 resize。参 docs/research/c2/policy.md。
+            log::info!(
+                "IME 候选窗 popup 尺寸更新：{pw:.0}×{ph:.0} scale={} → 物理 {:.0}×{:.0}",
+                self.scale,
+                pw * self.scale,
+                ph * self.scale
+            );
             self.im_popup_dirty = true; // 尺寸变化须重渲染提交。
         }
         if self.im_popup.is_none() {
