@@ -4453,7 +4453,11 @@ impl Shell {
         if let Some((inc, dmg_pct, insts)) = c15_stats {
             self.perf_im_popup.record_c15(inc, dmg_pct, insts);
         }
-        crate::perf::pacing_present_named(&format!("{:?}:im_popup", self.role), Instant::now());
+        crate::perf::pacing_present_named(
+            &format!("{:?}:im_popup", self.role),
+            Instant::now(),
+            self.frame_clock.current_predicted_present(),
+        );
     }
 }
 
