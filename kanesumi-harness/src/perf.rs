@@ -328,6 +328,9 @@ struct Activity {
     sample_err_us: Vec<f32>,
     feedback_count: u32,
     intervals_ms: Vec<f32>,
+    first_predicted: Option<std::time::Instant>,
+    predicted_hits: u32,
+    predicted_total: u32,
 }
 
 /// 客户端动画掉帧追踪器（纯逻辑，便于单测；运行期由 thread_local 持有）。
@@ -335,6 +338,7 @@ struct Activity {
 pub struct FramePacing {
     activities: Vec<Activity>,
     refresh_ms: f32,
+    period: Duration,
 }
 
 impl Default for FramePacing {
@@ -345,18 +349,35 @@ impl Default for FramePacing {
 
 impl FramePacing {
     pub fn new() -> Self {
-        Self { activities: Vec::new(), refresh_ms: refresh_period_ms() }
+        let ms = refresh_period_ms();
+        Self {
+            activities: Vec::new(),
+            refresh_ms: ms,
+            period: Duration::from_secs_f32(ms / 1000.0),
+        }
     }
 
     #[cfg(test)]
     fn with_refresh(refresh_ms: f32) -> Self {
-        Self { refresh_ms, ..Self::new() }
+        Self {
+            activities: Vec::new(),
+            refresh_ms,
+            period: Duration::from_secs_f32(refresh_ms / 1000.0),
+        }
     }
 
     /// 更新当前名义刷新周期（毫秒）。
     pub fn set_refresh_period(&mut self, period_ms: f32) {
         if period_ms > 0.0 {
             self.refresh_ms = period_ms;
+            self.period = Duration::from_secs_f32(period_ms / 1000.0);
+        }
+    }
+
+    pub fn set_period(&mut self, period: Duration) {
+        if !period.is_zero() {
+            self.period = period;
+            self.refresh_ms = period.as_secs_f32() * 1000.0;
         }
     }
 
@@ -373,6 +394,9 @@ impl FramePacing {
             a.sample_err_us.clear();
             a.feedback_count = 0;
             a.intervals_ms.clear();
+            a.first_predicted = None;
+            a.predicted_hits = 0;
+            a.predicted_total = 0;
             return;
         }
         self.activities.push(Activity {
@@ -387,6 +411,9 @@ impl FramePacing {
             sample_err_us: Vec::new(),
             feedback_count: 0,
             intervals_ms: Vec::new(),
+            first_predicted: None,
+            predicted_hits: 0,
+            predicted_total: 0,
         });
     }
 
@@ -413,13 +440,26 @@ impl FramePacing {
     pub fn on_present(&mut self, now: std::time::Instant) {
         let names: Vec<String> = self.activities.iter().map(|a| a.name.clone()).collect();
         for n in &names {
-            self.record_present(n, now);
+            self.record_present(n, now, None);
         }
     }
 
-    /// 指定动画的一帧提交（多表面进程须按表面分别记，否则别的表面的帧会污染间隔）。
-    pub fn record_present(&mut self, name: &str, now: std::time::Instant) {
+    /// 指定动画的一帧提交（带预测呈现时刻；多表面进程须按表面分别记，避免互相污染间隔）。
+    pub fn record_present(
+        &mut self,
+        name: &str,
+        now: std::time::Instant,
+        predicted: Option<std::time::Instant>,
+    ) {
         let refresh_ms = self.refresh_ms;
+        let period_ns = if !self.period.is_zero() {
+            self.period.as_nanos() as f64
+        } else if refresh_ms > 0.0 {
+            (refresh_ms as f64) * 1_000_000.0
+        } else {
+            16_666_667.0
+        };
+
         for a in &mut self.activities {
             if a.name != name {
                 continue;
@@ -444,6 +484,30 @@ impl FramePacing {
                 }
             }
             a.last_present = Some(now);
+
+            // 自检口径（Lumia 真机参照）：每段动画首帧 predicted_present 为基准，
+            // 第 k 帧与基准之差 ÷ 周期，取最近整数，偏差 < 0.01 记命中；比例 = 命中帧 / 总帧。
+            if let Some(pred) = predicted {
+                a.predicted_total = a.predicted_total.saturating_add(1);
+                match a.first_predicted {
+                    None => {
+                        a.first_predicted = Some(pred);
+                        a.predicted_hits = a.predicted_hits.saturating_add(1);
+                    }
+                    Some(t0) => {
+                        let diff_ns = if pred >= t0 {
+                            pred.duration_since(t0).as_nanos() as f64
+                        } else {
+                            -(t0.duration_since(pred).as_nanos() as f64)
+                        };
+                        let ratio = diff_ns / period_ns;
+                        let nearest = ratio.round();
+                        if (ratio - nearest).abs() < 0.01 {
+                            a.predicted_hits = a.predicted_hits.saturating_add(1);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -493,6 +557,12 @@ impl FramePacing {
             0.0
         };
 
+        let phase_int = if a.predicted_total > 0 {
+            Some(a.predicted_hits as f32 / a.predicted_total as f32)
+        } else {
+            None
+        };
+
         Some(format_pacing_line(&PacingReport {
             name: a.name,
             start_latency_ms: latency,
@@ -505,6 +575,7 @@ impl FramePacing {
             hz,
             fb_coverage,
             interval_cv,
+            phase_int,
         }))
     }
 }
@@ -534,10 +605,11 @@ pub struct PacingReport {
     pub hz: f32,
     pub fb_coverage: f32,
     pub interval_cv: f32,
+    pub phase_int: Option<f32>,
 }
 
 /// 一行掉帧日志（纯函数）：动画名、起跑延迟、总帧数、掉帧数、最长帧间隔，
-/// 以及 F1/F3 追加的量尺字段（hitch_ms / hitch_ratio / sample_err_us / hz / fb / cv）。
+/// 以及 F1/F3 追加的量尺字段（hitch_ms / hitch_ratio / sample_err_us / hz / fb / cv / phase_int）。
 pub fn format_pacing_line(r: &PacingReport) -> String {
     let ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -547,9 +619,13 @@ pub fn format_pacing_line(r: &PacingReport) -> String {
         Some((p50, p99, max)) => format!("{p50:.0}/{p99:.0}/{max:.0}"),
         None => "n/a".to_string(),
     };
+    let phase_int_str = match r.phase_int {
+        Some(v) => format!("{v:.2}"),
+        None => "n/a".to_string(),
+    };
     format!(
         "t={ms} name=\"{}\" start_latency_ms={:.1} frames={} drops={} max_interval_ms={:.1} \
-         hitch_ms={:.1} hitch_ratio={:.1} sample_err_us={} hz={:.1} fb={:.2} cv={:.3}\n",
+         hitch_ms={:.1} hitch_ratio={:.1} sample_err_us={} hz={:.1} fb={:.2} cv={:.3} phase_int={}\n",
         r.name,
         r.start_latency_ms,
         r.frames,
@@ -561,6 +637,7 @@ pub fn format_pacing_line(r: &PacingReport) -> String {
         r.hz,
         r.fb_coverage,
         r.interval_cv,
+        phase_int_str,
     )
 }
 
@@ -586,15 +663,18 @@ pub fn pacing_present(now: std::time::Instant) {
     PACING.with(|p| p.borrow_mut().on_present(now));
 }
 
-/// 指定动画的一帧提交（多表面进程按表面分别记，避免互相污染间隔）。
-pub fn pacing_present_named(name: &str, now: std::time::Instant) {
-    PACING.with(|p| p.borrow_mut().record_present(name, now));
+/// 指定动画的一帧提交（带预测呈现时刻；多表面进程按表面分别记，避免互相污染间隔）。
+pub fn pacing_present_named(
+    name: &str,
+    now: std::time::Instant,
+    predicted: Option<std::time::Instant>,
+) {
+    PACING.with(|p| p.borrow_mut().record_present(name, now, predicted));
 }
 
 /// 更新名义刷新周期。
 pub fn pacing_set_period(period: std::time::Duration) {
-    let ms = period.as_secs_f32() * 1000.0;
-    PACING.with(|p| p.borrow_mut().set_refresh_period(ms));
+    PACING.with(|p| p.borrow_mut().set_period(period));
 }
 
 /// 记一次 wp_presentation 回执的采样误差（µs）。
@@ -871,5 +951,20 @@ mod tests {
         p.on_present(t0 + Duration::from_millis(48));
         let line = p.finish("Settings:main", t0 + Duration::from_millis(48)).unwrap();
         assert!(line.contains("cv=0.000"), "{line}");
+    }
+
+    #[test]
+    fn pacing_line_reports_phase_int() {
+        use std::time::{Duration, Instant};
+        let p60 = Duration::from_nanos(16_666_667);
+        let mut p = FramePacing::new();
+        p.set_period(p60);
+        let t0 = Instant::now();
+        p.begin("Settings:main", t0);
+        p.record_present("Settings:main", t0, Some(t0));
+        p.record_present("Settings:main", t0 + p60, Some(t0 + p60));
+        p.record_present("Settings:main", t0 + p60 * 2, Some(t0 + p60 * 2));
+        let line = p.finish("Settings:main", t0 + p60 * 2).unwrap();
+        assert!(line.contains("phase_int=1.00"), "{line}");
     }
 }

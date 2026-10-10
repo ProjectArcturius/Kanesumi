@@ -2037,6 +2037,8 @@ impl App for GalleryApp {
         // 参 CONTEXT_MENU_SPEC §Ⅵ.2）——本处不再处理右键，右键按下不会到达这里。
         // S3：除纯 Move 外皆为交互事件（按下/释放/滚轮/按键/IME）→ 置脏 + 动画窗口。
         let interactive = !matches!(&event, InputEvent::PointerMoved { .. });
+        // 旧 Scroll 是即时像素增量；带来源的 ScrollInput 才交平滑滚动器。
+        let legacy_scroll = matches!(&event, InputEvent::Scroll { .. });
         match event {
             InputEvent::PointerMoved { x, y } => self.update_hover(Point::new(x, y)),
             InputEvent::PointerPressed { x, y, button, .. } => {
@@ -2059,7 +2061,11 @@ impl App for GalleryApp {
                         self.virtual_list_rect().size.width,
                         self.virtual_repeater().content_length(),
                     );
-                    self.virtual_list.scroll_wheel(y);
+                    if legacy_scroll {
+                        self.virtual_list.scroll_to(self.virtual_list.offset + y, false);
+                    } else {
+                        self.virtual_list.scroll_wheel(y);
+                    }
                 } else if self.list_rect().contains(p) {
                     self.list
                         .scroll_by(&self.theme, self.list_rect().size.height, y);
@@ -3157,6 +3163,14 @@ mod tests {
             modifiers: kanesumi_harness::Modifiers::NONE,
         });
         assert!(g.virtual_selected.is_some(), "点击应选中虚拟化条目");
+        // 按需保存真实光栅快照，便于核对滚动后的条目与选中态。
+        if let Some(path) = std::env::var_os("KANESUMI_GALLERY_SCROLL_SNAPSHOT") {
+            let engine = g.engine.clone();
+            let size = g.viewport;
+            kanesumi_harness::snapshot::render_png(
+                &mut g, &engine, size, 1.0, 1, std::path::Path::new(&path),
+            ).expect("滚动快照失败");
+        }
     }
 
     #[test]
