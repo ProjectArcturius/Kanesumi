@@ -126,8 +126,9 @@ impl FrameClock {
         let p_nanos = self.period.as_nanos().max(1);
         match self.grid_anchor {
             Some(anchor) if !period_changed => {
-                // 如果当前硬件呈现时刻与现有网格相差超过半个周期（发生跳相或丢帧重置），重置锚点；
-                // 否则保留当前锚点，保持网格相位严格稳定（消除调度/休眠抖动造成的网格漂移）。
+                // 与现有网格相差超过 1/8 周期（跳相）→ 重锚；锚点满 1 s 也换成最新回执，
+                // 吸收 refresh_ns 取整与时钟漂移的累积（否则锚点永不更新，数小时后预测偏离真 vblank）。
+                // 其余情况保留锚点，相位稳定，不随回执时间戳的微小抖动漂移。参 SMOOTHNESS_PLAN §Ⅶ-2。
                 let diff_nanos = if presented_at >= anchor {
                     let rem = presented_at.duration_since(anchor).as_nanos() % p_nanos;
                     rem.min(p_nanos - rem)
@@ -135,7 +136,8 @@ impl FrameClock {
                     let rem = anchor.duration_since(presented_at).as_nanos() % p_nanos;
                     rem.min(p_nanos - rem)
                 };
-                if diff_nanos >= p_nanos / 2 {
+                let stale = presented_at.saturating_duration_since(anchor) >= Duration::from_secs(1);
+                if diff_nanos > p_nanos / 8 || stale {
                     self.grid_anchor = Some(presented_at);
                 }
             }
@@ -547,6 +549,25 @@ mod tests {
         let hit_ratio = hits as f64 / predicted_times.len() as f64;
         assert!(hit_ratio >= 0.99, "周期整数倍命中率须 >= 99%：{hit_ratio}");
         assert_eq!(hit_ratio, 1.0, "网格锚定应达到 100% 整数倍命中");
+    }
+
+    #[test]
+    fn grid_anchor_rebases_on_phase_jump_and_age() {
+        let t0 = Instant::now();
+        let p = Duration::from_nanos(16_666_667);
+        let mut clock = FrameClock::new(p);
+        clock.on_presented(t0, 16_666_667);
+        // 小抖动（< 1/8 周期）：锚点不动，预测仍落在 t0 网格上。
+        clock.on_presented(t0 + p + Duration::from_micros(80), 16_666_667);
+        assert_eq!(clock.predict_next_present(t0 + p + Duration::from_millis(1)), t0 + p * 2);
+        // 跳相 5 ms（> 1/8 周期）：改锚到新回执。
+        let jump = t0 + p * 3 + Duration::from_millis(5);
+        clock.on_presented(jump, 16_666_667);
+        assert_eq!(clock.predict_next_present(jump + Duration::from_millis(1)), jump + p);
+        // 锚点满 1 s：即便只差 30 µs 也换成最新回执，吸收漂移。
+        let late = jump + p * 61 + Duration::from_micros(30);
+        clock.on_presented(late, 16_666_667);
+        assert_eq!(clock.predict_next_present(late + Duration::from_millis(1)), late + p);
     }
 }
 
