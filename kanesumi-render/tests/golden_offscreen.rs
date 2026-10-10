@@ -3,7 +3,11 @@
 //! 覆盖 8 个几何与文本/图片场景在 1× 与 2× 下的对比，
 //! 断言各场景通道差 > 8 的像素比例 ≤ 0.5%（0.005）。
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+// 多线程并行创建无头 GPU 设备会让 Mesa 段错误（2026-10-10 Arch 实测 SIGSEGV，单线程全过）；
+// 各用例串行取设备，与 cargo test 的线程数无关。
+static GPU_SERIAL: Mutex<()> = Mutex::new(());
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, SceneCommand, TextAlign, TextOverflow};
 use kanesumi_core::{Color, FontWeight, Point, Rect, TextStyle};
@@ -348,6 +352,7 @@ fn run_for_both_scales<F>(name: &str, make_scene: F)
 where
     F: Fn() -> Scene,
 {
+    let _serial = GPU_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let ctx = match GpuContext::headless() {
         Ok(c) => c,
         Err(e) => {
