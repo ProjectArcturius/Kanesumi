@@ -252,6 +252,22 @@ mod tests {
     }
 
     #[test]
+    fn 子弹层等小浮层关闭时留_cpu_开启时走_gpu() {
+        // 控制面板 / TopBar / Dock 菜单的典型物理尺寸（≤ 1 Mpx）：开关关闭按阈值留 CPU……
+        let area = 800 * 1000; // 0.8 Mpx
+        assert_eq!(
+            choose_renderer(SurfaceClass::Floating, area, 10.0, true, false),
+            RendererKind::Cpu,
+            "子弹层尺寸的小浮层在开关关闭时必须留 CPU"
+        );
+        // ……开关开启 → GPU（与浮层同一规则）。
+        assert_eq!(
+            choose_renderer(SurfaceClass::Floating, area, 10.0, true, true),
+            RendererKind::Gpu
+        );
+    }
+
+    #[test]
     fn gpu_不可用一律_cpu() {
         for class in [
             SurfaceClass::XdgWindow,

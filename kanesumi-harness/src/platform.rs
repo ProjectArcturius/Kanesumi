@@ -840,6 +840,8 @@ pub(crate) struct Shell {
     perf_floating: Vec<crate::perf::SurfacePerf>,
     /// 候选窗 popup 耗时样本（C2：perf 日志补齐）。
     perf_im_popup: crate::perf::SurfacePerf,
+    /// 子弹层（控制面板 / 菜单）耗时样本（C2：perf 日志补齐）。
+    perf_popup: crate::perf::SurfacePerf,
     /// 下次写 perf 日志的时刻（挂钟节流）。
     perf_flush_at: Instant,
     /// 进程名（日志行首）。
@@ -1490,6 +1492,7 @@ impl Shell {
             perf_main: crate::perf::SurfacePerf::new(),
             perf_floating: vec![crate::perf::SurfacePerf::new(); floating_len],
             perf_im_popup: crate::perf::SurfacePerf::new(),
+            perf_popup: crate::perf::SurfacePerf::new(),
             perf_flush_at: Instant::now(),
             perf_proc,
             perf_header_done: false,
@@ -2416,6 +2419,15 @@ impl Shell {
             ));
             self.perf_im_popup.reset();
         }
+        if !self.perf_popup.is_empty() {
+            out.push_str(&crate::perf::format_line(
+                &proc,
+                &role,
+                "popup",
+                &self.perf_popup,
+            ));
+            self.perf_popup.reset();
+        }
         if out.is_empty() {
             return;
         }
@@ -2436,6 +2448,11 @@ impl Shell {
                         .as_ref()
                         .and_then(|p| p.renderer.as_ref().map(|r| r.gpu_timing_supported()))
                 })
+                .or_else(|| {
+                    self.popups
+                        .iter()
+                        .find_map(|p| p.renderer.as_ref().map(|r| r.gpu_timing_supported()))
+                })
                 .unwrap_or(false);
             let msaa = self
                 .renderer
@@ -2450,6 +2467,11 @@ impl Shell {
                     self.im_popup
                         .as_ref()
                         .and_then(|p| p.renderer.as_ref().map(|r| r.msaa_samples()))
+                })
+                .or_else(|| {
+                    self.popups
+                        .iter()
+                        .find_map(|p| p.renderer.as_ref().map(|r| r.msaa_samples()))
                 });
             out.insert_str(
                 0,
