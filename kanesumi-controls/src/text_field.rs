@@ -7,6 +7,8 @@
 // 下标约定：光标/选区均为 **字符下标**（CJK 安全）。`cursor ∈ [0, len]`；
 // 选区 = `(anchor, cursor)` 两角点，规范区间 = `min..max`（空选区 = None）。
 
+use unicode_segmentation::UnicodeSegmentation;
+
 /// 文本编辑键 —— 控件层的跨平台键契约（harness `Key` 的超集子集）。
 /// 由宿主从 harness `InputEvent::KeyPressed` 转换后喂给 `TextField::handle_key`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +55,8 @@ pub struct TextField {
     preedit: String,
     /// 预编辑光标（字符下标，相对 `preedit` 起点；None = 光标在组合态尾）。
     preedit_cursor: Option<usize>,
+    /// 外部覆盖的簇边界（字符下标列表，递增；若为 None 则按 Unicode 扩展字素簇计算）。
+    cluster_boundaries_override: Option<Vec<usize>>,
 }
 
 impl Default for TextField {
@@ -66,6 +70,7 @@ impl Default for TextField {
             max_undo: 64,
             preedit: String::new(),
             preedit_cursor: None,
+            cluster_boundaries_override: None,
         }
     }
 }
@@ -150,6 +155,83 @@ impl TextField {
         self.mask = c;
     }
 
+    /// 外部设置的簇边界覆盖（如由 TextEngine 塑形后得到的连字簇）。
+    pub fn set_cluster_boundaries_override(&mut self, boundaries: Option<Vec<usize>>) {
+        self.cluster_boundaries_override = boundaries;
+    }
+
+    /// 内容的簇边界（字符下标列表，递增，首项 0，末项 len()）。
+    /// 组合 emoji、组合附加符、连字等原子视觉单元在簇边界处切分。
+    pub fn cluster_boundaries(&self) -> Vec<usize> {
+        if let Some(ref ov) = self.cluster_boundaries_override
+            && !ov.is_empty()
+            && ov.first() == Some(&0)
+            && ov.last() == Some(&self.text.len())
+        {
+            return ov.clone();
+        }
+        let s: String = self.text.iter().collect();
+        let mut boundaries = Vec::new();
+        let mut char_count = 0usize;
+        boundaries.push(0);
+        for grapheme in s.graphemes(true) {
+            char_count += grapheme.chars().count();
+            boundaries.push(char_count);
+        }
+        if boundaries.last() != Some(&self.text.len()) {
+            boundaries.push(self.text.len());
+        }
+        boundaries
+    }
+
+    /// 光标前一个簇边界（字符下标）。若已在起点返回 0。
+    pub fn prev_cluster_boundary(&self, cursor: usize) -> usize {
+        let boundaries = self.cluster_boundaries();
+        boundaries
+            .iter()
+            .copied()
+            .rfind(|&b| b < cursor)
+            .unwrap_or(0)
+    }
+
+    /// 光标后一个簇边界（字符下标）。若已在末尾返回 len()。
+    pub fn next_cluster_boundary(&self, cursor: usize) -> usize {
+        let boundaries = self.cluster_boundaries();
+        boundaries
+            .iter()
+            .copied()
+            .find(|&b| b > cursor)
+            .unwrap_or(self.text.len())
+    }
+
+    /// 光标当前所在的 UTF-8 字节偏移。
+    pub fn cursor_byte(&self) -> usize {
+        self.text[..self.cursor.min(self.text.len())]
+            .iter()
+            .map(|c| c.len_utf8())
+            .sum()
+    }
+
+    /// 按 UTF-8 字节偏移设置光标（对齐到字符与簇边界）。
+    pub fn set_cursor_byte(&mut self, byte: usize) {
+        let mut acc = 0usize;
+        let mut char_idx = 0usize;
+        for c in &self.text {
+            if acc >= byte {
+                break;
+            }
+            acc += c.len_utf8();
+            char_idx += 1;
+        }
+        let boundaries = self.cluster_boundaries();
+        let snapped = boundaries
+            .iter()
+            .copied()
+            .min_by_key(|&b| (b as isize - char_idx as isize).abs())
+            .unwrap_or(char_idx);
+        self.set_cursor(snapped);
+    }
+
     // ── IME 组合态 ──────────────────────────────────────────────
 
     /// 预编辑文本（原始字符，非掩码）。
@@ -209,6 +291,7 @@ impl TextField {
         self.text.splice(at..at, chars);
         self.cursor += n;
         self.clear_preedit();
+        self.cluster_boundaries_override = None;
         true
     }
 
@@ -239,6 +322,7 @@ impl TextField {
         self.anchor = None;
         // 周边文本已变，旧组合态不再可信（协议 done 序列会重灌新 preedit）。
         self.clear_preedit();
+        self.cluster_boundaries_override = None;
         true
     }
 
@@ -303,6 +387,7 @@ impl TextField {
         self.text = snap.text;
         self.cursor = snap.cursor.min(self.text.len());
         self.anchor = snap.anchor;
+        self.cluster_boundaries_override = None;
         true
     }
 
@@ -332,6 +417,7 @@ impl TextField {
         self.delete_selection();
         self.text.insert(self.cursor, c);
         self.cursor += 1;
+        self.cluster_boundaries_override = None;
         true
     }
 
@@ -348,35 +434,42 @@ impl TextField {
         let at = self.cursor;
         self.text.splice(at..at, chars);
         self.cursor += n;
+        self.cluster_boundaries_override = None;
         true
     }
 
-    /// Backspace：删选区，否则删光标前一字符。
+    /// Backspace：删选区，否则删光标前一整个簇（emoji/组合符/连字一步全删）。
     pub fn backspace(&mut self) -> bool {
         self.clear_preedit();
         self.snapshot();
         if self.delete_selection() > 0 {
+            self.cluster_boundaries_override = None;
             return true;
         }
         if self.cursor == 0 {
             return false;
         }
-        self.cursor -= 1;
-        self.text.remove(self.cursor);
+        let prev = self.prev_cluster_boundary(self.cursor);
+        self.text.drain(prev..self.cursor);
+        self.cursor = prev;
+        self.cluster_boundaries_override = None;
         true
     }
 
-    /// Delete：删选区，否则删光标处字符。
+    /// Delete：删选区，否则删光标处一整个簇。
     pub fn delete(&mut self) -> bool {
         self.clear_preedit();
         self.snapshot();
         if self.delete_selection() > 0 {
+            self.cluster_boundaries_override = None;
             return true;
         }
         if self.cursor >= self.text.len() {
             return false;
         }
-        self.text.remove(self.cursor);
+        let next = self.next_cluster_boundary(self.cursor);
+        self.text.drain(self.cursor..next);
+        self.cluster_boundaries_override = None;
         true
     }
 
@@ -387,6 +480,7 @@ impl TextField {
         self.cursor = self.text.len();
         self.anchor = None;
         self.undo.clear();
+        self.cluster_boundaries_override = None;
     }
 
     // ── 光标 / 选区移动 ────────────────────────────────────────
@@ -397,8 +491,8 @@ impl TextField {
         self.anchor = None;
     }
 
-    fn move_cursor(&mut self, delta: isize, select: bool) {
-        let new = (self.cursor as isize + delta).clamp(0, self.text.len() as isize) as usize;
+    pub fn move_left(&mut self, select: bool) {
+        let new = self.prev_cluster_boundary(self.cursor);
         if select {
             if self.anchor.is_none() {
                 self.anchor = Some(self.cursor);
@@ -410,12 +504,17 @@ impl TextField {
         }
     }
 
-    pub fn move_left(&mut self, select: bool) {
-        self.move_cursor(-1, select);
-    }
-
     pub fn move_right(&mut self, select: bool) {
-        self.move_cursor(1, select);
+        let new = self.next_cluster_boundary(self.cursor);
+        if select {
+            if self.anchor.is_none() {
+                self.anchor = Some(self.cursor);
+            }
+            self.cursor = new;
+        } else {
+            self.cursor = new;
+            self.anchor = None;
+        }
     }
 
     pub fn move_home(&mut self, select: bool) {
@@ -909,5 +1008,99 @@ mod tests {
         f.set_preedit("abc", None);
         assert_eq!(f.preedit(), "abc", "原始保留");
         assert_eq!(f.preedit_display(), "●●●", "掩码组合态");
+    }
+
+    // ── K3 簇步进：组合 emoji / 组合附加符 / 连字（参 Ether docs/research/k_text_shaping/DESIGN.md）──
+    //
+    // 光标移动、退格、删除都按「簇」为一步：一个 ZWJ emoji 序列、一个组合附加符、
+    // 一个 OpenType 连字都整体跨过 / 整体删除，绝不落到簇内部。
+
+    const ZWJ_FAMILY: &str = "a\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}b";
+
+    #[test]
+    fn emoji_zwj_sequence_is_one_cluster_step() {
+        let mut f = TextField::with_text(ZWJ_FAMILY);
+        f.move_end(false);
+        assert_eq!(f.cursor(), 7, "a + 家庭(5 码点) + b");
+        f.move_left(false);
+        assert_eq!(f.cursor(), 6, "一步跨过整个 ZWJ 序列");
+        f.move_left(false);
+        assert_eq!(f.cursor(), 1, "再一步到 a 之后");
+        f.move_right(false);
+        assert_eq!(f.cursor(), 6, "向右一步同样跨过整个簇");
+        f.move_right(false);
+        assert_eq!(f.cursor(), 7);
+    }
+
+    #[test]
+    fn combining_mark_is_one_cluster_step() {
+        let mut f = TextField::with_text("e\u{301}x");
+        f.move_end(false);
+        assert_eq!(f.cursor(), 3);
+        f.move_left(false);
+        assert_eq!(f.cursor(), 2, "组合附加符与基字母同簇，一步跨过");
+        f.move_left(false);
+        assert_eq!(f.cursor(), 0, "é 整体一步");
+        f.move_right(false);
+        assert_eq!(f.cursor(), 2);
+    }
+
+    #[test]
+    fn backspace_deletes_whole_cluster() {
+        let mut f = TextField::with_text("e\u{301}");
+        f.move_end(false);
+        assert!(f.backspace());
+        assert_eq!(f.text(), "", "退格删除 e + 组合附加符整簇");
+
+        let mut f = TextField::with_text(ZWJ_FAMILY);
+        f.move_end(false);
+        assert!(f.backspace());
+        assert_eq!(f.text(), "a\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}", "先删尾字符 b");
+        assert!(f.backspace());
+        assert_eq!(f.text(), "a", "再删整个 ZWJ emoji 簇");
+    }
+
+    #[test]
+    fn backspace_deletes_regional_indicator_flag() {
+        let mut f = TextField::with_text("x\u{1F1E8}\u{1F1F3}");
+        f.move_end(false);
+        assert!(f.backspace());
+        assert_eq!(f.text(), "x", "国旗 = 两个区域指示符一个簇，整体删除");
+    }
+
+    #[test]
+    fn delete_removes_whole_cluster() {
+        let mut f = TextField::with_text("x\u{1F1E8}\u{1F1F3}y");
+        f.set_cursor(1);
+        assert!(f.delete());
+        assert_eq!(f.text(), "xy", "Delete 删除光标处整个簇");
+        assert_eq!(f.cursor(), 1);
+    }
+
+    #[test]
+    fn shaping_override_makes_ligature_one_step() {
+        // "offi"：o + ffi 连字（字符下标 0..1 / 1..4）。塑形几何给出的覆盖边界。
+        let mut f = TextField::with_text("offi");
+        f.move_end(false);
+        f.set_cluster_boundaries_override(Some(vec![0, 1, 4]));
+        f.move_left(false);
+        assert_eq!(f.cursor(), 1, "连字整体一步跨过");
+        f.move_right(false);
+        assert_eq!(f.cursor(), 4);
+        assert!(f.backspace());
+        assert_eq!(f.text(), "o", "退格删除整个连字簇");
+        assert_eq!(f.cursor(), 1);
+    }
+
+    #[test]
+    fn override_is_cleared_after_edit_and_falls_back_to_graphemes() {
+        let mut f = TextField::with_text("e\u{301}");
+        f.move_end(false);
+        f.set_cluster_boundaries_override(Some(vec![0, 1, 2])); // 故意给出「劈开簇」的机械边界
+        f.insert_char('x');
+        assert_eq!(f.text(), "e\u{301}x");
+        // 编辑后覆盖被清除 → 退回 Unicode 字素簇：退格仍整体删除 é+x 的 x 前一簇。
+        assert!(f.backspace());
+        assert_eq!(f.text(), "e\u{301}", "覆盖失效后退回字素簇，不劈组合符");
     }
 }

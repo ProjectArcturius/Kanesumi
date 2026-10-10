@@ -1165,6 +1165,7 @@ dependencies = [
  "kanesumi-canvas",
  "kanesumi-core",
  "kanesumi-element",
+ "unicode-segmentation",
 ]
 
 [[package]]
