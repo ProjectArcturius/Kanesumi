@@ -1766,7 +1766,11 @@ impl Shell {
             }
         }
         // 掉帧计数：浮层本帧已提交（零面积早退分支不计）；按表面分别记避免污染间隔。参 perf.rs。
-        crate::perf::pacing_present_named(&self.pacing_floating_name(idx), Instant::now());
+        crate::perf::pacing_present_named(
+            &self.pacing_floating_name(idx),
+            Instant::now(),
+            self.frame_clock.current_predicted_present(),
+        );
     }
 
     /// 浮层输入事件错误边界。事件到达即置脏（I-4）。
@@ -2307,7 +2311,11 @@ impl Shell {
             self.perf_main.record_gpu(ms);
         }
         // 掉帧计数：主表面本帧已提交（零面积早退分支不计）。参 perf.rs。
-        crate::perf::pacing_present_named(&self.pacing_main_name(), Instant::now());
+        crate::perf::pacing_present_named(
+            &self.pacing_main_name(),
+            Instant::now(),
+            self.frame_clock.current_predicted_present(),
+        );
     }
 
     /// 掉帧计数：声明主表面与各浮层的「动画进行中」状态（App::needs_redraw 语义 = 内容脏 /
