@@ -7,7 +7,7 @@
 // 下标约定：光标/选区均为 **字符下标**（CJK 安全）。`cursor ∈ [0, len]`；
 // 选区 = `(anchor, cursor)` 两角点，规范区间 = `min..max`（空选区 = None）。
 
-use unicode_segmentation::UnicodeSegmentation;
+use kanesumi_canvas::text::grapheme_char_boundaries;
 
 /// 文本编辑键 —— 控件层的跨平台键契约（harness `Key` 的超集子集）。
 /// 由宿主从 harness `InputEvent::KeyPressed` 转换后喂给 `TextField::handle_key`。
@@ -171,17 +171,7 @@ impl TextField {
             return ov.clone();
         }
         let s: String = self.text.iter().collect();
-        let mut boundaries = Vec::new();
-        let mut char_count = 0usize;
-        boundaries.push(0);
-        for grapheme in s.graphemes(true) {
-            char_count += grapheme.chars().count();
-            boundaries.push(char_count);
-        }
-        if boundaries.last() != Some(&self.text.len()) {
-            boundaries.push(self.text.len());
-        }
-        boundaries
+        grapheme_char_boundaries(&s)
     }
 
     /// 光标前一个簇边界（字符下标）。若已在起点返回 0。

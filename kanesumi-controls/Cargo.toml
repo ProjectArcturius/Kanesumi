@@ -11,4 +11,3 @@ kanesumi-core = { path = "../kanesumi-core" }
 kanesumi-canvas = { path = "../kanesumi-canvas" }
 kanesumi-anim = { path = "../kanesumi-anim" }
 kanesumi-element = { path = "../kanesumi-element" }
-unicode-segmentation = "1.12"

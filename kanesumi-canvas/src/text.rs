@@ -9,6 +9,18 @@ use rustybuzz::{Direction, Face, UnicodeBuffer};
 use unicode_bidi::ParagraphBidiInfo;
 use unicode_segmentation::UnicodeSegmentation;
 
+/// 无字体时的编辑簇边界（字符下标），共用画布既有的 Unicode 字素切分。
+/// 首项为 0，末项为字符总数；参 Ether docs/research/k_text_shaping/DESIGN.md §簇映射。
+pub fn grapheme_char_boundaries(text: &str) -> Vec<usize> {
+    let mut boundaries = vec![0];
+    let mut chars = 0;
+    for grapheme in text.graphemes(true) {
+        chars += grapheme.chars().count();
+        boundaries.push(chars);
+    }
+    boundaries
+}
+
 /// 文本越界策略。布局边界、绘制裁剪与内容取舍是三件独立的事。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum TextOverflow {
