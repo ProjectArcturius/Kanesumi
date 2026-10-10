@@ -240,6 +240,52 @@ fn scene_text_cjk_latin() -> Scene {
     s
 }
 
+/// 场景 7b：整形文本（连字 / 组合附加符 / 组合 emoji / CJK 混排）。
+/// K3 后排版单位是「整形后的字形串」，本场景验证 CPU 与 GPU 两路对同一段
+/// 整形结果逐像素一致（簇映射不改变放置契约）。参 Ether docs/research/k_text_shaping/DESIGN.md。
+fn scene_text_shaped() -> Scene {
+    let mut s = Scene::default();
+    s.commands.push(SceneCommand::FillRect {
+        color: Color::new(0.1, 0.1, 0.12, 1.0),
+        rect: Rect::new(10.0, 10.0, 300.0, 300.0),
+        corner_radius: 4.0,
+    });
+    // 连字（office / affluent）+ 字距对（AV To）。
+    s.commands.push(SceneCommand::Text {
+        content: "office affluent AV To".to_string(),
+        rect: Rect::new(24.0, 32.0, 280.0, 36.0),
+        color: Color::WHITE,
+        style: TextStyle::new(26.0, 32.0, FontWeight::Normal),
+        align: TextAlign::Left,
+        wrap: false,
+        max_lines: Some(1),
+        overflow: TextOverflow::Clip,
+    });
+    // 组合附加符（é = e + U+0301）与组合 emoji（ZWJ 家庭、国旗）。
+    s.commands.push(SceneCommand::Text {
+        content: "e\u{301} e\u{301} \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} \u{1F1E8}\u{1F1F3}".to_string(),
+        rect: Rect::new(24.0, 96.0, 280.0, 32.0),
+        color: Color::new(0.9, 0.9, 0.9, 1.0),
+        style: TextStyle::new(22.0, 28.0, FontWeight::Normal),
+        align: TextAlign::Left,
+        wrap: false,
+        max_lines: Some(1),
+        overflow: TextOverflow::Clip,
+    });
+    // 多行自动换行（换行点不得切入簇内）。
+    s.commands.push(SceneCommand::Text {
+        content: "系统设置 Kanesumi 文字整形 e\u{301}e\u{301}e\u{301} 换行不切簇".to_string(),
+        rect: Rect::new(24.0, 150.0, 150.0, 120.0),
+        color: Color::new(0.8, 0.85, 0.95, 1.0),
+        style: TextStyle::new(16.0, 22.0, FontWeight::Normal),
+        align: TextAlign::Left,
+        wrap: true,
+        max_lines: None,
+        overflow: TextOverflow::Clip,
+    });
+    s
+}
+
 /// 场景 8：图片（包含原色与染色、透明度）。
 fn scene_image() -> Scene {
     let mut s = Scene::default();
@@ -400,6 +446,11 @@ fn test_golden_clip_stack() {
 #[test]
 fn test_golden_text_cjk_latin() {
     run_for_both_scales("text_cjk_latin", scene_text_cjk_latin);
+}
+
+#[test]
+fn test_golden_text_shaped() {
+    run_for_both_scales("text_shaped", scene_text_shaped);
 }
 
 #[test]
