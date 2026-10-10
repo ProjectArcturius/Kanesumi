@@ -217,9 +217,9 @@ impl Shell {
 
     /// 子弹层渲染器惰性创建（C2）：按策略选 GPU / CPU；GPU 不可用或创建失败 → CPU。
     ///
-    /// 子弹层 = 控制面板 / TopBar 菜单 / Dock 子菜单等**小表面**，按 `SurfaceClass::Floating`
-    /// 的面积 × 频率阈值决策；`KANESUMI_ONE_CANVAS=1` 时强制与主表面 / 浮层 / 候选窗同走一份
-    /// v2 GPU 画布。参 docs/CANVAS_PLAN.md §Ⅳ C2。
+    /// 子弹层 = 控制面板 / TopBar 菜单 / Dock 子菜单等**小表面**。缺省（开关关）维持既有 CPU
+    /// 光栅；`KANESUMI_ONE_CANVAS=1` 且 GPU 可用时与主表面 / 浮层 / 候选窗同走一份 v2 GPU
+    /// 画布（见下方 gpu_ok 门控）。参 docs/CANVAS_PLAN.md §Ⅳ C2。
     fn ensure_popup_renderer(&mut self, i: usize) {
         let Some((pw, ph, pscale, surf)) = self.popups.get(i).and_then(|p| {
             (p.cpu.is_none() && p.renderer.is_none())
