@@ -735,6 +735,27 @@ impl MetroAutoSuggestBox {
         self.field.set_cursor(geometry.caret_at_x(click_x));
     }
 
+    /// 用当前文本的塑形簇边界刷新编辑核心的簇切分 —— 连字一步跨过，与点击定位同源。
+    /// 文本变更后覆盖被清除，故每次编辑 / 点击前重算（塑形有缓存）。
+    /// 参 MetroTextBox::sync_cluster_boundaries 与 Ether docs/research/k_text_shaping/DESIGN.md。
+    fn sync_cluster_boundaries(&mut self, theme: &MetroTheme, engine: &TextEngine) {
+        let text = self.field.text();
+        let char_count = text.chars().count();
+        if char_count == 0 {
+            self.field.set_cluster_boundaries_override(None);
+            return;
+        }
+        let style = theme.typography.body;
+        let geometry = engine.line_geometry(&text, style.size, style.letter_spacing_em);
+        let mut boundaries = geometry.cluster_boundaries();
+        boundaries.dedup();
+        let valid = boundaries.first() == Some(&0)
+            && boundaries.last() == Some(&char_count)
+            && boundaries.windows(2).all(|w| w[0] < w[1]);
+        self.field
+            .set_cluster_boundaries_override(valid.then_some(boundaries));
+    }
+
     /// 光标 x（相对 body 左缘，含滚动偏移与组合态光标）。
     fn caret_x(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> f32 {
         let content = self.content_rect(theme, body);
@@ -837,6 +858,11 @@ impl MetroAutoSuggestBox {
             ctx.set_handled();
             return;
         }
+        // 编辑前按塑形簇刷新边界（连字一步跨过）；无引擎时退回 Unicode 字素簇。
+        if let Some(engine) = ctx.engine().cloned() {
+            let theme = *ctx.theme();
+            self.sync_cluster_boundaries(&theme, &engine);
+        }
         let before = self.field.text();
         if modifiers.shift {
             match key {
@@ -930,6 +956,7 @@ impl kanesumi_element::Widget for MetroAutoSuggestBox {
                 let theme = *ctx.theme();
                 let body = self.body_rect(&theme, rect);
                 if let Some(engine) = ctx.engine().cloned() {
+                    self.sync_cluster_boundaries(&theme, &engine);
                     self.place_caret_at(&theme, &engine, body, *pos);
                     ctx.invalidate_paint();
                 }

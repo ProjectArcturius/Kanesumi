@@ -256,6 +256,31 @@ impl MetroTextBox {
         true
     }
 
+    /// 用当前文本的塑形簇边界刷新编辑核心的簇切分 —— 连字（如 `ffi`）等被 OpenType
+    /// 合并的簇因此「一步跨过」，与点击定位（`place_caret_at` 走同一塑形几何）语义一致。
+    ///
+    /// `TextField` 在任何文本变更后清除覆盖（旧边界随即失效），故每次编辑 / 点击前重算；
+    /// 塑形结果有缓存，重算代价可忽略。边界必须从 0 起、覆盖到末字符，否则退回
+    /// `TextField` 内建的 Unicode 字素簇（保证不因异常塑形丢失编辑能力）。
+    /// 参 Ether docs/research/k_text_shaping/DESIGN.md §簇映射。
+    fn sync_cluster_boundaries(&mut self, theme: &MetroTheme, engine: &TextEngine) {
+        let text = self.field.text();
+        let char_count = text.chars().count();
+        if char_count == 0 {
+            self.field.set_cluster_boundaries_override(None);
+            return;
+        }
+        let style = theme.typography.body;
+        let geometry = engine.line_geometry(&text, style.size, style.letter_spacing_em);
+        let mut boundaries = geometry.cluster_boundaries();
+        boundaries.dedup();
+        let valid = boundaries.first() == Some(&0)
+            && boundaries.last() == Some(&char_count)
+            && boundaries.windows(2).all(|w| w[0] < w[1]);
+        self.field
+            .set_cluster_boundaries_override(valid.then_some(boundaries));
+    }
+
     /// 确保光标在可视范围内（水平滚动夹紧）。
     ///
     /// **不重置闪烁**（2026-09-30 更正）：本函数在每次 `render` 里调用，旧实现在此
@@ -711,6 +736,7 @@ impl kanesumi_element::Widget for MetroTextBox {
                     self.scroll = 0.0;
                     self.emit_changed(ctx);
                 } else if let Some(engine) = ctx.engine().cloned() {
+                    self.sync_cluster_boundaries(&theme, &engine);
                     self.place_caret_at(&theme, &engine, body, *pos);
                     self.reset_blink();
                     ctx.invalidate_paint();
@@ -741,6 +767,11 @@ impl kanesumi_element::Widget for MetroTextBox {
                     ctx.invalidate_paint();
                     ctx.set_handled();
                     return;
+                }
+                // 编辑前按塑形簇刷新边界（连字一步跨过）；无引擎时退回 Unicode 字素簇。
+                if let Some(engine) = ctx.engine().cloned() {
+                    let theme = *ctx.theme();
+                    self.sync_cluster_boundaries(&theme, &engine);
                 }
                 let before = self.field.text();
                 if modifiers.shift {

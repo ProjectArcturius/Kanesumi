@@ -9,6 +9,18 @@ use rustybuzz::{Direction, Face, UnicodeBuffer};
 use unicode_bidi::ParagraphBidiInfo;
 use unicode_segmentation::UnicodeSegmentation;
 
+/// 无字体时的编辑簇边界（字符下标），共用画布既有的 Unicode 字素切分。
+/// 首项为 0，末项为字符总数；参 Ether docs/research/k_text_shaping/DESIGN.md §簇映射。
+pub fn grapheme_char_boundaries(text: &str) -> Vec<usize> {
+    let mut boundaries = vec![0];
+    let mut chars = 0;
+    for grapheme in text.graphemes(true) {
+        chars += grapheme.chars().count();
+        boundaries.push(chars);
+    }
+    boundaries
+}
+
 /// 文本越界策略。布局边界、绘制裁剪与内容取舍是三件独立的事。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum TextOverflow {
@@ -47,11 +59,107 @@ impl TextLayoutOptions {
     }
 }
 
-/// 排版结果 —— 单行（逻辑内容 + 实际塑形宽度）。
+/// 排版结果 —— 单行（逻辑内容 + 实际塑形宽度 + 簇边界与光标坐标）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Line {
     pub content: String,
     pub width: f32,
+    pub cluster_offsets: Vec<usize>,
+    pub cluster_carets: Vec<f32>,
+}
+
+impl Line {
+    pub fn new(content: impl Into<String>, width: f32) -> Self {
+        let content = content.into();
+        let len = content.len();
+        Self {
+            content,
+            width,
+            cluster_offsets: vec![0, len],
+            cluster_carets: vec![0.0, width],
+        }
+    }
+
+    /// 簇边界字节偏移列表。首项恒为 0，末项恒为 `content.len()`。
+    pub fn cluster_boundaries(&self) -> &[usize] {
+        &self.cluster_offsets
+    }
+
+    /// 字节偏移处的光标 x 坐标。若未落在簇边界上，夹紧到最近的簇边界。
+    pub fn caret_x(&self, byte_offset: usize) -> f32 {
+        if self.cluster_offsets.is_empty() || self.cluster_carets.is_empty() {
+            return 0.0;
+        }
+        let byte = byte_offset.min(self.content.len());
+        let idx = match self.cluster_offsets.binary_search(&byte) {
+            Ok(i) => i,
+            Err(i) => {
+                if i == 0 {
+                    0
+                } else if i >= self.cluster_offsets.len() {
+                    self.cluster_offsets.len() - 1
+                } else {
+                    let prev = self.cluster_offsets[i - 1];
+                    let next = self.cluster_offsets[i];
+                    if byte - prev <= next - byte {
+                        i - 1
+                    } else {
+                        i
+                    }
+                }
+            }
+        };
+        self.cluster_carets.get(idx).copied().unwrap_or(0.0)
+    }
+
+    /// 命中测试：根据 x 坐标返回最近的簇边界字节偏移。恰在中点时偏向后一个。
+    pub fn hit_test(&self, x: f32) -> usize {
+        if self.cluster_offsets.is_empty() || self.cluster_carets.is_empty() {
+            return 0;
+        }
+        let mut best_idx = 0;
+        let mut best_dist = f32::INFINITY;
+        for (i, &caret) in self.cluster_carets.iter().enumerate() {
+            let dist = (x - caret).abs();
+            if dist <= best_dist {
+                best_dist = dist;
+                best_idx = i;
+            }
+        }
+        self.cluster_offsets[best_idx]
+    }
+
+    /// 选区高亮水平片段：给定起止字节偏移，返回视觉行上的水平区间片段列表。
+    pub fn selection_spans(&self, start_byte: usize, end_byte: usize) -> Vec<(f32, f32)> {
+        let lo = start_byte.min(end_byte).min(self.content.len());
+        let hi = start_byte.max(end_byte).min(self.content.len());
+        if lo == hi || self.cluster_offsets.len() < 2 {
+            return Vec::new();
+        }
+        let mut spans = Vec::new();
+        for i in 0..self.cluster_offsets.len() - 1 {
+            let b0 = self.cluster_offsets[i];
+            let b1 = self.cluster_offsets[i + 1];
+            if b0 >= hi || b1 <= lo {
+                continue;
+            }
+            let c0 = self.cluster_carets[i];
+            let c1 = self.cluster_carets[i + 1];
+            spans.push((c0.min(c1), c0.max(c1)));
+        }
+        spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut merged: Vec<(f32, f32)> = Vec::new();
+        for span in spans {
+            if let Some(last) = merged.last_mut()
+                && span.0 <= last.1 + 0.001
+            {
+                last.1 = last.1.max(span.1);
+            } else {
+                merged.push(span);
+            }
+        }
+        merged
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +167,28 @@ pub struct TextLayout {
     pub lines: Vec<Line>,
     pub size: kanesumi_core::Size,
     pub truncated: bool,
+}
+
+impl TextLayout {
+    /// 簇边界字节偏移列表（单行/首行）。
+    pub fn cluster_boundaries(&self) -> &[usize] {
+        self.lines.first().map(|l| l.cluster_boundaries()).unwrap_or(&[])
+    }
+
+    /// 根据 x 坐标返回最近的簇边界字节偏移（单行/首行）。
+    pub fn hit_test(&self, x: f32) -> usize {
+        self.lines.first().map(|l| l.hit_test(x)).unwrap_or(0)
+    }
+
+    /// 字节偏移处的光标 x 坐标（单行/首行）。
+    pub fn caret_x(&self, byte_offset: usize) -> f32 {
+        self.lines.first().map(|l| l.caret_x(byte_offset)).unwrap_or(0.0)
+    }
+
+    /// 选区水平片段（单行/首行）。
+    pub fn selection_spans(&self, start_byte: usize, end_byte: usize) -> Vec<(f32, f32)> {
+        self.lines.first().map(|l| l.selection_spans(start_byte, end_byte)).unwrap_or_default()
+    }
 }
 
 /// OpenType 塑形后的单个 glyph。位置和推进量均为逻辑像素。
@@ -104,13 +234,36 @@ impl TextLineGeometry {
         &self.carets
     }
 
-    /// 命中最近光标；恰在中点时偏向后一个逻辑位置，与既有 TextBox 点按语义一致。
+    /// 簇边界的字符下标列表。首项恒为 0，末项为字符总数。
+    pub fn cluster_boundaries(&self) -> Vec<usize> {
+        let mut boundaries = Vec::new();
+        boundaries.push(0);
+        let mut logical_clusters = self.clusters.clone();
+        logical_clusters.sort_by_key(|c| c.char_start);
+        for c in logical_clusters {
+            if boundaries.last() != Some(&c.char_start) {
+                boundaries.push(c.char_start);
+            }
+            if boundaries.last() != Some(&c.char_end) {
+                boundaries.push(c.char_end);
+            }
+        }
+        boundaries.dedup();
+        boundaries
+    }
+
+    /// 命中最近光标；落在簇内时对齐到最近的簇边界，恰在中点时偏向后一个逻辑位置。
     pub fn caret_at_x(&self, x: f32) -> usize {
-        self.carets
+        let boundaries = self.cluster_boundaries();
+        if boundaries.is_empty() {
+            return 0;
+        }
+        boundaries
             .iter()
-            .enumerate()
-            .fold((0, f32::INFINITY), |best, (index, caret)| {
-                let distance = (x - *caret).abs();
+            .copied()
+            .fold((0, f32::INFINITY), |best, index| {
+                let caret = self.caret_x(index);
+                let distance = (x - caret).abs();
                 if distance <= best.1 {
                     (index, distance)
                 } else {
@@ -1259,13 +1412,36 @@ impl TextEngine {
         if text.is_empty() || max_width <= 0.0 || max_width.is_nan() {
             return Vec::new();
         }
+        let cluster_segments = self.cluster_segments(text, size, letter_spacing_em, weight);
+        let mut cluster_bounds = Vec::with_capacity(cluster_segments.len() + 1);
+        let mut acc = 0usize;
+        cluster_bounds.push(0);
+        for s in &cluster_segments {
+            acc += s.len();
+            cluster_bounds.push(acc);
+        }
+
         let mut lines = Vec::new();
         let mut current = String::new();
         let mut prev_end = 0usize;
 
         for (byte_idx, opportunity) in unicode_linebreak::linebreaks(text) {
-            let segment = &text[prev_end..byte_idx];
-            prev_end = byte_idx;
+            // 确保换行绝不切入簇内：非簇边界的折行点外扩对齐到下一个簇边界
+            let valid_end = match cluster_bounds.binary_search(&byte_idx) {
+                Ok(i) => cluster_bounds[i],
+                Err(i) => {
+                    if i < cluster_bounds.len() {
+                        cluster_bounds[i]
+                    } else {
+                        byte_idx
+                    }
+                }
+            };
+            if valid_end <= prev_end {
+                continue;
+            }
+            let segment = &text[prev_end..valid_end];
+            prev_end = valid_end;
             if segment.is_empty() {
                 continue;
             }
@@ -1281,7 +1457,7 @@ impl TextEngine {
             {
                 current.push_str(segment);
             } else if current.is_empty() {
-                self.hard_break_graphemes(
+                self.hard_break_clusters(
                     segment,
                     size,
                     letter_spacing_em,
@@ -1297,7 +1473,7 @@ impl TextEngine {
                 {
                     current.push_str(segment);
                 } else {
-                    self.hard_break_graphemes(
+                    self.hard_break_clusters(
                         segment,
                         size,
                         letter_spacing_em,
@@ -1361,15 +1537,12 @@ impl TextEngine {
         } else if text.is_empty() || options.max_width <= 0.0 {
             Vec::new()
         } else {
-            vec![Line {
-                content: text.replace(['\n', '\r'], " "),
-                width: self.measure_with_spacing_weighted(
-                    text,
-                    size,
-                    options.letter_spacing_em,
-                    weight,
-                ),
-            }]
+            vec![self.create_line(
+                &text.replace(['\n', '\r'], " "),
+                size,
+                options.letter_spacing_em,
+                weight,
+            )]
         };
         // 高度上限折算成行数。两条防「文字静默消失」的铁律（2026-09-22 溢出审计）：
         // 1. `wrap == false`（单行标签）**至少保留一行** —— 调用方给的框比一行还矮时，
@@ -1423,24 +1596,21 @@ impl TextEngine {
     ) -> Line {
         let ellipsis = "…";
         if self.measure_with_spacing_weighted(ellipsis, size, spacing, weight) > max_width {
-            return Line {
-                content: String::new(),
-                width: 0.0,
-            };
+            return self.create_line("", size, spacing, weight);
         }
-        let mut graphemes: Vec<&str> = line.content.graphemes(true).collect();
+        let mut clusters = self.cluster_segments(&line.content, size, spacing, weight);
         loop {
-            let content = format!("{}{}", graphemes.concat().trim_end(), ellipsis);
+            let content = format!("{}{}", clusters.concat().trim_end(), ellipsis);
             let width = self.measure_with_spacing_weighted(&content, size, spacing, weight);
-            if width <= max_width || graphemes.is_empty() {
-                return Line { content, width };
+            if width <= max_width || clusters.is_empty() {
+                return self.create_line(&content, size, spacing, weight);
             }
-            graphemes.pop();
+            clusters.pop();
         }
     }
 
-    #[allow(clippy::too_many_arguments)] // 纯排版参数（字素 / 字号 / 字距 / 宽度 / 字重），拆结构体反而更绕。
-    fn hard_break_graphemes(
+    #[allow(clippy::too_many_arguments)]
+    fn hard_break_clusters(
         &self,
         segment: &str,
         size: f32,
@@ -1450,15 +1620,15 @@ impl TextEngine {
         lines: &mut Vec<Line>,
         current: &mut String,
     ) {
-        for grapheme in segment.graphemes(true) {
-            let candidate = format!("{current}{grapheme}");
+        for cluster in self.cluster_segments(segment, size, spacing, weight) {
+            let candidate = format!("{current}{cluster}");
             if !current.is_empty()
                 && self.measure_with_spacing_weighted(&candidate, size, spacing, weight)
                     > max_width + FIT_EPSILON
             {
                 self.push_line(lines, current, size, spacing, weight);
             }
-            current.push_str(grapheme);
+            current.push_str(cluster);
         }
     }
 
@@ -1472,12 +1642,134 @@ impl TextEngine {
     ) {
         let content = current.trim_end().to_string();
         if !content.is_empty() {
-            lines.push(Line {
-                width: self.measure_with_spacing_weighted(&content, size, spacing, weight),
-                content,
-            });
+            lines.push(self.create_line(&content, size, spacing, weight));
         }
         current.clear();
+    }
+
+    /// 为一段单行文本构建排版结果，包含精确的簇边界与各簇光标坐标。
+    pub fn create_line(
+        &self,
+        text: &str,
+        size: f32,
+        letter_spacing_em: f32,
+        weight: FontWeight,
+    ) -> Line {
+        if text.is_empty() {
+            return Line {
+                content: String::new(),
+                width: 0.0,
+                cluster_offsets: vec![0],
+                cluster_carets: vec![0.0],
+            };
+        }
+        let glyphs = self.shape_line_weighted(text, size, letter_spacing_em, weight);
+        let mut visual_groups = Vec::<(usize, bool, f32, f32)>::new();
+        let mut pen = 0.0_f32;
+        for glyph in &glyphs {
+            let next = pen + glyph.x_advance;
+            let x0 = pen.min(next);
+            let x1 = pen.max(next);
+            if let Some((cluster, rtl, _, group_x1)) = visual_groups.last_mut()
+                && *cluster == glyph.cluster as usize
+                && *rtl == glyph.rtl
+            {
+                *group_x1 = (*group_x1).max(x1);
+            } else {
+                visual_groups.push((glyph.cluster as usize, glyph.rtl, x0, x1));
+            }
+            pen = next;
+        }
+
+        let mut glyph_cluster_starts: Vec<usize> = visual_groups
+            .iter()
+            .map(|(cluster, _, _, _)| *cluster)
+            .collect();
+        glyph_cluster_starts.sort_unstable();
+        glyph_cluster_starts.dedup();
+
+        let grapheme_bounds: Vec<usize> = text
+            .grapheme_indices(true)
+            .map(|(byte, _)| byte)
+            .chain(std::iter::once(text.len()))
+            .collect();
+
+        // 簇边界：以字素簇为基准，若塑形合并为连字（跨字素），中间字素边界剔除
+        let mut cluster_offsets = Vec::new();
+        cluster_offsets.push(0);
+        for &g in &grapheme_bounds[1..] {
+            if (g == text.len() || glyph_cluster_starts.contains(&g))
+                && cluster_offsets.last() != Some(&g)
+            {
+                cluster_offsets.push(g);
+            }
+        }
+        if cluster_offsets.last() != Some(&text.len()) {
+            cluster_offsets.push(text.len());
+        }
+
+        let mut cluster_carets = vec![f32::NAN; cluster_offsets.len()];
+        cluster_carets[0] = 0.0;
+        let last_idx = cluster_offsets.len() - 1;
+        cluster_carets[last_idx] = pen.abs();
+
+        for i in 0..cluster_offsets.len() - 1 {
+            let c_start = cluster_offsets[i];
+            let c_end = cluster_offsets[i + 1];
+            let matching: Vec<_> = visual_groups
+                .iter()
+                .filter(|(start, _, _, _)| *start >= c_start && *start < c_end)
+                .collect();
+            if !matching.is_empty() {
+                let is_rtl = matching[0].1;
+                let min_x = matching.iter().map(|(_, _, x0, _)| *x0).fold(f32::INFINITY, f32::min);
+                let max_x = matching.iter().map(|(_, _, _, x1)| *x1).fold(f32::NEG_INFINITY, f32::max);
+                if is_rtl {
+                    cluster_carets[i] = max_x;
+                    cluster_carets[i + 1] = min_x;
+                } else {
+                    cluster_carets[i] = min_x;
+                    cluster_carets[i + 1] = max_x;
+                }
+            }
+        }
+
+        let mut prev = 0.0;
+        for c in &mut cluster_carets {
+            if c.is_finite() {
+                prev = *c;
+            } else {
+                *c = prev;
+            }
+        }
+
+        Line {
+            content: text.to_string(),
+            width: pen.abs(),
+            cluster_offsets,
+            cluster_carets,
+        }
+    }
+
+    /// 返回文本切分后的簇片段（每个片段在簇边界处切开，不在簇内断开）。
+    pub fn cluster_segments<'a>(
+        &self,
+        text: &'a str,
+        size: f32,
+        letter_spacing_em: f32,
+        weight: FontWeight,
+    ) -> Vec<&'a str> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        let line = self.create_line(text, size, letter_spacing_em, weight);
+        let mut segments = Vec::new();
+        for i in 0..line.cluster_offsets.len() - 1 {
+            let start = line.cluster_offsets[i];
+            let end = line.cluster_offsets[i + 1];
+            segments.push(&text[start..end]);
+        }
+        segments
     }
 }
 
@@ -1889,5 +2181,255 @@ fn embolden_hole_shrinks_inward() {
     let max_x = h.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, f32::max);
     assert!((min_x - 105.0).abs() < 1e-3, "内环左边应内收：{min_x}");
     assert!((max_x - 195.0).abs() < 1e-3, "内环右边应内收：{max_x}");
+}
+
+// ── K3 文字整形地基（参 Ether docs/research/k_text_shaping/DESIGN.md）───────────────────
+//
+// 排版单位自「字符」改为「整形后的字形串」：同字体 / 方向 / 脚本的连续文本交 rustybuzz
+// 整形，产出 `ShapedGlyph { glyph_id, cluster（UTF-8 字节）, x_advance, x_offset, y_offset }`。
+// 以下测试锁死四条契约：① 中日韩 / ASCII 位置与「逐字符取度量」的旧结果一致（金样 ≤0.5px）；
+// ② 连字、组合 emoji、组合附加符按簇整体处理；③ 换行与省略号不切入簇内；
+// ④ CPU / GPU 两路对同一段整形文本逐像素一致（后者在 kanesumi-render 的 golden_offscreen）。
+
+/// Settings 导航常用字串 20 条（K3 金样集）。覆盖 CJK、含拉丁混排与 `HiDPI` 等型号词。
+const SETTINGS_GOLDEN_STRINGS: &[&str] = &[
+    "系统", "设备", "个性化", "声音", "时间和语言", "隐私", "通知", "显示",
+    "存储", "电源", "网络", "连接", "打印机", "用户", "辅助功能", "应用管理",
+    "个性化 Chorus", "Wi-Fi", "缩放与 HiDPI", "提权认证 uniauth",
+];
+
+/// 逐字符取度量的「未整形」宽度（K3 之前的算法）：每字符独立前进量之和。
+fn unshaped_width(engine: &TextEngine, text: &str, size: f32) -> f32 {
+    text.chars()
+        .map(|c| engine.glyph_metrics(c, size).advance_width)
+        .sum()
+}
+
+/// 金样：Settings 20 条字串整形后字形位置与未整形参考的位置差 ≤ 0.5 px。
+/// 这些串不含 `ff` / `fi` / `fl` 连字，字形与字符一一对应，故可逐位对齐比较。
+#[test]
+fn settings_golden_strings_shaping_within_half_px() {
+    let Some(engine) = engine() else { return };
+    let size = 14.0;
+    for text in SETTINGS_GOLDEN_STRINGS {
+        let glyphs = engine.shape_line(text, size, 0.0);
+        let chars: Vec<char> = text.chars().collect();
+        assert_eq!(
+            glyphs.len(),
+            chars.len(),
+            "金样集不得含连字（{text}：{} 字形 / {} 字符）",
+            glyphs.len(),
+            chars.len()
+        );
+        let mut shaped_pen = 0.0_f32;
+        let mut unshaped_pen = 0.0_f32;
+        let mut max_diff = 0.0_f32;
+        for (i, c) in chars.iter().enumerate() {
+            max_diff = max_diff.max((shaped_pen - unshaped_pen).abs());
+            shaped_pen += glyphs[i].x_advance;
+            unshaped_pen += engine.glyph_metrics(*c, size).advance_width;
+        }
+        max_diff = max_diff.max((shaped_pen - unshaped_pen).abs());
+        assert!(
+            max_diff <= 0.5,
+            "{text} 整形前后字形位置差 {max_diff:.3} px > 0.5 px"
+        );
+    }
+}
+
+/// 拉丁字距对（kerning）：整形应让它们**变窄或持平**，不构成金样失败。
+/// 单列报告差值，供人核对（`cargo test ... -- --nocapture`）。
+#[test]
+fn kerning_pairs_shaped_not_wider_than_unshaped() {
+    let Some(engine) = engine() else { return };
+    let size = 14.0;
+    for pair in ["AV", "To", "Va", "WA", "Settings"] {
+        let shaped = engine.measure(pair, size);
+        let unshaped = unshaped_width(&engine, pair, size);
+        println!("[k3-kerning] {pair:<10} shaped={shaped:.3} unshaped={unshaped:.3} delta={:.3}", shaped - unshaped);
+        assert!(
+            shaped <= unshaped + 0.001,
+            "{pair} 整形后不得比未整形更宽（shaped {shaped:.3} / unshaped {unshaped:.3}）"
+        );
+    }
+}
+
+/// 连字：`ffi` / `fl` 在支持 `liga` 的拉丁字体（DejaVu Sans）上合成单个字形，
+/// 且该字形簇起点为 0（整个连字是一个簇）。无该字体时跳过。
+#[test]
+fn ligature_ffi_and_fl_merge_into_single_glyph() {
+    let Some(path) = find_ligature_font() else { return };
+    let engine = TextEngine::load(&path).unwrap();
+    let ffi = engine.shape_line("ffi", 24.0, 0.0);
+    assert_eq!(ffi.len(), 1, "ffi 应合成一个字形（字体 {path:?}）");
+    assert_eq!(ffi[0].cluster, 0, "连字簇起点为 0");
+    let fl = engine.shape_line("fl", 24.0, 0.0);
+    assert_eq!(fl.len(), 1, "fl 应合成一个字形");
+    assert_eq!(fl[0].cluster, 0);
+}
+
+/// 整形绝不增加字形数（合并只会更少）。SC 正体（思源 / Noto CJK）无拉丁连字，
+/// 此时字形数 == 字符数；有连字的字体则更少。此断言跨字体恒成立。
+#[test]
+fn shaping_never_increases_glyph_count() {
+    let Some(engine) = engine() else { return };
+    for text in ["ffi", "fl", "office", "affluent", "系统", "Settings"] {
+        let glyphs = engine.shape_line(text, 20.0, 0.0);
+        let chars = text.chars().count();
+        assert!(
+            glyphs.len() <= chars,
+            "{text}：{} 字形 > {chars} 字符",
+            glyphs.len()
+        );
+    }
+}
+
+/// 连字内部不是簇边界：`office` 的 `ffi`（字符 1..4）整体一簇，
+/// 字节偏移 2 / 3 处取光标必须夹紧到 1 或 4。
+#[test]
+fn ligature_interior_is_not_a_cluster_boundary() {
+    let Some(engine) = engine() else { return };
+    let line = engine.create_line("office", 20.0, 0.0, FontWeight::Normal);
+    let bounds = line.cluster_boundaries();
+    assert_eq!(bounds, &[0, 1, 4, 5, 6], "o | ffi | c | e 的字节边界");
+    assert!(!bounds.contains(&2) && !bounds.contains(&3), "连字内不得有边界");
+    let caret_after_o = line.caret_x(1);
+    let caret_after_ffi = line.caret_x(4);
+    assert!(caret_after_ffi > caret_after_o, "连字整体一步，占一段宽度");
+    assert_eq!(line.caret_x(2), caret_after_o, "字节 2 夹紧到前一边界");
+    assert_eq!(line.caret_x(3), caret_after_ffi, "字节 3 夹紧到后一边界");
+    assert_eq!(line.hit_test(caret_after_ffi), 4, "命中回到簇边界");
+}
+
+/// 组合 emoji（ZWJ 家庭序列）与组合附加符（é）是单簇：光标一步跨过，
+/// 命中只落在簇边界，绝不落进簇内部。
+#[test]
+fn shaped_clusters_step_over_emoji_and_combining_mark() {
+    let Some(engine) = engine() else { return };
+    // 👨👩👧 = 4 + 3 + 4 + 3 + 4 = 18 字节。
+    let family = "a\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}b";
+    let line = engine.create_line(family, 18.0, 0.0, FontWeight::Normal);
+    assert_eq!(line.cluster_boundaries(), &[0, 1, 19, 20], "a | 家庭 | b");
+    assert_eq!(line.caret_x(19), line.caret_x(1) + engine.measure("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}", 18.0), "家庭簇占一整段前移");
+    // 簇内部任意字节都夹紧到相邻边界。
+    let mid = line.caret_x(10);
+    assert!(mid == line.caret_x(1) || mid == line.caret_x(19));
+
+    let marked = engine.create_line("e\u{301}x", 18.0, 0.0, FontWeight::Normal);
+    assert_eq!(marked.cluster_boundaries(), &[0, 3, 4], "é | x");
+    assert_eq!(marked.caret_x(1), marked.caret_x(0), "附加符内夹紧到 é 起点");
+    assert_eq!(marked.caret_x(2), marked.caret_x(3), "附加符内夹紧到 é 终点");
+    assert_eq!(marked.hit_test(marked.caret_x(3)), 3);
+}
+
+/// 换行绝不切入簇内：组合附加符与 ZWJ emoji 均整簇换行。
+#[test]
+fn wrapping_never_splits_a_cluster() {
+    let Some(engine) = engine() else { return };
+    let cluster = "e\u{301}";
+    let width = engine.measure(cluster, 18.0) + 0.5;
+    let lines = engine.layout(&cluster.repeat(3), 18.0, width);
+    assert_eq!(lines.len(), 3, "每簇一行");
+    assert!(lines.iter().all(|l| l.content == cluster), "不得劈开组合附加符");
+
+    let emoji = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+    let emoji_w = engine.measure(emoji, 18.0) + 0.5;
+    let lines = engine.layout(&emoji.repeat(2), 18.0, emoji_w);
+    assert_eq!(lines.len(), 2, "ZWJ emoji 每簇一行");
+    assert!(lines.iter().all(|l| l.content == emoji), "不得劈开 ZWJ 序列");
+}
+
+/// 省略号截断不切半个簇：省略号前的正文必是完整簇的整数倍。
+#[test]
+fn ellipsis_truncation_never_splits_a_cluster() {
+    let Some(engine) = engine() else { return };
+    let unit = "e\u{301}";
+    let text = unit.repeat(4);
+    // 逐档预算：从「只放省略号」到「放 3 个簇 + 省略号」，正文必须始终是整簇前缀。
+    for k in 0..4usize {
+        let budget = engine.measure(&format!("{}…", unit.repeat(k)), 18.0);
+        let mut options = TextLayoutOptions::wrapped(budget, 22.0, 22.0);
+        options.wrap = false;
+        options.max_lines = Some(1);
+        options.overflow = TextOverflow::Ellipsis;
+        let layout = engine.layout_box(&text, 18.0, options);
+        assert_eq!(layout.lines.len(), 1);
+        let content = &layout.lines[0].content;
+        if let Some(body) = content.strip_suffix('…') {
+            let whole = (0..=3).any(|m| body == unit.repeat(m));
+            assert!(whole, "k={k}：省略号前必须是整簇，实际 {body:?}");
+        } else {
+            assert_eq!(content.as_str(), text, "k={k}：预算够放下全文时不得截断");
+        }
+    }
+}
+
+/// 超过可用宽度的单行（省略号）不得切入连字内部：正文只能是完整连字簇。
+/// 用带 `liga` 的拉丁字体；无该字体时跳过。
+#[test]
+fn ellipsis_does_not_split_ligature() {
+    let Some(path) = find_ligature_font() else { return };
+    let engine = TextEngine::load(&path).unwrap();
+    let text = "offi";
+    let ell = engine.measure("…", 20.0);
+    for k in 0..2usize {
+        let head = ["", "o"][k];
+        let budget = engine.measure(&format!("{head}{}", if k == 0 { "" } else { "ffi" }), 20.0) + ell + 0.5;
+        let mut options = TextLayoutOptions::wrapped(budget, 24.0, 24.0);
+        options.wrap = false;
+        options.max_lines = Some(1);
+        options.overflow = TextOverflow::Ellipsis;
+        let layout = engine.layout_box(text, 20.0, options);
+        let content = &layout.lines[0].content;
+        let body = content.trim_end_matches('…');
+        assert!(
+            body == "o" || body == "offi" || body.is_empty(),
+            "k={k}：省略号前不得切一半连字，实际 {body:?}"
+        );
+    }
+}
+
+/// 排版缓存命中路径的耗时量级（K3 性能报告）。缓存本身在本件未改（`layout_box`
+/// 命中仍是「加锁 + 哈希查找 + Arc 克隆」），此测试打印冷 / 热耗时供人核对命中确有增益。
+#[test]
+fn layout_cache_hit_timing_report() {
+    use std::time::Instant;
+    let Some(engine) = engine() else { return };
+    let size = 14.0;
+    let options = TextLayoutOptions::wrapped(200.0, 40.0, 20.0);
+
+    // 冷：每串一次未命中（首帧场景）。
+    let cold = Instant::now();
+    for text in SETTINGS_GOLDEN_STRINGS {
+        let _ = engine.layout_box(text, size, options);
+    }
+    let cold = cold.elapsed();
+
+    // 热：已全部入缓存，100 轮命中。
+    let warm = Instant::now();
+    for _ in 0..100 {
+        for text in SETTINGS_GOLDEN_STRINGS {
+            let _ = engine.layout_box(text, size, options);
+        }
+    }
+    let warm = warm.elapsed() / 100;
+    println!(
+        "[k3-perf] Settings 20 串：冷排版 {cold:?}（{:.1} µs/串），缓存命中 {warm:?}（{:.2} µs/串）",
+        cold.as_secs_f64() * 1e6 / SETTINGS_GOLDEN_STRINGS.len() as f64,
+        warm.as_secs_f64() * 1e6 / SETTINGS_GOLDEN_STRINGS.len() as f64,
+    );
+    assert!(warm < cold, "缓存命中应显著快于冷排版");
+}
+
+/// 带 `liga` 连字的拉丁字体（`ffi` / `fl`）。测试机常见路径，缺失则跳过。
+fn find_ligature_font() -> Option<std::path::PathBuf> {
+    [
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
+    ]
+    .into_iter()
+    .map(std::path::PathBuf::from)
+    .find(|p| p.exists())
 }
 }
