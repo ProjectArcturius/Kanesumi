@@ -113,7 +113,7 @@ impl SurfaceRenderer {
         scale: f32,
         transparent: bool,
     ) -> Result<Self, crate::render::RendererError> {
-        if canvas_v2_enabled() {
+        if crate::renderer_policy::one_canvas() || canvas_v2_enabled() {
             crate::canvas_v2::CanvasV2::with_context(
                 ctx, conn, wl_surface, width, height, scale, transparent,
             )
@@ -558,6 +558,7 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         // 帧耗时自记录：每 10s 且有新帧时追加一行持久日志（默认开启，零交互）。
         shell.maybe_flush_perf();
     }
+    shell.flush_perf(true);
     Ok(())
 }
 
@@ -837,6 +838,8 @@ pub(crate) struct Shell {
     perf_main: crate::perf::SurfacePerf,
     /// 各浮层表面三段耗时（与 `floating` 等长）。
     perf_floating: Vec<crate::perf::SurfacePerf>,
+    /// 候选窗 popup 耗时样本（C2：perf 日志补齐）。
+    perf_im_popup: crate::perf::SurfacePerf,
     /// 下次写 perf 日志的时刻（挂钟节流）。
     perf_flush_at: Instant,
     /// 进程名（日志行首）。
@@ -1056,8 +1059,10 @@ struct ImPopupSurface {
     /// popup surface 对象（角色标记，保持存活）。
     #[allow(dead_code)]
     popup: wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_popup_surface_v2::ZwpInputPopupSurfaceV2,
-    /// CPU 光栅化器（popup surface 走 SHM/dmabuf 提交；resize 复用，不重建）。
+    /// CPU 光栅化器（popup surface 走 SHM/dmabuf 提交；resize 复用，不重建）。与 `renderer` 二选一。
     cpu: Option<CpuRenderer>,
+    /// wgpu 光栅化器（C2 一张画布：候选窗走 GPU 直出）。与 `cpu` 二选一。
+    renderer: Option<SurfaceRenderer>,
     /// 输出缓冲（dmabuf 直通优先，SHM 回退）。
     out: SurfaceOutput,
     width: f32,
@@ -1484,6 +1489,7 @@ impl Shell {
             frame_count: 0,
             perf_main: crate::perf::SurfacePerf::new(),
             perf_floating: vec![crate::perf::SurfacePerf::new(); floating_len],
+            perf_im_popup: crate::perf::SurfacePerf::new(),
             perf_flush_at: Instant::now(),
             perf_proc,
             perf_header_done: false,
@@ -1574,7 +1580,8 @@ impl Shell {
         let area = ((fw * fscale).max(0.0) * (fh * fscale).max(0.0)) as u64;
         let hz = default_expected_hz(class);
         let gpu_ok = self.gpu_available();
-        let kind = choose_renderer(class, area, hz, gpu_ok);
+        let one_canvas = crate::renderer_policy::one_canvas();
+        let kind = choose_renderer(class, area, hz, gpu_ok, one_canvas);
         log::info!(
             "渲染器选择：浮层 #{}（{:.0}x{:.0}，scale {}）area={}px² hz={:.1} → {:?}（{}）",
             idx,
@@ -1584,17 +1591,25 @@ impl Shell {
             area,
             hz,
             kind,
-            crate::renderer_policy::decision_reason(class, area, hz, gpu_ok),
+            crate::renderer_policy::decision_reason(class, area, hz, gpu_ok, one_canvas),
         );
-        if kind == RendererKind::Gpu
-            && let Some(ctx) = self.ensure_gpu_context(&surf)
-            && let Ok(mut r) = SurfaceRenderer::with_context(ctx, &self.conn, &surf, fw, fh, fscale, true)
-        {
-            // 预热：空场景提交一次，强制管线/着色器编译（消除 G0 测得的首帧 20~40 ms 尖峰）。
-            r.render(&self.engine, &Scene::default());
-            log::info!("浮层 wgpu 渲染器已创建（{}）", r.diagnostics());
-            self.floating[idx].renderer = Some(r);
-            return;
+        if kind == RendererKind::Gpu {
+            if let Some(ctx) = self.ensure_gpu_context(&surf) {
+                match SurfaceRenderer::with_context(ctx, &self.conn, &surf, fw, fh, fscale, true) {
+                    Ok(mut r) => {
+                        // 预热：空场景提交一次，强制管线/着色器编译（消除 G0 测得的首帧 20~40 ms 尖峰）。
+                        r.render(&self.engine, &Scene::default());
+                        log::info!("浮层 wgpu 渲染器已创建（{}）", r.diagnostics());
+                        self.floating[idx].renderer = Some(r);
+                        return;
+                    }
+                    Err(e) => {
+                        log::warn!("浮层 wgpu 渲染器创建失败（{e:?}），回退 CPU");
+                    }
+                }
+            } else {
+                log::warn!("浮层 wgpu 共享上下文不可用，回退 CPU");
+            }
         }
         let cpu = CpuRenderer::new(fw, fh, fscale);
         log::info!("浮层 CPU 光栅化器已创建（{:.0}x{:.0}）", fw, fh);
@@ -1685,6 +1700,8 @@ impl Shell {
         let mut commit_ms = 0.0f32;
         let mut gpu_samples: Vec<f32> = Vec::new();
         let mut draws: Option<u32> = None;
+        let mut acquire_ms: Option<f32> = None;
+        let mut c15_stats: Option<(bool, f32, u32)> = None;
         if let Some(cpu) = f.cpu.as_mut() {
             let (pw, ph) = cpu.physical_size();
             let t = Instant::now();
@@ -1753,6 +1770,8 @@ impl Shell {
             }
             gpu_samples = r.drain_gpu_samples();
             draws = r.last_draws();
+            acquire_ms = r.take_acquire_ms();
+            c15_stats = r.last_c15_stats();
             self.floating_full[idx] = false;
             self.floating_raster_size[idx] = phys_now;
         }
@@ -1761,8 +1780,14 @@ impl Shell {
             if let Some(n) = draws {
                 p.record_draws(n);
             }
+            if let Some(ms) = acquire_ms {
+                p.record_acquire(ms);
+            }
             for ms in gpu_samples {
                 p.record_gpu(ms);
+            }
+            if let Some((inc, dmg_pct, insts)) = c15_stats {
+                p.record_c15(inc, dmg_pct, insts);
             }
         }
         // 掉帧计数：浮层本帧已提交（零面积早退分支不计）；按表面分别记避免污染间隔。参 perf.rs。
@@ -2003,8 +2028,9 @@ impl Shell {
         let area = ((self.width * self.scale).max(0.0) * (self.height * self.scale).max(0.0)) as u64;
         let hz = default_expected_hz(class);
         let gpu_ok = self.gpu_available();
+        let one_canvas = crate::renderer_policy::one_canvas();
         let force = std::env::var_os("KANESUMI_LAYER_GPU").is_some_and(|v| v == "1");
-        let mut kind = choose_renderer(class, area, hz, gpu_ok);
+        let mut kind = choose_renderer(class, area, hz, gpu_ok, one_canvas);
         if force && gpu_ok {
             kind = RendererKind::Gpu;
         }
@@ -2014,12 +2040,12 @@ impl Shell {
             area,
             hz,
             kind,
-            crate::renderer_policy::decision_reason(class, area, hz, gpu_ok),
+            crate::renderer_policy::decision_reason(class, area, hz, gpu_ok, one_canvas),
         );
         if kind == RendererKind::Gpu {
             let surf = self.surface.clone();
-            if let Some(ctx) = self.ensure_gpu_context(&surf)
-                && let Ok(r) = SurfaceRenderer::with_context(
+            if let Some(ctx) = self.ensure_gpu_context(&surf) {
+                match SurfaceRenderer::with_context(
                     ctx,
                     &self.conn,
                     &surf,
@@ -2027,15 +2053,22 @@ impl Shell {
                     self.height,
                     self.scale,
                     false,
-                )
-            {
-                log::info!("主表面 wgpu 渲染器已创建（{}）", r.diagnostics());
-                if matches!(r, SurfaceRenderer::V2(_)) && !crate::canvas_v2::canvas_full_forced() {
-                    self.app.set_damage_cull(true);
+                ) {
+                    Ok(r) => {
+                        log::info!("主表面 wgpu 渲染器已创建（{}）", r.diagnostics());
+                        if matches!(r, SurfaceRenderer::V2(_)) && !crate::canvas_v2::canvas_full_forced() {
+                            self.app.set_damage_cull(true);
+                        }
+                        self.renderer = Some(r);
+                        crate::timeline::note_once("renderer_ready");
+                        return;
+                    }
+                    Err(e) => {
+                        log::warn!("主表面 wgpu 渲染器创建失败（{e:?}），回退 CPU");
+                    }
                 }
-                self.renderer = Some(r);
-                crate::timeline::note_once("renderer_ready");
-                return;
+            } else {
+                log::warn!("主表面 wgpu 共享上下文不可用，回退 CPU");
             }
         }
         // CPU 光栅化。无失败模式：Vec 分配即就绪（I-1）。
@@ -2337,8 +2370,13 @@ impl Shell {
 
     /// 每 10s 且有新帧时把各表面三段耗时 p50/p95/max 追加到持久日志（默认开启）。
     fn maybe_flush_perf(&mut self) {
+        self.flush_perf(false);
+    }
+
+    /// 刷新 perf 日志（`force = true` 用于外壳退出时无视 10s 节流落盘全部未写数据）。
+    fn flush_perf(&mut self, force: bool) {
         let now = Instant::now();
-        if now.duration_since(self.perf_flush_at) < crate::perf::FLUSH_INTERVAL {
+        if !force && now.duration_since(self.perf_flush_at) < crate::perf::FLUSH_INTERVAL {
             return;
         }
         self.perf_flush_at = now;
@@ -2361,10 +2399,19 @@ impl Shell {
                 self.perf_floating[i].reset();
             }
         }
+        if !self.perf_im_popup.is_empty() {
+            out.push_str(&crate::perf::format_line(
+                &proc,
+                &role,
+                "im_popup",
+                &self.perf_im_popup,
+            ));
+            self.perf_im_popup.reset();
+        }
         if out.is_empty() {
             return;
         }
-        // 首行自证：实际 MSAA 采样数 + GPU 计时是否开启（A/B 必须能从日志分辨档位）。
+        // 首行自证：实际 MSAA 采样数 + GPU 计时是否开启 + one_canvas=on|off（A/B 必须能从日志分辨档位）。
         if !self.perf_header_done {
             self.perf_header_done = true;
             let gpu_ok = self
@@ -2376,6 +2423,11 @@ impl Shell {
                         .iter()
                         .find_map(|f| f.renderer.as_ref().map(|r| r.gpu_timing_supported()))
                 })
+                .or_else(|| {
+                    self.im_popup
+                        .as_ref()
+                        .and_then(|p| p.renderer.as_ref().map(|r| r.gpu_timing_supported()))
+                })
                 .unwrap_or(false);
             let msaa = self
                 .renderer
@@ -2385,8 +2437,22 @@ impl Shell {
                     self.floating
                         .iter()
                         .find_map(|f| f.renderer.as_ref().map(|r| r.msaa_samples()))
+                })
+                .or_else(|| {
+                    self.im_popup
+                        .as_ref()
+                        .and_then(|p| p.renderer.as_ref().map(|r| r.msaa_samples()))
                 });
-            out.insert_str(0, &crate::perf::format_header(&proc, msaa, gpu_ok, crate::platform::canvas_v2_enabled()));
+            out.insert_str(
+                0,
+                &crate::perf::format_header(
+                    &proc,
+                    msaa,
+                    gpu_ok,
+                    crate::platform::canvas_v2_enabled(),
+                    crate::renderer_policy::one_canvas(),
+                ),
+            );
         }
         if let Some(path) = crate::perf::state_log_path("ether-harness-perf.log") {
             crate::perf::write_log(&path, &out);
@@ -2639,6 +2705,19 @@ impl Shell {
     fn apply_surface_scale(&mut self, surface: &wl_surface::WlSurface, scale: f32) {
         if *surface == self.surface {
             self.apply_scale(scale);
+            return;
+        }
+        if let Some(popup) = self.im_popup.as_mut()
+            && popup.surface == *surface
+        {
+            popup.surface.set_buffer_scale(scale.round().max(1.0) as i32);
+            if let Some(cpu) = popup.cpu.as_mut() {
+                cpu.resize(popup.width, popup.height, scale);
+            }
+            if let Some(r) = popup.renderer.as_mut() {
+                r.resize(popup.width, popup.height, scale);
+            }
+            self.im_popup_dirty = true;
             return;
         }
         let Some(index) = self.floating_idx(surface) else {
@@ -4218,6 +4297,7 @@ impl Shell {
                 surface: surface.clone(),
                 popup,
                 cpu: None,
+                renderer: None,
                 out,
                 width: pw,
                 height: ph,
@@ -4225,15 +4305,73 @@ impl Shell {
             self.im_popup_dirty = true; // 新 surface 首帧须渲染。
         }
 
-        let Some(im_popup) = self.im_popup.as_mut() else {
-            return;
-        };
-        if im_popup.cpu.is_none() {
-            im_popup.cpu = Some(CpuRenderer::new(pw, ph, self.scale));
+        let needs_init = self
+            .im_popup
+            .as_ref()
+            .map(|p| p.cpu.is_none() && p.renderer.is_none())
+            .unwrap_or(false);
+        if needs_init {
+            let surf = self.im_popup.as_ref().unwrap().surface.clone();
+            let class = SurfaceClass::ImePopup;
+            let area = ((pw * self.scale).max(0.0) * (ph * self.scale).max(0.0)) as u64;
+            let hz = default_expected_hz(class);
+            let gpu_ok = self.gpu_available();
+            let one_canvas = crate::renderer_policy::one_canvas();
+            let kind = choose_renderer(class, area, hz, gpu_ok, one_canvas);
+            log::info!(
+                "渲染器选择：候选窗（{:.0}x{:.0}，scale {}）area={}px² hz={:.1} → {:?}（{}）",
+                pw,
+                ph,
+                self.scale,
+                area,
+                hz,
+                kind,
+                crate::renderer_policy::decision_reason(class, area, hz, gpu_ok, one_canvas),
+            );
+            if kind == RendererKind::Gpu {
+                if let Some(ctx) = self.ensure_gpu_context(&surf) {
+                    match SurfaceRenderer::with_context(
+                        ctx,
+                        &self.conn,
+                        &surf,
+                        pw,
+                        ph,
+                        self.scale,
+                        true,
+                    ) {
+                        Ok(mut r) => {
+                            // 预热：空场景提交一次，强制管线/着色器编译。
+                            r.render(&self.engine, &Scene::default());
+                            log::info!("候选窗 wgpu 渲染器已创建（{}）", r.diagnostics());
+                            if let Some(p) = self.im_popup.as_mut() {
+                                p.renderer = Some(r);
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("候选窗 wgpu 渲染器创建失败（{e:?}），回退 CPU");
+                            if let Some(p) = self.im_popup.as_mut() {
+                                p.cpu = Some(CpuRenderer::new(pw, ph, self.scale));
+                            }
+                        }
+                    }
+                } else {
+                    log::warn!("候选窗 wgpu 共享上下文不可用，回退 CPU");
+                    if let Some(p) = self.im_popup.as_mut() {
+                        p.cpu = Some(CpuRenderer::new(pw, ph, self.scale));
+                    }
+                }
+            } else if let Some(p) = self.im_popup.as_mut() {
+                p.cpu = Some(CpuRenderer::new(pw, ph, self.scale));
+            }
         } else if size_changed {
             // 尺寸变化：resize 复用（避免重建闪烁）。
-            if let Some(cpu) = im_popup.cpu.as_mut() {
-                cpu.resize(pw, ph, self.scale);
+            if let Some(p) = self.im_popup.as_mut() {
+                if let Some(cpu) = p.cpu.as_mut() {
+                    cpu.resize(pw, ph, self.scale);
+                }
+                if let Some(r) = p.renderer.as_mut() {
+                    r.resize(pw, ph, self.scale);
+                }
             }
         }
         // 候选窗内容仅在 dirty（key 变化 / 尺寸变化 / 首次）时渲染提交——
@@ -4242,6 +4380,7 @@ impl Shell {
             return;
         }
         self.im_popup_dirty = false;
+        let t_render = Instant::now();
         // 候选窗 Scene（App 引擎驱动）。
         let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.app.ime_engine_popup_scene(&self.engine)
@@ -4253,23 +4392,60 @@ impl Shell {
                 return;
             }
         };
-        if let Some(cpu) = im_popup.cpu.as_mut() {
-            let (srw, srh) = cpu.physical_size();
-            let rgba = cpu.render(&self.engine, &scene, None);
-            // 候选窗同样走 dmabuf 直通（打字时每键一提交 → 收益最直接的表面）。
-            let surface = im_popup.surface.clone();
-            im_popup.out.commit(
-                qh,
-                self.shm.as_ref(),
-                &self.dmabuf,
-                &surface,
-                srw,
-                srh,
-                rgba,
-                self.scale,
-                None,
-            );
+        let render_ms = t_render.elapsed().as_secs_f32() * 1000.0;
+        let mut raster_ms = 0.0f32;
+        let mut commit_ms = 0.0f32;
+        let mut gpu_samples = Vec::new();
+        let mut draws = None;
+        let mut acquire_ms = None;
+        let mut c15_stats = None;
+
+        if let Some(im_popup) = self.im_popup.as_mut() {
+            if let Some(cpu) = im_popup.cpu.as_mut() {
+                let (srw, srh) = cpu.physical_size();
+                let t = Instant::now();
+                let rgba = cpu.render(&self.engine, &scene, None);
+                raster_ms = t.elapsed().as_secs_f32() * 1000.0;
+                // 候选窗同样走 dmabuf 直通（打字时每键一提交 → 收益最直接的表面）。
+                let t = Instant::now();
+                let surface = im_popup.surface.clone();
+                im_popup.out.commit(
+                    qh,
+                    self.shm.as_ref(),
+                    &self.dmabuf,
+                    &surface,
+                    srw,
+                    srh,
+                    rgba,
+                    self.scale,
+                    None,
+                );
+                commit_ms = t.elapsed().as_secs_f32() * 1000.0;
+            } else if let Some(r) = im_popup.renderer.as_mut() {
+                let t = Instant::now();
+                r.render_with_damage(&self.engine, &scene, None);
+                raster_ms = t.elapsed().as_secs_f32() * 1000.0;
+                gpu_samples = r.drain_gpu_samples();
+                draws = r.last_draws();
+                acquire_ms = r.take_acquire_ms();
+                c15_stats = r.last_c15_stats();
+            }
         }
+
+        self.perf_im_popup.record(render_ms, raster_ms, commit_ms);
+        if let Some(n) = draws {
+            self.perf_im_popup.record_draws(n);
+        }
+        if let Some(ms) = acquire_ms {
+            self.perf_im_popup.record_acquire(ms);
+        }
+        for ms in gpu_samples {
+            self.perf_im_popup.record_gpu(ms);
+        }
+        if let Some((inc, dmg_pct, insts)) = c15_stats {
+            self.perf_im_popup.record_c15(inc, dmg_pct, insts);
+        }
+        crate::perf::pacing_present_named(&format!("{:?}:im_popup", self.role), Instant::now());
     }
 }
 

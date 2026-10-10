@@ -58,18 +58,24 @@ pub fn default_expected_hz(class: SurfaceClass) -> f32 {
     }
 }
 
-/// 纯决策函数：给定表面种类、物理面积、预期刷新频率与 GPU 是否可用，返回渲染器种类。
+/// 纯决策函数：给定表面种类、物理面积、预期刷新频率、GPU 是否可用与是否开启一张画布（`KANESUMI_ONE_CANVAS`），返回渲染器种类。
 ///
 /// `gpu_available = false` 表示 kill-switch 命中或 wgpu 初始化已失败 → 一律 CPU。
 /// xdg 窗口在可用时一律 GPU（现状行为，不经阈值）。
+/// `one_canvas = true`（KANESUMI_ONE_CANVAS=1）且 GPU 可用时，LayerMain / Floating / ImePopup 一律 GPU。
+/// `one_canvas = false` 时与旧有按面积 × 刷新频率阈值决策逻辑逐项一致。
 pub fn choose_renderer(
     class: SurfaceClass,
     physical_area_px2: u64,
     expected_hz: f32,
     gpu_available: bool,
+    one_canvas: bool,
 ) -> RendererKind {
     if !gpu_available {
         return RendererKind::Cpu;
+    }
+    if one_canvas {
+        return RendererKind::Gpu;
     }
     match class {
         SurfaceClass::XdgWindow => RendererKind::Gpu,
@@ -95,9 +101,13 @@ pub fn decision_reason(
     physical_area_px2: u64,
     expected_hz: f32,
     gpu_available: bool,
+    one_canvas: bool,
 ) -> String {
     if !gpu_available {
         return "GPU 不可用（kill-switch 命中或初始化失败）→ CPU".to_string();
+    }
+    if one_canvas {
+        return "KANESUMI_ONE_CANVAS=1 强制一张画布 → GPU".to_string();
     }
     match class {
         SurfaceClass::XdgWindow => "xdg-shell 窗口默认 GPU 直出".to_string(),
@@ -135,25 +145,80 @@ fn config_dir_flag_exists(name: &str) -> bool {
         .exists()
 }
 
+/// KANESUMI_ONE_CANVAS 开关纯判定：env 为 Some("1") 时激活。
+///
+/// 与真实环境分离以便单测；真实读取见 [`one_canvas`]。
+pub fn one_canvas_active(env_one_canvas: Option<&str>) -> bool {
+    env_one_canvas == Some("1")
+}
+
+/// 真实读取环境变量 `KANESUMI_ONE_CANVAS`。
+pub fn one_canvas() -> bool {
+    let env = std::env::var("KANESUMI_ONE_CANVAS").ok();
+    one_canvas_active(env.as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn one_canvas_active_判定() {
+        assert!(!one_canvas_active(None));
+        assert!(!one_canvas_active(Some("0")));
+        assert!(!one_canvas_active(Some("2")));
+        assert!(!one_canvas_active(Some("")));
+        assert!(one_canvas_active(Some("1")));
+    }
+
+    #[test]
+    fn one_canvas_开启且_gpu_可用时一律_gpu() {
+        for class in [
+            SurfaceClass::XdgWindow,
+            SurfaceClass::LayerMain,
+            SurfaceClass::Floating,
+            SurfaceClass::ImePopup,
+        ] {
+            // 即使面积与频率极小，开启一张画布后也选 GPU。
+            assert_eq!(
+                choose_renderer(class, 100, 1.0, true, true),
+                RendererKind::Gpu,
+                "{class:?} 在 one_canvas 开启且 GPU 可用时必须 GPU"
+            );
+        }
+    }
+
+    #[test]
+    fn one_canvas_开启但_gpu_不可用时一律_cpu() {
+        for class in [
+            SurfaceClass::XdgWindow,
+            SurfaceClass::LayerMain,
+            SurfaceClass::Floating,
+            SurfaceClass::ImePopup,
+        ] {
+            assert_eq!(
+                choose_renderer(class, 5_898_240, 60.0, false, true),
+                RendererKind::Cpu,
+                "{class:?} 在 GPU 不可用时即使 one_canvas 开启也必须 CPU"
+            );
+        }
+    }
+
+    #[test]
     fn 小表面留在_cpu() {
         // TopBar 3072×30 ≈ 92k px²，刷新 2 Hz。
         assert_eq!(
-            choose_renderer(SurfaceClass::LayerMain, 92_160, 2.0, true),
+            choose_renderer(SurfaceClass::LayerMain, 92_160, 2.0, true, false),
             RendererKind::Cpu
         );
         // Dock 3072×64 ≈ 197k px²，即使高频也低于面积阈值。
         assert_eq!(
-            choose_renderer(SurfaceClass::LayerMain, 196_608, 30.0, true),
+            choose_renderer(SurfaceClass::LayerMain, 196_608, 30.0, true, false),
             RendererKind::Cpu
         );
         // IME 候选窗（小）。
         assert_eq!(
-            choose_renderer(SurfaceClass::ImePopup, 200_000, 10.0, true),
+            choose_renderer(SurfaceClass::ImePopup, 200_000, 10.0, true, false),
             RendererKind::Cpu
         );
     }
@@ -162,12 +227,12 @@ mod tests {
     fn 大浮层走_gpu() {
         // Launcher 覆盖层 3072×1920 ≈ 5.90 Mpx，10 Hz。
         assert_eq!(
-            choose_renderer(SurfaceClass::Floating, 5_898_240, 10.0, true),
+            choose_renderer(SurfaceClass::Floating, 5_898_240, 10.0, true, false),
             RendererKind::Gpu
         );
         // 桌面（大面积、高频框选）。
         assert_eq!(
-            choose_renderer(SurfaceClass::LayerMain, 5_898_240, 60.0, true),
+            choose_renderer(SurfaceClass::LayerMain, 5_898_240, 60.0, true, false),
             RendererKind::Gpu
         );
     }
@@ -176,12 +241,12 @@ mod tests {
     fn 大而低频留在_cpu() {
         // 2 Mpx 但每分钟才变一次（≈ 0.0167 Hz）→ 不值一份设备。
         assert_eq!(
-            choose_renderer(SurfaceClass::Floating, 2_000_000, 0.0167, true),
+            choose_renderer(SurfaceClass::Floating, 2_000_000, 0.0167, true, false),
             RendererKind::Cpu
         );
         // 面积过关 + 频率过关 → GPU。
         assert_eq!(
-            choose_renderer(SurfaceClass::Floating, 2_000_000, 30.0, true),
+            choose_renderer(SurfaceClass::Floating, 2_000_000, 30.0, true, false),
             RendererKind::Gpu
         );
     }
@@ -195,7 +260,7 @@ mod tests {
             SurfaceClass::ImePopup,
         ] {
             assert_eq!(
-                choose_renderer(class, 5_898_240, 60.0, false),
+                choose_renderer(class, 5_898_240, 60.0, false, false),
                 RendererKind::Cpu,
                 "{class:?} 在 GPU 不可用时必须 CPU"
             );
@@ -216,11 +281,11 @@ mod tests {
     fn 非法频率按零处理() {
         // NaN / 负值 → 视为不动，留在 CPU。
         assert_eq!(
-            choose_renderer(SurfaceClass::Floating, 5_898_240, f32::NAN, true),
+            choose_renderer(SurfaceClass::Floating, 5_898_240, f32::NAN, true, false),
             RendererKind::Cpu
         );
         assert_eq!(
-            choose_renderer(SurfaceClass::Floating, 5_898_240, -5.0, true),
+            choose_renderer(SurfaceClass::Floating, 5_898_240, -5.0, true, false),
             RendererKind::Cpu
         );
     }
