@@ -114,6 +114,24 @@ pub fn focus_inner_color(scheme: ColorScheme) -> Color {
     }
 }
 
+// ── Ⅶ 手势 ──────────────────────────────────────────────────────────────────
+//
+// 三指上滑拉起 Launcher 的进度源参数（`docs/GESTURE_PLAN.md` §Ⅳ，裁定 §129）。
+// 时间一律单调秒；`snap_tracker` 用 f64，故此处手势常量亦为 f64。
+
+/// 手势距离归一 D = 300（libinput 手势增量单位；GNOME `TOUCHPAD_BASE_HEIGHT = 300`，待真机校准）。
+pub const GESTURE_DISTANCE: f64 = 300.0;
+/// 松手速度估计窗口 150 ms（GNOME `EVENT_HISTORY_THRESHOLD_MS = 150`）。
+pub const GESTURE_VELOCITY_WINDOW_MS: u32 = 150;
+/// 触发投影的最小速度 2.0 /s（GNOME `VELOCITY_THRESHOLD_TOUCHPAD = 0.6 px/ms ÷ D`）。
+pub const GESTURE_MIN_VELOCITY: f64 = 2.0;
+/// 开方向临界阻尼角频率 18.97 /s（GESTURE_PLAN §Ⅳ 推导：静止 0→0.99 ≈ 350 ms，与现行开曲线同时长）。
+pub const SNAP_OMEGA_OPEN: f64 = 18.97;
+/// 关方向临界阻尼角频率 33.2 /s（GESTURE_PLAN §Ⅳ 推导：≈ 200 ms）。
+pub const SNAP_OMEGA_CLOSE: f64 = 33.2;
+/// 落定位置阈值 0.005（GNOME `EPSILON = 0.005`）。
+pub const SNAP_EPSILON: f64 = 0.005;
+
 /// 交互数值的用户可调覆盖（正典 §Ⅰ.2）。`Default` = 正典值。
 ///
 /// 由 harness 读取 `~/.config/ether/input.toml` 覆盖；控件层消费默认值。

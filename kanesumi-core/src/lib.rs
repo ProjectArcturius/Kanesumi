@@ -12,6 +12,7 @@ pub mod colors;
 pub mod geometry;
 pub mod indicator;
 pub mod interaction;
+pub mod snap_tracker;
 pub mod status;
 pub mod theme;
 pub mod tokens;
