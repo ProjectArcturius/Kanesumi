@@ -485,11 +485,18 @@ impl ScrollTracker {
 
 // ── 手指与滚动输入 ──────────────────────────────────────────────────────────
 
-/// 起一段 `scroll_by` / `scroll_to` 动画：`end_pos` 恰为目标（基准速度与停止速度相等时）。
+/// 起一段 `scroll_by` / `scroll_to` 动画：`end_pos` 恰为目标，无结束硬跳。
 ///
 /// 位置在 `t` 处连续（新段从 `x_now` 起步）；目标 = 调用前目标 + Δ（夹界，任务书
-/// 2026-10-11 必修 5）。若速度量级不足以在有限时长内到目标，则按目标方向补足，
-/// 避免 `end_t` 非正导致瞬跳。
+/// 2026-10-11 必修 5）。解析曲线 `x0 + v0·τ·(1 − e^{−dt/τ})`，结束时刻由「曲线到达目标」
+/// 解出：`end_t = −τ·ln(1 − (target − x0)/(v0·τ))`，故 `end_t` 处解析值 = `target`、末速 ≈
+/// 停止速度，`eval` 在 `dt ≥ end_t` 保持 `end_pos` 不会产生跳变（裁定后续修 1：不得靠结束
+/// 硬跳凑终点）。若改用「速度衰到停止速度」定 `end_t`，会因 `SCROLL_BY_VELOCITY_PER_PX` 是
+/// `−ln(1 − 衰减率)` 的**四舍五入值**（`k·τ ≈ 1 − 6.1e-6`）使终点差约 `|d|·6.1e-6`，
+/// 逼近终点时即成为小硬跳。
+///
+/// 兜底：调用方给出的 `v0` 由解析键盘模型保证方向与 `target − x0` 一致且 `|v0| > 停止速度`；
+/// 浮点退化时按方向以两倍停止速度补足，避免 `end_t` 非正导致瞬跳。
 fn start_anim(ax: &mut Axis, t: f64, x0: f64, v0: f64, target: f64, params: &TrackerParams) {
     let tau = params.scroll_by_tau();
     let stop = params.stop_velocity;
@@ -497,11 +504,9 @@ fn start_anim(ax: &mut Axis, t: f64, x0: f64, v0: f64, target: f64, params: &Tra
         ax.motion = Motion::Idle { pos: target };
         return;
     }
-    let mut v0 = v0;
-    if v0.abs() <= stop {
-        v0 = (target - x0).signum() * stop * 2.0;
-    }
-    let end_t = tau * (v0.abs() / stop).ln();
+    let v0 = if v0.abs() <= stop { (target - x0).signum() * stop * 2.0 } else { v0 };
+    let frac = ((target - x0) / (v0 * tau)).clamp(0.0, 1.0 - 1.0e-12);
+    let end_t = -tau * (1.0 - frac).ln();
     ax.motion = Motion::Anim { t0: t, x0, v0, tau, end_t, end_pos: target };
 }
 
@@ -617,8 +622,12 @@ impl ScrollTracker {
             // 同向续加：基准速度被当前速度抵消，故不再加基准（`ScrollView.cpp:2401–2422`）。
             v_now + added * k
         } else {
-            // 新起点 / 反向：速度按目标距离重算（含基准速度）。
-            (target - x_now) * k + added.signum() * params.baseline_velocity
+            // 新起点 / 反向：解析键盘模型的起速由「当前位置 → 新目标」的方向与距离确定。
+            // 加号项必须随行进方向 `target − x_now`，而非目标增量 `added` 的方向：新目标落在
+            // 当前位置与旧目标之间时（部分反向），两者方向相反，旧式 `added.signum()` 会让解析
+            // 曲线到不了目标、结束点硬跳（裁定后续修 1）。基准速度 = 停止速度（皆 30），起速与
+            // `target − x_now` 同向；终止时刻由 `start_anim` 按「曲线到达目标」解出，终点恰为目标。
+            (target - x_now) * k + (target - x_now).signum() * params.baseline_velocity
         };
         start_anim(ax, t, x_now, v0, target, &params);
     }
@@ -936,5 +945,82 @@ mod tests {
             assert!(ps[i] <= ps[i - 1] + 1.0e-9, "回程非单调 i={i}");
         }
         assert!((ps[ps.len() - 1] - 300.0).abs() < 0.01, "终点 {}", ps[ps.len() - 1]);
+    }
+
+    /// 二分求运动段结束时刻（相位首次归 `Idle`）；`[lo, hi]` 须括号住这一刻。
+    fn phase_end(tr: &ScrollTracker, mut lo: f64, mut hi: f64) -> f64 {
+        for _ in 0..80 {
+            let mid = 0.5 * (lo + hi);
+            if tr.sample(mid).1 == Phase::Idle {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        hi
+    }
+
+    /// 断言 `scroll_by` 结果的调用点连续、结束点连续、恰好停在 `target`。
+    fn assert_scroll_by_lands(tr: &ScrollTracker, t_call: f64, before: f64, target: f64, tag: &str) {
+        let after = tr.sample(t_call).0[1];
+        assert!((after - before).abs() < 1.0e-6, "{tag}: 调用点不连续 {before} → {after}");
+        let te = phase_end(tr, t_call, t_call + 5.0);
+        let left = tr.sample(te - 1.0e-9).0[1];
+        let right = tr.sample(te).0[1];
+        assert!((right - left).abs() < 1.0e-6, "{tag}: 结束点跳变 {left} → {right}");
+        assert!((right - target).abs() < 1.0e-6, "{tag}: 终点 {right} vs 目标 {target}");
+    }
+
+    /// 必修 5 补：运动中 `scroll_by`（部分反向 / 完全反向 / 极小目标 / 同向追加）——
+    /// 调用点与结束点都连续、恰好停在夹界后的累加目标，不得靠结束硬跳到位。
+    #[test]
+    fn scroll_by_mid_flight_lands_continuously() {
+        // 部分反向：增量方向与当前速度相反，但新目标仍在当前位置前方（旧实现按增量符号
+        // 定起速，结束点与解析曲线差约 7.9 px，靠硬跳补上）。
+        let mut tr = ScrollTracker::new(TrackerParams::default());
+        tr.set_bounds([0.0, 0.0], [1000.0, 1000.0]);
+        tr.scroll_by(0.0, 0.0, 48.0);
+        let before = tr.sample(0.1 - 1.0e-9).0[1];
+        tr.scroll_by(0.1, 0.0, -5.0);
+        assert_scroll_by_lands(&tr, 0.1, before, 43.0, "部分反向");
+
+        // 完全反向：新目标 = 起点的 0。
+        let mut tr = ScrollTracker::new(TrackerParams::default());
+        tr.set_bounds([0.0, 0.0], [1000.0, 1000.0]);
+        tr.scroll_by(0.0, 0.0, 48.0);
+        let before = tr.sample(0.1 - 1.0e-9).0[1];
+        tr.scroll_by(0.1, 0.0, -48.0);
+        assert_scroll_by_lands(&tr, 0.1, before, 0.0, "完全反向");
+
+        // 极小目标距离：新目标仅略在当前位置前方（位速方向与增量符号相反）。
+        let mut tr = ScrollTracker::new(TrackerParams::default());
+        tr.set_bounds([0.0, 0.0], [1000.0, 1000.0]);
+        tr.scroll_by(0.0, 0.0, 48.0);
+        let before = tr.sample(0.1 - 1.0e-9).0[1];
+        tr.scroll_by(0.1, 0.0, -20.0);
+        assert_scroll_by_lands(&tr, 0.1, before, 28.0, "极小目标");
+
+        // 同向追加：目标累加。
+        let mut tr = ScrollTracker::new(TrackerParams::default());
+        tr.set_bounds([0.0, 0.0], [1000.0, 1000.0]);
+        tr.scroll_by(0.0, 0.0, 48.0);
+        let before = tr.sample(0.1 - 1.0e-9).0[1];
+        tr.scroll_by(0.1, 0.0, 48.0);
+        assert_scroll_by_lands(&tr, 0.1, before, 96.0, "同向追加");
+    }
+
+    /// 必修 5 补：运动中同向追加，目标夹界后不得越过该目标。
+    #[test]
+    fn scroll_by_clamped_target_not_overshot() {
+        let mut tr = ScrollTracker::new(TrackerParams::default());
+        tr.set_bounds([0.0, 0.0], [100.0, 100.0]);
+        tr.scroll_by(0.0, 0.0, 48.0);
+        tr.scroll_by(0.1, 0.0, 100.0);
+        let mut t = 0.1;
+        while t < 3.0 {
+            assert!(tr.sample(t).0[1] <= 100.0 + 1.0e-6, "越过夹界目标 t={t} {}", tr.sample(t).0[1]);
+            t += 1.0e-3;
+        }
+        assert!((tr.sample(3.0).0[1] - 100.0).abs() < 1.0e-6, "终点 {}", tr.sample(3.0).0[1]);
     }
 }
