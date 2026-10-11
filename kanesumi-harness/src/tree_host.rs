@@ -591,6 +591,11 @@ impl<A: TreeApp> App for TreeHost<A> {
     }
 
     fn needs_redraw(&self) -> bool {
+        // 引擎宿主的主表面恒透明（界面在候选窗 popup 表面，由按键驱动 `im_popup_dirty`）：
+        // 不为它请求帧 —— 否则外壳每迭代都会光栅 + 提交整幅全屏透明表面（60 fps 白烧）。
+        if self.app.ime_engine_host() {
+            return false;
+        }
         self.tree.needs_frame()
     }
 
@@ -648,6 +653,11 @@ impl<A: TreeApp> App for TreeHost<A> {
     }
 
     fn damage_hint(&mut self) -> Option<Rect> {
+        // 引擎宿主：主表面无内容 → 报零面积损伤，外壳据此跳过光栅与提交（省一整幅
+        // 全屏透明光栅 + 一次无用提交）。参 `render_into` 同名分支。
+        if self.app.ime_engine_host() {
+            return Some(Rect::new(0.0, 0.0, 0.0, 0.0));
+        }
         self.damage.take()
     }
 
