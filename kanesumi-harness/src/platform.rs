@@ -3271,14 +3271,18 @@ impl SeatHandler for Shell {
     }
 }
 
-/// 把 SCTK 的一次轴事件（含 `axis_source` / `axis_stop` / 离散步）汇成外壳 [`InputEvent`]。
+/// 把 SCTK 的一次轴事件（含 `axis_source` / `axis_stop` / 离散步）汇成外壳 [`InputEvent`]，
+/// 按顺序推入 `out`。
 ///
 /// 分流：离散滚轮 → 旧 [`InputEvent::Scroll`]（传统 App 行为不变，元素树 `TreeHost` 等价转
 /// `Wheel`/`Update` 平滑）；触控板 / 连续源 → [`InputEvent::ScrollInput`] 携带
 /// [`ScrollSource`]（跟手）；`axis_stop`（手指离开）→ `ScrollInput` 的 `End` 阶段（惯性起点）。
-/// 返回 `None` = 无位移且非停止，忽略。
+/// 无位移且非停止时 `out` 不变（忽略）。
 ///
-/// 注：SCTK 0.19 未暴露 `wl_pointer.axis_value120`（高精度滚轮），高精度设备只能经
+/// 注 1：同一帧可能既有位移又有 `axis_stop`——此时先推位移的 `Update` 再推 `End`，否则手指
+/// 离开那一帧的最后一段跟手位移会被丢掉（参 docs/research/fix6/fix6-2.md）。
+///
+/// 注 2：SCTK 0.19 未暴露 `wl_pointer.axis_value120`（高精度滚轮），高精度设备只能经
 /// `axis` 的 `absolute` / `discrete` 近似。本文件仅 Linux，**未在 Windows 编译**，待 Arch 验证。
 fn axis_to_input(
     horizontal: &AxisScroll,
@@ -3286,7 +3290,8 @@ fn axis_to_input(
     source: Option<wl_pointer::AxisSource>,
     modifiers: Modifiers,
     step: f32,
-) -> Option<InputEvent> {
+    out: &mut Vec<InputEvent>,
+) {
     let has_discrete = vertical.discrete != 0 || horizontal.discrete != 0;
     // `axis_source` 缺省（None）：带离散步按滚轮，否则按触控板连续。
     let scroll_source = match source {
@@ -3302,7 +3307,7 @@ fn axis_to_input(
         },
         other => other,
     };
-    // 离散步优先（每格 = wheel_lines × 16，正典默认 48px），否则用连续像素。
+    // 位移事件构造：离散步优先（每格 = wheel_lines × 16，正典默认 48px），否则用连续像素。
     let dy = if vertical.discrete != 0 {
         vertical.discrete as f32 * step
     } else {
@@ -3313,28 +3318,28 @@ fn axis_to_input(
     } else {
         horizontal.absolute as f32
     };
+    // 先补发本帧位移（若有），再补发 `End`——顺序即语义（跟手位移不能被 stop 吞掉）。
+    if dx != 0.0 || dy != 0.0 {
+        out.push(match scroll_source {
+            ScrollSource::Wheel { .. } => InputEvent::Scroll {
+                x: dx,
+                y: dy,
+                modifiers,
+            },
+            _ => InputEvent::ScrollInput(ScrollInput::new(
+                dx,
+                dy,
+                scroll_source,
+                ScrollPhase::Update,
+                modifiers,
+            )),
+        });
+    }
     if vertical.stop || horizontal.stop {
-        return Some(InputEvent::ScrollInput(ScrollInput::end(
+        out.push(InputEvent::ScrollInput(ScrollInput::end(
             scroll_source,
             modifiers,
         )));
-    }
-    if dx == 0.0 && dy == 0.0 {
-        return None;
-    }
-    match scroll_source {
-        ScrollSource::Wheel { .. } => Some(InputEvent::Scroll {
-            x: dx,
-            y: dy,
-            modifiers,
-        }),
-        _ => Some(InputEvent::ScrollInput(ScrollInput::new(
-            dx,
-            dy,
-            scroll_source,
-            ScrollPhase::Update,
-            modifiers,
-        ))),
     }
 }
 
@@ -3353,23 +3358,28 @@ impl PointerHandler for Shell {
             }
             // 子弹层表面：事件原样（弹层局部坐标）交给 App，App 平移回树坐标。
             if let Some(key) = self.popup_key(&event.surface) {
-                let ev = match &event.kind {
+                let mut evs: Vec<InputEvent> = Vec::new();
+                match &event.kind {
                     PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
-                        Some(InputEvent::PointerMoved { x: pos.0, y: pos.1 })
+                        evs.push(InputEvent::PointerMoved { x: pos.0, y: pos.1 })
                     }
-                    PointerEventKind::Leave { .. } => Some(InputEvent::PointerLeft),
-                    PointerEventKind::Press { button, .. } => Some(InputEvent::PointerPressed {
-                        x: pos.0,
-                        y: pos.1,
-                        button: map_button(*button),
-                        modifiers: self.modifiers,
-                    }),
-                    PointerEventKind::Release { button, .. } => Some(InputEvent::PointerReleased {
-                        x: pos.0,
-                        y: pos.1,
-                        button: map_button(*button),
-                        modifiers: self.modifiers,
-                    }),
+                    PointerEventKind::Leave { .. } => evs.push(InputEvent::PointerLeft),
+                    PointerEventKind::Press { button, .. } => {
+                        evs.push(InputEvent::PointerPressed {
+                            x: pos.0,
+                            y: pos.1,
+                            button: map_button(*button),
+                            modifiers: self.modifiers,
+                        })
+                    }
+                    PointerEventKind::Release { button, .. } => {
+                        evs.push(InputEvent::PointerReleased {
+                            x: pos.0,
+                            y: pos.1,
+                            button: map_button(*button),
+                            modifiers: self.modifiers,
+                        })
+                    }
                     PointerEventKind::Axis {
                         vertical,
                         horizontal,
@@ -3377,10 +3387,17 @@ impl PointerHandler for Shell {
                         ..
                     } => {
                         let step = self.interaction.wheel_step_px();
-                        axis_to_input(horizontal, vertical, *source, self.modifiers, step)
+                        axis_to_input(
+                            horizontal,
+                            vertical,
+                            *source,
+                            self.modifiers,
+                            step,
+                            &mut evs,
+                        );
                     }
                 };
-                if let Some(ev) = ev {
+                for ev in evs {
                     self.emit_popup_input(key, ev);
                 }
                 continue;
@@ -3448,11 +3465,13 @@ impl PointerHandler for Shell {
                 } => {
                     // 滚轮 / 触控板分流见 `axis_to_input`：正方向 = +y（表面坐标，下为正）。
                     let step = self.interaction.wheel_step_px();
-                    if let Some(ev) =
-                        axis_to_input(horizontal, vertical, *source, self.modifiers, step)
-                    {
+                    let mut evs: Vec<InputEvent> = Vec::new();
+                    axis_to_input(horizontal, vertical, *source, self.modifiers, step, &mut evs);
+                    if !evs.is_empty() {
                         self.pointer_pos = pos;
-                        self.route_input(target, ev);
+                        for ev in evs {
+                            self.route_input(target, ev);
+                        }
                     }
                 }
             }
@@ -4931,5 +4950,118 @@ mod tests {
     #[test]
     fn grab_key_passthrough_without_keymap() {
         assert!(grab_key_passthrough(true, false));
+    }
+
+    /// 轴事件 → 输入事件的分流（纯函数层）：断言四种组合的输出序列。
+    ///
+    /// 参 docs/research/fix6/fix6-2.md：手指离开那一帧若同时带位移，位移必须先于 `End` 发出。
+    fn axis_events(
+        horizontal: &AxisScroll,
+        vertical: &AxisScroll,
+        source: Option<wl_pointer::AxisSource>,
+    ) -> Vec<InputEvent> {
+        let mut out = Vec::new();
+        axis_to_input(horizontal, vertical, source, Modifiers::NONE, 48.0, &mut out);
+        out
+    }
+
+    /// 仅连续位移（无 stop）→ 一个 `Update`，携带该帧像素增量。
+    #[test]
+    fn axis_input_delta_only_yields_update() {
+        let v = AxisScroll {
+            absolute: 12.5,
+            ..Default::default()
+        };
+        let out = axis_events(&AxisScroll::default(), &v, Some(wl_pointer::AxisSource::Finger));
+        assert_eq!(
+            out,
+            vec![InputEvent::ScrollInput(ScrollInput::new(
+                0.0,
+                12.5,
+                ScrollSource::Finger,
+                ScrollPhase::Update,
+                Modifiers::NONE,
+            ))]
+        );
+    }
+
+    /// 仅 stop（无位移）→ 只一个 `End`，且不产生空 `Update`。
+    #[test]
+    fn axis_input_stop_only_yields_end() {
+        let v = AxisScroll {
+            stop: true,
+            ..Default::default()
+        };
+        let out = axis_events(&AxisScroll::default(), &v, Some(wl_pointer::AxisSource::Finger));
+        assert_eq!(
+            out,
+            vec![InputEvent::ScrollInput(ScrollInput::end(
+                ScrollSource::Finger,
+                Modifiers::NONE,
+            ))]
+        );
+    }
+
+    /// 位移 + stop（同一帧）→ 先 `Update`（带该帧位移）后 `End`，位移不丢。
+    #[test]
+    fn axis_input_delta_then_stop_keeps_delta() {
+        let v = AxisScroll {
+            absolute: 7.0,
+            stop: true,
+            ..Default::default()
+        };
+        let h = AxisScroll {
+            absolute: -3.0,
+            ..Default::default()
+        };
+        let out = axis_events(&h, &v, Some(wl_pointer::AxisSource::Continuous));
+        assert_eq!(
+            out,
+            vec![
+                InputEvent::ScrollInput(ScrollInput::new(
+                    -3.0,
+                    7.0,
+                    ScrollSource::Continuous,
+                    ScrollPhase::Update,
+                    Modifiers::NONE,
+                )),
+                InputEvent::ScrollInput(ScrollInput::end(
+                    ScrollSource::Continuous,
+                    Modifiers::NONE,
+                )),
+            ]
+        );
+    }
+
+    /// 既无位移也无 stop → 空序列（忽略该事件）。
+    #[test]
+    fn axis_input_empty_yields_nothing() {
+        let out = axis_events(&AxisScroll::default(), &AxisScroll::default(), None);
+        assert!(out.is_empty(), "无位移无 stop 不应产生任何事件");
+    }
+
+    /// 离散滚轮带 stop → 位移走旧 `Scroll`（传统 App 语义不变），随后照发 `End`。
+    #[test]
+    fn axis_input_wheel_discrete_then_stop_keeps_scroll() {
+        let v = AxisScroll {
+            discrete: 2,
+            stop: true,
+            ..Default::default()
+        };
+        let out = axis_events(&AxisScroll::default(), &v, None);
+        assert_eq!(
+            out,
+            vec![
+                InputEvent::Scroll {
+                    x: 0.0,
+                    y: 96.0,
+                    modifiers: Modifiers::NONE,
+                },
+                InputEvent::ScrollInput(ScrollInput::end(
+                    ScrollSource::Wheel { steps: 2.0 },
+                    Modifiers::NONE,
+                )),
+            ]
+        );
     }
 }
