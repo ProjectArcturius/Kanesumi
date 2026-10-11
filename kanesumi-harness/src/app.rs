@@ -236,6 +236,13 @@ pub struct PopupRequest {
     pub grab: bool,
 }
 
+/// Kanesumi 应用入口 trait —— 把 Kanesumi 变成应用 SDK 的契约。
+///
+/// **已弃用（K4 应用模型统一）**：新代码用 [`crate::tree_host::TreeApp`]（元素树）；
+/// 图层、进度绑定、合成器滚动、统一画布等新机制只在元素树一侧实现，旧模型表面永远
+/// 享受不到。本 trait 只留给外壳（`TreeHost` 实现它）与测试宿主，参
+/// docs/PIPELINE_PLAN.md §Ⅳ-K4。
+#[deprecated(note = "新代码用 TreeApp；参 PIPELINE_PLAN §Ⅳ-K4")]
 pub trait App {
     fn config(&self) -> &AppConfig;
 

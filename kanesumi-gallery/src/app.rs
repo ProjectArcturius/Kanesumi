@@ -3,6 +3,12 @@
 // 实现 `App` trait：状态驱动渲染 + 输入路由（参 HANDOVER §2 输入层）。
 // 事件路由：顶层弹层优先（Dialog/DropdownMenu/SelectorFlyout）→ 常规控件。
 // 控件状态切换：set_state / set_checked / hovered / show / hide / toggle。
+//
+// 旧应用模型（`App`）自 K4 起标记弃用（参 docs/PIPELINE_PLAN.md §Ⅳ-K4）：Gallery 是控件
+// 展示台，迁移是另一件事 —— 本文件整体豁免弃用告警（内部大量 `App::*` 调用），
+// **Gallery 暂留旧模型，迁移另立任务**。
+
+#![allow(deprecated)]
 
 use kanesumi_canvas::icon::Icon;
 use kanesumi_canvas::layout::{CrossAlign, LaidTree, LayoutLeaf, LayoutNode, layout};
@@ -16,6 +22,8 @@ use kanesumi_controls::{
     MetroTextBox, MetroTile, TextInputKey, TileSize,
 };
 use kanesumi_core::{Color, MetroTheme, Point, Rect, Size, TextStyle};
+// Gallery 暂留旧模型（`App`）；K4 起该 trait 已弃用，此处显式豁免告警。
+#[allow(deprecated)]
 use kanesumi_harness::{
     App, AppConfig, AppMenuHandle, EtherRole, InputEvent, PointerButton, ScrollInput,
 };
@@ -1847,6 +1855,8 @@ impl GalleryApp {
     }
 }
 
+// Gallery 暂留旧模型，迁移另立任务。
+#[allow(deprecated)]
 impl App for GalleryApp {
     fn config(&self) -> &AppConfig {
         &self.config

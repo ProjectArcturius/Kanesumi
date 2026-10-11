@@ -6,6 +6,9 @@
 //
 // 无 `--snapshot` 则按普通 GUI 应用运行（Linux Wayland）。
 
+// `App` 自 K4 起标记弃用；本示例按外壳契约驱动应用，显式豁免告警。
+#![allow(deprecated)]
+
 use kanesumi_controls::MetroButton;
 use kanesumi_core::{Accent, ColorScheme, MetroTheme, Size, ThemeColor};
 use kanesumi_harness::element::widgets::{Border, Label, Stack};

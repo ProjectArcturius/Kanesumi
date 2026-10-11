@@ -8,6 +8,8 @@
 //
 // 计时（release）：加 `--bench` 打印首帧与滚轮 100 次 `Tree::frame` 的 p50 / p95。
 
+// `App` 自 K4 起标记弃用；本示例按外壳契约驱动应用，显式豁免告警。
+#![allow(deprecated)]
 use std::cell::RefCell;
 use std::rc::Rc;
 
