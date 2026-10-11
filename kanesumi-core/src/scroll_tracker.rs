@@ -134,11 +134,17 @@ fn overscroll_display(raw: f64, min: f64, max: f64, m: f64) -> f64 {
 }
 
 /// [`overscroll_display`] 的逆：由显示位置求未饱和的原始位置（用于跟手从当前显示值续接）。
+///
+/// 越界量先钳到 `[0, M·(1 − 1e-9)]` 再取对数（任务书 2026-10-11 必修 3）：反变换对任何
+/// 越界量（含惯性峰值、异常注入）都不得产生 NaN / inf。钳位后往返误差 < 1e-6，跟手不跳。
 fn overscroll_raw(display: f64, min: f64, max: f64, m: f64) -> f64 {
+    let cap = m * (1.0 - 1.0e-9);
     if display > max {
-        max - m * (1.0 - (display - max) / m).ln()
+        let over = (display - max).clamp(0.0, cap);
+        max - m * (1.0 - over / m).ln()
     } else if display < min {
-        min + m * (1.0 - (min - display) / m).ln()
+        let over = (min - display).clamp(0.0, cap);
+        min + m * (1.0 - over / m).ln()
     } else {
         display
     }
@@ -220,14 +226,16 @@ impl Inertia {
         } else if outward {
             it.ex0 = (p0 - it.b).abs();
             it.v_hit = v0;
-            it.bounce(to, ret, stop);
+            it.bounce(to, ret, stop, params.overscroll_max);
         } else {
             if v0.abs() <= stop {
                 it.free_stop = true;
                 return it;
             }
             let cross = (it.b - p0) / (v0 * tau);
-            if cross >= 1.0 {
+            // 停止速度先于边界（任务书 2026-10-11 必修 2）：自然停点 `p_end` 在界内就停在那里，
+            // 不触边。`cross` 是到边界的位移 / 一阶渐近位移，`1 − stop/|v0|` 即自然停点比例。
+            if cross >= 1.0 - stop / v0.abs() {
                 it.free_stop = true;
                 it.t_stop = tau * (v0.abs() / stop).ln();
                 it.p_end = p0 + v0 * tau * (1.0 - stop / v0.abs());
@@ -237,16 +245,34 @@ impl Inertia {
             it.tc = -tau * (1.0 - cross).ln();
             it.v_hit = v0 - (it.b - p0) / tau;
             it.ex0 = 0.0;
-            it.bounce(to, ret, stop);
+            it.bounce(to, ret, stop, params.overscroll_max);
         }
         it
     }
 
     /// 越界减速到峰值再回程（相对时刻，`it.tc` 已定）。
-    fn bounce(&mut self, to: f64, ret: f64, stop: f64) {
-        if self.v_hit.abs() > stop {
-            self.t_pk = self.tc + to * (self.v_hit.abs() / stop).ln();
-            self.peak = self.ex0 + self.v_hit.abs() * to * (1.0 - stop / self.v_hit.abs());
+    ///
+    /// 峰值封顶在越界上限 `m`（任务书 2026-10-11 必修 6：外向越界松手的峰值越界 < M）：
+    /// 与跟手饱和曲线同界，且令 [`overscroll_raw`] 的反变换始终落在定义域内。若位移先到
+    /// `m`，`t_pk` 取到达 `m` 的时刻；到不了 `m` 则取速度衰到 `stop` 的时刻（原物理峰值）。
+    fn bounce(&mut self, to: f64, ret: f64, stop: f64, m: f64) {
+        let av = self.v_hit.abs();
+        let cap = m * (1.0 - 1.0e-9);
+        if av > stop {
+            let t_pk_raw = self.tc + to * (av / stop).ln();
+            let peak_raw = self.ex0 + av * to * (1.0 - stop / av);
+            if self.ex0 >= cap {
+                // 起点已在封顶处（仅异常注入可达）：不再外移，直接回程。
+                self.t_pk = self.tc;
+                self.peak = self.ex0;
+            } else if peak_raw > cap {
+                let denom = av * to - (cap - self.ex0);
+                self.t_pk = if denom > 0.0 { self.tc + to * (av * to / denom).ln() } else { t_pk_raw };
+                self.peak = cap;
+            } else {
+                self.t_pk = t_pk_raw;
+                self.peak = peak_raw;
+            }
             self.end_t = self.t_pk + ret;
         } else {
             self.t_pk = self.tc;
@@ -355,12 +381,28 @@ impl Axis {
         }
     }
 
-    fn phase(&self) -> Phase {
+    /// `t` 时刻的相位（任务书 2026-10-11 必修 1）：运动段到 `t` 已结束即 `Idle`。
+    ///
+    /// 相位是 `t` 的函数，不依赖 [`ScrollTracker::settle`]；故 `sample(t)` 对同一状态同一 `t`
+    /// 恒定，`settle` 前后结果相同。
+    fn phase_at(&self, t: f64) -> Phase {
         match self.motion {
             Motion::Idle { .. } => Phase::Idle,
             Motion::Follow { .. } => Phase::Interacting,
-            Motion::Inertia(_) => Phase::Inertia,
-            Motion::Anim { .. } => Phase::Animating,
+            Motion::Inertia(it) => {
+                if t >= it.t0 + it.end_t {
+                    Phase::Idle
+                } else {
+                    Phase::Inertia
+                }
+            }
+            Motion::Anim { t0, end_t, .. } => {
+                if t >= t0 + end_t {
+                    Phase::Idle
+                } else {
+                    Phase::Animating
+                }
+            }
         }
     }
 
@@ -417,7 +459,7 @@ impl ScrollTracker {
         ];
         let mut phase = Phase::Idle;
         for ax in &self.axes {
-            phase = match (phase, ax.phase()) {
+            phase = match (phase, ax.phase_at(t)) {
                 (Phase::Interacting, _) | (_, Phase::Interacting) => Phase::Interacting,
                 (Phase::Inertia, _) | (_, Phase::Inertia) => Phase::Inertia,
                 (Phase::Animating, _) | (_, Phase::Animating) => Phase::Animating,
@@ -444,12 +486,20 @@ impl ScrollTracker {
 // ── 手指与滚动输入 ──────────────────────────────────────────────────────────
 
 /// 起一段 `scroll_by` / `scroll_to` 动画：`end_pos` 恰为目标（基准速度与停止速度相等时）。
+///
+/// 位置在 `t` 处连续（新段从 `x_now` 起步）；目标 = 调用前目标 + Δ（夹界，任务书
+/// 2026-10-11 必修 5）。若速度量级不足以在有限时长内到目标，则按目标方向补足，
+/// 避免 `end_t` 非正导致瞬跳。
 fn start_anim(ax: &mut Axis, t: f64, x0: f64, v0: f64, target: f64, params: &TrackerParams) {
     let tau = params.scroll_by_tau();
     let stop = params.stop_velocity;
-    if v0.abs() <= stop {
+    if (target - x0).abs() <= EPS {
         ax.motion = Motion::Idle { pos: target };
         return;
+    }
+    let mut v0 = v0;
+    if v0.abs() <= stop {
+        v0 = (target - x0).signum() * stop * 2.0;
     }
     let end_t = tau * (v0.abs() / stop).ln();
     ax.motion = Motion::Anim { t0: t, x0, v0, tau, end_t, end_pos: target };
@@ -517,21 +567,21 @@ impl ScrollTracker {
         self.samples.clear();
     }
 
-    /// 最近速度窗内的 `Δp/Δt`（每轴）；样本不足两点用全部；窗口内单点则退回全部。
+    /// 最近速度窗内的 `Δp/Δt`（每轴）（任务书 2026-10-11 必修 4）：**只用** `t` 前
+    /// `velocity_window_s` 内的样本；窗内不足两点（含无位移）即速度 0，不退回归整轮历史。
     fn estimate_velocity(&self, axis: usize, t: f64, params: &TrackerParams) -> f64 {
-        if self.samples.is_empty() {
-            return 0.0;
-        }
         let start = t - params.velocity_window_s;
         let recent: Vec<(f64, [f64; 2])> = self
             .samples
             .iter()
             .copied()
-            .filter(|(ts, _)| *ts >= start)
+            .filter(|(ts, _)| *ts >= start && *ts <= t)
             .collect();
-        let used = if recent.len() >= 2 { &recent } else { &self.samples };
-        let (t0, p0) = used[0];
-        let (t1, p1) = used[used.len() - 1];
+        if recent.len() < 2 {
+            return 0.0;
+        }
+        let (t0, p0) = recent[0];
+        let (t1, p1) = recent[recent.len() - 1];
         let dt = t1 - t0;
         if dt <= 0.0 { 0.0 } else { (p1[axis] - p0[axis]) / dt }
     }
@@ -743,5 +793,148 @@ mod tests {
             prev = x;
         }
         assert!((prev - 300.0).abs() < 0.01, "回程未到边界 {prev}");
+    }
+
+    /// 必修 1：相位是 `t` 的函数——运动段结束后 `sample` 归 `Idle`，且与 `settle` 无关。
+    #[test]
+    fn phase_is_function_of_time() {
+        let mut tr = ScrollTracker::new(TrackerParams::default());
+        tr.set_bounds([0.0, 0.0], [1000.0, 1000.0]);
+        tr.scroll_by(0.0, 0.0, 48.0);
+        let (p, ph) = tr.sample(10.0);
+        assert_eq!(ph, Phase::Idle, "运动段结束后应为 Idle");
+        assert!((p[1] - 48.0).abs() < 0.01, "位置 {}", p[1]);
+        let before = tr.sample(10.0);
+        tr.settle(10.0);
+        assert_eq!(before, tr.sample(10.0), "settle 不得改变 sample 结果");
+    }
+
+    /// 必修 2：停止速度先于边界——自然停点在界内就地停住、从不触边。
+    #[test]
+    fn natural_stop_before_boundary() {
+        let tau = TrackerParams::default().tau_s;
+        let mut tr = ScrollTracker::new(TrackerParams::default());
+        tr.set_bounds([0.0, 0.0], [1.0e5, 30.0]);
+        tr.flick(0.0, 0.0, 0.0, 0.0, 100.0);
+        let expect = 100.0 * tau * (1.0 - 30.0 / 100.0);
+        let mut peak = f64::NEG_INFINITY;
+        let mut t = 0.0;
+        while t <= 2.0 {
+            peak = peak.max(tr.sample(t).0[1]);
+            t += 1.0e-3;
+        }
+        let end = tr.sample(2.0);
+        assert!((end.0[1] - expect).abs() < 0.01, "停点 {} vs {expect}", end.0[1]);
+        assert_eq!(end.1, Phase::Idle);
+        assert!(peak <= 30.0 + 1.0e-9, "从未越过上界，峰值 {peak}");
+    }
+
+    /// 必修 3：越界反变换对任意越界量有限；峰值附近按下位置连续。
+    #[test]
+    fn overscroll_inverse_finite_and_continuous() {
+        let mut tr = ScrollTracker::new(TrackerParams::default());
+        tr.set_bounds([0.0, 0.0], [1.0e5, 300.0]);
+        tr.flick(0.0, 0.0, 299.0, 0.0, 8000.0);
+        let (mut t_pk, mut best) = (0.0, f64::NEG_INFINITY);
+        let mut t = 0.0;
+        while t < 0.5 {
+            let v = tr.sample(t).0[1];
+            assert!(v.is_finite(), "t={t} 非有限 {v}");
+            if v > best {
+                best = v;
+                t_pk = t;
+            }
+            t += 1.0e-4;
+        }
+        let before = tr.sample(t_pk).0[1];
+        tr.finger_begin(t_pk);
+        let after = tr.sample(t_pk).0[1];
+        assert!(after.is_finite(), "按下后非有限 {after}");
+        assert!((after - before).abs() < 1.0e-6, "按下不连续 {before} → {after}");
+    }
+
+    /// 必修 3 性质：固定种子随机 2000 组操作，每个 `sample` 输出有限。
+    #[test]
+    fn all_inputs_finite() {
+        let mut s: u64 = 0x1234_5678_9abc_def0;
+        let mut rnd = move || -> u64 {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s >> 11
+        };
+        let unit = |raw: u64| (raw as f64) / ((1u64 << 53) as f64) * 2.0 - 1.0;
+        for _ in 0..2000 {
+            let v = unit(rnd()) * 1.0e5;
+            let base = unit(rnd()) * 5000.0;
+            let width = unit(rnd()).abs() * 5000.0;
+            let mut tr = ScrollTracker::new(TrackerParams::default());
+            tr.set_bounds([base, base], [base + width, base + width]);
+            tr.set_axes(rnd() & 1 == 0, rnd() & 1 == 0);
+            let mut t = 0.0;
+            for _ in 0..8 {
+                match rnd() % 6 {
+                    0 => tr.finger_begin(t),
+                    1 => tr.finger_delta(t, unit(rnd()) * 200.0, unit(rnd()) * 200.0),
+                    2 => tr.finger_end(t),
+                    3 => tr.scroll_by(t, unit(rnd()) * 100.0, unit(rnd()) * 100.0),
+                    4 => tr.set_position(t, unit(rnd()) * 500.0, unit(rnd()) * 500.0),
+                    _ => tr.flick(t, unit(rnd()) * 500.0, unit(rnd()) * 500.0, v, v),
+                }
+                for k in 0..4 {
+                    let (p, _) = tr.sample(t + k as f64 * 0.05);
+                    assert!(p[0].is_finite() && p[1].is_finite(), "非有限 {p:?} @ t={t}");
+                }
+                t += 0.05;
+            }
+        }
+    }
+
+    /// 必修 5：运动中 `scroll_by` 位置连续、目标累加；反向一次回到 0。
+    #[test]
+    fn scroll_by_during_motion_continuous() {
+        let mut tr = ScrollTracker::new(TrackerParams::default());
+        tr.set_bounds([0.0, 0.0], [1000.0, 1000.0]);
+        tr.scroll_by(0.0, 0.0, 48.0);
+        let t = 0.1;
+        let before = tr.sample(t - 1.0e-9).0[1];
+        tr.scroll_by(t, 0.0, 48.0);
+        let after = tr.sample(t).0[1];
+        assert!((after - before).abs() < 1.0e-6, "位置跳变 {before} → {after}");
+        assert!((tr.sample(5.0).0[1] - 96.0).abs() < 0.01, "累加目标 {}", tr.sample(5.0).0[1]);
+
+        let mut tr = ScrollTracker::new(TrackerParams::default());
+        tr.set_bounds([0.0, 0.0], [1000.0, 1000.0]);
+        tr.scroll_by(0.0, 0.0, 48.0);
+        tr.scroll_by(0.1, 0.0, -48.0);
+        assert!(tr.sample(5.0).0[1].abs() < 0.01, "反向终点 {}", tr.sample(5.0).0[1]);
+    }
+
+    /// 必修 6：外向越界松手——先按 `τ_over` 继续外移，再单调回程；峰值越界 < M、终点 = 边界。
+    #[test]
+    fn outward_overscroll_release() {
+        let m = TrackerParams::default().overscroll_max;
+        let mut tr = ScrollTracker::new(TrackerParams::default());
+        tr.set_bounds([0.0, 0.0], [1.0e5, 300.0]);
+        tr.set_position(0.0, 0.0, 300.0);
+        tr.finger_begin(0.0);
+        tr.finger_delta(0.02, 0.0, 50.0);
+        tr.finger_delta(0.03, 0.0, 50.0);
+        let start = tr.sample(0.03).0[1];
+        tr.finger_end(0.03);
+        let mut ps = Vec::new();
+        let mut t = 0.03;
+        while t < 1.0 {
+            ps.push(tr.sample(t).0[1]);
+            t += 1.0e-3;
+        }
+        let (ipk, peak) = ps
+            .iter()
+            .enumerate()
+            .fold((0usize, f64::NEG_INFINITY), |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) });
+        assert!(peak > start, "应先继续外移：start={start} peak={peak}");
+        assert!(peak - 300.0 < m, "峰值越界 {} 未 < M={m}", peak - 300.0);
+        for i in ipk + 1..ps.len() {
+            assert!(ps[i] <= ps[i - 1] + 1.0e-9, "回程非单调 i={i}");
+        }
+        assert!((ps[ps.len() - 1] - 300.0).abs() < 0.01, "终点 {}", ps[ps.len() - 1]);
     }
 }
