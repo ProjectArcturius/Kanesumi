@@ -1023,4 +1023,17 @@ mod tests {
         }
         assert!((tr.sample(3.0).0[1] - 100.0).abs() < 1.0e-6, "终点 {}", tr.sample(3.0).0[1]);
     }
+
+    /// 必修 4：速度窗只看窗内样本——窗内无位移即速度 0、松手不起惯性。
+    #[test]
+    fn velocity_window_only_within() {
+        let mut tr = ScrollTracker::new(TrackerParams::default());
+        tr.set_bounds([0.0, 0.0], [1000.0, 1000.0]);
+        tr.finger_begin(0.0);
+        tr.finger_delta(0.05, 0.0, 30.0);
+        // 松手距上次位移 0.95 s，远在 `velocity_window_s` 之外：旧实现退回归整轮历史样本，
+        // 会误估出 30/0.05 的速度并起惯性。
+        tr.finger_end(1.0);
+        assert_eq!(tr.sample(1.1), ([0.0, 30.0], Phase::Idle), "静止松手仍起甩");
+    }
 }
