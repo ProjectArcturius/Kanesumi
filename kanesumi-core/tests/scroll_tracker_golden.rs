@@ -121,6 +121,7 @@ fn c1_win11_free_inertia() {
         let t0 = fit_scalar(|t0| inertia_rmse(&t, &x, 0.0, v0, t0, &params, (lo, hi)), t[0], 0.3);
         let rmse = inertia_rmse(&t, &x, 0.0, v0, t0, &params, (lo, hi));
         let limit = if v0 >= 8000.0 { 3.0 } else { 0.5 };
+        eprintln!("C-1 {name}: t0fit={t0:.5} RMSE={rmse:.4} limit={limit}");
         assert!(rmse <= limit, "{name}: RMSE={rmse:.3} > {limit}");
 
         // 停止速度：终值 = A − 30·τ（证明停在 30 px/s），且与真值终值同量级。
@@ -148,6 +149,7 @@ fn c1_win11_free_inertia() {
         };
         let t0 = fit_scalar(|t0| inertia_rmse(&t, &x, 0.0, 2000.0, t0, &params, (lo, hi)), t[0], 0.3);
         let rmse = inertia_rmse(&t, &x, 0.0, 2000.0, t0, &params, (lo, hi));
+        eprintln!("C-1 {name} (decay law): RMSE={rmse:.4} limit=1.0");
         assert!(rmse <= 1.0, "{name}: RMSE={rmse:.3} > 1.0");
     }
 }
@@ -175,6 +177,7 @@ fn c2_win11_boundary() {
         .enumerate()
         .fold((0usize, f64::NEG_INFINITY), |(bi, bv), (i, &v)| if v > bv { (i, v) } else { (bi, bv) });
     let overshoot = peak - 300.0;
+    eprintln!("C-2 过冲={overshoot:.2} px（真值 35.3），t0fit={t0:.5}");
     assert!((10.0..=60.0).contains(&overshoot), "过冲 {overshoot:.2} px（真值 35.3）");
     for i in ipk + 1..ps.len() {
         assert!(ps[i] <= ps[i - 1] + 1.0e-9, "回程非单调 i={i}");
