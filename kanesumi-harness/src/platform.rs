@@ -85,11 +85,16 @@ use crate::context_menu::ContextMenuAction;
 use crate::cpu_raster::CpuRenderer;
 use crate::render::{GpuContext, GpuContextExt, Renderer};
 
-/// 画布 v1/v2 选择：`KANESUMI_CANVAS=2` 走实例化批渲染画布（CanvasV2，无 MSAA），
-/// 其余（未设 / 其他值）保持 v1 `Renderer`（MSAA 4）。真机验证后由调度者翻缺省。
-/// 参 Ether docs/CANVAS_PLAN.md §Ⅳ C1、任务 c1-canvas-core。
+/// 画布 v1/v2 选择：缺省走实例化批渲染画布（CanvasV2，无 MSAA）；`KANESUMI_CANVAS=1` 退回 v1 `Renderer`（MSAA 4）。
+/// 2026-10-11 Debian 真机 iGPU（Arrow Lake、3072×1920@2×）dep1 探针后翻缺省：客户端掉帧 30/128 → 10/105、
+/// Launcher 起跑 31 → 13.8 ms，截图与 v1 版式一致。参 Ether docs/CANVAS_PLAN.md §Ⅳ C1、docs/research/dep1/RESULT.md。
 pub fn canvas_v2_enabled() -> bool {
-    std::env::var("KANESUMI_CANVAS").ok().as_deref() == Some("2")
+    canvas_v2_active(std::env::var("KANESUMI_CANVAS").ok().as_deref())
+}
+
+/// [`canvas_v2_enabled`] 的纯判定：只有显式 `1` 退回 v1。
+pub fn canvas_v2_active(env: Option<&str>) -> bool {
+    env != Some("1")
 }
 
 /// 表面渲染器枚举：v1 / v2 对外接口对齐，创建处统一经 [`SurfaceRenderer::with_context`]。
