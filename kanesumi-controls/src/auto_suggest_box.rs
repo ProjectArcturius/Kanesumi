@@ -15,7 +15,9 @@ use kanesumi_core::{MetroTheme, Point, Rect, TextVAlign};
 
 use crate::ime::{ImeContentHint, ImeContext};
 use crate::state::ControlState;
-use crate::text_box::MetroTextBox;
+use crate::text_box::{
+    MetroTextBox, text_input_content_rect, text_input_inner_rect, text_input_line_rect,
+};
 use crate::text_field::{TextInputKey, TextField};
 
 /// 建议列表最大高（UWP AutoSuggestListMaxHeight 300，OS 值）。
@@ -290,15 +292,12 @@ impl MetroAutoSuggestBox {
 
         let body = self.body_rect(theme, rect);
         let b = self.border_thickness();
-        let inner = Rect::new(
-            body.origin.x,
-            body.origin.y,
-            (body.size.width - 2.0 * b).max(0.0),
-            (body.size.height - 2.0 * b).max(0.0),
-        );
+        let inner = text_input_inner_rect(body, b);
         scene.fill_rounded_rect(colors.surface, inner, theme.tokens.corner_radius);
 
         let content = self.content_rect(theme, body);
+        // 文字行盒：内容区内垂直居中；与 TextBox 同一套共用几何。
+        let line = text_input_line_rect(content, style.line_height);
 
         // 自适应滚动：单行文本超宽时，把 scroll 调至末尾可见（UWP 单行输入行为）。
         if !self.field.is_empty() {
@@ -309,14 +308,14 @@ impl MetroAutoSuggestBox {
             self.scroll = 0.0;
         }
 
-        // 文本 / 占位 —— 单行不换行 + 裁剪进内容区（避免换行溢出框）。
-        scene.push_clip(content);
+        // 文本 / 占位 —— 单行不换行 + 裁到**边框内侧矩形**（不含内边距，下伸部不被切）。
+        scene.push_clip(inner);
         if !self.field.is_empty() {
             let text_rect = Rect::new(
                 content.origin.x - self.scroll,
-                content.origin.y,
+                line.origin.y,
                 content.size.width + self.scroll,
-                style.line_height,
+                line.size.height,
             );
             scene.text_with_options(
                 self.field.display_text(),
@@ -331,9 +330,9 @@ impl MetroAutoSuggestBox {
         } else if !self.placeholder.is_empty() {
             let ph_rect = Rect::new(
                 content.origin.x,
-                content.origin.y,
+                line.origin.y,
                 content.size.width,
-                style.line_height,
+                line.size.height,
             );
             scene.text_with_options(
                 self.placeholder.clone(),
@@ -415,17 +414,7 @@ impl MetroAutoSuggestBox {
     /// 内容区（在 `body` 内扣除边框 + Padding，与 MetroTextBox::content_rect 同款
     /// UWP Padding `10,6,6,5`）——文本/占位/滚动的自适应基准矩形。
     fn content_rect(&self, _theme: &MetroTheme, body: Rect) -> Rect {
-        let b = self.border_thickness();
-        let pad_l = 10.0;
-        let pad_t = 6.0;
-        let pad_r = 6.0;
-        let pad_b = 5.0;
-        Rect::new(
-            body.origin.x + b + pad_l,
-            body.origin.y + b + pad_t,
-            (body.size.width - 2.0 * b - pad_l - pad_r).max(0.0),
-            (body.size.height - 2.0 * b - pad_t - pad_b).max(0.0),
-        )
+        text_input_content_rect(body, self.border_thickness())
     }
 
     /// 主体矩形（Header 之下）。
@@ -774,11 +763,12 @@ impl MetroAutoSuggestBox {
     /// 光标矩形（表面绝对坐标，未夹右缘 —— IME 需要真实位置）。
     fn caret_rect_absolute(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> Rect {
         let content = self.content_rect(theme, body);
+        let line = text_input_line_rect(content, theme.typography.body.line_height);
         Rect::new(
             self.caret_x(theme, engine, body),
-            content.origin.y,
+            line.origin.y,
             2.0,
-            content.size.height,
+            line.size.height,
         )
     }
 
@@ -1341,5 +1331,25 @@ mod tests {
         ab.focus();
         ab.handle_key(TextInputKey::Char('果'));
         assert_eq!(ab.highlighted, Some(0), "展开后默认高亮首项");
+    }
+
+    /// 文字行盒在内容区内垂直居中（与 TextBox 共用几何）。
+    #[test]
+    fn line_box_centers_in_content() {
+        if !font_available() {
+            return;
+        }
+        let th = MetroTheme::ether_dark();
+        let body = Rect::new(0.0, 0.0, 200.0, 35.0);
+        let ab = MetroAutoSuggestBox::new();
+        let content = ab.content_rect(&th, body);
+        let line = text_input_line_rect(content, th.typography.body.line_height);
+        assert!(
+            (line.center().y - content.center().y).abs() < 0.01,
+            "行框中心 {} 应等于内容区中心 {}",
+            line.center().y,
+            content.center().y
+        );
+        assert_eq!(line.size.height, th.typography.body.line_height);
     }
 }

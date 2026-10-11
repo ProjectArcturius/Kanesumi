@@ -16,7 +16,9 @@ use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::{MetroTheme, Point, Rect};
 
 use crate::state::ControlState;
-use crate::text_box::MetroTextBox;
+use crate::text_box::{
+    MetroTextBox, text_input_content_rect, text_input_inner_rect, text_input_line_rect,
+};
 use crate::text_field::{TextInputKey, TextField};
 
 /// SpinButton 区宽（SpinButtonsColumn = 72）。
@@ -312,12 +314,7 @@ impl MetroNumberBox {
 
         let body = self.body_rect(theme, rect);
         let b = if self.focused { 2.0 } else { 1.0 };
-        let inner = Rect::new(
-            body.origin.x,
-            body.origin.y,
-            (body.size.width - 2.0 * b).max(0.0),
-            (body.size.height - 2.0 * b).max(0.0),
-        );
+        let inner = text_input_inner_rect(body, b);
 
         // 底色
         scene.fill_rounded_rect(
@@ -326,18 +323,19 @@ impl MetroNumberBox {
             theme.tokens.corner_radius,
         );
 
-        // 文本（左内边距 10）
+        // 文本（左内边距 10）：行盒在文本区内容区垂直居中（与 TextBox 共用几何）。
         let text_rect = self.text_rect(theme, rect);
-        let content_x = text_rect.origin.x + b + 10.0;
+        let content = text_input_content_rect(text_rect, b);
+        let line = text_input_line_rect(content, style.line_height);
         let fg = colors.on_surface.with_alpha(colors.on_surface.a * alpha);
         let text = self.field.display_text();
         scene.text(
             text,
             Rect::new(
-                content_x,
-                text_rect.origin.y + b + 6.0,
-                (text_rect.size.width - 16.0).max(0.0),
-                style.line_height,
+                content.origin.x,
+                line.origin.y,
+                content.size.width,
+                line.size.height,
             ),
             fg,
             style,
@@ -496,10 +494,12 @@ impl MetroNumberBox {
         let style = theme.typography.body;
         let text = self.text_rect(theme, rect);
         let b = if self.focused { 2.0 } else { 1.0 };
+        let content = text_input_content_rect(text, b);
+        let line = text_input_line_rect(content, style.line_height);
         let (before, after, cursor_byte, anchor_byte) = self.field.surrounding_text(1000);
         let stream = self.field.display_text();
         let geom = engine.line_geometry(&stream, style.size, 0.0);
-        let caret_x = text.origin.x + b + 10.0 + geom.caret_x(self.field.cursor());
+        let caret_x = content.origin.x + geom.caret_x(self.field.cursor());
         crate::ime::ImeContext {
             surrounding_before: before,
             surrounding_after: after,
@@ -507,9 +507,9 @@ impl MetroNumberBox {
             anchor_byte: anchor_byte as u32,
             caret_rect: Rect::new(
                 caret_x,
-                text.origin.y + b + 6.0,
+                line.origin.y,
                 kanesumi_core::interaction::CARET_WIDTH_PX,
-                style.line_height,
+                line.size.height,
             ),
             content_hint: crate::ime::ImeContentHint::Digits,
         }
@@ -969,5 +969,27 @@ mod tests {
             .filter(|c| matches!(c, SceneCommand::Triangle { .. }))
             .count();
         assert_eq!(triangles, 2, "上/下两个 chevron");
+    }
+
+    /// 文本行盒在文本区内容区内垂直居中（与 TextBox 共用几何）。
+    #[test]
+    fn text_line_centers_in_content() {
+        if !font_available() {
+            return;
+        }
+        let th = MetroTheme::ether_dark();
+        let rect = Rect::new(0.0, 0.0, 200.0, 40.0);
+        let nb = MetroNumberBox::new();
+        let text = nb.text_rect(&th, rect);
+        let b = 1.0;
+        let content = text_input_content_rect(text, b);
+        let line = text_input_line_rect(content, th.typography.body.line_height);
+        assert!(
+            (line.center().y - content.center().y).abs() < 0.01,
+            "行框中心 {} 应等于内容区中心 {}",
+            line.center().y,
+            content.center().y
+        );
+        assert_eq!(line.size.height, th.typography.body.line_height);
     }
 }

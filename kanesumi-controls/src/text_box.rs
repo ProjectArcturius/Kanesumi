@@ -18,6 +18,54 @@ use crate::text_field::{TextField, TextInputKey};
 
 /// 删除按钮列宽（TextBox 右上角 × 按钮，MinWidth 34）。参 themeresources_v1。
 pub const TEXTBOX_DELETE_BUTTON_W: f32 = 34.0;
+
+// ── 单行文本输入共用几何（TextBox / PasswordBox / AutoSuggestBox / NumberBox）──────
+//
+// 四个控件共享同一套 UWP 文本输入几何（参 CONTROL_SPEC §34 TextControlThemePadding
+// `10,6,6,5` + Border 1/2）。旧实现各自复制这段几何、且把文字行贴在内容区**顶部**、
+// 裁剪框取内容区（含 5px 下内边距）—— 思源黑体 / Noto CJK 上下伸之和 > 1em，下伸部
+// （g / j / p / q / y、中文下缘）会被下内边距切掉（2026-10-11 真机反馈）。此处集中为
+// 三个函数：内容区、边框内侧矩形、垂直居中的行盒——四处共用，不再各写一份。
+
+/// 内容区左内边距。
+pub const TEXT_INPUT_PAD_L: f32 = 10.0;
+/// 内容区上内边距。
+pub const TEXT_INPUT_PAD_T: f32 = 6.0;
+/// 内容区右内边距。
+pub const TEXT_INPUT_PAD_R: f32 = 6.0;
+/// 内容区下内边距。
+pub const TEXT_INPUT_PAD_B: f32 = 5.0;
+
+/// 边框内侧矩形（`body` 扣边框；**不含内边距**）。字形裁剪框用它，下伸部不被下内边距切。
+pub fn text_input_inner_rect(body: Rect, border: f32) -> Rect {
+    Rect::new(
+        body.origin.x,
+        body.origin.y,
+        (body.size.width - 2.0 * border).max(0.0),
+        (body.size.height - 2.0 * border).max(0.0),
+    )
+}
+
+/// 内容区（`body` 扣边框与 Padding `10,6,6,5`）—— 文本 / 占位 / 滚动的基准矩形。
+pub fn text_input_content_rect(body: Rect, border: f32) -> Rect {
+    Rect::new(
+        body.origin.x + border + TEXT_INPUT_PAD_L,
+        body.origin.y + border + TEXT_INPUT_PAD_T,
+        (body.size.width - 2.0 * border - TEXT_INPUT_PAD_L - TEXT_INPUT_PAD_R).max(0.0),
+        (body.size.height - 2.0 * border - TEXT_INPUT_PAD_T - TEXT_INPUT_PAD_B).max(0.0),
+    )
+}
+
+/// 单行文本行盒：在内容区内**垂直居中**（行框中心 = 内容区中心）。
+///
+/// 行盒高 = 样式 `line_height`；内容区矮于一行时行盒上下各溢出（配合
+/// [`text_input_inner_rect`] 的裁剪，字形不被切）。光标 / 选区 / 预编辑下划线都以
+/// 本矩形为纵向基准，与文字同行移动。
+pub fn text_input_line_rect(content: Rect, line_height: f32) -> Rect {
+    let line_height = line_height.max(0.0);
+    let top = content.origin.y + (content.size.height - line_height) / 2.0;
+    Rect::new(content.origin.x, top, content.size.width, line_height)
+}
 /// 光标宽度（正典 §Ⅳ：1px；2× 下 2 物理像素）。
 pub const TEXTBOX_CARET_W: f32 = kanesumi_core::interaction::CARET_WIDTH_PX;
 /// 光标闪烁半周期（正典 §Ⅳ：周期 530ms，on/off 各 265ms）。
@@ -142,17 +190,13 @@ impl MetroTextBox {
     /// 内容区（在 `body` 内扣除边框 + Padding）。UWP Padding `10,6,6,5` + Border。
     pub fn content_rect(&self, theme: &MetroTheme, body: Rect) -> Rect {
         let _ = theme;
-        let b = self.border_thickness();
-        let pad_l = 10.0;
-        let pad_t = 6.0;
-        let pad_r = 6.0;
-        let pad_b = 5.0;
-        Rect::new(
-            body.origin.x + b + pad_l,
-            body.origin.y + b + pad_t,
-            (body.size.width - 2.0 * b - pad_l - pad_r).max(0.0),
-            (body.size.height - 2.0 * b - pad_t - pad_b).max(0.0),
-        )
+        text_input_content_rect(body, self.border_thickness())
+    }
+
+    /// 文字行盒（内容区内垂直居中，高 = 样式 line_height）。光标 / 选区 / 下划线同基准。
+    pub fn line_rect(&self, theme: &MetroTheme, body: Rect) -> Rect {
+        let content = self.content_rect(theme, body);
+        text_input_line_rect(content, theme.typography.body.line_height)
     }
 
     /// 删除按钮矩形（主体右缘，34 宽）。
@@ -216,9 +260,9 @@ impl MetroTextBox {
 
     /// 光标矩形（表面绝对坐标，未做右缘夹紧 —— IME 需要真实位置，参 CONTROL_SPEC §34）。
     pub fn caret_rect_absolute(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> Rect {
-        let content = self.content_rect(theme, body);
+        let line = self.line_rect(theme, body);
         let cx = self.caret_x(theme, engine, body);
-        Rect::new(cx, content.origin.y, TEXTBOX_CARET_W, content.size.height)
+        Rect::new(cx, line.origin.y, TEXTBOX_CARET_W, line.size.height)
     }
 
     /// 当前 IME 上下文（周边文本 + 光标矩形 + 内容提示）。`body` 为控件主体矩形。
@@ -354,26 +398,23 @@ impl MetroTextBox {
 
         let body_rect = self.body_rect(theme, rect);
         let b = self.border_thickness();
-        let inner = Rect::new(
-            body_rect.origin.x,
-            body_rect.origin.y,
-            (body_rect.size.width - 2.0 * b).max(0.0),
-            (body_rect.size.height - 2.0 * b).max(0.0),
-        );
+        let inner = text_input_inner_rect(body_rect, b);
 
         // 底色（UWP TextControlBackground；Kanesumi = surface）
         let bg = colors.surface.with_alpha(colors.surface.a * alpha);
         scene.fill_rounded_rect(bg, inner, theme.tokens.corner_radius);
 
         let content = self.content_rect(theme, body_rect);
+        // 文字行盒：内容区内垂直居中；光标 / 选区 / 下划线共用同一纵向基准。
+        let line = text_input_line_rect(content, style.line_height);
 
         // 渲染前推进水平滚动，让光标（含 IME 组合态）落在视口内。
         self.ensure_caret_visible(theme, engine, body_rect);
 
-        // 容器语义：内容一律裁到内容区（`COMPOSITION.md` 强制契约）。
-        // 此前 **完全没有裁剪** —— 选区块与 preedit 虚线下划线都可能画到框外
-        // （文本本身因 `Scene::text` 默认省略号而侥幸不出框，故问题长期未被发现）。
-        scene.push_clip(content);
+        // 容器语义：内容裁到**边框内侧矩形**（不含内边距）。旧实现裁到内容区，下内边距
+        // 5px 把下伸部（g / j / p / q / y、中文下缘）切掉（2026-10-11 真机反馈）。
+        // 参 COMPOSITION.md 强制契约。
+        scene.push_clip(inner);
 
         // 选区高亮（TextControlSelectionHighlightColor → 强调色 35%）
         if let Some((lo, hi)) = self.field.selection() {
@@ -382,9 +423,9 @@ impl MetroTextBox {
             for (x0, x1) in geometry.selection_spans(lo, hi) {
                 let sel_rect = Rect::new(
                     content.origin.x - self.scroll + x0,
-                    content.origin.y,
+                    line.origin.y,
                     x1 - x0,
-                    content.size.height,
+                    line.size.height,
                 );
                 // 选区高亮 = 强调色 35%（CONTROL_SPEC §34`TextControlSelectionHighlightColor`）。
                 // alpha 取令牌自身的 a 再乘禁用系数，避免 0.35 在两处重复书写后漂移。
@@ -402,15 +443,15 @@ impl MetroTextBox {
         if has_text {
             if self.field.has_preedit() {
                 // IME 组合态：显示流 = 光标前文本 + preedit(下划线) + 光标后文本。
-                self.render_text_with_preedit(theme, engine, content, scene);
+                self.render_text_with_preedit(theme, engine, content, line, scene);
             } else {
                 let text = self.field.display_text();
                 let text_x = content.origin.x - self.scroll;
                 let text_rect = Rect::new(
                     text_x,
-                    content.origin.y,
+                    line.origin.y,
                     content.size.width + self.scroll,
-                    style.line_height,
+                    line.size.height,
                 );
                 let fg = colors.on_surface;
                 scene.text(
@@ -434,9 +475,9 @@ impl MetroTextBox {
             );
             let ph_rect = Rect::new(
                 content.origin.x,
-                content.origin.y,
+                line.origin.y,
                 content.size.width,
-                style.line_height,
+                line.size.height,
             );
             scene.text(
                 self.placeholder.clone(),
@@ -456,7 +497,7 @@ impl MetroTextBox {
             // 光标不超出右缘
             let max_x = body_rect.right() - b - 2.0;
             let cx = cx.min(max_x).max(body_rect.origin.x + b);
-            let caret_rect = Rect::new(cx, content.origin.y, TEXTBOX_CARET_W, content.size.height);
+            let caret_rect = Rect::new(cx, line.origin.y, TEXTBOX_CARET_W, line.size.height);
             scene.fill_rect(
                 colors
                     .on_surface
@@ -520,6 +561,7 @@ impl MetroTextBox {
         theme: &MetroTheme,
         engine: &TextEngine,
         content: Rect,
+        line: Rect,
         scene: &mut Scene,
     ) {
         let colors = &theme.colors;
@@ -535,8 +577,8 @@ impl MetroTextBox {
         let fg = colors.on_surface;
         let color = fg.with_alpha(fg.a * alpha);
         let x0 = content.origin.x - self.scroll;
-        let y = content.origin.y;
-        let h = style.line_height;
+        let y = line.origin.y;
+        let h = line.size.height;
         scene.text(
             stream.clone(),
             Rect::new(x0, y, content.size.width + self.scroll, h),
@@ -1385,10 +1427,11 @@ mod tests {
         let body = Rect::new(0.0, 0.0, 200.0, 32.0);
         let tb = MetroTextBox::from_text("ab");
         let rect = tb.caret_rect_absolute(&th, &e, body);
-        let content = tb.content_rect(&th, body);
+        // 光标纵向与文字行盒一致（内容区垂直居中），随文字同行移动。
+        let line = tb.line_rect(&th, body);
         assert_eq!(rect.origin.x, tb.caret_x(&th, &e, body));
-        assert_eq!(rect.origin.y, content.origin.y);
-        assert_eq!(rect.size.height, content.size.height);
+        assert_eq!(rect.origin.y, line.origin.y);
+        assert_eq!(rect.size.height, line.size.height);
         assert_eq!(rect.size.width, TEXTBOX_CARET_W);
     }
 
@@ -1409,5 +1452,114 @@ mod tests {
         assert_eq!(ctx.anchor_byte, 6, "无选区 anchor = cursor");
         assert_eq!(ctx.caret_rect, tb.caret_rect_absolute(&th, &e, body));
         assert_eq!(ctx.content_hint, crate::ime::ImeContentHint::Normal);
+    }
+
+    // ── 垂直居中与共用基线（2026-10-11 k-textbox-vcenter）────────────────────────
+
+    /// 行框中心 = 内容区中心（差 < 0.01 逻辑 px）；行盒高 = 样式 line_height。
+    #[test]
+    fn line_box_centers_in_content() {
+        if !font_available() {
+            return;
+        }
+        let th = theme();
+        let body = Rect::new(0.0, 0.0, 200.0, 35.0);
+        for tb in [
+            MetroTextBox::new(),
+            MetroTextBox::from_text("Hgjpqy 中文汉字"),
+            MetroTextBox::with_header("标题"),
+        ] {
+            let content = tb.content_rect(&th, body);
+            let line = tb.line_rect(&th, body);
+            assert!(
+                (line.center().y - content.center().y).abs() < 0.01,
+                "行框中心 {} 应等于内容区中心 {}",
+                line.center().y,
+                content.center().y
+            );
+            assert_eq!(line.size.height, th.typography.body.line_height);
+            assert_eq!(line.origin.x, content.origin.x);
+        }
+    }
+
+    /// 光标 / 选区 / 预编辑下划线与文字同一行盒基准（一起移动）。
+    #[test]
+    fn caret_selection_underline_share_text_line() {
+        if !font_available() {
+            return;
+        }
+        let e = engine();
+        let th = theme();
+        let body = Rect::new(0.0, 0.0, 240.0, 35.0);
+        let mut tb = MetroTextBox::from_text("Ether");
+        tb.focus(); // 全选
+        tb.field.set_preedit("nǐ", Some(0));
+        let mut scene = Scene::default();
+        tb.render(&th, &e, body, &mut scene);
+
+        let line = tb.line_rect(&th, body);
+        let baseline = line.origin.y + e.ascent(th.typography.body.size);
+
+        // 文字行盒矩形（首个 Text 命令）。
+        let text_rect = scene
+            .commands
+            .iter()
+            .find_map(|c| match c {
+                SceneCommand::Text { rect, .. } => Some(*rect),
+                _ => None,
+            })
+            .expect("应有文本命令");
+        assert_eq!(text_rect.origin.y, line.origin.y, "文字在行盒顶部");
+        assert_eq!(text_rect.size.height, line.size.height);
+
+        // 光标（宽 = TEXTBOX_CARET_W）。
+        let carets: Vec<Rect> = scene
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                SceneCommand::FillRect { rect, .. } if rect.size.width == TEXTBOX_CARET_W => {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(carets.len(), 1, "聚焦时恰好一个光标");
+        assert_eq!(carets[0].origin.y, line.origin.y, "光标贴行盒顶");
+        assert_eq!(carets[0].size.height, line.size.height, "光标跨整行盒");
+
+        // 选区高亮（色 = text_selection_tint）。
+        let sel_tint = th.colors.text_selection_tint;
+        let sels: Vec<Rect> = scene
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                SceneCommand::FillRect { rect, color, .. } if *color == sel_tint => Some(*rect),
+                _ => None,
+            })
+            .collect();
+        assert!(!sels.is_empty(), "全选应有选区高亮");
+        for s in &sels {
+            assert_eq!(s.origin.y, line.origin.y, "选区贴行盒顶");
+            assert_eq!(s.size.height, line.size.height, "选区跨整行盒");
+        }
+
+        // 预编辑虚线下划线（高 1px）：基线下方 2px。
+        let underlines: Vec<Rect> = scene
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                SceneCommand::FillRect { rect, .. } if rect.size.height == 1.0 => Some(*rect),
+                _ => None,
+            })
+            .collect();
+        assert!(!underlines.is_empty(), "组合态应有下划线");
+        for u in &underlines {
+            assert!(
+                (u.origin.y - (baseline + 2.0)).abs() < 0.05,
+                "下划线在基线下方 2px：{} vs {}",
+                u.origin.y,
+                baseline + 2.0
+            );
+        }
     }
 }
