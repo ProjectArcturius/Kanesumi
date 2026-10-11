@@ -9,7 +9,7 @@
 // Kanesumi 适配：深色桌面底色 `surface`；选区强调色 35%；光标 1px（正典 §Ⅳ）。
 
 use kanesumi_canvas::text::TextEngine;
-use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_canvas::{Icon, Scene, TextAlign};
 use kanesumi_core::{MetroTheme, Point, Rect};
 
 use crate::ime::{ImeContentHint, ImeContext};
@@ -87,6 +87,11 @@ pub struct MetroTextBox {
     pub focused: bool,
     /// 是否显示删除按钮（UWP ButtonStates：有内容 + hover/聚焦时）。
     pub show_delete: bool,
+    /// 删除按钮图标（可选）。`Some` 时替代字体字形绘制 —— 字体里的 `✕`（U+2715）在
+    /// 思源黑体 / Noto CJK 内**缺字形**，会渲染成方框（2026-10-11 锁屏真机反馈）。
+    /// 宿主经 [`MetroTextBox::set_delete_icon`] 注入 `window-close.svg` 光栅位图；
+    /// `None` 时退回既有 `✕` 字体字形（保持旧行为不 panic）。
+    pub delete_icon: Option<Icon>,
     /// 水平滚动偏移（内容超宽时，保持光标可见）。
     pub scroll: f32,
     /// 光标闪烁相位累加（update(dt) 推进）。
@@ -102,6 +107,7 @@ impl Default for MetroTextBox {
             state: ControlState::Normal,
             focused: false,
             show_delete: false,
+            delete_icon: None,
             scroll: 0.0,
             blink_phase: 0.0,
         }
@@ -138,6 +144,18 @@ impl MetroTextBox {
     /// 直接以内容构造（等同 `new().with_text`）。
     pub fn from_text(text: impl Into<String>) -> Self {
         Self::new().with_text(text)
+    }
+
+    /// 设置删除按钮图标（`None` 退回 `✕` 字体字形）。宿主注入 `window-close.svg` 位图，
+    /// 避免依赖字体码位（U+2715 在思源黑体 / Noto CJK 缺字形）。
+    pub fn set_delete_icon(&mut self, icon: Option<Icon>) {
+        self.delete_icon = icon;
+    }
+
+    /// 链式设置删除按钮图标。参 [`Self::set_delete_icon`]。
+    pub fn with_delete_icon(mut self, icon: Option<Icon>) -> Self {
+        self.delete_icon = icon;
+        self
     }
 
     /// 聚焦进入。
@@ -506,27 +524,27 @@ impl MetroTextBox {
             );
         }
 
-        // 删除按钮（show_delete + 有内容）：UWP ×（E894）→ Kanesumi 自绘 ×（Triangle 两段）
+        // 删除按钮（show_delete + 有内容）：UWP ×（E894）→ Kanesumi 自绘 ×。
+        // 优先用宿主注入的图标位图（`window-close.svg`）—— 字体里的 `✕`（U+2715）在
+        // 思源黑体 / Noto CJK 缺字形，会在真机上渲染成方框（2026-10-11 锁屏反馈）。
+        // 未注入图标时退回旧字体字形，行为与旧版一致。
         if self.show_delete && has_text && !disabled {
             let btn = self.delete_button_rect(theme, body_rect);
             let c = btn.center();
-            let r = btn.size.height.min(8.0) / 2.0;
-            // ×：两条线用细矩形近似（简化：半透明 × 字形用三角形组合）
             let col = colors
                 .on_surface_variant
                 .with_alpha(theme.indication.secondary_opacity);
-            let t = 1.5;
-            // 用 4 个小三角形拼 × 太碎；改用一个居中 × 文本字形（U+2715），
-            // 思源黑体包含乘法叉号。参 V7 不假设 Segoe MDL2。
-            scene.text(
-                "✕".into(),
-                Rect::new(c.x - 8.0, c.y - 8.0, 16.0, 16.0),
-                col,
-                style,
-                TextAlign::Center,
-            );
-            let _ = r;
-            let _ = t;
+            if let Some(icon) = &self.delete_icon {
+                scene.image(icon, Rect::new(c.x - 8.0, c.y - 8.0, 16.0, 16.0), Some(col));
+            } else {
+                scene.text(
+                    "✕".into(),
+                    Rect::new(c.x - 8.0, c.y - 8.0, 16.0, 16.0),
+                    col,
+                    style,
+                    TextAlign::Center,
+                );
+            }
         }
 
         // 边框：聚焦时正典 §Ⅳ 双层（外 2px 焦点色 + 内 1px 对比色）；其余态单层。
@@ -1561,5 +1579,39 @@ mod tests {
                 baseline + 2.0
             );
         }
+    }
+
+    /// 删除按钮图标位图优先于字体字形（`window-close.svg` 接线）。
+    #[test]
+    fn delete_button_uses_icon_bitmap_when_set() {
+        if !font_available() {
+            return;
+        }
+        let e = engine();
+        let th = theme();
+        let mut tb = MetroTextBox::from_text("Ether");
+        tb.focus();
+        tb.show_delete = true;
+        // 1×1 不透明占位图标：仅验证走 `SceneCommand::Image` 而非 Text 字形。
+        let icon = kanesumi_canvas::Icon {
+            rgba: std::sync::Arc::from(vec![255u8, 255, 255, 255].into_boxed_slice()),
+            width: 1,
+            height: 1,
+        };
+        tb.set_delete_icon(Some(icon));
+        let mut scene = Scene::default();
+        tb.render(&th, &e, Rect::new(0.0, 0.0, 200.0, 35.0), &mut scene);
+        let images = scene
+            .commands
+            .iter()
+            .filter(|c| matches!(c, SceneCommand::Image { .. }))
+            .count();
+        assert_eq!(images, 1, "有图标时删除按钮走 Image 路径");
+        let glyph_x = scene
+            .commands
+            .iter()
+            .filter(|c| matches!(c, SceneCommand::Text { content, .. } if content == "✕"))
+            .count();
+        assert_eq!(glyph_x, 0, "不再画 ✕ 字体字形");
     }
 }

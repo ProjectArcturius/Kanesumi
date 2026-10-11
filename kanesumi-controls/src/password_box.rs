@@ -58,6 +58,19 @@ impl MetroPasswordBox {
         Self::masked(MetroTextBox::from_text(text))
     }
 
+    /// 设置删除（清除）按钮图标（`None` 退回 `✕` 字体字形）。宿主注入 `window-close.svg`
+    /// 位图 —— 字体里的 `✕`（U+2715）在思源黑体 / Noto CJK 缺字形，会渲染成方框
+    /// （2026-10-11 锁屏真机反馈）。掩码 / 明文两态共用同一删除按钮。
+    pub fn set_delete_icon(&mut self, icon: Option<kanesumi_canvas::Icon>) {
+        self.boxed.set_delete_icon(icon);
+    }
+
+    /// 链式设置删除按钮图标。参 [`Self::set_delete_icon`]。
+    pub fn with_delete_icon(mut self, icon: Option<kanesumi_canvas::Icon>) -> Self {
+        self.boxed.set_delete_icon(icon);
+        self
+    }
+
     /// 明文。
     pub fn password(&self) -> String {
         self.boxed.field.text()
