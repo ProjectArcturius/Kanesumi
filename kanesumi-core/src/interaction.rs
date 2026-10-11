@@ -93,6 +93,32 @@ pub const INERTIA_MIN_START_VELOCITY: f32 = 50.0;
 /// 触摸板速度估计窗口 100 ms（正典 §Ⅴ「最近 ~100 ms 的 delta / 时间估速度」）。
 pub const FINGER_VELOCITY_WINDOW_MS: u32 = 100;
 
+/// 越界上限 M = 135.59 px（Lumia `tracks.csv` 的 drag/inertia 最大越界量，下界方向；
+/// 上界方向为 118.32）。手指越界位移按 `M·(1 − e^{−x/M})` 饱和。
+/// 出处：`docs/research/w_scroll_tracker/README.md` §二（A3），取代设计初值 120。
+pub const SCROLL_OVERSCROLL_MAX_PX: f64 = 135.59;
+
+/// 越界减速时间常数 τ_over = 44.9 ms（Lumia 越界段速度对数回归中位；参
+/// `docs/research/w_scroll_tracker/README.md` §二 A2a）。
+pub const SCROLL_OVERSCROLL_TAU_S: f64 = 0.0449;
+
+/// 回程（越界后单调回贴边界）时长 T = 280.4 ms（Lumia 回程段三次贝塞尔拟合，总 RMSE 最小；
+/// 参 `docs/research/w_scroll_tracker/README.md` §二 A2b）。
+pub const SCROLL_RETURN_DURATION_S: f64 = 0.2804;
+
+/// 回程三次贝塞尔控制点 `(x1, y1, x2, y2)`（Lumia 回程拟合；同上 §二 A2b）。
+pub const SCROLL_RETURN_BEZIER: [f64; 4] = [0.1913, 0.5439, 0.5005, 1.0];
+
+/// `scroll_by` 每像素所需速度 7.600855902349023（≈ `−ln(1 − 0.9995)`，使惯性总位移恰为目标）。
+/// 出处：WinUI `ScrollView.cpp:2399` `s_velocityNeededPerPixel`（`w_comp_ref` §②）。
+pub const SCROLL_BY_VELOCITY_PER_PX: f64 = 7.600855902349023;
+
+/// `scroll_by` 惯性衰减率 0.9995（键盘专用，非默认 0.95）。出处：WinUI `ScrollView.cpp:2393`。
+pub const SCROLL_BY_DECAY_RATE: f64 = 0.9995;
+
+/// `scroll_by` 基准速度 30 px/s。出处：WinUI `ScrollView.cpp:2404` `baselineVelocity = minVelocity * scrollDir`。
+pub const SCROLL_BY_BASELINE_VELOCITY: f64 = 30.0;
+
 // ── Ⅵ 内容就绪与动画门控 ────────────────────────────────────────────────────
 
 /// 内容就绪门控超时 1 s。参 `docs/ELEMENT_TREE.md`「内容就绪与动画门控」。
@@ -197,6 +223,14 @@ mod tests {
         assert_eq!(INERTIA_STOP_VELOCITY, 30.0);
         assert_eq!(INERTIA_MIN_START_VELOCITY, 50.0);
         assert_eq!(FINGER_VELOCITY_WINDOW_MS, 100);
+        // 滚动跟踪器 A 节拟合值 + WinUI 键盘黄金常数（`w_scroll_tracker/README.md` §二、§三）。
+        assert_eq!(SCROLL_OVERSCROLL_MAX_PX, 135.59);
+        assert_eq!(SCROLL_OVERSCROLL_TAU_S, 0.0449);
+        assert_eq!(SCROLL_RETURN_DURATION_S, 0.2804);
+        assert_eq!(SCROLL_RETURN_BEZIER, [0.1913, 0.5439, 0.5005, 1.0]);
+        assert_eq!(SCROLL_BY_VELOCITY_PER_PX, 7.600855902349023);
+        assert_eq!(SCROLL_BY_DECAY_RATE, 0.9995);
+        assert_eq!(SCROLL_BY_BASELINE_VELOCITY, 30.0);
     }
 
     /// τ 与衰减率同源：`τ = −1/ln(1−d)`（`w-comp-ref` §① 律式，误差 < 1%）。
