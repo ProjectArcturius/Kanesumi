@@ -101,6 +101,10 @@ fn inertia_rmse(
 
 const WIDE: ([f64; 2], [f64; 2]) = ([-1.0e9, -1.0e9], [1.0e9, 1.0e9]);
 
+/// Lumia 设置主页列表的可滚范围 `[-260, 0]`（`lumia_etw/README.md` §五）。
+const LUMIA_MIN: f64 = -260.0;
+const LUMIA_MAX: f64 = 0.0;
+
 /// C-1 Win11 自由惯性：5 档初速 + 3 档衰减率，位置 RMSE（8000 档放宽到 3 px），停止速度 30。
 #[test]
 fn c1_win11_free_inertia() {
@@ -133,12 +137,13 @@ fn c1_win11_free_inertia() {
         assert!((end - x[x.len() - 1]).abs() < 1.0, "{name}: 终值偏离真值");
     }
 
-    // 3 档衰减率：τ 取律式 τ = −1/ln(1−d)。任务书阈值 0.5 px，但真值数据最佳三参数拟合
-    // （探针 `fit_summary.csv`）已为 0.77~0.86 px（无明显收敛误差），故此处以 1.0 为界，见最终报告。
-    for (name, rate) in [
-        ("samples_decay0.90.csv", 0.90f64),
-        ("samples_decay0.95.csv", 0.95f64),
-        ("samples_decay0.99.csv", 0.99f64),
+    // 3 档衰减率：τ 取律式 τ = −1/ln(1−d)。三档门槛按裁定 §136 = 数据底 + 0.15 px：
+    // 探针 `fit_summary.csv` 的最佳三参数拟合（τ / A / t0 全放）为 0.862 / 0.772 / 0.779 px，
+    // 故 decay0.90 ≤ 1.012、decay0.95 ≤ 0.922、decay0.99 ≤ 0.929（原 0.5 px 是调度者写错的采样噪声底）。
+    for (name, rate, limit) in [
+        ("samples_decay0.90.csv", 0.90f64, 1.012f64),
+        ("samples_decay0.95.csv", 0.95f64, 0.922f64),
+        ("samples_decay0.99.csv", 0.99f64, 0.929f64),
     ] {
         let d = load_xy(name);
         let t: Vec<f64> = d.iter().map(|p| p.0).collect();
@@ -149,8 +154,8 @@ fn c1_win11_free_inertia() {
         };
         let t0 = fit_scalar(|t0| inertia_rmse(&t, &x, 0.0, 2000.0, t0, &params, (lo, hi)), t[0], 0.3);
         let rmse = inertia_rmse(&t, &x, 0.0, 2000.0, t0, &params, (lo, hi));
-        eprintln!("C-1 {name} (decay law): RMSE={rmse:.4} limit=1.0");
-        assert!(rmse <= 1.0, "{name}: RMSE={rmse:.3} > 1.0");
+        eprintln!("C-1 {name} (decay law): RMSE={rmse:.4} limit={limit} (裁定 §136)");
+        assert!(rmse <= limit, "{name}: RMSE={rmse:.3} > {limit}");
     }
 }
 
@@ -253,16 +258,17 @@ fn lumia_segments() -> (Vec<Vec<(f64, f64)>>, Vec<usize>) {
 
 /// C-4 Lumia 段（新口径）：逐段拟合初速度（1 dof）、其余参数共享。
 ///
-/// 门槛：非界内起始段逐段 RMSE 中位 ≤ 3 px 且每段 ≤ 6 px、到边界段终点 |误差| < 0.01 px。
-/// 界内起始段（唯一一段，P4：Lumia 无可用自由界内惯性段）与真值模型不符，单列报告、不入门槛。
+/// 门槛：**第一步位置严格落在 `[-260, 0]` 内**的段（代码判据，不按段号硬编码）不进
+/// 「中位 ≤ 3 / 每段 ≤ 6」门，单列打印其 RMSE 与界内步数；其终点 |误差| < 0.01 px 仍成立
+/// （裁定 §137）。其余段入门：逐段 RMSE 中位 ≤ 3 px 且每段 ≤ 6 px。
 #[test]
 fn c4_lumia_segments() {
     let params = TrackerParams::default();
     let (segs, dropped) = lumia_segments();
-    let lo = [-1.0e9, -260.0];
-    let hi = [1.0e9, 0.0];
+    let lo = [-1.0e9, LUMIA_MIN];
+    let hi = [1.0e9, LUMIA_MAX];
     let mut rmses = Vec::new();
-    let mut inside = Vec::new();
+    let mut exempt = Vec::new();
     for seg in &segs {
         let p0 = seg[0].1;
         let t: Vec<f64> = seg.iter().map(|p| (p.0 - seg[0].0) / 1000.0).collect();
@@ -271,21 +277,34 @@ fn c4_lumia_segments() {
         let span = (v0first.abs() * 4.0).max(200.0);
         let vfit = fit_scalar(|v| inertia_rmse(&t, &x, p0, v, 0.0, &params, (lo, hi)), v0first, span);
         let rmse = inertia_rmse(&t, &x, p0, vfit, 0.0, &params, (lo, hi));
-        if p0 > -260.0 && p0 < 0.0 {
-            inside.push((p0, vfit, v0first, rmse));
-            continue;
-        }
-        // 到边界的段：终点必须精确落在边界。
+        // 到边界的段：终点必须精确落在边界（对豁免段同样生效）。
         let last = x[x.len() - 1];
-        if last.abs() < 0.5 || (last + 260.0).abs() < 0.5 {
+        if last.abs() < 0.5 || (last - LUMIA_MIN).abs() < 0.5 {
             let mut tr = ScrollTracker::new(params);
             inject(&mut tr, [0.0, p0], [0.0, vfit], 0.0, lo, hi);
             let end = tr.sample(10.0).0[1];
             assert!((end - last).abs() < 0.01, "终点 {end:.4} vs {last:.4}（p0={p0:.2}）");
         }
+        // §137 豁免判据：第一步位置严格在可滚范围内部 → 不入门槛，单列报告。
+        if p0 > LUMIA_MIN && p0 < LUMIA_MAX {
+            let in_bounds = x.iter().filter(|&&y| (LUMIA_MIN..=LUMIA_MAX).contains(&y)).count();
+            exempt.push((p0, v0first, vfit, rmse, in_bounds));
+            continue;
+        }
         rmses.push((p0, v0first, vfit, rmse));
     }
-    eprintln!("C-4 子段 {}（剔除 <5 步 {:?}），界内起始段 {}", segs.len(), dropped, inside.len());
+    eprintln!(
+        "C-4 子段 {}（剔除 <5 步 {:?}），免入门槛（首步界内）{} 段",
+        segs.len(),
+        dropped,
+        exempt.len()
+    );
+    for (p0, vf, vm, r, n) in &exempt {
+        eprintln!(
+            "  [豁免/首步界内 p0={p0:.2}] v0first={vf:8.0} v0fit={vm:8.0} ratio={:.2} RMSE={r:.3} 界内步数={n}",
+            vm / vf
+        );
+    }
     for (p0, vf, vm, r) in &rmses {
         eprintln!("  p0={p0:8.2} v0first={vf:8.0} v0fit={vm:8.0} ratio={:.2} RMSE={r:.3}", vm / vf);
     }
@@ -296,29 +315,58 @@ fn c4_lumia_segments() {
     for (p0, _, _, r) in &rmses {
         assert!(*r <= 6.0, "段 p0={p0:.2} RMSE={r:.3} > 6");
     }
-    assert_eq!(inside.len(), 1, "应恰有一段界内起始（P4）");
-    let i = inside[0];
-    eprintln!(
-        "  [界内起始/P4 不可用] p0={:.2} v0fit={:.0} v0first={:.0} RMSE={:.3}",
-        i.0, i.1, i.2, i.3
-    );
+    assert_eq!(exempt.len(), 1, "应恰有一段首步界内（P4 数据前提）");
 }
 
-/// C-5 采样无关性：同一手势以任意频率 / 相位采样，同一时刻位置一致（`sample` 不改状态）。
+/// C-5 采样无关性（任务书 2026-10-11 补足）：同一手势（拖动、松手、越界、回程）以
+/// 60 / 120 / 165 Hz 与固定种子随机抖动（±4 ms）四种采样各跑，1 ms 网格公共时刻位置差 < 1e-9。
 #[test]
 fn c5_sampling_independence() {
-    let mut tr = ScrollTracker::new(TrackerParams::default());
-    inject(&mut tr, [0.0, 0.0], [0.0, 1500.0], 0.0, WIDE.0, WIDE.1);
-    let grid: Vec<f64> = (0..220).map(|i| i as f64 / 165.0).collect();
-    let vals: Vec<f64> = grid.iter().map(|&t| tr.sample(t).0[1]).collect();
-    for i in (0..grid.len()).rev() {
-        assert!((tr.sample(grid[i]).0[1] - vals[i]).abs() < 1.0e-12, "60/165 反序 i={i}");
+    // 手势：0→0.02 s 下移 120、0.02→0.04 s 再 120（越过下界 200 进入回程区），0.04 s 松手。
+    let build = || {
+        let mut tr = ScrollTracker::new(TrackerParams::default());
+        tr.set_bounds([-1.0e5, -1.0e5], [1.0e5, 200.0]);
+        tr.set_position(0.0, 0.0, 0.0);
+        tr.finger_begin(0.0);
+        tr.finger_delta(0.02, 0.0, 120.0);
+        tr.finger_delta(0.04, 0.0, 120.0);
+        tr.finger_end(0.04);
+        tr
+    };
+    // 四种采样时刻序列。
+    let hz: Vec<f64> = (0..30).map(|i| i as f64 / 60.0).collect();
+    let hz120: Vec<f64> = (0..60).map(|i| i as f64 / 120.0).collect();
+    let hz165: Vec<f64> = (0..80).map(|i| i as f64 / 165.0).collect();
+    // 固定种子抖动：标称 60 Hz 步长 ±4 ms。
+    let mut s: u64 = 0x0c0f_fee1_1234_5678;
+    let mut jitter = Vec::new();
+    let mut t = 0.0;
+    while t < 0.5 {
+        jitter.push(t);
+        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let frac = ((s >> 11) as f64) / ((1u64 << 53) as f64);
+        t += 1.0 / 60.0 + (frac * 2.0 - 1.0) * 0.004;
     }
-    for &t in &[0.0001, 0.1234, 0.2671, 0.4999, 1.2345] {
-        let _ = tr.sample(t);
-    }
-    for i in 0..grid.len() {
-        assert!((tr.sample(grid[i]).0[1] - vals[i]).abs() < 1.0e-12, "随机抖动后 i={i}");
+    let schedules = [hz, hz120, hz165, jitter];
+
+    // 1 ms 网格公共时刻。
+    let grid: Vec<f64> = (0..400).map(|i| i as f64 / 1000.0).collect();
+    let mut baseline: Option<Vec<f64>> = None;
+    for sched in &schedules {
+        let tr = build();
+        // 按本采样序列驱动（`sample` 是纯函数，不改状态）。
+        for &ts in sched {
+            let _ = tr.sample(ts);
+        }
+        let vals: Vec<f64> = grid.iter().map(|&g| tr.sample(g).0[1]).collect();
+        match &baseline {
+            None => baseline = Some(vals),
+            Some(b) => {
+                for i in 0..grid.len() {
+                    assert!((b[i] - vals[i]).abs() < 1.0e-9, "t={} 位置差 {}", grid[i], (b[i] - vals[i]).abs());
+                }
+            }
+        }
     }
 }
 
