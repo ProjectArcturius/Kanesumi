@@ -24,7 +24,7 @@ use smithay_client_toolkit::{
     registry_handlers,
     seat::{
         Capability, SeatHandler, SeatState,
-        keyboard::{KeyEvent as SctkKeyEvent, KeyboardHandler, Keysym},
+        keyboard::{KeyEvent as SctkKeyEvent, Keymap as SctkKeymap, KeyboardHandler, Keysym, RepeatInfo as SctkRepeatInfo},
         pointer::{
             AxisScroll, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, PointerEvent, PointerEventKind,
             PointerHandler,
@@ -533,11 +533,22 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         let theme_after = shell
             .next_theme_check
             .saturating_duration_since(Instant::now());
-        let timeout = crate::idle::next_wake(busy, shell.app.next_wake_hint(), Some(theme_after));
+        // 空闲唤醒取「App 定时器」与「按键重复下次时刻」较早者（参 crate::key_repeat）。
+        let timer = match (shell.app.next_wake_hint(), shell.repeat_wake_hint()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+        let timeout = crate::idle::next_wake(busy, timer, Some(theme_after));
         event_loop
             .dispatch(timeout, &mut shell)
             .map_err(|e| format!("事件循环 dispatch 失败：{e}"))?;
         crate::timeline::note_once("dispatch_done");
+        // 按键重复：到点发一次重复按下（不积压；参 crate::key_repeat）。
+        if shell.poll_key_repeat(&qh) {
+            shell.dirty = true;
+        }
         // 引擎宿主幂等绑定（input_method.is_none 才建，seat 就绪后即生效）。
         shell.ensure_ime_engine(&qh);
         crate::timeline::note_once("ime_ready");
@@ -910,6 +921,27 @@ pub(crate) struct Shell {
     seat: Option<wl_seat::WlSeat>,
     /// 最近一次输入事件 serial（指针按下 / 按键）—— grab 必须带触发它的输入 serial。
     last_input_serial: Option<u32>,
+
+    // ── 客户端按键重复（参任务 k-key-repeat、crate::key_repeat）─────
+    /// 主键盘（wl_keyboard 路径）重复调度器：外壳按 `repeat_info` 自行发重复按下。
+    key_repeat: crate::key_repeat::KeyRepeat,
+    /// 当前重复键的逻辑键（poll 命中时发它）。
+    repeat_logical: Key,
+    /// 单调时钟基准（重复调度用秒数；与 `Instant` 同轴换算）。
+    clock_base: Instant,
+    /// 主键盘 xkb keymap（`update_keymap` 建立）——按 `key_repeats` 判定可重复键
+    /// （修饰键 / 锁定键不重复）。缺失时回退修饰键黑名单。
+    xkb_keymap: Option<xkbcommon::xkb::Keymap>,
+    /// 引擎抓取键盘下发的重复参数（Ceyboard 消费键自重复）。
+    im_repeat: crate::key_repeat::RepeatConfig,
+    /// 引擎路径的重复调度器：Ceyboard 消费键的客户端重复（抓取键盘无独立 wl_keyboard）。
+    im_key_repeat: crate::key_repeat::KeyRepeat,
+    /// 当前引擎重复键（逻辑键 + 修饰键），poll 命中时重投给引擎。
+    im_repeat_logical: Key,
+    im_repeat_mods: Modifiers,
+    /// 已转发给焦点客户端（虚拟键盘）但尚未收到物理松开的原始 keycode 集合 ——
+    /// 松开时补发 release，使目标应用按自身重复连发（转发路径不合成第二层重复）。
+    forwarded_keys: std::collections::HashSet<u32>,
 }
 
 /// 单个表面的输出缓冲：SHM 双缓冲（回退）+ dmabuf 双缓冲（直通）+ 模式决策。
@@ -1056,6 +1088,12 @@ impl ImXkb {
 
     fn update_mask(&mut self, depressed: u32, latched: u32, locked: u32, group: u32) {
         let _ = self.state.update_mask(depressed, latched, locked, 0, 0, group);
+    }
+
+    /// 该 keycode 是否可重复（xkb `key_repeats`；修饰键 / 锁定键不重复）。
+    fn key_repeats(&self, keycode: u32) -> bool {
+        self.keymap
+            .key_repeats(xkbcommon::xkb::Keycode::new(keycode + 8))
     }
 }
 
@@ -1522,6 +1560,15 @@ impl Shell {
             popup_bounds_sent: None,
             seat: None,
             last_input_serial: None,
+            key_repeat: crate::key_repeat::KeyRepeat::new(crate::key_repeat::RepeatConfig::default()),
+            repeat_logical: Key::Escape,
+            clock_base: Instant::now(),
+            xkb_keymap: None,
+            im_repeat: crate::key_repeat::RepeatConfig::default(),
+            im_key_repeat: crate::key_repeat::KeyRepeat::new(crate::key_repeat::RepeatConfig::default()),
+            im_repeat_logical: Key::Escape,
+            im_repeat_mods: Modifiers::NONE,
+            forwarded_keys: std::collections::HashSet::new(),
         })
     }
 
@@ -2187,6 +2234,64 @@ impl Shell {
         if self.ctx_menu.is_animating() {
             // 右键菜单开/关动画推进中 → 逐帧呈现；静态 Open 不再锁帧（S1）。
             self.dirty = true;
+        }
+    }
+
+    /// 单调秒（外壳启动为 0）——按键重复调度的时钟。
+    fn now_secs(&self) -> f64 {
+        self.clock_base.elapsed().as_secs_f64()
+    }
+
+    /// 主键盘重复的下次唤醒（秒，None = 无）——并入主循环超时。
+    fn repeat_wake_hint(&self) -> Option<f64> {
+        let now = self.now_secs();
+        match (self.key_repeat.next_wake(now), self.im_key_repeat.next_wake(now)) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        }
+    }
+
+    /// 到点则发一次重复（不积压；参 crate::key_repeat）。返回是否实际发出（供主循环置脏）。
+    /// - 主键盘（wl_keyboard）路径 → `emit_input(KeyPressed{repeat:true})`；
+    /// - 引擎路径 → 重投 `ime_engine_key`（Ceyboard 消费键自行重复），并刷新候选窗。
+    fn poll_key_repeat(&mut self, qh: &QueueHandle<Self>) -> bool {
+        let now = self.now_secs();
+        let mut fired = false;
+        if self.key_repeat.poll(now).is_some() {
+            let key = self.repeat_logical;
+            // 零交互排障留痕：逐次重复按下（含单调时刻，供核对间隔 1000/rate）。
+            log::debug!("按键重复 fire key={key:?} t={now:.3}");
+            self.emit_input(InputEvent::KeyPressed {
+                key,
+                modifiers: self.modifiers,
+                repeat: true,
+            });
+            fired = true;
+        }
+        if self.im_key_repeat.poll(now).is_some() {
+            let (key, mods) = (self.im_repeat_logical, self.im_repeat_mods);
+            log::debug!("输入法按键重复 fire key={key:?} t={now:.3}");
+            let _ = guard("ime_engine_key_repeat", || {
+                self.app.ime_engine_key(key, mods)
+            });
+            if let Some(im) = self.input_method.clone() {
+                self.flush_engine(&im);
+            }
+            self.im_popup_dirty = true;
+            self.refresh_im_popup(qh);
+            fired = true;
+        }
+        fired
+    }
+
+    /// 判定某键是否可重复：优先按 xkb `key_repeats`（修饰键 / 锁定键不重复）；
+    /// keymap 未建立时回退修饰键黑名单。
+    fn key_repeatable(&self, key: Key, raw_code: u32) -> bool {
+        match self.xkb_keymap.as_ref() {
+            Some(km) => km.key_repeats(xkbcommon::xkb::Keycode::new(raw_code + 8)),
+            None => crate::key_repeat::default_repeatable(&key),
         }
     }
 
@@ -3601,6 +3706,8 @@ impl KeyboardHandler for Shell {
     ) {
         self.ime_focus_surface = false;
         self.pending_ime = PendingImeBatch::default();
+        // 键盘焦点离开 → 停止按键重复（任务 k-key-repeat §设计 2）。
+        self.key_repeat.cancel();
         self.reconcile_ime();
         // 键盘焦点移进本进程的抓取弹层（合成器在 grab 时转移焦点）→ 不是失焦，弹层不能因此关闭。
         if *surface == self.surface && self.has_grabbing_popup() {
@@ -3637,9 +3744,16 @@ impl KeyboardHandler for Shell {
                 return;
             }
         }
+        // 客户端按键重复：按下可重复键 → 安排首次重复；修饰键 / CapsLock 等不重复
+        // （按 xkb `key_repeats`；参 crate::key_repeat 与任务 k-key-repeat §设计 1/2）。
+        let repeatable = self.key_repeatable(key, event.raw_code);
+        self.repeat_logical = key;
+        let now = self.now_secs();
+        self.key_repeat.press(event.raw_code as u64, now, repeatable);
         self.emit_input(InputEvent::KeyPressed {
             key,
             modifiers: self.modifiers,
+            repeat: false,
         });
         // xkb 可产生多标量文本（组合序列等）；不能静默丢掉首字符后的内容。
         if let Some(text) = text
@@ -3656,8 +3770,10 @@ impl KeyboardHandler for Shell {
         _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _serial: u32,
-        _event: SctkKeyEvent,
+        event: SctkKeyEvent,
     ) {
+        // 松开当前重复键 → 立即停止（松开别的键不影响）。
+        self.key_repeat.release(event.raw_code as u64);
     }
 
     fn update_modifiers(
@@ -3683,8 +3799,36 @@ impl KeyboardHandler for Shell {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
-        _repeat: smithay_client_toolkit::seat::keyboard::RepeatInfo,
+        repeat: SctkRepeatInfo,
     ) {
+        let cfg = match repeat {
+            SctkRepeatInfo::Disable => crate::key_repeat::RepeatConfig::new(0, 0),
+            SctkRepeatInfo::Repeat { rate, delay } => {
+                crate::key_repeat::RepeatConfig::new(delay, rate.get())
+            }
+        };
+        self.key_repeat.set_config(cfg);
+    }
+
+    /// keymap 变化：另编一份供 `key_repeats` 判定可重复键（sctk 不暴露 xkb 状态）。
+    fn update_keymap(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        keymap: SctkKeymap<'_>,
+    ) {
+        use xkbcommon::xkb;
+        let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        match xkb::Keymap::new_from_string(
+            &ctx,
+            keymap.as_string(),
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        ) {
+            Some(km) => self.xkb_keymap = Some(km),
+            None => log::warn!("外壳 keymap 编译失败（重复判定回退黑名单）"),
+        }
     }
 }
 
@@ -4077,6 +4221,8 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                     // 松开事件：引擎激活期交给 App —— Shift 点按在**松开时**判定
                     // （按住期间无其它键、且按住 < 300 ms 才切中英，参 docs/IME_PLAN.md §Ⅱ-2）。
                     // 非激活期与按下同样门控，不介入（IME1）。松开不重放：按下时已随键透传。
+                    // 引擎路径重复：松开当前重复键即停（任务 k-key-repeat §设计 2）。
+                    state.im_key_repeat.release(key as u64);
                     if !grab_key_passthrough(state.im_active, state.im_xkb.is_some())
                         && let Some(xkb) = state.im_xkb.as_ref()
                     {
@@ -4085,6 +4231,14 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                         let _ = guard("ime_engine_key_release", || {
                             state.app.ime_engine_key_release(logical, state.im_modifiers)
                         });
+                    }
+                    // 转发过按下的键 → 物理松开时补发虚拟键盘 release（目标应用据此自行重复；
+                    // 转发路径不合成重复，保证同刻只有一层在重复）。参任务 k-key-repeat §设计 6。
+                    if state.forwarded_keys.remove(&key)
+                        && let Some(vk) = state.virtual_keyboard.clone()
+                    {
+                        vk.key(state.im_key_time, key, 0); // 释放
+                        state.im_key_time += 1;
                     }
                     return;
                 }
@@ -4098,8 +4252,9 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                     // 记录证明放行而非吞键（参 docs/IME_PLAN.md §Ⅲ IME1）。
                     log::debug!("IME 抓取按键 key={key} im_active={} → 放行", state.im_active);
                     if let Some(vk) = state.virtual_keyboard.clone() {
+                        // 只转发按下；物理松开到达时补发 release（目标应用自行重复）。
                         vk.key(state.im_key_time, key, 1); // 按下
-                        vk.key(state.im_key_time, key, 0); // 释放（透传完整按键）
+                        state.forwarded_keys.insert(key);
                     }
                     state.im_key_time += 1;
                     return;
@@ -4120,11 +4275,28 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                 if let Some(im) = state.input_method.clone() {
                     state.flush_engine(&im);
                 }
+                // 客户端重复：**引擎消费**的键由本客户端（Ceyboard 侧）自行重复 —— 稍后按
+                // 抓取 `repeat_info` 重投 `ime_engine_key`；未消费的键经虚拟键盘转发、由
+                // 目标应用自重复（不在转发路径合成重复，保证同刻只有一层在重复）。
+                if consumed {
+                    let repeatable = state
+                        .im_xkb
+                        .as_ref()
+                        .map(|x| x.key_repeats(key))
+                        .unwrap_or(true);
+                    let now = state.now_secs();
+                    state.im_repeat_logical = logical;
+                    state.im_repeat_mods = state.im_modifiers;
+                    state.im_key_repeat.press(key as u64, now, repeatable);
+                } else {
+                    state.im_key_repeat.cancel();
+                }
                 if !consumed
                     && let Some(vk) = state.virtual_keyboard.clone()
                 {
+                    // 只转发按下；物理松开到达时补发 release（目标应用据此自行重复）。
                     vk.key(state.im_key_time, key, 1); // 按下
-                    vk.key(state.im_key_time, key, 0); // 释放（透传完整按键）
+                    state.forwarded_keys.insert(key);
                 }
                 state.im_key_time += 1;
                 // 候选窗 popup 刷新（key 即时置脏，下一帧 refresh 提交）。
@@ -4151,6 +4323,21 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                 if let Some(vk) = state.virtual_keyboard.clone() {
                     vk.modifiers(mods_depressed, mods_latched, mods_locked, group);
                 }
+            }
+            ImGrabEvent::RepeatInfo { rate, delay } => {
+                // 抓取键盘的重复参数（与 wl_keyboard.repeat_info 同义）：传给引擎宿主
+                // （Ceyboard 消费键自重复）；rate/delay 负数按 0 处理（协议禁止但防御）。
+                let cfg = crate::key_repeat::RepeatConfig::new(
+                    delay.max(0) as u32,
+                    rate.max(0) as u32,
+                );
+                state.im_repeat = cfg;
+                state.im_key_repeat.set_config(cfg);
+                let _ = guard("ime_engine_repeat_info", || {
+                    state
+                        .app
+                        .ime_engine_repeat_info(cfg.rate, cfg.delay_ms)
+                });
             }
             _ => {}
         }

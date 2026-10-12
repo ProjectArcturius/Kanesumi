@@ -962,7 +962,7 @@ impl kanesumi_element::Widget for MetroAutoSuggestBox {
                 }
                 ctx.set_handled();
             }
-            Event::KeyDown { key, modifiers } => {
+            Event::KeyDown { key, modifiers, .. } => {
                 self.on_key_down(ctx, *key, modifiers);
             }
             Event::Preedit { text, cursor_byte } => {

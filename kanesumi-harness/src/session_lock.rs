@@ -617,6 +617,7 @@ impl KeyboardHandler for LockShell {
         self.app.handle_input(InputEvent::KeyPressed {
             key,
             modifiers: self.modifiers,
+            repeat: false,
         });
         self.dirty = true;
     }

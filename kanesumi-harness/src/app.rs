@@ -166,7 +166,13 @@ pub enum InputEvent {
     /// 触控板跟手需改用元素树 `TreeApp`（harness 平台层已接线，参 `platform.rs`）。
     ScrollInput(kanesumi_element::ScrollInput),
     /// 键按下（表面持有键盘焦点时）。释放事件不推（App 一般只关心按下）。
-    KeyPressed { key: Key, modifiers: Modifiers },
+    /// `repeat` = 本条是否由客户端重复调度产生（参 `key_repeat` 与任务 k-key-repeat）：
+    /// 需要区分「按住连发」的控件（按钮族忽略 `repeat=true` 的激活）读它；文本输入照常消费。
+    KeyPressed {
+        key: Key,
+        modifiers: Modifiers,
+        repeat: bool,
+    },
     /// 指针离开表面。
     PointerLeft,
     /// IME 组合态更新。`cursor_byte` 为组合态内光标字节偏移（None = 光标在尾部，
@@ -476,6 +482,11 @@ pub trait App {
     fn ime_engine_key_release(&mut self, _key: Key, _modifiers: Modifiers) -> bool {
         false
     }
+
+    /// 引擎宿主：抓取键盘下发重复参数（`zwp_input_method_keyboard_grab_v2.repeat_info` 的
+    /// rate/delay，单位次每秒 / 毫秒；rate 0 = 关闭）。消费键的客户端重复据此调度。
+    /// 仅 Ceyboard 关心，默认空实现。
+    fn ime_engine_repeat_info(&mut self, _rate: u32, _delay: u32) {}
 
     /// 引擎宿主：当前组合态 preedit（拼音串）及光标字节偏移。
     /// 返回 `(preedit, cursor_byte)`；空串 = 无组合态。
@@ -875,9 +886,10 @@ mod tests {
         let ev = InputEvent::KeyPressed {
             key: Key::Char('c'),
             modifiers: ctrl_shift,
+            repeat: false,
         };
         match ev {
-            InputEvent::KeyPressed { key, modifiers } => {
+            InputEvent::KeyPressed { key, modifiers, .. } => {
                 assert_eq!(key, Key::Char('c'));
                 assert!(modifiers.ctrl && modifiers.shift);
             }
