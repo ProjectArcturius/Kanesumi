@@ -384,6 +384,23 @@ pub(crate) fn create_wl_surface(
     }
 }
 
+/// GPU 后端候选：**缺省 Vulkan 优先、GL 回退**（既有缺省，不动）。
+///
+/// 真机测得（Debian 13 / Arrow Lake / Mesa 25.0.7）Vulkan 的 WSI 每次进程要付
+/// `request_adapter`（带表面兼容探测约 0.49 s）+ 首次 `get_capabilities` + 首次
+/// `configure`，合计约 1 s；GL 同机对应约数十毫秒（参 docs/research/k_cold_start_gpu）。
+/// 但**缺省后端是产品行为，不在本任务授权范围内**：本件只做惰性 / 并行 / 缓存等初始化
+/// 优化，不改写 Vulkan 优先 / GL 回退的既有缺省。`KANESUMI_GPU_BACKEND=gl|vulkan`
+/// 仅用于诊断 A/B；显式 GL 过预算不构成缺省实现过线（Vulkan 曾在 Ether 下
+/// `SURFACE_LOST`，参 Known Issue #8，故 GL 只作回退）。
+pub fn render_backends() -> Vec<wgpu::Backends> {
+    match std::env::var("KANESUMI_GPU_BACKEND").ok().as_deref() {
+        Some("vulkan") => vec![wgpu::Backends::VULKAN],
+        Some("gl") => vec![wgpu::Backends::GL],
+        _ => vec![wgpu::Backends::VULKAN, wgpu::Backends::GL],
+    }
+}
+
 pub trait GpuContextExt {
     /// 进程共享上下文：挨个后端候选（主→备）建 instance/device/queue 与选定格式。
     /// `wl_surface` 仅用于挑一个与该表面兼容的适配器，函数返回后临时表面即丢弃。
@@ -437,9 +454,7 @@ impl Renderer {
             height,
             scale,
             transparent,
-            // ⚠ 实验：Vulkan 优先（支持 PreMultiplied alpha，主表面可透明）。
-            // 之前 Vulkan 在 Ether 下 SURFACE_LOST，故 GL 优先；GL 复位实验后重试 Vulkan。
-            &[wgpu::Backends::VULKAN, wgpu::Backends::GL],
+            &render_backends(),
         )
     }
 
