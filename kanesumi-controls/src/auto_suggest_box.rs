@@ -296,8 +296,8 @@ impl MetroAutoSuggestBox {
         scene.fill_rounded_rect(colors.surface, inner, theme.tokens.corner_radius);
 
         let content = self.content_rect(theme, body);
-        // 文字行盒：内容区内垂直居中；与 TextBox 同一套共用几何。
-        let line = text_input_line_rect(content, style.line_height);
+        // 文字行盒：在边框内侧矩形内垂直居中（裁定 §145）；与 TextBox 同一套共用几何。
+        let line = text_input_line_rect(content, inner, style.line_height);
 
         // 自适应滚动：单行文本超宽时，把 scroll 调至末尾可见（UWP 单行输入行为）。
         if !self.field.is_empty() {
@@ -762,8 +762,10 @@ impl MetroAutoSuggestBox {
 
     /// 光标矩形（表面绝对坐标，未夹右缘 —— IME 需要真实位置）。
     fn caret_rect_absolute(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> Rect {
+        let b = self.border_thickness();
         let content = self.content_rect(theme, body);
-        let line = text_input_line_rect(content, theme.typography.body.line_height);
+        let inner = text_input_inner_rect(body, b);
+        let line = text_input_line_rect(content, inner, theme.typography.body.line_height);
         Rect::new(
             self.caret_x(theme, engine, body),
             line.origin.y,
@@ -1333,22 +1335,24 @@ mod tests {
         assert_eq!(ab.highlighted, Some(0), "展开后默认高亮首项");
     }
 
-    /// 文字行盒在内容区内垂直居中（与 TextBox 共用几何）。
+    /// 文字行盒在边框内侧矩形内垂直居中（与 TextBox 共用几何）。参裁定 §145。
     #[test]
-    fn line_box_centers_in_content() {
+    fn line_box_centers_in_inner_rect() {
         if !font_available() {
             return;
         }
         let th = MetroTheme::ether_dark();
         let body = Rect::new(0.0, 0.0, 200.0, 35.0);
         let ab = MetroAutoSuggestBox::new();
+        let b = ab.border_thickness();
+        let inner = text_input_inner_rect(body, b);
         let content = ab.content_rect(&th, body);
-        let line = text_input_line_rect(content, th.typography.body.line_height);
+        let line = text_input_line_rect(content, inner, th.typography.body.line_height);
         assert!(
-            (line.center().y - content.center().y).abs() < 0.01,
-            "行框中心 {} 应等于内容区中心 {}",
+            (line.center().y - inner.center().y).abs() < 0.01,
+            "行框中心 {} 应等于内侧矩形中心 {}",
             line.center().y,
-            content.center().y
+            inner.center().y
         );
         assert_eq!(line.size.height, th.typography.body.line_height);
     }

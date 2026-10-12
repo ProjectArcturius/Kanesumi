@@ -36,11 +36,15 @@ pub const TEXT_INPUT_PAD_R: f32 = 6.0;
 /// 内容区下内边距。
 pub const TEXT_INPUT_PAD_B: f32 = 5.0;
 
-/// 边框内侧矩形（`body` 扣边框；**不含内边距**）。字形裁剪框用它，下伸部不被下内边距切。
+/// 边框内侧矩形（`body` 四边各内缩 `border`；**不含内边距**）。字形裁剪框与行盒居中的
+/// 基准都用它 —— 下伸部不被下内边距切（2026-10-11 真机反馈）。
+///
+/// 注意**原点同步内缩**：只减宽高不平移会把矩形钉在 body 左上角，行盒中心随之偏移
+/// （2026-10-12 调度者复核指出的旧口径错误）。
 pub fn text_input_inner_rect(body: Rect, border: f32) -> Rect {
     Rect::new(
-        body.origin.x,
-        body.origin.y,
+        body.origin.x + border,
+        body.origin.y + border,
         (body.size.width - 2.0 * border).max(0.0),
         (body.size.height - 2.0 * border).max(0.0),
     )
@@ -56,14 +60,16 @@ pub fn text_input_content_rect(body: Rect, border: f32) -> Rect {
     )
 }
 
-/// 单行文本行盒：在内容区内**垂直居中**（行框中心 = 内容区中心）。
+/// 单行文本行盒：横向取内容区（`content`），纵向在**边框内侧矩形**（`inner`）内
+/// **垂直居中**（行框中心 = 内侧矩形中心）。参裁定 §145（Win10 TextBox 行盒行为）。
 ///
 /// 行盒高 = 样式 `line_height`；内容区矮于一行时行盒上下各溢出（配合
 /// [`text_input_inner_rect`] 的裁剪，字形不被切）。光标 / 选区 / 预编辑下划线都以
-/// 本矩形为纵向基准，与文字同行移动。
-pub fn text_input_line_rect(content: Rect, line_height: f32) -> Rect {
+/// 本矩形为纵向基准，与文字同行移动。基线 = 行盒顶 + 行内主字体 ascent（现有
+/// `glyph_layout` 算法），不另加光学偏移。
+pub fn text_input_line_rect(content: Rect, inner: Rect, line_height: f32) -> Rect {
     let line_height = line_height.max(0.0);
-    let top = content.origin.y + (content.size.height - line_height) / 2.0;
+    let top = inner.origin.y + (inner.size.height - line_height) / 2.0;
     Rect::new(content.origin.x, top, content.size.width, line_height)
 }
 /// 光标宽度（正典 §Ⅳ：1px；2× 下 2 物理像素）。
@@ -211,10 +217,13 @@ impl MetroTextBox {
         text_input_content_rect(body, self.border_thickness())
     }
 
-    /// 文字行盒（内容区内垂直居中，高 = 样式 line_height）。光标 / 选区 / 下划线同基准。
+    /// 文字行盒（在**边框内侧矩形**内垂直居中，高 = 样式 line_height）。
+    /// 光标 / 选区 / 下划线同基准。参裁定 §145。
     pub fn line_rect(&self, theme: &MetroTheme, body: Rect) -> Rect {
-        let content = self.content_rect(theme, body);
-        text_input_line_rect(content, theme.typography.body.line_height)
+        let b = self.border_thickness();
+        let content = text_input_content_rect(body, b);
+        let inner = text_input_inner_rect(body, b);
+        text_input_line_rect(content, inner, theme.typography.body.line_height)
     }
 
     /// 删除按钮矩形（主体右缘，34 宽）。
@@ -423,8 +432,8 @@ impl MetroTextBox {
         scene.fill_rounded_rect(bg, inner, theme.tokens.corner_radius);
 
         let content = self.content_rect(theme, body_rect);
-        // 文字行盒：内容区内垂直居中；光标 / 选区 / 下划线共用同一纵向基准。
-        let line = text_input_line_rect(content, style.line_height);
+        // 文字行盒：在**边框内侧矩形**内垂直居中（裁定 §145）；光标 / 选区 / 下划线共用同一纵向基准。
+        let line = text_input_line_rect(content, inner, style.line_height);
 
         // 渲染前推进水平滚动，让光标（含 IME 组合态）落在视口内。
         self.ensure_caret_visible(theme, engine, body_rect);
@@ -1474,9 +1483,10 @@ mod tests {
 
     // ── 垂直居中与共用基线（2026-10-11 k-textbox-vcenter）────────────────────────
 
-    /// 行框中心 = 内容区中心（差 < 0.01 逻辑 px）；行盒高 = 样式 line_height。
+    /// 行框中心 = 边框内侧矩形中心（差 < 0.01 逻辑 px）；行盒高 = 样式 line_height。
+    /// 参裁定 §145（契约：行盒中心 = 内侧矩形中心，非内容区中心）。
     #[test]
-    fn line_box_centers_in_content() {
+    fn line_box_centers_in_inner_rect() {
         if !font_available() {
             return;
         }
@@ -1487,16 +1497,17 @@ mod tests {
             MetroTextBox::from_text("Hgjpqy 中文汉字"),
             MetroTextBox::with_header("标题"),
         ] {
-            let content = tb.content_rect(&th, body);
+            let b = tb.border_thickness();
+            let inner = text_input_inner_rect(body, b);
             let line = tb.line_rect(&th, body);
             assert!(
-                (line.center().y - content.center().y).abs() < 0.01,
-                "行框中心 {} 应等于内容区中心 {}",
+                (line.center().y - inner.center().y).abs() < 0.01,
+                "行框中心 {} 应等于内侧矩形中心 {}",
                 line.center().y,
-                content.center().y
+                inner.center().y
             );
             assert_eq!(line.size.height, th.typography.body.line_height);
-            assert_eq!(line.origin.x, content.origin.x);
+            assert_eq!(line.origin.x, inner.origin.x + TEXT_INPUT_PAD_L);
         }
     }
 

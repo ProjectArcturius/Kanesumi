@@ -380,19 +380,21 @@ mod tests {
         assert_eq!(p.boxed.field.display_text(), "●●●");
     }
 
-    /// 密码框（掩码变体）继承 TextBox 的垂直居中行盒（圆点 / 明文两态同基准）。
+    /// 密码框（掩码变体）继承 TextBox 的行盒：在**边框内侧矩形**内垂直居中
+    /// （圆点 / 明文两态同基准）。参裁定 §145。
     #[test]
-    fn line_box_centers_in_content() {
+    fn line_box_centers_in_inner_rect() {
         let th = MetroTheme::ether_dark();
         let body = Rect::new(0.0, 0.0, 296.0, 35.0);
         let p = MetroPasswordBox::new();
-        let content = p.boxed.content_rect(&th, body);
+        let b = p.boxed.border_thickness();
+        let inner = crate::text_box::text_input_inner_rect(body, b);
         let line = p.boxed.line_rect(&th, body);
         assert!(
-            (line.center().y - content.center().y).abs() < 0.01,
-            "行框中心 {} 应等于内容区中心 {}",
+            (line.center().y - inner.center().y).abs() < 0.01,
+            "行框中心 {} 应等于内侧矩形中心 {}",
             line.center().y,
-            content.center().y
+            inner.center().y
         );
         assert_eq!(line.size.height, th.typography.body.line_height);
     }

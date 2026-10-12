@@ -323,10 +323,11 @@ impl MetroNumberBox {
             theme.tokens.corner_radius,
         );
 
-        // 文本（左内边距 10）：行盒在文本区内容区垂直居中（与 TextBox 共用几何）。
+        // 文本（左内边距 10）：行盒在文本区的**边框内侧矩形**内垂直居中（与 TextBox 共用几何）。
         let text_rect = self.text_rect(theme, rect);
         let content = text_input_content_rect(text_rect, b);
-        let line = text_input_line_rect(content, style.line_height);
+        let inner_text = text_input_inner_rect(text_rect, b);
+        let line = text_input_line_rect(content, inner_text, style.line_height);
         let fg = colors.on_surface.with_alpha(colors.on_surface.a * alpha);
         let text = self.field.display_text();
         scene.text(
@@ -495,7 +496,8 @@ impl MetroNumberBox {
         let text = self.text_rect(theme, rect);
         let b = if self.focused { 2.0 } else { 1.0 };
         let content = text_input_content_rect(text, b);
-        let line = text_input_line_rect(content, style.line_height);
+        let inner_text = text_input_inner_rect(text, b);
+        let line = text_input_line_rect(content, inner_text, style.line_height);
         let (before, after, cursor_byte, anchor_byte) = self.field.surrounding_text(1000);
         let stream = self.field.display_text();
         let geom = engine.line_geometry(&stream, style.size, 0.0);
@@ -971,9 +973,9 @@ mod tests {
         assert_eq!(triangles, 2, "上/下两个 chevron");
     }
 
-    /// 文本行盒在文本区内容区内垂直居中（与 TextBox 共用几何）。
+    /// 文本行盒在文本区边框内侧矩形内垂直居中（与 TextBox 共用几何）。参裁定 §145。
     #[test]
-    fn text_line_centers_in_content() {
+    fn text_line_centers_in_inner_rect() {
         if !font_available() {
             return;
         }
@@ -983,12 +985,13 @@ mod tests {
         let text = nb.text_rect(&th, rect);
         let b = 1.0;
         let content = text_input_content_rect(text, b);
-        let line = text_input_line_rect(content, th.typography.body.line_height);
+        let inner = text_input_inner_rect(text, b);
+        let line = text_input_line_rect(content, inner, th.typography.body.line_height);
         assert!(
-            (line.center().y - content.center().y).abs() < 0.01,
-            "行框中心 {} 应等于内容区中心 {}",
+            (line.center().y - inner.center().y).abs() < 0.01,
+            "行框中心 {} 应等于内侧矩形中心 {}",
             line.center().y,
-            content.center().y
+            inner.center().y
         );
         assert_eq!(line.size.height, th.typography.body.line_height);
     }
