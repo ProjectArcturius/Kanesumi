@@ -6,7 +6,7 @@
 // wgpu 附着 → frame callback 驱动 `App::update(dt)` / `App::render(engine, size)` → 光栅化 Scene。
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::Scene;
@@ -533,14 +533,11 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         let theme_after = shell
             .next_theme_check
             .saturating_duration_since(Instant::now());
-        // 空闲唤醒取「App 定时器」与「按键重复下次时刻」较早者（参 crate::key_repeat）。
-        let timer = match (shell.app.next_wake_hint(), shell.repeat_wake_hint()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (Some(a), None) => Some(a),
-            (None, Some(b)) => Some(b),
-            (None, None) => None,
-        };
-        let timeout = crate::idle::next_wake(busy, timer, Some(theme_after));
+        // 空闲唤醒取「App 定时器」与「主题节流点」较早者；按键重复 deadline 再单独并入
+        // —— busy 的 16ms 帧兜底可能晚于高 rate 的重复间隔（如 rate=100 → 10ms），
+        // 故在 platform 调用处再夹到更早者，不改未授权的 idle.rs（任务 k-key-repeat 缺陷 5）。
+        let timeout = crate::idle::next_wake(busy, shell.app.next_wake_hint(), Some(theme_after));
+        let timeout = shell.clamp_wake_to_repeat(timeout);
         event_loop
             .dispatch(timeout, &mut shell)
             .map_err(|e| format!("事件循环 dispatch 失败：{e}"))?;
@@ -927,6 +924,9 @@ pub(crate) struct Shell {
     key_repeat: crate::key_repeat::KeyRepeat,
     /// 当前重复键的逻辑键（poll 命中时发它）。
     repeat_logical: Key,
+    /// 首次按下时 xkb 产生的多标量可读文本（如组合序列）；重复时一并重放，
+    /// 保证「首次与重复走同一路径、完整可读文本不丢」（任务 k-key-repeat 缺陷 3）。
+    repeat_text: Option<String>,
     /// 单调时钟基准（重复调度用秒数；与 `Instant` 同轴换算）。
     clock_base: Instant,
     /// 主键盘 xkb keymap（`update_keymap` 建立）——按 `key_repeats` 判定可重复键
@@ -1562,6 +1562,7 @@ impl Shell {
             last_input_serial: None,
             key_repeat: crate::key_repeat::KeyRepeat::new(crate::key_repeat::RepeatConfig::default()),
             repeat_logical: Key::Escape,
+            repeat_text: None,
             clock_base: Instant::now(),
             xkb_keymap: None,
             im_repeat: crate::key_repeat::RepeatConfig::default(),
@@ -2245,7 +2246,12 @@ impl Shell {
     /// 主键盘重复的下次唤醒（秒，None = 无）——并入主循环超时。
     fn repeat_wake_hint(&self) -> Option<f64> {
         let now = self.now_secs();
-        match (self.key_repeat.next_wake(now), self.im_key_repeat.next_wake(now)) {
+        // 引擎路径仅在 `im_active` 时计入（失活后不应再有引擎重复 deadline）。
+        let im = self
+            .im_active
+            .then(|| self.im_key_repeat.next_wake(now))
+            .flatten();
+        match (self.key_repeat.next_wake(now), im) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (Some(a), None) => Some(a),
             (None, Some(b)) => Some(b),
@@ -2253,24 +2259,41 @@ impl Shell {
         }
     }
 
+    /// 把主循环超时再夹到「按键重复下次时刻」不晚于它（参 crate::key_repeat 缺陷 5）。
+    fn clamp_wake_to_repeat(&self, timeout: Option<Duration>) -> Option<Duration> {
+        match self.repeat_wake_hint() {
+            Some(secs) => {
+                let repeat_due = Duration::from_secs_f64(secs.max(0.0));
+                Some(timeout.map_or(repeat_due, |t| t.min(repeat_due)))
+            }
+            None => timeout,
+        }
+    }
+
+    /// 发出一次「按键激活」：`KeyPressed` + （首按下记录的多标量可读文本）`Commit`。
+    /// 首次与重复走同一路径，完整可读文本不丢（任务 k-key-repeat 缺陷 3）。
+    fn emit_key_activation(&mut self, key: Key, text: Option<String>, repeat: bool) {
+        for ev in key_activation_events(key, text, self.modifiers, repeat, !self.ime_enabled) {
+            self.emit_input(ev);
+        }
+    }
+
     /// 到点则发一次重复（不积压；参 crate::key_repeat）。返回是否实际发出（供主循环置脏）。
-    /// - 主键盘（wl_keyboard）路径 → `emit_input(KeyPressed{repeat:true})`；
+    /// - 主键盘（wl_keyboard）路径 → `emit_key_activation(repeat=true)`（含多标量文本）；
     /// - 引擎路径 → 重投 `ime_engine_key`（Ceyboard 消费键自行重复），并刷新候选窗。
     fn poll_key_repeat(&mut self, qh: &QueueHandle<Self>) -> bool {
         let now = self.now_secs();
         let mut fired = false;
         if self.key_repeat.poll(now).is_some() {
             let key = self.repeat_logical;
+            let text = self.repeat_text.clone();
             // 零交互排障留痕：逐次重复按下（含单调时刻，供核对间隔 1000/rate）。
             log::debug!("按键重复 fire key={key:?} t={now:.3}");
-            self.emit_input(InputEvent::KeyPressed {
-                key,
-                modifiers: self.modifiers,
-                repeat: true,
-            });
+            self.emit_key_activation(key, text, true);
             fired = true;
         }
-        if self.im_key_repeat.poll(now).is_some() {
+        // 引擎路径仅在引擎活跃时重复（失活后即使残留 deadline 也不再重投引擎；缺陷 1）。
+        if self.im_active && self.im_key_repeat.poll(now).is_some() {
             let (key, mods) = (self.im_repeat_logical, self.im_repeat_mods);
             log::debug!("输入法按键重复 fire key={key:?} t={now:.3}");
             let _ = guard("ime_engine_key_repeat", || {
@@ -2292,6 +2315,20 @@ impl Shell {
         match self.xkb_keymap.as_ref() {
             Some(km) => km.key_repeats(xkbcommon::xkb::Keycode::new(raw_code + 8)),
             None => crate::key_repeat::default_repeatable(&key),
+        }
+    }
+
+    /// 给所有「已转发给焦点客户端但仍在按住」的键补发虚拟键盘松开并清集合。
+    ///
+    /// 用途：引擎消费了新键 → 目标应用没收到新键，会继续把它以为的最后按键自重复，
+    /// 与引擎重复叠成两层；必须主动松开这些转发键让应用停手（任务 k-key-repeat 缺陷 4）。
+    fn release_forwarded_keys(&mut self) {
+        let held: Vec<u32> = self.forwarded_keys.drain().collect();
+        if let Some(vk) = self.virtual_keyboard.clone() {
+            for code in held {
+                vk.key(self.im_key_time, code, 0); // 释放
+                self.im_key_time += 1;
+            }
         }
     }
 
@@ -3734,6 +3771,9 @@ impl KeyboardHandler for Shell {
             .filter(|text| text.chars().count() > 1)
             .map(str::to_owned);
         let key = map_key(event.keysym, if text.is_some() { None } else { event.utf8 });
+        // 按下任何新键先停止旧的重复（含被 `focus_move` 消费的 Tab —— 旧实现把 Tab 的
+        // 早退放在 `key_repeat.press` 之前，导致按 Tab 时旧键仍在重复；缺陷 2）。
+        self.key_repeat.cancel();
         // Tab / Shift+Tab：框架级焦点推进（App 可选实现 `App::focus_move`）。
         // 仅在 IME 未接管键盘时抢路由 —— 否则会破坏输入法内的候选选择。
         if key == Key::Tab && !self.ime_enabled {
@@ -3748,19 +3788,11 @@ impl KeyboardHandler for Shell {
         // （按 xkb `key_repeats`；参 crate::key_repeat 与任务 k-key-repeat §设计 1/2）。
         let repeatable = self.key_repeatable(key, event.raw_code);
         self.repeat_logical = key;
+        self.repeat_text = text.clone();
         let now = self.now_secs();
         self.key_repeat.press(event.raw_code as u64, now, repeatable);
-        self.emit_input(InputEvent::KeyPressed {
-            key,
-            modifiers: self.modifiers,
-            repeat: false,
-        });
-        // xkb 可产生多标量文本（组合序列等）；不能静默丢掉首字符后的内容。
-        if let Some(text) = text
-            && !self.ime_enabled
-        {
-            self.emit_input(InputEvent::Commit { text });
-        }
+        // 首次与重复走同一路径：KeyPressed + 多标量文本 Commit（不静默丢首字符后内容）。
+        self.emit_key_activation(key, text, false);
         self.dirty = true;
     }
 
@@ -4137,6 +4169,10 @@ impl Dispatch<ZwpInputMethodV2, ()> for Shell {
             ImEvent::Deactivate => {
                 log::info!("IME 引擎失活（im_active=false）");
                 state.im_active = false;
+                // 失活 → 取消引擎路径重复（旧实现未取消 → 失活后仍重投引擎；缺陷 1）。
+                state.im_key_repeat.cancel();
+                // 已转发的按住键补发松开，避免焦点切换后目标应用残留按住态（缺陷 4）。
+                state.release_forwarded_keys();
                 state.im_preedit_cache = None;
                 state.emit_input(InputEvent::Preedit {
                     text: String::new(),
@@ -4169,6 +4205,28 @@ impl Dispatch<ZwpInputMethodV2, ()> for Shell {
 /// **绝不进入 `ime_engine_key`**，故不会触发 Shift 点按判定等引擎逻辑。
 fn grab_key_passthrough(im_active: bool, has_keymap: bool) -> bool {
     !im_active || !has_keymap
+}
+
+/// 一次「按键激活」产出的事件序列：先 `KeyPressed`，若本次由 xkb 产生多标量可读文本
+/// （`text.is_some()`）且未由 IME 接管（`commit_text`）再补一条 `Commit`。首次按下与后续
+/// 重复都走本函数，保证「完整可读文本不丢、首次与重复一致」（任务 k-key-repeat 缺陷 3）。
+/// 纯函数，便于回归。
+fn key_activation_events(
+    key: Key,
+    text: Option<String>,
+    modifiers: Modifiers,
+    repeat: bool,
+    commit_text: bool,
+) -> Vec<InputEvent> {
+    let mut events = vec![InputEvent::KeyPressed {
+        key,
+        modifiers,
+        repeat,
+    }];
+    if commit_text && let Some(text) = text {
+        events.push(InputEvent::Commit { text });
+    }
+    events
 }
 
 impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
@@ -4279,6 +4337,9 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                 // 抓取 `repeat_info` 重投 `ime_engine_key`；未消费的键经虚拟键盘转发、由
                 // 目标应用自重复（不在转发路径合成重复，保证同刻只有一层在重复）。
                 if consumed {
+                    // 引擎消费新键 → 之前转发的按住键必须收到松开（否则目标应用仍以为它是
+                    // 最后按键而继续自重复，与引擎重复叠成两层；任务 k-key-repeat 缺陷 4）。
+                    state.release_forwarded_keys();
                     let repeatable = state
                         .im_xkb
                         .as_ref()
@@ -5255,5 +5316,36 @@ mod tests {
                 )),
             ]
         );
+    }
+
+    /// 重复路径也要带上首次按下记录的多标量可读文本（缺陷 3：完整文本不丢、首次与重复一致）。
+    #[test]
+    fn key_activation_repeat_keeps_multi_scalar_text() {
+        let evs = key_activation_events(
+            Key::Unknown(0x0100_0000),
+            Some("ab".to_string()),
+            Modifiers::NONE,
+            true,
+            true,
+        );
+        assert_eq!(evs.len(), 2, "KeyPressed + Commit");
+        assert!(matches!(evs[0], InputEvent::KeyPressed { repeat: true, .. }));
+        assert!(matches!(&evs[1], InputEvent::Commit { text } if text == "ab"));
+    }
+
+    /// IME 接管键盘时不额外 `Commit`（文本由引擎产出），且单标量无文本只发 `KeyPressed`。
+    #[test]
+    fn key_activation_commit_rules() {
+        let ime = key_activation_events(
+            Key::Unknown(1),
+            Some("ab".to_string()),
+            Modifiers::NONE,
+            false,
+            false,
+        );
+        assert_eq!(ime.len(), 1, "IME 路径不补 Commit");
+        let single =
+            key_activation_events(Key::Char('a'), None, Modifiers::NONE, false, true);
+        assert_eq!(single.len(), 1, "单标量无多标量文本 → 只有 KeyPressed");
     }
 }

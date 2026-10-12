@@ -211,6 +211,18 @@ mod tests {
         assert_eq!(r.held(), None);
     }
 
+    /// 框架消费的新键（如被 `App::focus_move` 吃掉的 Tab）也必须停止旧键重复：
+    /// 外壳在新键按下时一律先 `press`（非可重复键 → 清空）——缺陷 2 的回归。
+    #[test]
+    fn framework_consumed_new_key_stops_previous_repeat() {
+        let mut r = KeyRepeat::new(CFG);
+        r.press(14, 0.0, true); // 先按住重复键（如 Backspace）
+        assert_eq!(r.held(), Some(14));
+        r.press(23, 0.1, false); // Tab：被框架消费 → repeatable=false
+        assert_eq!(r.held(), None, "新键（含被消费的 Tab）按下必须停旧重复");
+        assert_eq!(r.next_wake(0.1), None);
+    }
+
     #[test]
     fn only_last_pressed_key_repeats() {
         let mut r = KeyRepeat::new(CFG);
