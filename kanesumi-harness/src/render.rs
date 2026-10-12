@@ -419,9 +419,13 @@ impl GpuContextExt for GpuContext {
         backends: &[wgpu::Backends],
     ) -> Result<Arc<GpuContext>, RendererError> {
         crate::timeline::note_once("gpu_instance");
-        let ctx = GpuContext::with_surface_creator(backends, |inst| {
-            create_wl_surface(inst, conn, wl_surface)
-        })?;
+        // 子阶段（实例 / 表面 / 适配器 / 设备）各记一行，拆开 727 ms 的设备创建。
+        // 参任务 k-cold-start-gpu §要做的事 1。
+        let ctx = GpuContext::with_surface_creator_noted(
+            backends,
+            |inst| create_wl_surface(inst, conn, wl_surface),
+            crate::timeline::note_once,
+        )?;
         crate::timeline::note_once("gpu_device");
         Ok(ctx)
     }

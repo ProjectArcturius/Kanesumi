@@ -427,7 +427,9 @@ fn encode_scene(
         scale: f32,
         _transparent: bool,
     ) -> Result<Self, RendererError> {
+        let t_caps = std::time::Instant::now();
         let caps = surface.get_capabilities(&ctx.adapter);
+        let caps_ms = t_caps.elapsed().as_secs_f64() * 1000.0;
         let format = ctx.format;
         if !caps.formats.contains(&format) {
             return Err(RendererError::IncompatibleFormat { wanted: format });
@@ -463,7 +465,10 @@ fn encode_scene(
             // 与 v1 一致：优先 Mailbox（acquire 立返），其次 Immediate，最后 FIFO。
             present_mode: choose_present_mode(&caps.present_modes),
         };
+        let t_cfg = std::time::Instant::now();
         surface.configure(device, &config);
+        let configure_ms = t_cfg.elapsed().as_secs_f64() * 1000.0;
+        log::info!("kanesumi CanvasV2 表面计时：caps={caps_ms:.1}ms configure={configure_ms:.1}ms");
         Self::build(
             ctx,
             Some(surface),
@@ -519,9 +524,12 @@ fn encode_scene(
         present_copy: bool,
     ) -> Result<Self, RendererError> {
         let device = &ctx.device;
+        let t_cache = std::time::Instant::now();
         // 管线缓存：设备支持且磁盘有上次数据 → 管线创建走驱动缓存（首帧 < 20 ms 目标）。
         let cache = load_pipeline_cache(&ctx);
         let cache_ref = cache.as_ref().map(|(c, _)| c);
+        let cache_ms = t_cache.elapsed().as_secs_f64() * 1000.0;
+        let t_pipe = std::time::Instant::now();
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("kanesumi-c2-shader"),
@@ -652,6 +660,11 @@ fn encode_scene(
             cache: cache_ref,
         });
 
+        let pipe_ms = t_pipe.elapsed().as_secs_f64() * 1000.0;
+        log::info!(
+            "kanesumi CanvasV2 构建计时：cache_load={cache_ms:.1}ms pipelines={pipe_ms:.1}ms cache={}",
+            if cache.is_some() { "on" } else { "n/a" }
+        );
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("kanesumi-c2-sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
