@@ -324,12 +324,15 @@ impl MetroNumberBox {
         );
 
         // 文本（左内边距 10）：行盒在文本区的**边框内侧矩形**内垂直居中（与 TextBox 共用几何）。
+        // 字形裁剪框同样取文本区的内侧矩形（不含内边距）—— 旧实现只有外层 `push_clip(rect)`，
+        // 长文本会越过文本区压到 Spin 列上，且下伸部不受内侧矩形约束（裁定 §145 同款契约）。
         let text_rect = self.text_rect(theme, rect);
         let content = text_input_content_rect(text_rect, b);
         let inner_text = text_input_inner_rect(text_rect, b);
         let line = text_input_line_rect(content, inner_text, style.line_height);
         let fg = colors.on_surface.with_alpha(colors.on_surface.a * alpha);
         let text = self.field.display_text();
+        scene.push_clip(inner_text);
         scene.text(
             text,
             Rect::new(
@@ -342,6 +345,7 @@ impl MetroNumberBox {
             style,
             TextAlign::Left,
         );
+        scene.pop_clip();
 
         // Spin 按钮（Compact）
         if self.placement == SpinPlacement::Compact && !disabled {
