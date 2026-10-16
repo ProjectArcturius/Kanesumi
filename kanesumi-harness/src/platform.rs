@@ -452,7 +452,7 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
                 match crate::render::GpuContext::new(
                     &conn,
                     &tmp,
-                    &[wgpu::Backends::VULKAN, wgpu::Backends::GL],
+                    &crate::render::render_backends(),
                 ) {
                     Ok(ctx) => {
                         log::info!("GPU 上下文预载完成（与字体加载并行）");
@@ -1953,11 +1953,7 @@ impl Shell {
             return Some(ctx.clone());
         }
         // 后端候选与 `Renderer::new` 一致：Vulkan 优先，GL 回退（Known Issue #8）。
-        match GpuContext::new(
-            &self.conn,
-            wl_surface,
-            &[wgpu::Backends::VULKAN, wgpu::Backends::GL],
-        ) {
+        match GpuContext::new(&self.conn, wl_surface, &crate::render::render_backends()) {
             Ok(ctx) => {
                 log::info!(
                     "wgpu 共享上下文已创建（format={:?}）—— 主表面/浮层共用一份 device",
