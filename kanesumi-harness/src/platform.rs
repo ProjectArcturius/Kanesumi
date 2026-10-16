@@ -2328,6 +2328,20 @@ impl Shell {
         }
     }
 
+    /// 新键交给引擎时只停止目标应用的重复键，仍按住的修饰键必须等物理松开。
+    fn release_forwarded_repeat_keys(&mut self) {
+        let held = forwarded_repeat_keys(&self.forwarded_keys, |code| {
+            self.im_xkb.as_ref().is_some_and(|xkb| xkb.key_repeats(code))
+        });
+        if let Some(vk) = self.virtual_keyboard.clone() {
+            for code in held {
+                self.forwarded_keys.remove(&code);
+                vk.key(self.im_key_time, code, 0);
+                self.im_key_time += 1;
+            }
+        }
+    }
+
     /// 渲染 + 提交（dirty 驱动；I-1：CPU 缓冲恒就绪，无条件成功）。
     /// 渲染后若仍有动画（needs_redraw 语义 = 内容脏）→ 请求下一帧回调作 vsync
     /// 提示（I-2）。回调丢失绝不冻结：主循环 16ms 兜底超时继续推进。
@@ -2414,6 +2428,17 @@ impl Shell {
                 .render(&self.app.theme(), &self.engine, &mut self.scene_buf);
         }
         let render_ms = t_render.elapsed().as_secs_f32() * 1000.0;
+        // 原书 60→43 的搜索文本超过视口；显式测试时记录真实 Scene 的纯 a 串长度，
+        // 不改控件宽度、不推导输入状态、不记录任意用户文字。参任务 k-key-repeat §验证 3。
+        if std::env::var("KANESUMI_KEYREPEAT_TRACE").as_deref() == Ok("1") {
+            for command in &self.scene_buf.commands {
+                if let kanesumi_canvas::SceneCommand::Text { content, .. } = command
+                    && let Some(len) = repeat_trace_len(content)
+                {
+                    log::debug!("keyrepeat_ascii_scene chars={len} frame={}", self.frame_count);
+                }
+            }
+        }
         // 时间线：首帧 Scene 渲染完成（App::render_into 返回）。
         crate::timeline::note_once("first_frame_rendered");
 
@@ -3836,6 +3861,15 @@ impl KeyboardHandler for Shell {
             }
         };
         self.key_repeat.set_config(cfg);
+        // 输入法宿主也持有同一 seat 的普通键盘；其 repeat_info 会跟随运行时更新。
+        // 抓取对象只有创建时的通知，故在现有普通键盘回调同步参数，不改合成器。
+        if self.input_method.is_some() {
+            self.im_repeat = cfg;
+            self.im_key_repeat.set_config(cfg);
+            let _ = guard("ime_engine_repeat_info", || {
+                self.app.ime_engine_repeat_info(cfg.rate, cfg.delay_ms)
+            });
+        }
     }
 
     /// keymap 变化：另编一份供 `key_repeats` 判定可重复键（sctk 不暴露 xkb 状态）。
@@ -4102,6 +4136,12 @@ impl Dispatch<ZwpTextInputV3, ()> for Shell {
                 state.pending_ime.delete_after = after_length;
             }
             TextInputEvent::Done { serial } => {
+                if std::env::var("KANESUMI_KEYREPEAT_TRACE").as_deref() == Ok("1")
+                    && let Some(text) = state.pending_ime.commit.as_ref()
+                    && let Some(len) = repeat_trace_len(text)
+                {
+                    log::debug!("keyrepeat_done serial={serial} current={} chars={len}", state.commit_serial);
+                }
                 // 仅 serial 匹配生效（stale 帧丢弃，参 IME_WIRING_PLAN 风险 1）。
                 match state.pending_ime.apply_done(serial, state.commit_serial) {
                     Some(events) => {
@@ -4225,6 +4265,19 @@ fn key_activation_events(
     events
 }
 
+/// 只选择确实可重复的已转发键，避免把修饰键的虚拟松开提前发出。
+fn forwarded_repeat_keys(
+    held: &std::collections::HashSet<u32>,
+    mut repeats: impl FnMut(u32) -> bool,
+) -> Vec<u32> {
+    held.iter().copied().filter(|code| repeats(*code)).collect()
+}
+
+/// 诊断只接受本件的纯 a 测试串，避免日志泄露任意输入内容。
+fn repeat_trace_len(text: &str) -> Option<usize> {
+    (!text.is_empty() && text.bytes().all(|byte| byte == b'a')).then_some(text.len())
+}
+
 impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
     fn event(
         state: &mut Self,
@@ -4335,7 +4388,7 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                 if consumed {
                     // 引擎消费新键 → 之前转发的按住键必须收到松开（否则目标应用仍以为它是
                     // 最后按键而继续自重复，与引擎重复叠成两层；任务 k-key-repeat 缺陷 4）。
-                    state.release_forwarded_keys();
+                    state.release_forwarded_repeat_keys();
                     let repeatable = state
                         .im_xkb
                         .as_ref()
@@ -5343,5 +5396,21 @@ mod tests {
         let single =
             key_activation_events(Key::Char('a'), None, Modifiers::NONE, false, true);
         assert_eq!(single.len(), 1, "单标量无多标量文本 → 只有 KeyPressed");
+    }
+
+    #[test]
+    fn consumed_key_stops_forwarded_repeat_but_keeps_modifiers() {
+        let held = std::collections::HashSet::from([14, 29, 42]);
+        let release = forwarded_repeat_keys(&held, |code| code == 14);
+        assert_eq!(release, vec![14], "只停止退格，Ctrl/Shift 等物理松开");
+        assert_eq!(held.len(), 3, "选择函数不更改按住集合");
+    }
+
+    #[test]
+    fn repeat_trace_counts_complete_test_text_only() {
+        assert_eq!(repeat_trace_len(&"a".repeat(43)), Some(43));
+        assert_eq!(repeat_trace_len(""), None);
+        assert_eq!(repeat_trace_len("private"), None);
+        assert_eq!(repeat_trace_len("a中文"), None);
     }
 }
