@@ -76,7 +76,7 @@ use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
 };
 
 use crate::app::{
-    AnchorKind, App, FloatingLayer, ImeAction, ImeContentHint, ImeContext, InputEvent, Key,
+    AnchorKind, App, FloatingLayer, ImeAction, ImeContentHint, ImeContext, ImeReconcileGate, InputEvent, Key,
     LayerKind, Modifiers, PendingImeBatch, PointerButton, ScrollInput, ScrollPhase, ScrollSource,
     compute_ime_action,
 };
@@ -791,10 +791,12 @@ pub(crate) struct Shell {
     ime_enabled: bool,
     /// wl_keyboard / text-input enter 标记：表面是否持键盘焦点。
     ime_focus_surface: bool,
-    /// 单调 commit 计数 —— 每次实际 commit() 后 +1，done serial 与之匹配才生效。
+    /// 单调 commit 计数；done 匹配决定上下文回灌，文字不因 serial 不匹配而丢弃。
     commit_serial: u32,
     /// done 到达前累积的事件批。
     pending_ime: PendingImeBatch,
+    /// stale done 后延迟上下文回灌，匹配 done 或使能翻转后恢复。
+    ime_reconcile_gate: ImeReconcileGate,
     /// 上次发送的 IME 上下文缓存（无变化不重发，避免每帧灌上下文 + commit 抖动）。
     ime_context_cache: Option<ImeContext>,
 
@@ -1509,6 +1511,7 @@ impl Shell {
             ime_focus_surface: false,
             commit_serial: 0,
             pending_ime: PendingImeBatch::default(),
+            ime_reconcile_gate: ImeReconcileGate::default(),
             ime_context_cache: None,
             input_method_manager,
             input_method: None,
@@ -2328,7 +2331,7 @@ impl Shell {
         }
     }
 
-    /// 新键交给引擎时只停止目标应用的重复键，仍按住的修饰键必须等物理松开。
+    /// 引擎消费新键时停止目标应用的重复，修饰键仍等待物理松开。
     fn release_forwarded_repeat_keys(&mut self) {
         let held = forwarded_repeat_keys(&self.forwarded_keys, |code| {
             self.im_xkb.as_ref().is_some_and(|xkb| xkb.key_repeats(code))
@@ -2428,8 +2431,7 @@ impl Shell {
                 .render(&self.app.theme(), &self.engine, &mut self.scene_buf);
         }
         let render_ms = t_render.elapsed().as_secs_f32() * 1000.0;
-        // 原书 60→43 的搜索文本超过视口；显式测试时记录真实 Scene 的纯 a 串长度，
-        // 不改控件宽度、不推导输入状态、不记录任意用户文字。参任务 k-key-repeat §验证 3。
+        // 只在显式诊断时记录纯 a 测试串长度，不记录任意用户文本。
         if std::env::var("KANESUMI_KEYREPEAT_TRACE").as_deref() == Ok("1") {
             for command in &self.scene_buf.commands {
                 if let kanesumi_canvas::SceneCommand::Text { content, .. } = command
@@ -2813,6 +2815,9 @@ impl Shell {
 
         // 使能状态翻转才发 enable/disable（幂等，避免协议流量）。
         let action = compute_ime_action(self.ime_focus_surface, focus_control, self.ime_enabled);
+        if !self.ime_reconcile_gate.allows_context_update(action) {
+            return;
+        }
         if let Some(action) = action {
             self.ime_enabled = matches!(action, ImeAction::Enable);
             match action {
@@ -3861,8 +3866,7 @@ impl KeyboardHandler for Shell {
             }
         };
         self.key_repeat.set_config(cfg);
-        // 输入法宿主也持有同一 seat 的普通键盘；其 repeat_info 会跟随运行时更新。
-        // 抓取对象只有创建时的通知，故在现有普通键盘回调同步参数，不改合成器。
+        // 抓取对象只在创建时通知参数；同一 seat 的普通键盘还会收到运行时更新。
         if self.input_method.is_some() {
             self.im_repeat = cfg;
             self.im_key_repeat.set_config(cfg);
@@ -4142,23 +4146,15 @@ impl Dispatch<ZwpTextInputV3, ()> for Shell {
                 {
                     log::debug!("keyrepeat_done serial={serial} current={} chars={len}", state.commit_serial);
                 }
-                // 仅 serial 匹配生效（stale 帧丢弃，参 IME_WIRING_PLAN 风险 1）。
-                match state.pending_ime.apply_done(serial, state.commit_serial) {
-                    Some(events) => {
-                        for ev in events {
-                            state.emit_input(ev);
-                        }
-                    }
-                    None => {
-                        log::debug!(
-                            "text-input done serial {serial}（当前 {}）stale，丢弃",
-                            state.commit_serial
-                        );
-                    }
-                }
+                let outcome = state.pending_ime.apply_done(serial, state.commit_serial);
                 state.pending_ime = PendingImeBatch::default();
-                // 派发后文本/光标已变 → 重新灌上下文。
-                state.reconcile_ime();
+                for event in outcome.events {
+                    state.emit_input(event);
+                }
+                // 文字照常应用；回灌仅在匹配 done 后做，下一次匹配会补发缓存差异。
+                if state.ime_reconcile_gate.after_done(outcome.serial_matched) {
+                    state.reconcile_ime();
+                }
             }
             _ => {}
         }
@@ -4265,7 +4261,7 @@ fn key_activation_events(
     events
 }
 
-/// 只选择确实可重复的已转发键，避免把修饰键的虚拟松开提前发出。
+/// 只选择可重复的已转发键，避免提前松开仍按住的修饰键。
 fn forwarded_repeat_keys(
     held: &std::collections::HashSet<u32>,
     mut repeats: impl FnMut(u32) -> bool,
@@ -4273,7 +4269,7 @@ fn forwarded_repeat_keys(
     held.iter().copied().filter(|code| repeats(*code)).collect()
 }
 
-/// 诊断只接受本件的纯 a 测试串，避免日志泄露任意输入内容。
+/// 诊断仅接受纯 a 测试串。
 fn repeat_trace_len(text: &str) -> Option<usize> {
     (!text.is_empty() && text.bytes().all(|byte| byte == b'a')).then_some(text.len())
 }

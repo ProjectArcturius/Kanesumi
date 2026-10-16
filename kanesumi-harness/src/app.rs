@@ -689,12 +689,57 @@ impl PendingImeBatch {
         out
     }
 
-    /// done 应用：`serial == current_serial`（非 stale 帧）才返回事件流，否则 None。
-    pub fn apply_done(&self, serial: u32, current_serial: u32) -> Option<Vec<InputEvent>> {
-        if serial != current_serial {
-            return None;
+    /// done 应用：**一律**展开事件流（stale 也照常应用，参 text-input-v3 与
+    /// `docs/STATE_2026-10-13.md` §Ⅳ），并标明 serial 是否匹配；只有匹配才可回灌 IME 上下文。
+    pub fn apply_done(&self, serial: u32, current_serial: u32) -> ImeDoneOutcome {
+        ImeDoneOutcome {
+            events: self.apply(),
+            serial_matched: serial == current_serial,
         }
-        Some(self.apply())
+    }
+}
+
+/// `PendingImeBatch::apply_done` 的结果。
+///
+/// text-input-v3 规定：serial 不等的 done **仍须照常应用**变更，只是不改 current state
+/// （GTK `gtk_im_context_wayland` / Qt `zwp_text_input_v3_done` 均如此实现）。旧实现把 stale
+/// 整批丢弃，是 2026-10-13 四组对照实测的 IME 英文档丢字主因（`docs/STATE_2026-10-13.md` §Ⅳ）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImeDoneOutcome {
+    /// 协议 done 展开的输入事件，stale 同样照常展开。
+    pub events: Vec<InputEvent>,
+    /// `serial == current_serial`；false = stale，不得回灌 IME 上下文。
+    pub serial_matched: bool,
+}
+
+/// IME 上下文回灌门 —— stale done 后延后回灌，下一次匹配 done 后补做。
+///
+/// 为什么 stale 后不能立刻回灌：回灌 = `push_ime_context` + `commit`，会把本地 serial 抢进，
+/// 让同一队列中仍在途的重复 commit 被对端判 stale，反而放大丢字（2026-10-13 四组对照）。
+/// enable / disable 翻转由 `compute_ime_action` 独立决定，不经此门（任务书补充 2026-10-13 设计 2）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ImeReconcileGate {
+    pending: bool,
+}
+
+impl ImeReconcileGate {
+    /// done 到达后的决策：返回是否应立刻回灌上下文；stale → 记待回灌标志并返回 false。
+    pub fn after_done(&mut self, serial_matched: bool) -> bool {
+        self.pending = !serial_matched;
+        serial_matched
+    }
+
+    /// 是否有 stale done 留下的待回灌（下一次匹配 done 会清掉）。
+    pub fn pending(&self) -> bool {
+        self.pending
+    }
+
+    /// 使能翻转先解除旧批次的等待；普通更新须等匹配的 done。
+    pub fn allows_context_update(&mut self, action: Option<ImeAction>) -> bool {
+        if action.is_some() {
+            self.pending = false;
+        }
+        !self.pending
     }
 }
 
@@ -811,7 +856,7 @@ mod tests {
             delete_before: 3,
             delete_after: 6,
         };
-        let events = b.apply();
+        let events = b.apply_done(0, 1).events;
         assert!(matches!(
             events[0],
             InputEvent::DeleteSurrounding {
@@ -826,13 +871,48 @@ mod tests {
     }
 
     #[test]
-    fn pending_batch_stale_serial_is_dropped() {
+    fn pending_batch_stale_serial_is_applied_without_state_match() {
         let b = PendingImeBatch {
             commit: Some("x".into()),
             ..Default::default()
         };
-        assert_eq!(b.apply_done(1, 1).unwrap().len(), 1, "匹配 serial 生效");
-        assert_eq!(b.apply_done(0, 1), None, "stale serial 丢弃");
+        let matched = b.apply_done(1, 1);
+        assert!(matched.serial_matched);
+        assert_eq!(matched.events.len(), 1, "匹配 serial 生效");
+        let stale = b.apply_done(0, 1);
+        assert!(!stale.serial_matched);
+        assert_eq!(stale.events, matched.events, "stale 仍应用同一批文字");
+        assert!(matches!(&stale.events[0], InputEvent::Commit { text } if text == "x"));
+    }
+
+    #[test]
+    fn stale_done_defers_context_until_matching_done() {
+        let mut gate = ImeReconcileGate::default();
+        let mut sent_context = "old";
+        assert!(!gate.after_done(false));
+        assert!(gate.pending());
+        for desired in ["x", "xy"] {
+            if gate.allows_context_update(compute_ime_action(true, true, true)) {
+                sent_context = desired;
+            }
+        }
+        assert_eq!(sent_context, "old", "stale 后不回灌，也不提前更新已发送缓存");
+        assert!(gate.after_done(true));
+        if gate.allows_context_update(compute_ime_action(true, true, true)) {
+            sent_context = "xy";
+        }
+        assert_eq!(sent_context, "xy", "下一匹配 done 补发最新上下文");
+        assert!(!gate.pending());
+    }
+
+    #[test]
+    fn ime_enable_and_disable_bypass_stale_context_gate() {
+        let mut gate = ImeReconcileGate::default();
+        for action in [compute_ime_action(true, true, false), compute_ime_action(false, true, true)] {
+            assert!(!gate.after_done(false));
+            assert!(gate.allows_context_update(action));
+            assert!(!gate.pending(), "使能翻转清掉上一轮 stale 等待");
+        }
     }
 
     #[test]
