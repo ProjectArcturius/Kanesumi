@@ -127,8 +127,9 @@ impl GpuContext {
     }
 
     /// 同 [`Self::with_surface_creator`]，但在各子步骤后回调 `note(&'static str)`。
-    /// 供上层把 727 ms 的设备创建拆成「实例 / 表面 / 适配器 / 设备」四段记入拉起时间线。
-    /// 参任务书 k-cold-start-gpu §要做的事 1；回调只收静态阶段名，不引入依赖。
+    /// 供上层把 `gpu_create`（`gpu_instance`→`gpu_device`）拆成「实例 / 表面 / 适配器 / 设备」
+    /// 四段记入拉起时间线。参任务书 k-cold-start-gpu §要做的事 1；回调只收静态阶段名，
+    /// 不引入依赖。各段同机实测值见 docs/research/k_cold_start_gpu/ARCDECK_2026-10-16.md §Ⅱ。
     pub fn with_surface_creator_noted<F, N>(
         backends: &[wgpu::Backends],
         create_surface: F,
@@ -154,11 +155,14 @@ impl GpuContext {
             };
             note("gpu_surface_created");
             // 适配器选择（冷启动关键路径，参任务 §要做的事 1 / 3）：
-            // 先按「无表面约束」请求 LowPower 适配器 —— 带 `compatible_surface` 时 Vulkan
-            // WSI 在枚举期对每个物理设备做表面兼容探测，真机实测每次多付约 0.42 s。
-            // 随后用 `is_surface_supported` 核对能否呈现到本表面；不通过再退回带表面请求
-            // （多 GPU 场景下「无表面」可能选到不能呈现的卡）。末段 `force_fallback` 与
-            // 原实现一致，保证软渲染兜底。
+            // 先按「无表面约束」请求 LowPower 适配器，随后用 `is_surface_supported` 核对能否
+            // 呈现到本表面；不通过再退回带表面请求（多 GPU 场景下「无表面」可能选到不能呈现
+            // 的卡）。末段 `force_fallback` 与原实现一致，保证软渲染兜底。
+            // ⚠ 归因纠正（2026-10-16）：本条原注「带 `compatible_surface` 时 Vulkan WSI 在
+            // 枚举期对每个物理设备做表面兼容探测，真机实测每次多付约 0.42 s」是唤醒修复前的
+            // 无头 I/O 节拍伪影（`headless-io-wake` `1e569f32`），不是枚举成本；修后同机实测
+            // `gpu_adapter` 次启 p50 3.7 ms / 首启 5.4 ms。快路径仍保留 —— `is_surface_supported`
+            // 是多 GPU 选卡的核对；本轮未做「带表面请求」对照，故不宣称其省时收益。
             let fast = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::LowPower,
                 compatible_surface: None,

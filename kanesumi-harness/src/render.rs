@@ -386,13 +386,18 @@ pub(crate) fn create_wl_surface(
 
 /// GPU 后端候选：**缺省 Vulkan 优先、GL 回退**（既有缺省，不动）。
 ///
-/// 真机测得（Debian 13 / Arrow Lake / Mesa 25.0.7）Vulkan 的 WSI 每次进程要付
-/// `request_adapter`（带表面兼容探测约 0.49 s）+ 首次 `get_capabilities` + 首次
-/// `configure`，合计约 1 s；GL 同机对应约数十毫秒（参 docs/research/k_cold_start_gpu）。
-/// 但**缺省后端是产品行为，不在本任务授权范围内**：本件只做惰性 / 并行 / 缓存等初始化
-/// 优化，不改写 Vulkan 优先 / GL 回退的既有缺省。`KANESUMI_GPU_BACKEND=gl|vulkan`
-/// 仅用于诊断 A/B；显式 GL 过预算不构成缺省实现过线（Vulkan 曾在 Ether 下
-/// `SURFACE_LOST`，参 Known Issue #8，故 GL 只作回退）。
+/// ⚠ 归因纠正（2026-10-16）：此处原注「Vulkan 的 WSI 每次进程要付 `request_adapter`
+/// （带表面兼容探测约 0.49 s）+ 首次 `get_capabilities` + 首次 `configure`，合计约 1 s，
+/// 属驱动固有开销」**已被推翻**。那个量级是无头合成器每个虚拟 vblank 只读一次客户端请求
+/// 造成的 I/O 节拍等待（`headless-io-wake` `1e569f32` 已修），与 Vulkan WSI 无关。
+/// 同一台机（Debian 13 / Arrow Lake / Mesa 25.0.7、无头 60 Hz、缺省 Vulkan、缓存命中、n=11）
+/// 修后实测：次启 total p50 / p95 **123.3 / 131.7 ms**，其中 `gpu_create` 26.6 / 42.1、
+/// `renderer_build` 3.4 / 7.2、管线编译 1.1 / 2.5 ms；GL A/B 同机 96.8 / 102.7 ms。
+/// 参 docs/research/k_cold_start_gpu/ARCDECK_2026-10-16.md §Ⅱ。
+/// 故「Vulkan 太慢 → 换缺省后端」不成立；**缺省后端是产品行为，不在本任务授权范围内**：
+/// 本件只做惰性 / 并行 / 缓存等初始化优化，不改写 Vulkan 优先 / GL 回退的既有缺省。
+/// `KANESUMI_GPU_BACKEND=gl|vulkan` 仅用于诊断 A/B；显式 GL 过预算不构成缺省实现过线
+/// （Vulkan 曾在 Ether 下 `SURFACE_LOST`，参 Known Issue #8，故 GL 只作回退）。
 pub fn render_backends() -> Vec<wgpu::Backends> {
     match std::env::var("KANESUMI_GPU_BACKEND").ok().as_deref() {
         Some("vulkan") => vec![wgpu::Backends::VULKAN],
@@ -419,8 +424,9 @@ impl GpuContextExt for GpuContext {
         backends: &[wgpu::Backends],
     ) -> Result<Arc<GpuContext>, RendererError> {
         crate::timeline::note_once("gpu_instance");
-        // 子阶段（实例 / 表面 / 适配器 / 设备）各记一行，拆开 727 ms 的设备创建。
-        // 参任务 k-cold-start-gpu §要做的事 1。
+        // 子阶段（实例 / 表面 / 适配器 / 设备）各记一行，把 `gpu_create` 拆开。
+        // 参任务 k-cold-start-gpu §要做的事 1；727 ms 是 dep1 在修 DRM 唤醒之前测的旧值，
+        // 同机无头复测值见 docs/research/k_cold_start_gpu/ARCDECK_2026-10-16.md §Ⅱ。
         let ctx = GpuContext::with_surface_creator_noted(
             backends,
             |inst| create_wl_surface(inst, conn, wl_surface),
