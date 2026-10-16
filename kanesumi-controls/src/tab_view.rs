@@ -440,7 +440,7 @@ impl kanesumi_element::Widget for MetroTabView {
                     ctx.set_handled();
                 }
             }
-            Event::KeyDown { key, modifiers } => {
+            Event::KeyDown { key, modifiers, .. } => {
                 // Ctrl+Tab / Ctrl+Shift+Tab 切页；普通 Tab 直接放行给框架焦点遍历。
                 if *key != Key::Tab || !modifiers.ctrl || self.tabs.is_empty() {
                     return;

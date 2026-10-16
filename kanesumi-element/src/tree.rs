@@ -1588,10 +1588,16 @@ impl Tree {
 
     /// 键按下。返回是否被消费（未消费的键外壳可另作他用）。
     pub fn key_down(&mut self, key: Key, modifiers: Modifiers) -> bool {
+        self.key_down_ex(key, modifiers, false)
+    }
+
+    /// 键按下（带重复标记）。`repeat=true` 表示由客户端重复调度产生；控件可据此忽略
+    /// 「按住连发」的激活（按钮族），文本输入照常消费。参任务 k-key-repeat §设计 4。
+    pub fn key_down_ex(&mut self, key: Key, modifiers: Modifiers, repeat: bool) -> bool {
         // 键盘输入即收起提示（UWP：键盘交互优先于提示）。
         self.hide_tooltip();
         let handled = match self.focus {
-            Some(f) => self.deliver(f, &Event::KeyDown { key, modifiers }),
+            Some(f) => self.deliver(f, &Event::KeyDown { key, modifiers, repeat }),
             None => false,
         };
         if handled {

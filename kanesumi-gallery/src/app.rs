@@ -2071,7 +2071,7 @@ impl App for GalleryApp {
                         .scroll_by(&self.theme, self.list_rect().size.height, y);
                 }
             }
-            InputEvent::KeyPressed { key, modifiers } => {
+            InputEvent::KeyPressed { key, modifiers, .. } => {
                 // 键盘路由：聚焦的输入控件优先（TextBox / PasswordBox / NumberBox / AutoSuggestBox）
                 let focused = self.focused_input();
 
@@ -2733,10 +2733,12 @@ mod tests {
         g.handle_input(InputEvent::KeyPressed {
             key: kanesumi_harness::Key::Char('X'),
             modifiers: kanesumi_harness::Modifiers::NONE,
+            repeat: false,
         });
         g.handle_input(InputEvent::KeyPressed {
             key: kanesumi_harness::Key::Char('Y'),
             modifiers: kanesumi_harness::Modifiers::NONE,
+            repeat: false,
         });
         // 聚焦全选 → 输入替换内容
         assert!(g.textbox.field.text().ends_with("XY"), "输入应生效");
@@ -2758,6 +2760,7 @@ mod tests {
         g.handle_input(InputEvent::KeyPressed {
             key: HarnessKey::Char('a'),
             modifiers: ctrl,
+            repeat: false,
         });
         let field = &g.textbox.field;
         let sel = field.selection();
@@ -2767,6 +2770,7 @@ mod tests {
         g.handle_input(InputEvent::KeyPressed {
             key: HarnessKey::Char('c'),
             modifiers: ctrl,
+            repeat: false,
         });
         let copied = g.clipboard.clone();
         assert_eq!(copied, g.textbox.field.text(), "Ctrl+C 应复制全部文本");
@@ -2776,6 +2780,7 @@ mod tests {
         g.handle_input(InputEvent::KeyPressed {
             key: HarnessKey::Char('v'),
             modifiers: ctrl,
+            repeat: false,
         });
         let text = g.textbox.field.text();
         assert!(
@@ -2786,6 +2791,7 @@ mod tests {
         g.handle_input(InputEvent::KeyPressed {
             key: HarnessKey::Char('z'),
             modifiers: ctrl,
+            repeat: false,
         });
         assert_eq!(
             g.textbox.field.text().len(),
@@ -2797,6 +2803,7 @@ mod tests {
         g.handle_input(InputEvent::KeyPressed {
             key: HarnessKey::Char('a'),
             modifiers: HarnessModifiers::NONE,
+            repeat: false,
         });
         assert!(
             g.textbox.field.text().len() == before_len + 1,
@@ -2911,10 +2918,12 @@ mod tests {
         g.handle_input(InputEvent::KeyPressed {
             key: kanesumi_harness::Key::Char('a'),
             modifiers: kanesumi_harness::Modifiers::NONE,
+            repeat: false,
         });
         g.handle_input(InputEvent::KeyPressed {
             key: kanesumi_harness::Key::Char('b'),
             modifiers: kanesumi_harness::Modifiers::NONE,
+            repeat: false,
         });
         assert_eq!(g.password.password(), "ab");
         assert_eq!(g.password.boxed.field.display_text(), "●●");
@@ -2955,6 +2964,7 @@ mod tests {
         g.handle_input(InputEvent::KeyPressed {
             key: kanesumi_harness::Key::Char('苹'),
             modifiers: kanesumi_harness::Modifiers::NONE,
+            repeat: false,
         });
         assert_eq!(g.suggest.shown, vec!["苹果"], "过滤建议");
     }

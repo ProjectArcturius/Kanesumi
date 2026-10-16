@@ -145,9 +145,15 @@ impl kanesumi_element::Widget for MetroButton {
     fn event(&mut self, ctx: &mut kanesumi_element::EventCtx, event: &kanesumi_element::Event) {
         use kanesumi_element::{Event, Key};
         match event {
-            Event::Click
-            | Event::KeyDown {
+            Event::Click => {
+                ctx.emit(ButtonClicked);
+                ctx.set_handled();
+            }
+            // 按钮族忽略按住连发（repeat=true）：否则按住 Enter/Space 会连发激活
+            // （任务 k-key-repeat §设计 4）。
+            Event::KeyDown {
                 key: Key::Enter | Key::Char(' '),
+                repeat: false,
                 ..
             } => {
                 ctx.emit(ButtonClicked);
@@ -230,6 +236,23 @@ mod tree_tests {
         h.frame();
         h.click(id);
         assert!(h.take::<ButtonClicked>().is_empty());
+    }
+
+    /// 按住 Enter/Space 的连发（repeat=true）不得重复激活按钮（任务 k-key-repeat §设计 4）。
+    #[test]
+    fn repeat_keydown_ignores_activation() {
+        let (mut h, id) = harness();
+        h.click(id); // 指针激活一次
+        h.tab(); // 聚焦
+        h.tree
+            .key_down_ex(Key::Enter, kanesumi_element::Modifiers::NONE, false);
+        h.tree
+            .key_down_ex(Key::Enter, kanesumi_element::Modifiers::NONE, true);
+        assert_eq!(
+            h.take::<ButtonClicked>().len(),
+            2,
+            "指针 + 首次按下各一次；repeat=true 连发不得激活"
+        );
     }
 }
 

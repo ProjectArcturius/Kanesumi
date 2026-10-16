@@ -156,8 +156,8 @@ fn feed(t: &mut Tree, pointer: &mut Point, event: InputEvent) -> Option<(Key, Mo
         InputEvent::ScrollInput(input) => {
             t.scroll_ex(*pointer, input);
         }
-        InputEvent::KeyPressed { key, modifiers } => {
-            if !t.key_down(key, modifiers) {
+        InputEvent::KeyPressed { key, modifiers, repeat } => {
+            if !t.key_down_ex(key, modifiers, repeat) {
                 return Some((key, modifiers));
             }
         }
@@ -906,6 +906,7 @@ mod tests {
         h.handle_input(InputEvent::KeyPressed {
             key: Key::Char('w'),
             modifiers: Modifiers::NONE,
+            repeat: false,
         });
         h.handle_input(InputEvent::Commit { text: "无线".into() });
         assert_eq!(h.app().last_text, "w无线");
@@ -918,6 +919,7 @@ mod tests {
         let q = InputEvent::KeyPressed {
             key: Key::Char('q'),
             modifiers: Modifiers::NONE,
+            repeat: false,
         };
         h.handle_input(q.clone()); // 无焦点 → 应用级快捷键
         assert_eq!(h.app().accelerators, 1);

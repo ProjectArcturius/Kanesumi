@@ -812,7 +812,7 @@ impl kanesumi_element::Widget for MetroTextBox {
                 }
                 ctx.set_handled();
             }
-            Event::KeyDown { key, modifiers } => {
+            Event::KeyDown { key, modifiers, .. } => {
                 // Tab 留给框架做焦点遍历；Esc 留给弹层关闭。
                 if matches!(key, Key::Tab | Key::Escape) {
                     return;
