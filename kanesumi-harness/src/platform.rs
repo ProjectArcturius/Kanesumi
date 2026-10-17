@@ -398,6 +398,8 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
     event_loop
         .handle()
         .insert_source(ping_source, |(), _, shell: &mut Shell| {
+            // 唤醒可能来自两个来源：解码就绪，或外部线程的 wake::request()。
+            // 后者不需要在这里置脏——本轮 step 会让 App 自己声明 needs_redraw（置脏会多出空渲染）。
             let ready = kanesumi_canvas::decode::poll_ready();
             if !ready.is_empty() {
                 shell.app.on_decode_ready(&ready);
@@ -410,6 +412,9 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
     kanesumi_canvas::decode::set_ready_hook(Box::new(move || {
         ping_clone.ping();
     }));
+    // 同一桥接暴露给外部线程：`wake::request()` 直接 ping，主循环立刻醒来。
+    let wake_ping = ping.clone();
+    crate::wake::set_hook(std::sync::Arc::new(move || wake_ping.ping()));
     struct ReadyHookGuard;
     impl Drop for ReadyHookGuard {
         fn drop(&mut self) {

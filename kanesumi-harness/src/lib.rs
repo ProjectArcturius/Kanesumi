@@ -18,6 +18,7 @@ pub mod role;
 pub mod system_theme;
 pub mod timeline;
 pub mod tree_host;
+pub mod wake;
 
 pub mod canvas_v2;
 pub use kanesumi_render::cpu_raster;
