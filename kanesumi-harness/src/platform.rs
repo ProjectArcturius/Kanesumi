@@ -795,6 +795,8 @@ pub(crate) struct Shell {
     ime_enabled: bool,
     /// wl_keyboard / text-input enter 标记：表面是否持键盘焦点。
     ime_focus_surface: bool,
+    /// 当前持键盘焦点的浮层；None 表示主表面。
+    keyboard_floating: Option<usize>,
     /// 单调 commit 计数；done 匹配决定上下文回灌，文字不因 serial 不匹配而丢弃。
     commit_serial: u32,
     /// done 到达前累积的事件批。
@@ -1518,6 +1520,7 @@ impl Shell {
             text_input: None,
             ime_enabled: false,
             ime_focus_surface: false,
+            keyboard_floating: None,
             commit_serial: 0,
             pending_ime: PendingImeBatch::default(),
             ime_reconcile_gate: ImeReconcileGate::default(),
@@ -2288,7 +2291,11 @@ impl Shell {
     /// 首次与重复走同一路径，完整可读文本不丢（任务 k-key-repeat 缺陷 3）。
     fn emit_key_activation(&mut self, key: Key, text: Option<String>, repeat: bool) {
         for ev in key_activation_events(key, text, self.modifiers, repeat, !self.ime_enabled) {
-            self.emit_input(ev);
+            if let Some(index) = self.keyboard_floating {
+                self.emit_floating_input(index, ev);
+            } else {
+                self.emit_input(ev);
+            }
         }
     }
 
@@ -3756,11 +3763,12 @@ impl KeyboardHandler for Shell {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
-        _surface: &wl_surface::WlSurface,
+        surface: &wl_surface::WlSurface,
         _serial: u32,
         _raw: &[u32],
         _keysyms: &[Keysym],
     ) {
+        self.keyboard_floating = self.floating_idx(surface);
         // 表面获得键盘焦点 → text-input 焦点标记 + 幂等 reconcile。
         self.ime_focus_surface = true;
         self.reconcile_ime();
@@ -3777,6 +3785,7 @@ impl KeyboardHandler for Shell {
         surface: &wl_surface::WlSurface,
         _serial: u32,
     ) {
+        self.keyboard_floating = None;
         self.ime_focus_surface = false;
         self.pending_ime = PendingImeBatch::default();
         // 键盘焦点离开 → 停止按键重复（任务 k-key-repeat §设计 2）。
@@ -3812,7 +3821,7 @@ impl KeyboardHandler for Shell {
         self.key_repeat.cancel();
         // Tab / Shift+Tab：框架级焦点推进（App 可选实现 `App::focus_move`）。
         // 仅在 IME 未接管键盘时抢路由 —— 否则会破坏输入法内的候选选择。
-        if key == Key::Tab && !self.ime_enabled {
+        if key == Key::Tab && !self.ime_enabled && self.keyboard_floating.is_none() {
             let backward = self.modifiers.shift;
             let consumed = guard("focus_move", || self.app.focus_move(backward)).unwrap_or(false);
             if consumed {
