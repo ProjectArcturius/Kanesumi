@@ -97,6 +97,29 @@ impl MetroMenuBar {
         MetroTypography::metro().body_medium
     }
 
+    /// 悬停路由（Move / Enter 共用）：更新 header 高亮；已有菜单打开且换了标题 → UWP hover-swap。
+    ///
+    /// 单独抽出来是因为菜单弹层是独立表面：指针从弹层移回条上时只到 `PointerEnter`（无坐标），
+    /// 指针在条内滑动才是 `PointerMove`。两条路都必须走同一段逻辑，否则「文件→编辑」会漏切换、
+    /// 表现为菜单直接消失（用户 2026-10-17 反馈）。
+    fn track_hover(&mut self, ctx: &mut kanesumi_element::EventCtx, pos: Point) {
+        let Some(engine) = ctx.engine().cloned() else {
+            return;
+        };
+        let hit = self.header_at(&engine, ctx.rect(), pos);
+        let changed = hit != self.hovered_header;
+        self.hovered_header = hit;
+        if let Some(idx) = hit
+            && self.tree_popup.is_some()
+            && self.tree_open != Some(idx)
+        {
+            self.open_tree_menu(ctx, &engine, idx, false);
+            ctx.invalidate_paint();
+        } else if changed {
+            ctx.invalidate_paint();
+        }
+    }
+
     /// 单 header 宽度（label 宽 + 2×`HEADER_PAD_X`）。
     pub fn header_width(&self, engine: &TextEngine, index: usize) -> f32 {
         if index >= self.items.len() {
@@ -442,21 +465,13 @@ impl kanesumi_element::Widget for MetroMenuBar {
         use kanesumi_element::{Event, Key, PointerButton};
         match event {
             Event::PointerMove { pos } => {
-                let Some(engine) = ctx.engine().cloned() else {
-                    return;
-                };
-                let hit = self.header_at(&engine, ctx.rect(), *pos);
-                let changed = hit != self.hovered_header;
-                self.hovered_header = hit;
-                // UWP hover-swap：菜单已开且指针移到另一个标题 → 关当前、开那个。
-                if let Some(idx) = hit
-                    && self.tree_popup.is_some()
-                    && self.tree_open != Some(idx)
-                {
-                    self.open_tree_menu(ctx, &engine, idx, false);
-                    ctx.invalidate_paint();
-                } else if changed {
-                    ctx.invalidate_paint();
+                self.track_hover(ctx, *pos);
+            }
+            Event::PointerEnter => {
+                // 菜单弹层是独立表面：指针从弹层移回条上时，先到的是 Enter（不带坐标）。
+                // 只在 Move 里做 hover-swap 的话，这一路会漏 → 菜单先被弹层收掉，读作「直接消失」。
+                if let Some(pos) = ctx.pointer() {
+                    self.track_hover(ctx, pos);
                 }
             }
             Event::PointerLeave => {
