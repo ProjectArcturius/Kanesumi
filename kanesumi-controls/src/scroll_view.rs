@@ -57,7 +57,10 @@ pub struct MetroScrollView {
     pub mode: ScrollMode,
     /// 滚动条可见性。
     pub scrollbar_visibility: ScrollBarVisibility,
-    /// 是否使用平滑滚动（默认开）。关时滚轮 / 键盘瞬时定位，无惯性。
+    /// 是否使用平滑滚动（默认开）。关时滚轮 / 键盘瞬时定位。
+    /// 触控板松手惯性**不受此开关约束**：它是手指离开（`axis_stop`）的物理延续，不是滚轮平滑；
+    /// 旧实现把两者绑在一起，Ether Settings 为滚轮跟手关了平滑，连惯性一起没了
+    /// （2026-10-17 in-feel-f0 验收 G3）。
     pub smooth_scroll: bool,
     /// 滚轮 / 键盘平滑追踪（150 ms UWP 缓出，可中断 / 可累加）。
     wheel: MetroAnim,
@@ -233,9 +236,6 @@ impl MetroScrollView {
         let before = self.offset;
         // 跟手采样独立于动画：即使无动画也要把本帧累计位移计入速度估计。
         self.record_finger_sample(dt);
-        if !self.smooth_scroll {
-            return self.offset != before;
-        }
         if !self.inertia.is_steady() {
             self.inertia.advance(dt);
             let pos = self.inertia.value() as f32;
@@ -245,16 +245,16 @@ impl MetroScrollView {
                 // 撞边界即停（不做橡皮筋回弹；`w-comp-ref` §①）。
                 self.inertia.stop();
             }
-        } else if !self.wheel.is_steady() {
+        } else if self.smooth_scroll && !self.wheel.is_steady() {
             self.wheel.update(dt);
             self.offset = self.wheel.value() as f32;
         }
         self.offset != before
     }
 
-    /// 是否正在动画（滚轮平滑追踪或惯性）。
+    /// 是否正在动画（惯性，或平滑开时的滚轮追踪）。
     pub fn is_animating(&self) -> bool {
-        self.smooth_scroll && (!self.wheel.is_steady() || !self.inertia.is_steady())
+        !self.inertia.is_steady() || (self.smooth_scroll && !self.wheel.is_steady())
     }
 
     // ── 触控板：跟手 + 松手惯性 ──────────────────────────────────────────────
@@ -285,9 +285,7 @@ impl MetroScrollView {
         }
         let v = self.estimated_velocity();
         // 撞边界由 `step` 夹紧后即停（`max_offset==0` 时不启动，无可滚空间）。
-        let start = self.smooth_scroll
-            && v.abs() > INERTIA_MIN_START_VELOCITY
-            && self.is_scrollable();
+        let start = v.abs() > INERTIA_MIN_START_VELOCITY && self.is_scrollable();
         if start {
             self.inertia.start(self.offset as f64, v as f64);
         }
