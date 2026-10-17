@@ -19,7 +19,6 @@ use kanesumi_element::{
 };
 
 use crate::dropdown_menu::{MenuItem, MenuPath, MetroDropdownMenu};
-use crate::popup::popup_gap;
 
 /// 元素树动作：菜单项被选中。来源 id 是弹层自身；按 `owner` 区分是哪个控件的菜单。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,7 +56,9 @@ impl MenuFlyout {
             flyout,
             PopupSpec {
                 anchor: Some(owner),
-                gap: popup_gap(),
+                // 贴住触发控件：按钮 / 头像菜单下拉不留缝（TopBar 用户菜单曾透出 4pt 壁纸）。
+                // 指针锚定的右键菜单走 `open_at`，那里仍是 `PopupSpec::default()` 的 0 缝。
+                gap: 0.0,
                 ..PopupSpec::default()
             },
         );
