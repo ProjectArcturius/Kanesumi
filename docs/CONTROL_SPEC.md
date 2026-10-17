@@ -1490,8 +1490,11 @@ Kanesumi 移植**纯状态 + 几何**：offset 夹紧、滚动条拇指/轨道�
 
 ## 43 · Slider（MetroSlider）
 
-> 数据源：`reference/microsoft-ui-xaml/dev/CommonStyles/Slider_themeresources_v1.xaml`
-> （**闭源 B 类**，无 dev/Slider 目录；v1 = Metro 时代规格）。Kanesumi 移植**纯状态 + 几何**。
+> 数据源：Windows SDK `DesignTime/CommonConfiguration/Neutral/UAP/10.0.26100.0/Generic/generic.xaml`
+> （Slider 模板 + ThemeResources，**一手源**）。Kanesumi 移植**纯状态 + 几何**。
+> 2026-10-18 更正：旧稿「拇指 20×20 取 Capsule、轨道左右各缩 15」无一手源依据——
+> SDK 拇指是 8×24；PreContent / PostContent 15 是**纵向**留白，不是横向缩进。
+> 圆点拇指同时违反正典 §Ⅲ-1（无圆角、无曲线）。预览与取舍见 Ether `docs/research/slider_redesign/`。
 
 ### 定位
 
@@ -1501,32 +1504,35 @@ Kanesumi 移植**纯状态 + 几何**：offset 夹紧、滚动条拇指/轨道�
 
 | 项 | 值 |
 |---|---|
-| 轨道高 | **2px**（SliderTrackThemeHeight） |
-| 拇指 | **20×20**（SliderHorizontalThumbWidth/Height；Metro 时代无圆角 → Kanesumi 取 Capsule） |
+| 轨道高 | **2**（SliderTrackThemeHeight） |
+| 拇指 | **8×24 直角**（`HorizontalThumb` Width 8 / Height 24；SDK 模板 CornerRadius 4 不取，正典 §Ⅲ-1） |
 | 水平整体 MinHeight | **32**（SliderHorizontalHeight） |
-| 轨道上下留白 | 各 **15px**（SliderPreContentMargin / SliderPostContentMargin） |
-| Header | 可选项；Margin **0,0,0,4**（SliderHeaderThemeMargin） |
+| 轨道横向 | **占满控件宽**；拇指中心行程左右各让 4（半个拇指），0 / 100 时拇指恰贴控件边 |
+| Header | 可选项；Margin **0,0,0,4**（SliderHeaderThemeMargin）；滑杆区在 Header 之下（轨道中线 = 底部 32 区中线） |
 | 默认 MinWidth | **120**（对齐 NumberBox MinW） |
 
-### 颜色（Slider_themeresources_v1）
+### 颜色（generic.xaml ThemeResources）
 
-| 角色 | Metro 资源 | Kanesumi 映射 |
+| 角色 | SDK 资源 | Kanesumi 映射 |
 |---|---|---|
-| 轨道底 | SliderTrackFill = SystemControlForegroundBaseMediumLowBrush | `surface_variant` |
-| 轨道填充段 | SliderTrackValueFill = SystemControlHighlightAccentBrush | `primary` |
-| 拇指 | SliderThumbBackground = SystemControlForegroundAccentBrush | `primary` |
-| PointerOver 拇指 | SystemAccentColorLight1 | `primary`（Kanesumi 无 Light1，hover 不变色） |
-| Pressed 拇指 | SystemAccentColorDark1 | `press_tint` 叠加 |
-| Disabled | DisabledChromeDisabledHighBrush | 前景 0.38 alpha（通用铁律 §通用规律 3） |
+| 轨道底 | SliderTrackFill = BaseMediumLow（0x66） | `on_surface` × **0.4** |
+| 悬停轨道底 | SliderTrackFillPointerOver = BaseMedium（0x99） | `on_surface` × **0.6** |
+| 按下轨道底 | SliderTrackFillPressed = BaseMediumLow | 同静止 0.4 |
+| 填充段 | SliderTrackValueFill = HighlightAccent | `primary`（各状态不变） |
+| 拇指 | SliderThumbBackground = ForegroundAccent | `primary` |
+| 悬停拇指 | SliderThumbBackgroundPointerOver = ChromeAltLow | `on_surface` |
+| 按下拇指 | SliderThumbBackgroundPressed = ChromeHigh | `on_surface` 与 `surface` 各半（中灰） |
+| Disabled | DisabledChromeDisabledHigh | 整体 × 0.38 alpha（通用铁律 §通用规律 3） |
+
+旧映射「轨道底 = `surface_variant`」在亮色下是 #F0F0F0 画在 #FFFFFF 上，几乎不可见，已废。
 
 ### 行为
 
 - 状态驱动：`value ∈ [min, max]`，`set_value` 夹紧；`fraction()` = `(value−min)/(max−min)`。
-- **点击即跳**：`click(rect, pos)` 在轨道区按下 → 直接置值到点击 x（UWP 默认 Slider 点轨道跳值）。
-- **拖动**：`press` 记录拖动中，`drag_to` 连续更新（按下时未命中拇指也吸到最近值）。
-- 命中区 = 轨道矩形（含拇指 20×20 行程余量）：轨道 = 宿主 rect 内，左右各留 15px，
-  y 向以轨道 2px 为中心上下各扩 15px（总 32 高）。
-- 纯色无渐变，拇指 Capsule 圆角（轨道本身 2px 无圆角）。
+- **点击即跳**：在命中区按下 → 直接置值到点击 x（UWP 默认 Slider 点轨道跳值）。
+- **拖动**：`press` 记录拖动中，`drag_to` 连续更新；超出行程夹紧。
+- 命中区 = 轨道全宽 × 以轨道为中线的 32 高。
+- 纯色无渐变，**全部直角**（轨道、填充段、拇指）。
 
 ---
 

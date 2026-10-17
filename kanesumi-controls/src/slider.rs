@@ -1,15 +1,17 @@
 // MetroSlider —— 连续数值输入（音量 / 亮度 / 色温）。参 CONTROL_SPEC §43。
 //
-// 数据源：`reference/microsoft-ui-xaml/dev/CommonStyles/Slider_themeresources_v1.xaml`
-// （闭源 B 类，v1 = Metro 时代）。尺寸：轨道 2px、拇指 20×20、上下留白 15px、
-// 水平整体 MinHeight 32、Header Margin 0,0,0,4。颜色：轨道底 surface_variant、
-// 填充段 + 拇指 primary、Pressed 拇指 press_tint 叠加、Disabled 前景 0.38 alpha。
-// 交互：点击轨道即跳值（UWP 默认）、press 后 drag_to 连续更新、set_value 夹紧 [min,max]。
+// 数据源：Windows SDK `Generic/generic.xaml`（Slider 模板 + ThemeResources，一手源）。
+// 尺寸：轨道 2、拇指 **8×24 直角**（`HorizontalThumb` Width 8 / Height 24；正典 §Ⅲ-1
+// 不取 SDK 的 CornerRadius 4）、水平整体 32、Header Margin 0,0,0,4。轨道横向占满宿主宽，
+// 拇指中心行程左右各让半个拇指（拇指永不越出控件）。颜色：轨道底 = 前景 40%
+// （SliderTrackFill = BaseMediumLow），悬停 60%（BaseMedium）；填充段与静止拇指 = primary；
+// 悬停拇指 = 前景（ChromeAltLow）；按下拇指 = 前景与表面的中灰（ChromeHigh 近似）；
+// Disabled 整体 0.38 alpha。交互：点击轨道即跳值（UWP 默认）、press 后 drag_to 连续更新。
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::MetroTypography;
-use kanesumi_core::{CornerRadius, MetroTheme, Point, Rect, Size};
+use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
 use crate::state::ControlState;
 
@@ -17,10 +19,14 @@ use crate::state::ControlState;
 
 /// 轨道高（SliderTrackThemeHeight）。
 pub const SLIDER_TRACK_H: f32 = 2.0;
-/// 拇指边长（SliderHorizontalThumbWidth/Height）。
-pub const SLIDER_THUMB: f32 = 20.0;
-/// 轨道上下留白（SliderPreContentMargin / SliderPostContentMargin）。
-pub const SLIDER_TRACK_MARGIN: f32 = 15.0;
+/// 拇指宽（generic.xaml `HorizontalThumb` Width）。
+pub const SLIDER_THUMB_W: f32 = 8.0;
+/// 拇指高（generic.xaml `HorizontalThumb` Height）。
+pub const SLIDER_THUMB_H: f32 = 24.0;
+/// 轨道底不透明度（SliderTrackFill = BaseMediumLow 0x66）。
+pub const SLIDER_TRACK_ALPHA: f32 = 0.4;
+/// 悬停轨道底不透明度（SliderTrackFillPointerOver = BaseMedium 0x99）。
+pub const SLIDER_TRACK_HOVER_ALPHA: f32 = 0.6;
 /// 水平整体最小高（SliderHorizontalHeight）。
 pub const SLIDER_MIN_H: f32 = 32.0;
 /// Header 下边距（SliderHeaderThemeMargin）。
@@ -123,40 +129,54 @@ impl MetroSlider {
 
     // ── 几何 ──────────────────────────────────────────────────────
 
-    /// 轨道矩形（宿主 rect 内左右各 15px，y 向中心 2px 轨道）。
+    /// 轨道矩形（横向占满宿主宽，y 向贴底 32 区的中线）。有 Header 时滑杆区在 Header 之下。
     fn track_rect(&self, rect: Rect) -> Rect {
+        let cy = rect.origin.y + rect.size.height - SLIDER_MIN_H / 2.0;
         Rect::new(
-            rect.origin.x + SLIDER_TRACK_MARGIN,
-            rect.origin.y + rect.size.height / 2.0 - SLIDER_TRACK_H / 2.0,
-            (rect.size.width - 2.0 * SLIDER_TRACK_MARGIN).max(1.0),
+            rect.origin.x,
+            cy - SLIDER_TRACK_H / 2.0,
+            rect.size.width.max(1.0),
             SLIDER_TRACK_H,
         )
     }
 
-    /// 填充段矩形（0..value）。
+    /// 拇指中心的横向行程 (起点, 长度)：左右各让半个拇指，0 / 100 时拇指恰贴控件边。
+    fn travel(&self, rect: Rect) -> (f32, f32) {
+        let track = self.track_rect(rect);
+        let half = SLIDER_THUMB_W / 2.0;
+        (track.origin.x + half, (track.size.width - SLIDER_THUMB_W).max(1.0))
+    }
+
+    /// 拇指中心 x。
+    fn thumb_x(&self, rect: Rect) -> f32 {
+        let (x0, len) = self.travel(rect);
+        x0 + len * self.fraction()
+    }
+
+    /// 填充段矩形（轨道左端 → 拇指中心）。
     fn fill_rect(&self, rect: Rect) -> Rect {
         let track = self.track_rect(rect);
         Rect::new(
             track.origin.x,
             track.origin.y,
-            track.size.width * self.fraction(),
+            (self.thumb_x(rect) - track.origin.x).max(0.0),
             track.size.height,
         )
     }
 
-    /// 拇指矩形（20×20，中心对轨道 value x）。
+    /// 拇指矩形（8×24 直角，中心对 value）。
     fn thumb_rect(&self, rect: Rect) -> Rect {
         let track = self.track_rect(rect);
-        let cx = track.origin.x + track.size.width * self.fraction();
+        let cy = track.origin.y + SLIDER_TRACK_H / 2.0;
         Rect::new(
-            cx - SLIDER_THUMB / 2.0,
-            rect.origin.y + rect.size.height / 2.0 - SLIDER_THUMB / 2.0,
-            SLIDER_THUMB,
-            SLIDER_THUMB,
+            self.thumb_x(rect) - SLIDER_THUMB_W / 2.0,
+            cy - SLIDER_THUMB_H / 2.0,
+            SLIDER_THUMB_W,
+            SLIDER_THUMB_H,
         )
     }
 
-    /// 命中区（轨道矩形上下扩至 32 高总命中；x 向 = 轨道全长）。
+    /// 命中区（轨道全宽 × 以轨道为中线的 32 高）。
     fn hit_rect(&self, rect: Rect) -> Rect {
         let track = self.track_rect(rect);
         let half = (SLIDER_MIN_H - SLIDER_TRACK_H) / 2.0;
@@ -175,8 +195,8 @@ impl MetroSlider {
 
     /// 位置 → 值（步进吸附 + 夹紧）。
     fn value_from_pos(&self, rect: Rect, pos: Point) -> f64 {
-        let track = self.track_rect(rect);
-        let frac = ((pos.x - track.origin.x) / track.size.width).clamp(0.0, 1.0);
+        let (x0, len) = self.travel(rect);
+        let frac = ((pos.x - x0) / len).clamp(0.0, 1.0);
         self.snap(self.min + (self.max - self.min) * frac as f64)
     }
 
@@ -252,26 +272,30 @@ impl MetroSlider {
             );
         }
 
-        let track = self.track_rect(rect);
-        // 轨道底
-        scene.fill_rect(
-            colors.surface_variant.with_alpha(alpha),
-            track,
-        );
-        // 填充段（0..value）
+        let fg = colors.on_surface;
+        let hovered = self.state == ControlState::Hovered;
+        let pressed = self.state == ControlState::Pressed;
+        // 轨道底：前景 40%，悬停 60%（按下回到 40%，与 SDK 一致）。
+        let track_alpha = if hovered {
+            SLIDER_TRACK_HOVER_ALPHA
+        } else {
+            SLIDER_TRACK_ALPHA
+        };
+        scene.fill_rect(fg.with_alpha(track_alpha * alpha), self.track_rect(rect));
+        // 填充段（轨道左端 → 拇指中心）
         let fill = self.fill_rect(rect);
         if fill.size.width > 0.01 {
             scene.fill_rect(colors.primary.with_alpha(alpha), fill);
         }
-        // 拇指
-        let thumb = self.thumb_rect(rect);
-        let thumb_color = if self.state == ControlState::Pressed {
-            // SliderThumbBackgroundPressed = accentDark1；Kanesumi 用 press_tint 向暗侧压。
-            colors.primary.lerp(theme.indication.press_subtle_tint, 0.5).with_alpha(alpha)
+        // 拇指：静止 primary；悬停 = 前景（ChromeAltLow）；按下 = 前景与表面的中灰（ChromeHigh）。
+        let thumb_color = if pressed {
+            fg.lerp(colors.surface, 0.5)
+        } else if hovered {
+            fg
         } else {
-            colors.primary.with_alpha(alpha)
+            colors.primary
         };
-        scene.fill_rounded_rect(thumb_color, thumb, CornerRadius::Capsule);
+        scene.fill_rect(thumb_color.with_alpha(alpha), self.thumb_rect(rect));
     }
 }
 
@@ -410,8 +434,9 @@ mod tree_tests {
         let r = h.rect(id);
         let y = r.center().y;
         h.press_at(Point::new(r.origin.x + 20.0, y), PointerButton::Left);
-        h.move_to(Point::new(r.right() - 20.0, y));
-        h.release_at(Point::new(r.right() - 20.0, y), PointerButton::Left);
+        // 拖过拇指行程右端（右缘内 2pt，行程止于右缘内 4pt）→ 夹紧到 100。
+        h.move_to(Point::new(r.right() - 2.0, y));
+        h.release_at(Point::new(r.right() - 2.0, y), PointerButton::Left);
         h.frame();
         let vals: Vec<f64> = h
             .take::<SliderValueChanged>()
@@ -518,18 +543,42 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, 200.0, 32.0);
         let s = MetroSlider::new();
         assert!(s.hit_test(rect, Point::new(100.0, 16.0)));
-        assert!(s.hit_test(rect, Point::new(15.0, 16.0)), "轨道左缘命中");
-        assert!(s.hit_test(rect, Point::new(184.9, 16.0)), "轨道右缘命中");
-        assert!(!s.hit_test(rect, Point::new(0.0, 16.0)), "margin 内不命中");
+        assert!(s.hit_test(rect, Point::new(0.0, 16.0)), "轨道占满宽：左缘命中");
+        assert!(s.hit_test(rect, Point::new(199.9, 16.0)), "轨道占满宽：右缘命中");
+        assert!(!s.hit_test(rect, Point::new(200.5, 16.0)), "控件外不命中");
         assert!(!s.hit_test(rect, Point::new(100.0, 32.0)), "32 高命中区外不命中");
+    }
+
+    #[test]
+    fn thumb_is_8x24_square_and_stays_inside() {
+        let rect = Rect::new(0.0, 0.0, 200.0, 32.0);
+        let mut s = app();
+        for v in [0.0, 50.0, 100.0] {
+            s.set_value(v);
+            let t = s.thumb_rect(rect);
+            assert_eq!((t.size.width, t.size.height), (SLIDER_THUMB_W, SLIDER_THUMB_H));
+            assert!(t.origin.x >= 0.0 && t.right() <= 200.0, "v={v} 拇指越出控件：{t:?}");
+        }
+        s.set_value(0.0);
+        assert_eq!(s.thumb_rect(rect).origin.x, 0.0, "0 时拇指贴左缘");
+        s.set_value(100.0);
+        assert_eq!(s.thumb_rect(rect).right(), 200.0, "100 时拇指贴右缘");
+    }
+
+    #[test]
+    fn track_sits_in_slider_band_below_header() {
+        let rect = Rect::new(0.0, 0.0, 200.0, 48.0);
+        let s = MetroSlider::new().with_header("音量");
+        let t = s.track_rect(rect);
+        assert_eq!(t.origin.y + SLIDER_TRACK_H / 2.0, 32.0, "轨道中线 = 底部 32 区中线");
     }
 
     #[test]
     fn press_sets_value_to_pos() {
         let rect = Rect::new(0.0, 0.0, 200.0, 32.0);
         let mut s = app();
-        // 轨道 = x∈[15,185]，200 宽 → value = (x-15)/170
-        let v = s.press(rect, Point::new(15.0 + 85.0, 16.0)).unwrap();
+        // 拇指中心行程 = x∈[4,196]，200 宽 → value = (x-4)/192
+        let v = s.press(rect, Point::new(4.0 + 96.0, 16.0)).unwrap();
         assert!((v - 50.0).abs() < 1.0, "中点 → 约 50，got {v}");
     }
 
@@ -537,7 +586,7 @@ mod tests {
     fn press_outside_hit_returns_none() {
         let rect = Rect::new(0.0, 0.0, 200.0, 32.0);
         let mut s = app();
-        assert_eq!(s.press(rect, Point::new(0.0, 0.0)), None);
+        assert_eq!(s.press(rect, Point::new(100.0, -1.0)), None);
         assert!(!s.dragging);
     }
 
@@ -572,21 +621,19 @@ mod tests {
         s.set_value(50.0);
         s.state = ControlState::Disabled;
         let scene = render(&s, &theme, &engine, rect);
-        // 三元素（轨道底 + 填充段 + 拇指）均带 0.38 alpha
-        let fills: Vec<&kanesumi_canvas::SceneCommand> = scene
+        // 三元素（轨道底 + 填充段 + 拇指）整体乘 0.38：轨道 0.4×0.38，其余 0.38。
+        let alphas: Vec<f32> = scene
             .commands
             .iter()
-            .filter(|c| matches!(c, kanesumi_canvas::SceneCommand::FillRect { .. }))
+            .filter_map(|c| match c {
+                kanesumi_canvas::SceneCommand::FillRect { color, .. } => Some(color.a),
+                _ => None,
+            })
             .collect();
-        assert_eq!(fills.len(), 3, "轨道底 + 填充段 + 拇指");
-        for c in fills {
-            if let kanesumi_canvas::SceneCommand::FillRect { color, .. } = c {
-                assert!(
-                    (color.a - 0.38).abs() < 0.01,
-                    "禁用态前景 0.38，got {}",
-                    color.a
-                );
-            }
+        assert_eq!(alphas.len(), 3, "轨道底 + 填充段 + 拇指");
+        assert!((alphas[0] - SLIDER_TRACK_ALPHA * 0.38).abs() < 0.01, "轨道 {}", alphas[0]);
+        for a in &alphas[1..] {
+            assert!((a - 0.38).abs() < 0.01, "禁用态前景 0.38，got {a}");
         }
     }
 
@@ -608,16 +655,14 @@ mod tests {
             3,
             "轨道底 + 填充段 + 拇指"
         );
-        // 拇指 Capsule 圆角（corner_radius > 0）
+        // 正典 §Ⅲ-1：无圆角——三条都是直角。
         assert!(
-            scene.commands.iter().any(|c| {
-                matches!(
-                    c,
-                    kanesumi_canvas::SceneCommand::FillRect { corner_radius, .. }
-                        if *corner_radius > 0.0
-                )
-            }),
-            "拇指为 Capsule 圆角"
+            scene.commands.iter().all(|c| !matches!(
+                c,
+                kanesumi_canvas::SceneCommand::FillRect { corner_radius, .. }
+                    if *corner_radius > 0.0
+            )),
+            "滑杆不得有圆角"
         );
     }
 

@@ -130,7 +130,7 @@ pub use scroll_view::{
     ScrollMode,
 };
 pub use selector_flyout::{MetroSelectorFlyout, SelectorSelectionChanged};
-pub use slider::{MetroSlider, SliderValueChanged, SLIDER_HEADER_MARGIN, SLIDER_MIN_H, SLIDER_MIN_W, SLIDER_THUMB, SLIDER_TRACK_H, SLIDER_TRACK_MARGIN};
+pub use slider::{MetroSlider, SliderValueChanged, SLIDER_HEADER_MARGIN, SLIDER_MIN_H, SLIDER_MIN_W, SLIDER_THUMB_H, SLIDER_THUMB_W, SLIDER_TRACK_ALPHA, SLIDER_TRACK_H, SLIDER_TRACK_HOVER_ALPHA};
 pub use split_button::{MetroSplitButton, SplitButtonInvoked, SplitButtonClick, SplitButtonPart};
 pub use state::{ButtonState, ControlState, control_state};
 pub use surface::MetroSurface;
