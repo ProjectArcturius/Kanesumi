@@ -569,5 +569,26 @@ mod tests {
         clock.on_presented(late, 16_666_667);
         assert_eq!(clock.predict_next_present(late + Duration::from_millis(1)), late + p);
     }
+
+    /// 浮层重新显示时必须重置节流：隐藏期间没有渲染、也就收不到帧回调，残留的
+    /// 「本周期已出帧」会把首帧拖到下一回调或 100 ms 超时（真机 Launcher 覆盖层首帧晚 31 ms）。
+    #[test]
+    fn fresh_throttle_allows_first_frame_after_hidden() {
+        let now = Instant::now();
+        let mut t = PacingThrottle::new();
+        // 出一帧并挂起回调请求（隐藏前最后一次渲染的状态）。
+        t.on_frame_rendered();
+        t.on_request_callback(now);
+        assert!(
+            !t.can_render(now + Duration::from_millis(16), true).0,
+            "隐藏前残留状态：动画中不得出帧"
+        );
+        // 重新显示：外壳重置节流后应立刻允许首帧。
+        let mut fresh = PacingThrottle::new();
+        assert!(
+            fresh.can_render(now + Duration::from_millis(16), true).0,
+            "重新显示后首帧必须立即允许"
+        );
+    }
 }
 

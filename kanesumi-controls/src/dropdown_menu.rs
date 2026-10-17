@@ -4,7 +4,7 @@ use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::{MetroTheme, Point, Rect, TextStyle, TextVAlign};
 
-use crate::popup::{PopupAnim, PopupState, place_submenu, popup_gap, render_overlay};
+use crate::popup::{PopupAnim, PopupState, place_submenu, popup_gap, render_overlay, snap_edge};
 
 /// 留白式分组间距（逻辑 pt）：以空白表达组间分界，**不画线**。
 /// 参 docs/DECISIONS_2026-10-05.md §100（TopBar 不要分割线，分组改用留白）。
@@ -272,24 +272,28 @@ impl MetroDropdownMenu {
     }
 
     /// 顶层第 `i` 项的矩形（面板内）。
+    ///
+    /// 纵向边缘吸附到物理像素网格：相邻项的悬停底共用边缘，2× 下不会互相露 1 px 缝
+    /// （真机已知问题 #18）。面板原点本身也可能带小数，所以从吸附后的原点起算。
     pub fn item_rect(&self, i: usize) -> Rect {
-        let mut y = self.panel_rect.origin.y;
+        let mut y = snap_edge(self.panel_rect.origin.y);
         for (k, item) in self.items.iter().enumerate() {
             if k == i {
                 break;
             }
-            y += self.item_height;
+            y = snap_edge(y + self.item_height);
             if item.gap_after {
-                y += MENU_GROUP_GAP;
+                y = snap_edge(y + MENU_GROUP_GAP);
             } else if item.separator_after {
-                y += 2.0;
+                y = snap_edge(y + 2.0);
             }
         }
+        let next = snap_edge(y + self.item_height);
         Rect::new(
             self.panel_rect.origin.x,
             y,
             self.panel_rect.size.width,
-            self.item_height,
+            (next - y).max(0.0),
         )
     }
 
@@ -419,16 +423,19 @@ impl MetroDropdownMenu {
 
         let style = menu_item_style();
         let colors = &theme.colors;
-        let mut y = self.panel_rect.origin.y;
         // 容器语义 = 裁到面板矩形（2026-09-22 审计 P0-2）：开启动画期间面板只露出一部分，
         // 各项仍按最终坐标绘制 → 不裁会画到面板外。
         scene.push_clip(self.panel_rect);
+        // 边缘吸附到物理像素网格，与 `item_rect` 同源：相邻项的悬停底共用边缘，
+        // 2x 下不会露 1 px 缝（真机已知问题 #18）。
+        let mut y = snap_edge(self.panel_rect.origin.y);
         for (i, item) in self.items.iter().enumerate() {
+            let next = snap_edge(y + self.item_height);
             let item_rect = Rect::new(
                 self.panel_rect.origin.x,
                 y,
                 self.panel_rect.size.width,
-                self.item_height,
+                (next - y).max(0.0),
             );
 
             // 悬停高亮（中性）+ 级联展开项也高亮
@@ -505,10 +512,10 @@ impl MetroDropdownMenu {
                 );
             }
 
-            y += self.item_height;
+            y = next;
             if item.gap_after {
                 // 留白式分组间距：只留空，不画线。
-                y += MENU_GROUP_GAP;
+                y = snap_edge(y + MENU_GROUP_GAP);
             } else if item.separator_after {
                 // 分隔线
                 let sep_rect = Rect::new(
@@ -518,7 +525,7 @@ impl MetroDropdownMenu {
                     1.0,
                 );
                 scene.fill_rect(colors.divider, sep_rect);
-                y += 2.0;
+                y = snap_edge(y + 2.0);
             }
         }
         scene.pop_clip();
@@ -1084,5 +1091,38 @@ mod tests {
             )
         });
         assert!(!sep_at_gap, "留白式间距处不得画分隔线");
+    }
+
+    /// 相邻项的悬停底必须共用边缘，且边缘落在物理像素网格上：
+    /// 否则 2x 下两块高亮之间会露出 1 px 缝（真机已知问题 #18）。
+    #[test]
+    fn adjacent_item_rects_share_pixel_grid_edges() {
+        kanesumi_canvas::set_surface_scale(2.0);
+        let mut menu = MetroDropdownMenu::new(vec![
+            MenuItem::new("打开"),
+            MenuItem::new("另存为"),
+            MenuItem::new("退出"),
+        ]);
+        // 故意用带小数的面板原点：这正是 2x 下露缝的成因。
+        menu.panel_rect = Rect::new(30.25, 100.4, 180.0, 96.0);
+        let rects: Vec<_> = (0..3).map(|i| menu.item_rect(i)).collect();
+        for pair in rects.windows(2) {
+            assert!(
+                (pair[0].bottom() - pair[1].origin.y).abs() < 1e-4,
+                "相邻项必须首尾相接：{:?} / {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+        for r in &rects {
+            let y2 = r.origin.y * 2.0;
+            let bottom2 = r.bottom() * 2.0;
+            assert!(
+                (y2 - y2.round()).abs() < 1e-4 && (bottom2 - bottom2.round()).abs() < 1e-4,
+                "项边缘必须落在物理像素上：{:?}",
+                r
+            );
+        }
+        kanesumi_canvas::set_surface_scale(1.0);
     }
 }

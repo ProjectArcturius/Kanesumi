@@ -72,6 +72,15 @@ pub fn place_popup(trigger: Rect, panel_size: Size, screen: Rect, gap: f32) -> P
 /// 1. 右下（默认）→ 2. 左移（右侧不够）→ 3. 上移（下方不够）→ 4. 左上（两向不够），
 /// 每步后按屏幕夹紧。面板宽/高超过屏幕时贴屏边（以屏为基准不裁内容）。
 #[must_use]
+/// 把坐标吸附到**物理像素网格**（1/scale）。
+///
+/// 相邻背景块（菜单栏标题、下拉菜单项）共用吸附后的边缘，2× 缩放下就不会互相露出一条
+/// 1 px 缝（真机已知问题 #18）。文字量测出来的是小数宽，不吸附必然出现半像素边。
+pub fn snap_edge(v: f32) -> f32 {
+    let s = kanesumi_canvas::surface_scale().max(1.0);
+    (v * s).round() / s
+}
+
 pub fn place_context_menu(anchor: Point, panel_size: Size, screen: Rect) -> Rect {
     let w = panel_size.width.min(screen.size.width);
     let h = panel_size.height.min(screen.size.height);

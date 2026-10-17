@@ -18,6 +18,7 @@ pub mod role;
 pub mod system_theme;
 pub mod timeline;
 pub mod tree_host;
+pub mod wake;
 
 #[cfg(target_os = "linux")]
 pub mod canvas_v2;

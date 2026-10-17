@@ -395,6 +395,8 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
     event_loop
         .handle()
         .insert_source(ping_source, |(), _, shell: &mut Shell| {
+            // 唤醒可能来自两个来源：解码就绪，或外部线程的 wake::request()。
+            // 后者不需要在这里置脏——本轮 step 会让 App 自己声明 needs_redraw（置脏会多出空渲染）。
             let ready = kanesumi_canvas::decode::poll_ready();
             if !ready.is_empty() {
                 shell.app.on_decode_ready(&ready);
@@ -407,6 +409,9 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
     kanesumi_canvas::decode::set_ready_hook(Box::new(move || {
         ping_clone.ping();
     }));
+    // 同一桥接暴露给外部线程：`wake::request()` 直接 ping，主循环立刻醒来。
+    let wake_ping = ping.clone();
+    crate::wake::set_hook(std::sync::Arc::new(move || wake_ping.ping()));
     struct ReadyHookGuard;
     impl Drop for ReadyHookGuard {
         fn drop(&mut self) {
@@ -2206,6 +2211,12 @@ impl Shell {
                 self.floating_dirty[i] = true;
                 // 隐藏期间缓冲内容不可信 → 重新显示的首帧整幅。
                 self.floating_full[i] = true;
+                // 重新显示时重置出帧节流：隐藏期间该表面不渲染、也就收不到帧回调，
+                // 残留的「本周期已出帧 / 回调挂起」会把首帧硬拖到下一次回调或 100 ms 超时——
+                // 实测 Launcher 覆盖层首帧因此晚 31 ms，正对上真机 `start_latency_ms=33.3`。
+                if i < self.floating_throttle.len() {
+                    self.floating_throttle[i] = crate::frame_clock::PacingThrottle::new();
+                }
             }
             self.floating_visible_cache[i] = visible;
         }
