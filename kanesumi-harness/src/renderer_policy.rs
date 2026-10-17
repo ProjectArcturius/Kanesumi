@@ -166,11 +166,13 @@ fn config_dir_flag_exists(name: &str) -> bool {
         .exists()
 }
 
-/// KANESUMI_ONE_CANVAS 开关纯判定：env 为 Some("1") 时激活。
+/// KANESUMI_ONE_CANVAS 开关纯判定：缺省激活；只有显式 `0` 关闭（退回各表面旧路径）。
+/// 2026-10-11 Debian 真机 iGPU dep1 探针后翻缺省（裁定 §133 的真机条件闭环）：客户端掉帧 29/126 → 16/101，
+/// 截图与旧路径版式一致。参 Ether docs/research/dep1/RESULT.md。
 ///
 /// 与真实环境分离以便单测；真实读取见 [`one_canvas`]。
 pub fn one_canvas_active(env_one_canvas: Option<&str>) -> bool {
-    env_one_canvas == Some("1")
+    env_one_canvas != Some("0")
 }
 
 /// 真实读取环境变量 `KANESUMI_ONE_CANVAS`。
@@ -185,11 +187,14 @@ mod tests {
 
     #[test]
     fn one_canvas_active_判定() {
-        assert!(!one_canvas_active(None));
-        assert!(!one_canvas_active(Some("0")));
-        assert!(!one_canvas_active(Some("2")));
-        assert!(!one_canvas_active(Some("")));
+        assert!(one_canvas_active(None), "缺省开（dep1 后翻缺省）");
+        assert!(!one_canvas_active(Some("0")), "显式 0 关闭");
+        assert!(one_canvas_active(Some("2")));
+        assert!(one_canvas_active(Some("")));
         assert!(one_canvas_active(Some("1")));
+        assert!(crate::platform::canvas_v2_active(None), "v2 缺省开");
+        assert!(!crate::platform::canvas_v2_active(Some("1")), "显式 1 退回 v1");
+        assert!(crate::platform::canvas_v2_active(Some("2")));
     }
 
     #[test]

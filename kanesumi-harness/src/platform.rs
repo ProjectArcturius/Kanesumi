@@ -6,7 +6,7 @@
 // wgpu 附着 → frame callback 驱动 `App::update(dt)` / `App::render(engine, size)` → 光栅化 Scene。
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::Scene;
@@ -24,7 +24,7 @@ use smithay_client_toolkit::{
     registry_handlers,
     seat::{
         Capability, SeatHandler, SeatState,
-        keyboard::{KeyEvent as SctkKeyEvent, KeyboardHandler, Keysym},
+        keyboard::{KeyEvent as SctkKeyEvent, Keymap as SctkKeymap, KeyboardHandler, Keysym, RepeatInfo as SctkRepeatInfo},
         pointer::{
             AxisScroll, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, PointerEvent, PointerEventKind,
             PointerHandler,
@@ -76,7 +76,7 @@ use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
 };
 
 use crate::app::{
-    AnchorKind, App, FloatingLayer, ImeAction, ImeContentHint, ImeContext, InputEvent, Key,
+    AnchorKind, App, FloatingLayer, ImeAction, ImeContentHint, ImeContext, ImeReconcileGate, InputEvent, Key,
     LayerKind, Modifiers, PendingImeBatch, PointerButton, ScrollInput, ScrollPhase, ScrollSource,
     compute_ime_action,
 };
@@ -85,11 +85,16 @@ use crate::context_menu::ContextMenuAction;
 use crate::cpu_raster::CpuRenderer;
 use crate::render::{GpuContext, GpuContextExt, Renderer};
 
-/// 画布 v1/v2 选择：`KANESUMI_CANVAS=2` 走实例化批渲染画布（CanvasV2，无 MSAA），
-/// 其余（未设 / 其他值）保持 v1 `Renderer`（MSAA 4）。真机验证后由调度者翻缺省。
-/// 参 Ether docs/CANVAS_PLAN.md §Ⅳ C1、任务 c1-canvas-core。
+/// 画布 v1/v2 选择：缺省走实例化批渲染画布（CanvasV2，无 MSAA）；`KANESUMI_CANVAS=1` 退回 v1 `Renderer`（MSAA 4）。
+/// 2026-10-11 Debian 真机 iGPU（Arrow Lake、3072×1920@2×）dep1 探针后翻缺省：客户端掉帧 30/128 → 10/105、
+/// Launcher 起跑 31 → 13.8 ms，截图与 v1 版式一致。参 Ether docs/CANVAS_PLAN.md §Ⅳ C1、docs/research/dep1/RESULT.md。
 pub fn canvas_v2_enabled() -> bool {
-    std::env::var("KANESUMI_CANVAS").ok().as_deref() == Some("2")
+    canvas_v2_active(std::env::var("KANESUMI_CANVAS").ok().as_deref())
+}
+
+/// [`canvas_v2_enabled`] 的纯判定：只有显式 `1` 退回 v1。
+pub fn canvas_v2_active(env: Option<&str>) -> bool {
+    env != Some("1")
 }
 
 /// 表面渲染器枚举：v1 / v2 对外接口对齐，创建处统一经 [`SurfaceRenderer::with_context`]。
@@ -237,7 +242,7 @@ use kanesumi_canvas::set_surface_scale;
 /// **主路径必须持久**（`~/.local/state/ether/`）—— Debian 会话里崩溃/黑屏后无法开终端，
 /// 只能重启回主系统读盘；只写 tmpfs（`/tmp`）会随重启丢失（参 `AGENTS.md` 铁律）。
 /// 另外在 `$XDG_RUNTIME_DIR` 留一份便于会话内即时查看（无持久性要求）。
-mod layers;
+pub(crate) mod layers;
 mod popups;
 
 fn write_diag(name: &str, content: &str) {
@@ -447,7 +452,7 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
                 match crate::render::GpuContext::new(
                     &conn,
                     &tmp,
-                    &[wgpu::Backends::VULKAN, wgpu::Backends::GL],
+                    &crate::render::render_backends(),
                 ) {
                     Ok(ctx) => {
                         log::info!("GPU 上下文预载完成（与字体加载并行）");
@@ -528,11 +533,19 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         let theme_after = shell
             .next_theme_check
             .saturating_duration_since(Instant::now());
+        // 空闲唤醒取「App 定时器」与「主题节流点」较早者；按键重复 deadline 再单独并入
+        // —— busy 的 16ms 帧兜底可能晚于高 rate 的重复间隔（如 rate=100 → 10ms），
+        // 故在 platform 调用处再夹到更早者，不改未授权的 idle.rs（任务 k-key-repeat 缺陷 5）。
         let timeout = crate::idle::next_wake(busy, shell.app.next_wake_hint(), Some(theme_after));
+        let timeout = shell.clamp_wake_to_repeat(timeout);
         event_loop
             .dispatch(timeout, &mut shell)
             .map_err(|e| format!("事件循环 dispatch 失败：{e}"))?;
         crate::timeline::note_once("dispatch_done");
+        // 按键重复：到点发一次重复按下（不积压；参 crate::key_repeat）。
+        if shell.poll_key_repeat(&qh) {
+            shell.dirty = true;
+        }
         // 引擎宿主幂等绑定（input_method.is_none 才建，seat 就绪后即生效）。
         shell.ensure_ime_engine(&qh);
         crate::timeline::note_once("ime_ready");
@@ -778,10 +791,12 @@ pub(crate) struct Shell {
     ime_enabled: bool,
     /// wl_keyboard / text-input enter 标记：表面是否持键盘焦点。
     ime_focus_surface: bool,
-    /// 单调 commit 计数 —— 每次实际 commit() 后 +1，done serial 与之匹配才生效。
+    /// 单调 commit 计数；done 匹配决定上下文回灌，文字不因 serial 不匹配而丢弃。
     commit_serial: u32,
     /// done 到达前累积的事件批。
     pending_ime: PendingImeBatch,
+    /// stale done 后延迟上下文回灌，匹配 done 或使能翻转后恢复。
+    ime_reconcile_gate: ImeReconcileGate,
     /// 上次发送的 IME 上下文缓存（无变化不重发，避免每帧灌上下文 + commit 抖动）。
     ime_context_cache: Option<ImeContext>,
 
@@ -905,6 +920,30 @@ pub(crate) struct Shell {
     seat: Option<wl_seat::WlSeat>,
     /// 最近一次输入事件 serial（指针按下 / 按键）—— grab 必须带触发它的输入 serial。
     last_input_serial: Option<u32>,
+
+    // ── 客户端按键重复（参任务 k-key-repeat、crate::key_repeat）─────
+    /// 主键盘（wl_keyboard 路径）重复调度器：外壳按 `repeat_info` 自行发重复按下。
+    key_repeat: crate::key_repeat::KeyRepeat,
+    /// 当前重复键的逻辑键（poll 命中时发它）。
+    repeat_logical: Key,
+    /// 首次按下时 xkb 产生的多标量可读文本（如组合序列）；重复时一并重放，
+    /// 保证「首次与重复走同一路径、完整可读文本不丢」（任务 k-key-repeat 缺陷 3）。
+    repeat_text: Option<String>,
+    /// 单调时钟基准（重复调度用秒数；与 `Instant` 同轴换算）。
+    clock_base: Instant,
+    /// 主键盘 xkb keymap（`update_keymap` 建立）——按 `key_repeats` 判定可重复键
+    /// （修饰键 / 锁定键不重复）。缺失时回退修饰键黑名单。
+    xkb_keymap: Option<xkbcommon::xkb::Keymap>,
+    /// 引擎抓取键盘下发的重复参数（Ceyboard 消费键自重复）。
+    im_repeat: crate::key_repeat::RepeatConfig,
+    /// 引擎路径的重复调度器：Ceyboard 消费键的客户端重复（抓取键盘无独立 wl_keyboard）。
+    im_key_repeat: crate::key_repeat::KeyRepeat,
+    /// 当前引擎重复键（逻辑键 + 修饰键），poll 命中时重投给引擎。
+    im_repeat_logical: Key,
+    im_repeat_mods: Modifiers,
+    /// 已转发给焦点客户端（虚拟键盘）但尚未收到物理松开的原始 keycode 集合 ——
+    /// 松开时补发 release，使目标应用按自身重复连发（转发路径不合成第二层重复）。
+    forwarded_keys: std::collections::HashSet<u32>,
 }
 
 /// 单个表面的输出缓冲：SHM 双缓冲（回退）+ dmabuf 双缓冲（直通）+ 模式决策。
@@ -937,7 +976,8 @@ impl SurfaceOutput {
         self.dmabuf.set_feedback(main_device, formats.to_vec());
     }
 
-    /// 提交一帧：dmabuf 优先，失败回退 SHM。
+    /// 提交一帧：dmabuf 优先，失败回退 SHM。返回是否真的提交了（两槽都在合成器手里 → 跳过，false）。
+    /// 每帧重画的表面下一帧自然补上；只交一次内容的图层须据此登记待补交（参 platform/layers.rs）。
     #[allow(clippy::too_many_arguments)]
     fn commit(
         &mut self,
@@ -950,14 +990,15 @@ impl SurfaceOutput {
         rgba: &[u8],
         scale: f32,
         damage: Option<kanesumi_core::Rect>,
-    ) {
+    ) -> bool {
         use crate::dmabuf::CommitOutcome;
         if self.allow {
             match self
                 .dmabuf
                 .commit(qh, surface, dmabuf_state, width, height, rgba, scale, damage)
             {
-                CommitOutcome::Committed | CommitOutcome::Skipped => return,
+                CommitOutcome::Committed => return true,
+                CommitOutcome::Skipped => return false,
                 CommitOutcome::Unavailable => {
                     // 单表面失败 → 该表面永久回退 SHM（其它表面不受影响）。
                     self.allow = false;
@@ -965,8 +1006,11 @@ impl SurfaceOutput {
                 }
             }
         }
-        if let Some(shm) = shm {
-            commit_shm_buffers(shm, qh, surface, &mut self.shm, width, height, rgba, scale, damage);
+        match shm {
+            Some(shm) => {
+                commit_shm_buffers(shm, qh, surface, &mut self.shm, width, height, rgba, scale, damage)
+            }
+            None => false,
         }
     }
 
@@ -1051,6 +1095,12 @@ impl ImXkb {
 
     fn update_mask(&mut self, depressed: u32, latched: u32, locked: u32, group: u32) {
         let _ = self.state.update_mask(depressed, latched, locked, 0, 0, group);
+    }
+
+    /// 该 keycode 是否可重复（xkb `key_repeats`；修饰键 / 锁定键不重复）。
+    fn key_repeats(&self, keycode: u32) -> bool {
+        self.keymap
+            .key_repeats(xkbcommon::xkb::Keycode::new(keycode + 8))
     }
 }
 
@@ -1466,6 +1516,7 @@ impl Shell {
             ime_focus_surface: false,
             commit_serial: 0,
             pending_ime: PendingImeBatch::default(),
+            ime_reconcile_gate: ImeReconcileGate::default(),
             ime_context_cache: None,
             input_method_manager,
             input_method: None,
@@ -1517,6 +1568,16 @@ impl Shell {
             popup_bounds_sent: None,
             seat: None,
             last_input_serial: None,
+            key_repeat: crate::key_repeat::KeyRepeat::new(crate::key_repeat::RepeatConfig::default()),
+            repeat_logical: Key::Escape,
+            repeat_text: None,
+            clock_base: Instant::now(),
+            xkb_keymap: None,
+            im_repeat: crate::key_repeat::RepeatConfig::default(),
+            im_key_repeat: crate::key_repeat::KeyRepeat::new(crate::key_repeat::RepeatConfig::default()),
+            im_repeat_logical: Key::Escape,
+            im_repeat_mods: Modifiers::NONE,
+            forwarded_keys: std::collections::HashSet::new(),
         })
     }
 
@@ -1948,11 +2009,7 @@ impl Shell {
             return Some(ctx.clone());
         }
         // 后端候选与 `Renderer::new` 一致：Vulkan 优先，GL 回退（Known Issue #8）。
-        match GpuContext::new(
-            &self.conn,
-            wl_surface,
-            &[wgpu::Backends::VULKAN, wgpu::Backends::GL],
-        ) {
+        match GpuContext::new(&self.conn, wl_surface, &crate::render::render_backends()) {
             Ok(ctx) => {
                 log::info!(
                     "wgpu 共享上下文已创建（format={:?}）—— 主表面/浮层共用一份 device",
@@ -2185,6 +2242,114 @@ impl Shell {
         }
     }
 
+    /// 单调秒（外壳启动为 0）——按键重复调度的时钟。
+    fn now_secs(&self) -> f64 {
+        self.clock_base.elapsed().as_secs_f64()
+    }
+
+    /// 主键盘重复的下次唤醒（秒，None = 无）——并入主循环超时。
+    fn repeat_wake_hint(&self) -> Option<f64> {
+        let now = self.now_secs();
+        // 引擎路径仅在 `im_active` 时计入（失活后不应再有引擎重复 deadline）。
+        let im = self
+            .im_active
+            .then(|| self.im_key_repeat.next_wake(now))
+            .flatten();
+        match (self.key_repeat.next_wake(now), im) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        }
+    }
+
+    /// 把主循环超时再夹到「按键重复下次时刻」不晚于它（参 crate::key_repeat 缺陷 5）。
+    fn clamp_wake_to_repeat(&self, timeout: Option<Duration>) -> Option<Duration> {
+        match self.repeat_wake_hint() {
+            Some(secs) => {
+                let repeat_due = Duration::from_secs_f64(secs.max(0.0));
+                Some(timeout.map_or(repeat_due, |t| t.min(repeat_due)))
+            }
+            None => timeout,
+        }
+    }
+
+    /// 发出一次「按键激活」：`KeyPressed` + （首按下记录的多标量可读文本）`Commit`。
+    /// 首次与重复走同一路径，完整可读文本不丢（任务 k-key-repeat 缺陷 3）。
+    fn emit_key_activation(&mut self, key: Key, text: Option<String>, repeat: bool) {
+        for ev in key_activation_events(key, text, self.modifiers, repeat, !self.ime_enabled) {
+            self.emit_input(ev);
+        }
+    }
+
+    /// 到点则发一次重复（不积压；参 crate::key_repeat）。返回是否实际发出（供主循环置脏）。
+    /// - 主键盘（wl_keyboard）路径 → `emit_key_activation(repeat=true)`（含多标量文本）；
+    /// - 引擎路径 → 重投 `ime_engine_key`（Ceyboard 消费键自行重复），并刷新候选窗。
+    fn poll_key_repeat(&mut self, qh: &QueueHandle<Self>) -> bool {
+        let now = self.now_secs();
+        let mut fired = false;
+        if self.key_repeat.poll(now).is_some() {
+            let key = self.repeat_logical;
+            let text = self.repeat_text.clone();
+            // 零交互排障留痕：逐次重复按下（含单调时刻，供核对间隔 1000/rate）。
+            log::debug!("按键重复 fire key={key:?} t={now:.3}");
+            self.emit_key_activation(key, text, true);
+            fired = true;
+        }
+        // 引擎路径仅在引擎活跃时重复（失活后即使残留 deadline 也不再重投引擎；缺陷 1）。
+        if self.im_active && self.im_key_repeat.poll(now).is_some() {
+            let (key, mods) = (self.im_repeat_logical, self.im_repeat_mods);
+            log::debug!("输入法按键重复 fire key={key:?} t={now:.3}");
+            let _ = guard("ime_engine_key_repeat", || {
+                self.app.ime_engine_key(key, mods)
+            });
+            if let Some(im) = self.input_method.clone() {
+                self.flush_engine(&im);
+            }
+            self.im_popup_dirty = true;
+            self.refresh_im_popup(qh);
+            fired = true;
+        }
+        fired
+    }
+
+    /// 判定某键是否可重复：优先按 xkb `key_repeats`（修饰键 / 锁定键不重复）；
+    /// keymap 未建立时回退修饰键黑名单。
+    fn key_repeatable(&self, key: Key, raw_code: u32) -> bool {
+        match self.xkb_keymap.as_ref() {
+            Some(km) => km.key_repeats(xkbcommon::xkb::Keycode::new(raw_code + 8)),
+            None => crate::key_repeat::default_repeatable(&key),
+        }
+    }
+
+    /// 给所有「已转发给焦点客户端但仍在按住」的键补发虚拟键盘松开并清集合。
+    ///
+    /// 用途：引擎消费了新键 → 目标应用没收到新键，会继续把它以为的最后按键自重复，
+    /// 与引擎重复叠成两层；必须主动松开这些转发键让应用停手（任务 k-key-repeat 缺陷 4）。
+    fn release_forwarded_keys(&mut self) {
+        let held: Vec<u32> = self.forwarded_keys.drain().collect();
+        if let Some(vk) = self.virtual_keyboard.clone() {
+            for code in held {
+                vk.key(self.im_key_time, code, 0); // 释放
+                self.im_key_time += 1;
+            }
+        }
+    }
+
+    /// 引擎消费新键时停止目标应用的重复，修饰键仍等待物理松开。
+    fn release_forwarded_repeat_keys(&mut self) {
+        let held = forwarded_repeat_keys(&self.forwarded_keys, |code| {
+            self.im_xkb.as_ref().is_some_and(|xkb| xkb.key_repeats(code))
+        });
+        if let Some(vk) = self.virtual_keyboard.clone() {
+            for code in held {
+                self.forwarded_keys.remove(&code);
+                vk.key(self.im_key_time, code, 0);
+                self.im_key_time += 1;
+            }
+        }
+    }
+
     /// 渲染 + 提交（dirty 驱动；I-1：CPU 缓冲恒就绪，无条件成功）。
     /// 渲染后若仍有动画（needs_redraw 语义 = 内容脏）→ 请求下一帧回调作 vsync
     /// 提示（I-2）。回调丢失绝不冻结：主循环 16ms 兜底超时继续推进。
@@ -2271,6 +2436,16 @@ impl Shell {
                 .render(&self.app.theme(), &self.engine, &mut self.scene_buf);
         }
         let render_ms = t_render.elapsed().as_secs_f32() * 1000.0;
+        // 只在显式诊断时记录纯 a 测试串长度，不记录任意用户文本。
+        if std::env::var("KANESUMI_KEYREPEAT_TRACE").as_deref() == Ok("1") {
+            for command in &self.scene_buf.commands {
+                if let kanesumi_canvas::SceneCommand::Text { content, .. } = command
+                    && let Some(len) = repeat_trace_len(content)
+                {
+                    log::debug!("keyrepeat_ascii_scene chars={len} frame={}", self.frame_count);
+                }
+            }
+        }
         // 时间线：首帧 Scene 渲染完成（App::render_into 返回）。
         crate::timeline::note_once("first_frame_rendered");
 
@@ -2645,6 +2820,9 @@ impl Shell {
 
         // 使能状态翻转才发 enable/disable（幂等，避免协议流量）。
         let action = compute_ime_action(self.ime_focus_surface, focus_control, self.ime_enabled);
+        if !self.ime_reconcile_gate.allows_context_update(action) {
+            return;
+        }
         if let Some(action) = action {
             self.ime_enabled = matches!(action, ImeAction::Enable);
             match action {
@@ -3271,14 +3449,18 @@ impl SeatHandler for Shell {
     }
 }
 
-/// 把 SCTK 的一次轴事件（含 `axis_source` / `axis_stop` / 离散步）汇成外壳 [`InputEvent`]。
+/// 把 SCTK 的一次轴事件（含 `axis_source` / `axis_stop` / 离散步）汇成外壳 [`InputEvent`]，
+/// 按顺序推入 `out`。
 ///
 /// 分流：离散滚轮 → 旧 [`InputEvent::Scroll`]（传统 App 行为不变，元素树 `TreeHost` 等价转
 /// `Wheel`/`Update` 平滑）；触控板 / 连续源 → [`InputEvent::ScrollInput`] 携带
 /// [`ScrollSource`]（跟手）；`axis_stop`（手指离开）→ `ScrollInput` 的 `End` 阶段（惯性起点）。
-/// 返回 `None` = 无位移且非停止，忽略。
+/// 无位移且非停止时 `out` 不变（忽略）。
 ///
-/// 注：SCTK 0.19 未暴露 `wl_pointer.axis_value120`（高精度滚轮），高精度设备只能经
+/// 注 1：同一帧可能既有位移又有 `axis_stop`——此时先推位移的 `Update` 再推 `End`，否则手指
+/// 离开那一帧的最后一段跟手位移会被丢掉（参 docs/research/fix6/fix6-2.md）。
+///
+/// 注 2：SCTK 0.19 未暴露 `wl_pointer.axis_value120`（高精度滚轮），高精度设备只能经
 /// `axis` 的 `absolute` / `discrete` 近似。本文件仅 Linux，**未在 Windows 编译**，待 Arch 验证。
 fn axis_to_input(
     horizontal: &AxisScroll,
@@ -3286,7 +3468,8 @@ fn axis_to_input(
     source: Option<wl_pointer::AxisSource>,
     modifiers: Modifiers,
     step: f32,
-) -> Option<InputEvent> {
+    out: &mut Vec<InputEvent>,
+) {
     let has_discrete = vertical.discrete != 0 || horizontal.discrete != 0;
     // `axis_source` 缺省（None）：带离散步按滚轮，否则按触控板连续。
     let scroll_source = match source {
@@ -3302,7 +3485,7 @@ fn axis_to_input(
         },
         other => other,
     };
-    // 离散步优先（每格 = wheel_lines × 16，正典默认 48px），否则用连续像素。
+    // 位移事件构造：离散步优先（每格 = wheel_lines × 16，正典默认 48px），否则用连续像素。
     let dy = if vertical.discrete != 0 {
         vertical.discrete as f32 * step
     } else {
@@ -3313,28 +3496,28 @@ fn axis_to_input(
     } else {
         horizontal.absolute as f32
     };
+    // 先补发本帧位移（若有），再补发 `End`——顺序即语义（跟手位移不能被 stop 吞掉）。
+    if dx != 0.0 || dy != 0.0 {
+        out.push(match scroll_source {
+            ScrollSource::Wheel { .. } => InputEvent::Scroll {
+                x: dx,
+                y: dy,
+                modifiers,
+            },
+            _ => InputEvent::ScrollInput(ScrollInput::new(
+                dx,
+                dy,
+                scroll_source,
+                ScrollPhase::Update,
+                modifiers,
+            )),
+        });
+    }
     if vertical.stop || horizontal.stop {
-        return Some(InputEvent::ScrollInput(ScrollInput::end(
+        out.push(InputEvent::ScrollInput(ScrollInput::end(
             scroll_source,
             modifiers,
         )));
-    }
-    if dx == 0.0 && dy == 0.0 {
-        return None;
-    }
-    match scroll_source {
-        ScrollSource::Wheel { .. } => Some(InputEvent::Scroll {
-            x: dx,
-            y: dy,
-            modifiers,
-        }),
-        _ => Some(InputEvent::ScrollInput(ScrollInput::new(
-            dx,
-            dy,
-            scroll_source,
-            ScrollPhase::Update,
-            modifiers,
-        ))),
     }
 }
 
@@ -3353,23 +3536,28 @@ impl PointerHandler for Shell {
             }
             // 子弹层表面：事件原样（弹层局部坐标）交给 App，App 平移回树坐标。
             if let Some(key) = self.popup_key(&event.surface) {
-                let ev = match &event.kind {
+                let mut evs: Vec<InputEvent> = Vec::new();
+                match &event.kind {
                     PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
-                        Some(InputEvent::PointerMoved { x: pos.0, y: pos.1 })
+                        evs.push(InputEvent::PointerMoved { x: pos.0, y: pos.1 })
                     }
-                    PointerEventKind::Leave { .. } => Some(InputEvent::PointerLeft),
-                    PointerEventKind::Press { button, .. } => Some(InputEvent::PointerPressed {
-                        x: pos.0,
-                        y: pos.1,
-                        button: map_button(*button),
-                        modifiers: self.modifiers,
-                    }),
-                    PointerEventKind::Release { button, .. } => Some(InputEvent::PointerReleased {
-                        x: pos.0,
-                        y: pos.1,
-                        button: map_button(*button),
-                        modifiers: self.modifiers,
-                    }),
+                    PointerEventKind::Leave { .. } => evs.push(InputEvent::PointerLeft),
+                    PointerEventKind::Press { button, .. } => {
+                        evs.push(InputEvent::PointerPressed {
+                            x: pos.0,
+                            y: pos.1,
+                            button: map_button(*button),
+                            modifiers: self.modifiers,
+                        })
+                    }
+                    PointerEventKind::Release { button, .. } => {
+                        evs.push(InputEvent::PointerReleased {
+                            x: pos.0,
+                            y: pos.1,
+                            button: map_button(*button),
+                            modifiers: self.modifiers,
+                        })
+                    }
                     PointerEventKind::Axis {
                         vertical,
                         horizontal,
@@ -3377,10 +3565,17 @@ impl PointerHandler for Shell {
                         ..
                     } => {
                         let step = self.interaction.wheel_step_px();
-                        axis_to_input(horizontal, vertical, *source, self.modifiers, step)
+                        axis_to_input(
+                            horizontal,
+                            vertical,
+                            *source,
+                            self.modifiers,
+                            step,
+                            &mut evs,
+                        );
                     }
                 };
-                if let Some(ev) = ev {
+                for ev in evs {
                     self.emit_popup_input(key, ev);
                 }
                 continue;
@@ -3448,11 +3643,13 @@ impl PointerHandler for Shell {
                 } => {
                     // 滚轮 / 触控板分流见 `axis_to_input`：正方向 = +y（表面坐标，下为正）。
                     let step = self.interaction.wheel_step_px();
-                    if let Some(ev) =
-                        axis_to_input(horizontal, vertical, *source, self.modifiers, step)
-                    {
+                    let mut evs: Vec<InputEvent> = Vec::new();
+                    axis_to_input(horizontal, vertical, *source, self.modifiers, step, &mut evs);
+                    if !evs.is_empty() {
                         self.pointer_pos = pos;
-                        self.route_input(target, ev);
+                        for ev in evs {
+                            self.route_input(target, ev);
+                        }
                     }
                 }
             }
@@ -3577,6 +3774,8 @@ impl KeyboardHandler for Shell {
     ) {
         self.ime_focus_surface = false;
         self.pending_ime = PendingImeBatch::default();
+        // 键盘焦点离开 → 停止按键重复（任务 k-key-repeat §设计 2）。
+        self.key_repeat.cancel();
         self.reconcile_ime();
         // 键盘焦点移进本进程的抓取弹层（合成器在 grab 时转移焦点）→ 不是失焦，弹层不能因此关闭。
         if *surface == self.surface && self.has_grabbing_popup() {
@@ -3603,6 +3802,9 @@ impl KeyboardHandler for Shell {
             .filter(|text| text.chars().count() > 1)
             .map(str::to_owned);
         let key = map_key(event.keysym, if text.is_some() { None } else { event.utf8 });
+        // 按下任何新键先停止旧的重复（含被 `focus_move` 消费的 Tab —— 旧实现把 Tab 的
+        // 早退放在 `key_repeat.press` 之前，导致按 Tab 时旧键仍在重复；缺陷 2）。
+        self.key_repeat.cancel();
         // Tab / Shift+Tab：框架级焦点推进（App 可选实现 `App::focus_move`）。
         // 仅在 IME 未接管键盘时抢路由 —— 否则会破坏输入法内的候选选择。
         if key == Key::Tab && !self.ime_enabled {
@@ -3613,16 +3815,15 @@ impl KeyboardHandler for Shell {
                 return;
             }
         }
-        self.emit_input(InputEvent::KeyPressed {
-            key,
-            modifiers: self.modifiers,
-        });
-        // xkb 可产生多标量文本（组合序列等）；不能静默丢掉首字符后的内容。
-        if let Some(text) = text
-            && !self.ime_enabled
-        {
-            self.emit_input(InputEvent::Commit { text });
-        }
+        // 客户端按键重复：按下可重复键 → 安排首次重复；修饰键 / CapsLock 等不重复
+        // （按 xkb `key_repeats`；参 crate::key_repeat 与任务 k-key-repeat §设计 1/2）。
+        let repeatable = self.key_repeatable(key, event.raw_code);
+        self.repeat_logical = key;
+        self.repeat_text = text.clone();
+        let now = self.now_secs();
+        self.key_repeat.press(event.raw_code as u64, now, repeatable);
+        // 首次与重复走同一路径：KeyPressed + 多标量文本 Commit（不静默丢首字符后内容）。
+        self.emit_key_activation(key, text, false);
         self.dirty = true;
     }
 
@@ -3632,8 +3833,10 @@ impl KeyboardHandler for Shell {
         _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _serial: u32,
-        _event: SctkKeyEvent,
+        event: SctkKeyEvent,
     ) {
+        // 松开当前重复键 → 立即停止（松开别的键不影响）。
+        self.key_repeat.release(event.raw_code as u64);
     }
 
     fn update_modifiers(
@@ -3659,8 +3862,44 @@ impl KeyboardHandler for Shell {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
-        _repeat: smithay_client_toolkit::seat::keyboard::RepeatInfo,
+        repeat: SctkRepeatInfo,
     ) {
+        let cfg = match repeat {
+            SctkRepeatInfo::Disable => crate::key_repeat::RepeatConfig::new(0, 0),
+            SctkRepeatInfo::Repeat { rate, delay } => {
+                crate::key_repeat::RepeatConfig::new(delay, rate.get())
+            }
+        };
+        self.key_repeat.set_config(cfg);
+        // 抓取对象只在创建时通知参数；同一 seat 的普通键盘还会收到运行时更新。
+        if self.input_method.is_some() {
+            self.im_repeat = cfg;
+            self.im_key_repeat.set_config(cfg);
+            let _ = guard("ime_engine_repeat_info", || {
+                self.app.ime_engine_repeat_info(cfg.rate, cfg.delay_ms)
+            });
+        }
+    }
+
+    /// keymap 变化：另编一份供 `key_repeats` 判定可重复键（sctk 不暴露 xkb 状态）。
+    fn update_keymap(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        keymap: SctkKeymap<'_>,
+    ) {
+        use xkbcommon::xkb;
+        let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        match xkb::Keymap::new_from_string(
+            &ctx,
+            keymap.as_string(),
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        ) {
+            Some(km) => self.xkb_keymap = Some(km),
+            None => log::warn!("外壳 keymap 编译失败（重复判定回退黑名单）"),
+        }
     }
 }
 
@@ -3816,6 +4055,10 @@ impl DmabufHandler for Shell {
         if self.main_out.mark_released(buffer) {
             return;
         }
+        if self.comp.mark_released(buffer) {
+            self.retry_pending_layers(_qh);
+            return;
+        }
         for out in self.floating_out.iter_mut() {
             if out.mark_released(buffer) {
                 return;
@@ -3906,23 +4149,21 @@ impl Dispatch<ZwpTextInputV3, ()> for Shell {
                 state.pending_ime.delete_after = after_length;
             }
             TextInputEvent::Done { serial } => {
-                // 仅 serial 匹配生效（stale 帧丢弃，参 IME_WIRING_PLAN 风险 1）。
-                match state.pending_ime.apply_done(serial, state.commit_serial) {
-                    Some(events) => {
-                        for ev in events {
-                            state.emit_input(ev);
-                        }
-                    }
-                    None => {
-                        log::debug!(
-                            "text-input done serial {serial}（当前 {}）stale，丢弃",
-                            state.commit_serial
-                        );
-                    }
+                if std::env::var("KANESUMI_KEYREPEAT_TRACE").as_deref() == Ok("1")
+                    && let Some(text) = state.pending_ime.commit.as_ref()
+                    && let Some(len) = repeat_trace_len(text)
+                {
+                    log::debug!("keyrepeat_done serial={serial} current={} chars={len}", state.commit_serial);
                 }
+                let outcome = state.pending_ime.apply_done(serial, state.commit_serial);
                 state.pending_ime = PendingImeBatch::default();
-                // 派发后文本/光标已变 → 重新灌上下文。
-                state.reconcile_ime();
+                for event in outcome.events {
+                    state.emit_input(event);
+                }
+                // 文字照常应用；回灌仅在匹配 done 后做，下一次匹配会补发缓存差异。
+                if state.ime_reconcile_gate.after_done(outcome.serial_matched) {
+                    state.reconcile_ime();
+                }
             }
             _ => {}
         }
@@ -3969,6 +4210,10 @@ impl Dispatch<ZwpInputMethodV2, ()> for Shell {
             ImEvent::Deactivate => {
                 log::info!("IME 引擎失活（im_active=false）");
                 state.im_active = false;
+                // 失活 → 取消引擎路径重复（旧实现未取消 → 失活后仍重投引擎；缺陷 1）。
+                state.im_key_repeat.cancel();
+                // 已转发的按住键补发松开，避免焦点切换后目标应用残留按住态（缺陷 4）。
+                state.release_forwarded_keys();
                 state.im_preedit_cache = None;
                 state.emit_input(InputEvent::Preedit {
                     text: String::new(),
@@ -4001,6 +4246,41 @@ impl Dispatch<ZwpInputMethodV2, ()> for Shell {
 /// **绝不进入 `ime_engine_key`**，故不会触发 Shift 点按判定等引擎逻辑。
 fn grab_key_passthrough(im_active: bool, has_keymap: bool) -> bool {
     !im_active || !has_keymap
+}
+
+/// 一次「按键激活」产出的事件序列：先 `KeyPressed`，若本次由 xkb 产生多标量可读文本
+/// （`text.is_some()`）且未由 IME 接管（`commit_text`）再补一条 `Commit`。首次按下与后续
+/// 重复都走本函数，保证「完整可读文本不丢、首次与重复一致」（任务 k-key-repeat 缺陷 3）。
+/// 纯函数，便于回归。
+fn key_activation_events(
+    key: Key,
+    text: Option<String>,
+    modifiers: Modifiers,
+    repeat: bool,
+    commit_text: bool,
+) -> Vec<InputEvent> {
+    let mut events = vec![InputEvent::KeyPressed {
+        key,
+        modifiers,
+        repeat,
+    }];
+    if commit_text && let Some(text) = text {
+        events.push(InputEvent::Commit { text });
+    }
+    events
+}
+
+/// 只选择可重复的已转发键，避免提前松开仍按住的修饰键。
+fn forwarded_repeat_keys(
+    held: &std::collections::HashSet<u32>,
+    mut repeats: impl FnMut(u32) -> bool,
+) -> Vec<u32> {
+    held.iter().copied().filter(|code| repeats(*code)).collect()
+}
+
+/// 诊断仅接受纯 a 测试串。
+fn repeat_trace_len(text: &str) -> Option<usize> {
+    (!text.is_empty() && text.bytes().all(|byte| byte == b'a')).then_some(text.len())
 }
 
 impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
@@ -4053,6 +4333,8 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                     // 松开事件：引擎激活期交给 App —— Shift 点按在**松开时**判定
                     // （按住期间无其它键、且按住 < 300 ms 才切中英，参 docs/IME_PLAN.md §Ⅱ-2）。
                     // 非激活期与按下同样门控，不介入（IME1）。松开不重放：按下时已随键透传。
+                    // 引擎路径重复：松开当前重复键即停（任务 k-key-repeat §设计 2）。
+                    state.im_key_repeat.release(key as u64);
                     if !grab_key_passthrough(state.im_active, state.im_xkb.is_some())
                         && let Some(xkb) = state.im_xkb.as_ref()
                     {
@@ -4061,6 +4343,14 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                         let _ = guard("ime_engine_key_release", || {
                             state.app.ime_engine_key_release(logical, state.im_modifiers)
                         });
+                    }
+                    // 转发过按下的键 → 物理松开时补发虚拟键盘 release（目标应用据此自行重复；
+                    // 转发路径不合成重复，保证同刻只有一层在重复）。参任务 k-key-repeat §设计 6。
+                    if state.forwarded_keys.remove(&key)
+                        && let Some(vk) = state.virtual_keyboard.clone()
+                    {
+                        vk.key(state.im_key_time, key, 0); // 释放
+                        state.im_key_time += 1;
                     }
                     return;
                 }
@@ -4074,8 +4364,9 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                     // 记录证明放行而非吞键（参 docs/IME_PLAN.md §Ⅲ IME1）。
                     log::debug!("IME 抓取按键 key={key} im_active={} → 放行", state.im_active);
                     if let Some(vk) = state.virtual_keyboard.clone() {
+                        // 只转发按下；物理松开到达时补发 release（目标应用自行重复）。
                         vk.key(state.im_key_time, key, 1); // 按下
-                        vk.key(state.im_key_time, key, 0); // 释放（透传完整按键）
+                        state.forwarded_keys.insert(key);
                     }
                     state.im_key_time += 1;
                     return;
@@ -4096,11 +4387,31 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                 if let Some(im) = state.input_method.clone() {
                     state.flush_engine(&im);
                 }
+                // 客户端重复：**引擎消费**的键由本客户端（Ceyboard 侧）自行重复 —— 稍后按
+                // 抓取 `repeat_info` 重投 `ime_engine_key`；未消费的键经虚拟键盘转发、由
+                // 目标应用自重复（不在转发路径合成重复，保证同刻只有一层在重复）。
+                if consumed {
+                    // 引擎消费新键 → 之前转发的按住键必须收到松开（否则目标应用仍以为它是
+                    // 最后按键而继续自重复，与引擎重复叠成两层；任务 k-key-repeat 缺陷 4）。
+                    state.release_forwarded_repeat_keys();
+                    let repeatable = state
+                        .im_xkb
+                        .as_ref()
+                        .map(|x| x.key_repeats(key))
+                        .unwrap_or(true);
+                    let now = state.now_secs();
+                    state.im_repeat_logical = logical;
+                    state.im_repeat_mods = state.im_modifiers;
+                    state.im_key_repeat.press(key as u64, now, repeatable);
+                } else {
+                    state.im_key_repeat.cancel();
+                }
                 if !consumed
                     && let Some(vk) = state.virtual_keyboard.clone()
                 {
+                    // 只转发按下；物理松开到达时补发 release（目标应用据此自行重复）。
                     vk.key(state.im_key_time, key, 1); // 按下
-                    vk.key(state.im_key_time, key, 0); // 释放（透传完整按键）
+                    state.forwarded_keys.insert(key);
                 }
                 state.im_key_time += 1;
                 // 候选窗 popup 刷新（key 即时置脏，下一帧 refresh 提交）。
@@ -4127,6 +4438,21 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
                 if let Some(vk) = state.virtual_keyboard.clone() {
                     vk.modifiers(mods_depressed, mods_latched, mods_locked, group);
                 }
+            }
+            ImGrabEvent::RepeatInfo { rate, delay } => {
+                // 抓取键盘的重复参数（与 wl_keyboard.repeat_info 同义）：传给引擎宿主
+                // （Ceyboard 消费键自重复）；rate/delay 负数按 0 处理（协议禁止但防御）。
+                let cfg = crate::key_repeat::RepeatConfig::new(
+                    delay.max(0) as u32,
+                    rate.max(0) as u32,
+                );
+                state.im_repeat = cfg;
+                state.im_key_repeat.set_config(cfg);
+                let _ = guard("ime_engine_repeat_info", || {
+                    state
+                        .app
+                        .ime_engine_repeat_info(cfg.rate, cfg.delay_ms)
+                });
             }
             _ => {}
         }
@@ -4588,14 +4914,14 @@ fn commit_shm_buffers(
     bgra: &[u8],
     scale: f32,
     damage: Option<Rect>,
-) {
+) -> bool {
     use std::os::fd::AsFd;
 
     let expected = (width as usize)
         .saturating_mul(height as usize)
         .saturating_mul(4);
     if bgra.len() < expected || width == 0 || height == 0 {
-        return;
+        return false;
     }
     // 尺寸变化或 pool 未建 → 重建（pool 大小 = 2×expected，容纳双缓冲）。
     let fresh_pool = state.pool.is_none() || state.width != width || state.height != height;
@@ -4607,7 +4933,7 @@ fn commit_shm_buffers(
                 "ether-shm-error.log",
                 "shm_open 失败：无法为 wl_shm 建立共享内存池（/dev/shm 是否已满？）\n",
             );
-            return;
+            return false;
         };
         state.pool.take().map(|p| p.destroy());
         for b in state.buffers.iter_mut() {
@@ -4643,7 +4969,7 @@ fn commit_shm_buffers(
     } else if !state.in_flight[1 - state.next] {
         1 - state.next
     } else {
-        return;
+        return false;
     };
     // 本槽位需写入区（物理像素）：
     // - 全量帧 / 槽位内容不可用（新建）→ 整面；
@@ -4726,6 +5052,7 @@ fn commit_shm_buffers(
         state.in_flight[idx] = true;
         state.next = 1 - idx;
     }
+    true
 }
 
 // ── SHM 相关空事件处理（wl_shm / pool / buffer，无事件需处理）──────────────
@@ -4771,6 +5098,7 @@ impl Dispatch<wl_buffer::WlBuffer, ()> for Shell {
                 return;
             }
             if state.comp.mark_released(proxy) {
+                state.retry_pending_layers(_qh);
                 return;
             }
             for slot in &mut state.floating_out {
@@ -4931,5 +5259,165 @@ mod tests {
     #[test]
     fn grab_key_passthrough_without_keymap() {
         assert!(grab_key_passthrough(true, false));
+    }
+
+    /// 轴事件 → 输入事件的分流（纯函数层）：断言四种组合的输出序列。
+    ///
+    /// 参 docs/research/fix6/fix6-2.md：手指离开那一帧若同时带位移，位移必须先于 `End` 发出。
+    fn axis_events(
+        horizontal: &AxisScroll,
+        vertical: &AxisScroll,
+        source: Option<wl_pointer::AxisSource>,
+    ) -> Vec<InputEvent> {
+        let mut out = Vec::new();
+        axis_to_input(horizontal, vertical, source, Modifiers::NONE, 48.0, &mut out);
+        out
+    }
+
+    /// 仅连续位移（无 stop）→ 一个 `Update`，携带该帧像素增量。
+    #[test]
+    fn axis_input_delta_only_yields_update() {
+        let v = AxisScroll {
+            absolute: 12.5,
+            ..Default::default()
+        };
+        let out = axis_events(&AxisScroll::default(), &v, Some(wl_pointer::AxisSource::Finger));
+        assert_eq!(
+            out,
+            vec![InputEvent::ScrollInput(ScrollInput::new(
+                0.0,
+                12.5,
+                ScrollSource::Finger,
+                ScrollPhase::Update,
+                Modifiers::NONE,
+            ))]
+        );
+    }
+
+    /// 仅 stop（无位移）→ 只一个 `End`，且不产生空 `Update`。
+    #[test]
+    fn axis_input_stop_only_yields_end() {
+        let v = AxisScroll {
+            stop: true,
+            ..Default::default()
+        };
+        let out = axis_events(&AxisScroll::default(), &v, Some(wl_pointer::AxisSource::Finger));
+        assert_eq!(
+            out,
+            vec![InputEvent::ScrollInput(ScrollInput::end(
+                ScrollSource::Finger,
+                Modifiers::NONE,
+            ))]
+        );
+    }
+
+    /// 位移 + stop（同一帧）→ 先 `Update`（带该帧位移）后 `End`，位移不丢。
+    #[test]
+    fn axis_input_delta_then_stop_keeps_delta() {
+        let v = AxisScroll {
+            absolute: 7.0,
+            stop: true,
+            ..Default::default()
+        };
+        let h = AxisScroll {
+            absolute: -3.0,
+            ..Default::default()
+        };
+        let out = axis_events(&h, &v, Some(wl_pointer::AxisSource::Continuous));
+        assert_eq!(
+            out,
+            vec![
+                InputEvent::ScrollInput(ScrollInput::new(
+                    -3.0,
+                    7.0,
+                    ScrollSource::Continuous,
+                    ScrollPhase::Update,
+                    Modifiers::NONE,
+                )),
+                InputEvent::ScrollInput(ScrollInput::end(
+                    ScrollSource::Continuous,
+                    Modifiers::NONE,
+                )),
+            ]
+        );
+    }
+
+    /// 既无位移也无 stop → 空序列（忽略该事件）。
+    #[test]
+    fn axis_input_empty_yields_nothing() {
+        let out = axis_events(&AxisScroll::default(), &AxisScroll::default(), None);
+        assert!(out.is_empty(), "无位移无 stop 不应产生任何事件");
+    }
+
+    /// 离散滚轮带 stop → 位移走旧 `Scroll`（传统 App 语义不变），随后照发 `End`。
+    #[test]
+    fn axis_input_wheel_discrete_then_stop_keeps_scroll() {
+        let v = AxisScroll {
+            discrete: 2,
+            stop: true,
+            ..Default::default()
+        };
+        let out = axis_events(&AxisScroll::default(), &v, None);
+        assert_eq!(
+            out,
+            vec![
+                InputEvent::Scroll {
+                    x: 0.0,
+                    y: 96.0,
+                    modifiers: Modifiers::NONE,
+                },
+                InputEvent::ScrollInput(ScrollInput::end(
+                    ScrollSource::Wheel { steps: 2.0 },
+                    Modifiers::NONE,
+                )),
+            ]
+        );
+    }
+
+    /// 重复路径也要带上首次按下记录的多标量可读文本（缺陷 3：完整文本不丢、首次与重复一致）。
+    #[test]
+    fn key_activation_repeat_keeps_multi_scalar_text() {
+        let evs = key_activation_events(
+            Key::Unknown(0x0100_0000),
+            Some("ab".to_string()),
+            Modifiers::NONE,
+            true,
+            true,
+        );
+        assert_eq!(evs.len(), 2, "KeyPressed + Commit");
+        assert!(matches!(evs[0], InputEvent::KeyPressed { repeat: true, .. }));
+        assert!(matches!(&evs[1], InputEvent::Commit { text } if text == "ab"));
+    }
+
+    /// IME 接管键盘时不额外 `Commit`（文本由引擎产出），且单标量无文本只发 `KeyPressed`。
+    #[test]
+    fn key_activation_commit_rules() {
+        let ime = key_activation_events(
+            Key::Unknown(1),
+            Some("ab".to_string()),
+            Modifiers::NONE,
+            false,
+            false,
+        );
+        assert_eq!(ime.len(), 1, "IME 路径不补 Commit");
+        let single =
+            key_activation_events(Key::Char('a'), None, Modifiers::NONE, false, true);
+        assert_eq!(single.len(), 1, "单标量无多标量文本 → 只有 KeyPressed");
+    }
+
+    #[test]
+    fn consumed_key_stops_forwarded_repeat_but_keeps_modifiers() {
+        let held = std::collections::HashSet::from([14, 29, 42]);
+        let release = forwarded_repeat_keys(&held, |code| code == 14);
+        assert_eq!(release, vec![14], "只停止退格，Ctrl/Shift 等物理松开");
+        assert_eq!(held.len(), 3, "选择函数不更改按住集合");
+    }
+
+    #[test]
+    fn repeat_trace_counts_complete_test_text_only() {
+        assert_eq!(repeat_trace_len(&"a".repeat(43)), Some(43));
+        assert_eq!(repeat_trace_len(""), None);
+        assert_eq!(repeat_trace_len("private"), None);
+        assert_eq!(repeat_trace_len("a中文"), None);
     }
 }

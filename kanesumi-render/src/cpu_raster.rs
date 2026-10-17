@@ -616,10 +616,11 @@ impl CpuRenderer {
         // 裁剪：包围盒 ∩ clip（物理）。
         let (mut cx0, mut cy0, mut cx1, mut cy1) = (0.0f32, 0.0f32, self.w as f32, self.h as f32);
         if let Some(cl) = clip {
-            cx0 = cl.origin.x * scale;
-            cy0 = cl.origin.y * scale;
-            cx1 = cl.right() * scale;
-            cy1 = cl.bottom() * scale;
+            // 裁剪框与表面求交：裁剪框可被整体平移到表面外（负坐标 / 超出右下）。
+            cx0 = (cl.origin.x * scale).max(0.0);
+            cy0 = (cl.origin.y * scale).max(0.0);
+            cx1 = (cl.right() * scale).min(self.w as f32);
+            cy1 = (cl.bottom() * scale).min(self.h as f32);
         }
         let bx0 = min_x.max(cx0);
         let by0 = min_y.max(cy0);
@@ -893,10 +894,12 @@ impl CpuRenderer {
         // 裁剪边界（物理）。
         let (mut cx0, mut cy0, mut cx1, mut cy1) = (0i64, 0i64, self.w as i64, self.h as i64);
         if let Some(cl) = clip {
-            cx0 = (cl.origin.x * scale).floor() as i64;
-            cy0 = (cl.origin.y * scale).floor() as i64;
-            cx1 = (cl.right() * scale).ceil() as i64;
-            cy1 = (cl.bottom() * scale).ceil() as i64;
+            // 裁剪框与表面求交：裁剪框被平移到表面外时，像素坐标为负，转 u32 回绕后越界
+            // （2026-10-17 锁屏幕布上滑离场时 panic：index 17175728736，len 23592960）。
+            cx0 = ((cl.origin.x * scale).floor() as i64).max(0);
+            cy0 = ((cl.origin.y * scale).floor() as i64).max(0);
+            cx1 = ((cl.right() * scale).ceil() as i64).min(self.w as i64);
+            cy1 = ((cl.bottom() * scale).ceil() as i64).min(self.h as i64);
         }
         for py in y0..y0 + bh as i64 {
             if py < cy0 || py >= cy1 {
@@ -958,10 +961,11 @@ impl CpuRenderer {
         let y1 = rect.bottom() * scale;
         let (mut cx0, mut cy0, mut cx1, mut cy1) = (0.0f32, 0.0f32, self.w as f32, self.h as f32);
         if let Some(cl) = clip {
-            cx0 = cl.origin.x * scale;
-            cy0 = cl.origin.y * scale;
-            cx1 = cl.right() * scale;
-            cy1 = cl.bottom() * scale;
+            // 裁剪框与表面求交：裁剪框可被整体平移到表面外（负坐标 / 超出右下）。
+            cx0 = (cl.origin.x * scale).max(0.0);
+            cy0 = (cl.origin.y * scale).max(0.0);
+            cx1 = (cl.right() * scale).min(self.w as f32);
+            cy1 = (cl.bottom() * scale).min(self.h as f32);
         }
         let x0c = x0.max(cx0);
         let y0c = y0.max(cy0);
@@ -1485,6 +1489,35 @@ mod tests {
         r.render_inner(None, &scene2, None);
         assert_eq!(px_at(&r, 2, 4), [0, 0, 255, 255], "全量覆盖");
         assert_eq!(px_at(&r, 6, 4), [0, 0, 255, 255]);
+    }
+
+    /// 回归（2026-10-17 锁屏幕布上滑 panic）：裁剪框整体平移到表面外（负坐标）时，
+    /// 文本 / 填充只画表面内的部分，不得越界。
+    #[test]
+    fn clip_translated_off_surface_does_not_overflow() {
+        let mut scene = Scene::default();
+        scene.push_clip(Rect::new(0.0, -40.0, 64.0, 60.0));
+        scene.fill_rect(Color::WHITE, Rect::new(0.0, -40.0, 64.0, 60.0));
+        scene.pop_clip();
+        let r = render_scene(&scene, 64.0, 32.0);
+        assert_eq!(px_at(&r, 10, 5)[3], 255, "表面内的部分照常绘制");
+        assert_eq!(px_at(&r, 10, 25)[3], 0, "裁剪框之外不画");
+        let Some(path) = test_font_path() else {
+            return;
+        };
+        let engine = TextEngine::load(path).unwrap();
+        let mut scene = Scene::default();
+        scene.push_clip(Rect::new(0.0, -30.0, 64.0, 40.0));
+        scene.text(
+            "中文测试".to_string(),
+            Rect::new(2.0, -12.0, 56.0, 24.0),
+            Color::WHITE,
+            TextStyle::new(20.0, 24.0, FontWeight::Normal),
+            TextAlign::Left,
+        );
+        scene.pop_clip();
+        let mut r = CpuRenderer::new(64.0, 32.0, 1.0);
+        r.render(&engine, &scene, None);
     }
 
     /// S4 回归：无 PushClip 的文本命令在全量帧必须绘制。

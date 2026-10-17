@@ -15,6 +15,11 @@
 // `platform::commit_shm_buffers`）。每输出独立缓冲；主输出画完整界面，副输出只画背板。
 // wgpu 锁屏表面不在本任务范围（`choose_renderer` 的 GPU 分支需自建 wgpu Surface，
 // 属后续；锁屏为低频静态界面，CPU 光栅足够）。
+//
+// 合成图层（2026-10-17）：会动的东西（幕布上滑、认证内容淡入）放进主输出锁屏表面下的
+// desync 子表面，内容只在变化时光栅一次，位移 / 不透明度动画经 `ether_visual_v1` 交合成器
+// 按自己的时钟推进 —— 动画期间客户端不重画、不提交。旧做法逐帧整屏 CPU 光栅 3072×1920 +
+// SHM 上传，真机上滑只剩一两帧中间帧。语义与 `platform/layers.rs` 相同（参 `crate::layers`）。
 
 use std::time::{Duration, Instant};
 
@@ -49,6 +54,11 @@ use wayland_client::{
 
 use crate::app::{App, InputEvent, LockEvent, Modifiers, PointerButton};
 use crate::cpu_raster::CpuRenderer;
+use crate::layers::{LayerCommand, LayerEvent, LayerId};
+use crate::platform::layers::proto::ether_composition_manager_v1::EtherCompositionManagerV1;
+use crate::platform::layers::proto::ether_visual_v1::{self, EtherVisualV1};
+use smithay_client_toolkit::subcompositor::SubcompositorState;
+use wayland_client::protocol::wl_subsurface::WlSubsurface;
 
 /// 锁确认状态机（纯逻辑；不变量 1/2 的单测目标，无需真实合成器）。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +115,26 @@ struct OutputSlot {
     raster_dims: Option<(i32, i32, i32)>,
     /// 已提交过至少一帧。
     presented: bool,
+    /// 最近提交的场景（与本次相同且尺寸未变 → 跳过光栅与提交）。图层模式下主表面只是静态背板，
+    /// 认证内容每次变化（打字 / 光标闪烁）都会触发全部输出重画；不跳过就每次重传整屏 23 MB
+    /// （2026-10-17 真机阻塞日志 collect:lock）。
+    last_scene: Option<kanesumi_canvas::Scene>,
+}
+
+/// 锁屏合成图层：主输出锁屏表面下的一个 desync 子表面（纯视觉，空输入区域）。
+struct LockLayer {
+    id: LayerId,
+    surface: wl_surface::WlSurface,
+    subsurface: WlSubsurface,
+    visual: Option<EtherVisualV1>,
+    cpu: Option<CpuRenderer>,
+    pool: Option<SlotPool>,
+    /// 最近提交的缓冲（须存活到合成器释放）。
+    buffer: Option<smithay_client_toolkit::shm::slot::Buffer>,
+    rect: kanesumi_core::Rect,
+    scale: i32,
+    /// 回落模式（合成器无 `ether_composition_v1`）下模拟的偏移。
+    offset: (f32, f32),
 }
 
 /// 锁屏外壳状态。
@@ -142,6 +172,11 @@ struct LockShell {
     exit_code: i32,
     /// 上次 `step` 时刻（dt）。
     last: Instant,
+    /// 合成图层：Ether 私有协议（别的合成器没有 → None，动画回落为直接跳终值）。
+    comp_manager: Option<EtherCompositionManagerV1>,
+    subcompositor: Option<SubcompositorState>,
+    layers: Vec<LockLayer>,
+    comp_unsupported_reported: bool,
 }
 
 /// 锁屏外壳入口：接管进程直到解锁 / 被终止（不返回）。
@@ -175,6 +210,11 @@ fn run_inner(app: &'static mut dyn App, engine: TextEngine) -> Result<i32, Strin
     let shm = Shm::bind(&globals, &qh).map_err(|e| format!("wl_shm 不可用：{e}"))?;
     let lock_state = SessionLockState::new(&globals, &qh);
     let registry_state = RegistryState::new(&globals);
+    let comp_manager = globals
+        .bind::<EtherCompositionManagerV1, LockShell, ()>(&qh, 1..=1, ())
+        .ok();
+    let subcompositor =
+        SubcompositorState::bind(compositor_state.wl_compositor().clone(), &globals, &qh).ok();
 
     let started = Instant::now();
     let lock_call_at = Instant::now();
@@ -206,6 +246,10 @@ fn run_inner(app: &'static mut dyn App, engine: TextEngine) -> Result<i32, Strin
         exit: false,
         exit_code: 0,
         last: Instant::now(),
+        comp_manager,
+        subcompositor,
+        layers: Vec::new(),
+        comp_unsupported_reported: false,
     };
 
     while !shell.exit {
@@ -247,6 +291,204 @@ impl LockShell {
             }
             self.dirty = false;
         }
+        // 图层命令在主表面出过帧之后执行（父表面须已有缓冲，子表面才可见）。
+        self.process_layer_commands(qh);
+    }
+
+    /// 主输出锁屏表面（图层父表面；尚未出帧返回 None）。
+    fn layer_parent(&self) -> Option<(wl_surface::WlSurface, i32)> {
+        let slot = self.outputs.iter().find(|s| s.primary)?;
+        if !slot.presented {
+            return None;
+        }
+        Some((slot.surface.as_ref()?.wl_surface().clone(), slot.scale.max(1)))
+    }
+
+    /// 取走 App 的图层命令并执行（父表面未就绪时留在 App 队列里，下一步再取）。
+    fn process_layer_commands(&mut self, qh: &QueueHandle<Self>) {
+        let Some((parent, scale)) = self.layer_parent() else {
+            return;
+        };
+        let cmds = self.app.take_layer_commands();
+        if cmds.is_empty() {
+            return;
+        }
+        if self.comp_manager.is_none() && !self.comp_unsupported_reported {
+            self.comp_unsupported_reported = true;
+            log::warn!("锁屏：合成器不支持 ether_composition_v1 → 图层动画回落为直接跳终值");
+            self.app.on_layer_event(LayerEvent::Unsupported);
+        }
+        for c in cmds {
+            self.apply_layer_command(c, &parent, scale, qh);
+        }
+    }
+
+    fn layer_index(&self, id: LayerId) -> Option<usize> {
+        self.layers.iter().position(|l| l.id == id)
+    }
+
+    fn apply_layer_command(
+        &mut self,
+        c: LayerCommand,
+        parent: &wl_surface::WlSurface,
+        scale: i32,
+        qh: &QueueHandle<Self>,
+    ) {
+        match c {
+            LayerCommand::Create { id, rect, .. } => {
+                if self.layer_index(id).is_some() {
+                    return;
+                }
+                let Some(sub) = self.subcompositor.as_ref() else {
+                    log::warn!("锁屏：合成器无 wl_subcompositor，无法创建图层 {id:?}");
+                    return;
+                };
+                let (subsurface, surface) = sub.create_subsurface(parent.clone(), qh);
+                subsurface.set_desync();
+                let region = self.compositor_state.wl_compositor().create_region(qh, ());
+                surface.set_input_region(Some(&region));
+                region.destroy();
+                surface.set_buffer_scale(scale);
+                let visual = self.comp_manager.as_ref().map(|m| m.get_visual(&surface, qh, id));
+                subsurface.set_position(rect.origin.x.round() as i32, rect.origin.y.round() as i32);
+                parent.commit();
+                self.layers.push(LockLayer {
+                    id,
+                    surface,
+                    subsurface,
+                    visual,
+                    cpu: None,
+                    pool: None,
+                    buffer: None,
+                    rect,
+                    scale,
+                    offset: (0.0, 0.0),
+                });
+            }
+            LayerCommand::SetContent { id, scene } => {
+                let Some(i) = self.layer_index(id) else { return };
+                let l = &mut self.layers[i];
+                let (w, h) = (l.rect.size.width.max(1.0), l.rect.size.height.max(1.0));
+                let cpu = l.cpu.get_or_insert_with(|| CpuRenderer::new(w, h, l.scale as f32));
+                let rgba = cpu.render(&self.engine, &scene, None).to_vec();
+                let (pw, ph) = cpu.physical_size();
+                if pw == 0 || ph == 0 {
+                    return;
+                }
+                if l.pool.is_none() {
+                    let len = (pw as usize * ph as usize * 4).saturating_mul(2).max(1 << 20);
+                    match SlotPool::new(len, &self.shm) {
+                        Ok(p) => l.pool = Some(p),
+                        Err(e) => {
+                            log::error!("锁屏图层：wl_shm 池创建失败：{e}");
+                            return;
+                        }
+                    }
+                }
+                let pool = l.pool.as_mut().expect("pool 已建");
+                let Ok((buffer, canvas)) =
+                    pool.create_buffer(pw as i32, ph as i32, (pw * 4) as i32, wl_shm::Format::Argb8888)
+                else {
+                    log::error!("锁屏图层：缓冲创建失败");
+                    return;
+                };
+                for (dst, src) in canvas.chunks_exact_mut(4).zip(rgba.chunks_exact(4)) {
+                    dst[0] = src[2];
+                    dst[1] = src[1];
+                    dst[2] = src[0];
+                    dst[3] = src[3];
+                }
+                if buffer.attach_to(&l.surface).is_err() {
+                    log::error!("锁屏图层：缓冲 attach 失败");
+                    return;
+                }
+                l.surface.damage_buffer(0, 0, pw as i32, ph as i32);
+                l.surface.commit();
+                l.buffer = Some(buffer);
+            }
+            LayerCommand::SetRect { id, rect } => {
+                let Some(i) = self.layer_index(id) else { return };
+                let l = &mut self.layers[i];
+                l.rect = rect;
+                l.subsurface.set_position(
+                    (rect.origin.x + l.offset.0).round() as i32,
+                    (rect.origin.y + l.offset.1).round() as i32,
+                );
+                if let Some(cpu) = l.cpu.as_mut() {
+                    cpu.resize(rect.size.width, rect.size.height, l.scale as f32);
+                }
+                parent.commit();
+            }
+            LayerCommand::SetOffset { id, x, y } => {
+                let Some(i) = self.layer_index(id) else { return };
+                let l = &mut self.layers[i];
+                match &l.visual {
+                    Some(v) => {
+                        v.set_offset(x as f64, y as f64);
+                        l.surface.commit();
+                    }
+                    None => {
+                        l.offset = (x, y);
+                        l.subsurface.set_position(
+                            (l.rect.origin.x + x).round() as i32,
+                            (l.rect.origin.y + y).round() as i32,
+                        );
+                        parent.commit();
+                    }
+                }
+            }
+            LayerCommand::SetOpacity { id, opacity } => {
+                let Some(i) = self.layer_index(id) else { return };
+                let l = &self.layers[i];
+                if let Some(v) = &l.visual {
+                    v.set_opacity(opacity.clamp(0.0, 1.0) as f64);
+                    l.surface.commit();
+                }
+            }
+            LayerCommand::Animate { id, anim } => {
+                let Some(i) = self.layer_index(id) else { return };
+                let l = &mut self.layers[i];
+                match l.visual.clone() {
+                    Some(v) => {
+                        let [x1, y1, x2, y2] = anim.curve;
+                        v.animate(
+                            anim.serial,
+                            anim.duration_ms,
+                            anim.delay_ms,
+                            x1 as f64,
+                            y1 as f64,
+                            x2 as f64,
+                            y2 as f64,
+                            anim.to_x as f64,
+                            anim.to_y as f64,
+                            anim.to_opacity.clamp(0.0, 1.0) as f64,
+                        );
+                        l.surface.commit();
+                    }
+                    None => {
+                        l.offset = (anim.to_x, anim.to_y);
+                        l.subsurface.set_position(
+                            (l.rect.origin.x + anim.to_x).round() as i32,
+                            (l.rect.origin.y + anim.to_y).round() as i32,
+                        );
+                        parent.commit();
+                        for e in crate::layers::fallback_events(id, &anim) {
+                            self.app.on_layer_event(e);
+                        }
+                    }
+                }
+            }
+            LayerCommand::Destroy { id } => {
+                let Some(i) = self.layer_index(id) else { return };
+                let l = self.layers.remove(i);
+                if let Some(v) = l.visual {
+                    v.destroy();
+                }
+                l.subsurface.destroy();
+                l.surface.destroy();
+                parent.commit();
+            }
+        }
     }
 
     /// 解锁：`unlock_and_destroy` → roundtrip → 退出（不变量 3 唯一路径）。
@@ -279,6 +521,9 @@ impl LockShell {
         let size = Size::new(lw as f32, lh as f32);
         let scene = self.app.render_lock(&self.engine, size, primary);
         let dims = (lw, lh, scale);
+        if slot.presented && slot.raster_dims == Some(dims) && slot.last_scene.as_ref() == Some(&scene) {
+            return;
+        }
         let cpu = slot
             .cpu
             .get_or_insert_with(|| CpuRenderer::new(size.width, size.height, scale as f32));
@@ -332,6 +577,7 @@ impl LockShell {
         wl.commit();
         log::debug!("锁屏渲染输出 #{i}：{lw}x{lh}@{scale} 命令 {} 条", scene.commands.len());
         slot.buffer = Some(buffer);
+        slot.last_scene = Some(scene);
         if !slot.presented {
             slot.presented = true;
             if !self.first_frame_reported {
@@ -378,6 +624,7 @@ impl LockShell {
             buffer: None,
             raster_dims: None,
             presented: false,
+            last_scene: None,
         });
         log::info!("锁屏输出 #{index} {name}（逻辑 {info_logical:?} scale {scale}，主={primary}）");
         self.app
@@ -617,6 +864,7 @@ impl KeyboardHandler for LockShell {
         self.app.handle_input(InputEvent::KeyPressed {
             key,
             modifiers: self.modifiers,
+            repeat: false,
         });
         self.dirty = true;
     }
@@ -799,6 +1047,47 @@ mod tests {
     }
 }
 
+// ── 合成图层协议（与 platform/layers.rs 同一份 ether_composition_v1）────────────
 
+impl wayland_client::Dispatch<EtherCompositionManagerV1, ()> for LockShell {
+    fn event(
+        _state: &mut Self,
+        _proxy: &EtherCompositionManagerV1,
+        _event: crate::platform::layers::proto::ether_composition_manager_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
 
+impl wayland_client::Dispatch<EtherVisualV1, LayerId> for LockShell {
+    fn event(
+        state: &mut Self,
+        _proxy: &EtherVisualV1,
+        event: ether_visual_v1::Event,
+        id: &LayerId,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        let e = match event {
+            ether_visual_v1::Event::Done { serial } => LayerEvent::Done { id: *id, serial },
+            ether_visual_v1::Event::Cancelled { serial } => LayerEvent::Cancelled { id: *id, serial },
+        };
+        state.app.on_layer_event(e);
+    }
+}
 
+impl wayland_client::Dispatch<wayland_client::protocol::wl_region::WlRegion, ()> for LockShell {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wayland_client::protocol::wl_region::WlRegion,
+        _event: wayland_client::protocol::wl_region::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+smithay_client_toolkit::delegate_subcompositor!(LockShell);

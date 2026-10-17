@@ -184,8 +184,12 @@ pub enum Event {
         phase: ScrollPhase,
         modifiers: Modifiers,
     },
-    /// 键按下（焦点冒泡）。
-    KeyDown { key: Key, modifiers: Modifiers },
+    /// 键按下（焦点冒泡）。`repeat` = 按住连发产生的重复（按钮族忽略其激活）。
+    KeyDown {
+        key: Key,
+        modifiers: Modifiers,
+        repeat: bool,
+    },
     /// IME 组合态（焦点）。空串 = 清除。
     Preedit { text: String, cursor_byte: Option<usize> },
     /// IME 提交 / 普通文本输入（焦点）。

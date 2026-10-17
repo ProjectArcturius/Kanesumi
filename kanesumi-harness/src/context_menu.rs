@@ -391,6 +391,7 @@ mod tests {
         let ev = InputEvent::KeyPressed {
             key: Key::Escape,
             modifiers: crate::Modifiers::NONE,
+            repeat: false,
         };
         assert_eq!(s.handle_pointer(Some(&engine), &ev, SCREEN), ContextMenuAction::Consumed);
         assert!(!s.is_visible());

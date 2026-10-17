@@ -58,6 +58,19 @@ impl MetroPasswordBox {
         Self::masked(MetroTextBox::from_text(text))
     }
 
+    /// 设置删除（清除）按钮图标（`None` 退回 `✕` 字体字形）。宿主注入 `window-close.svg`
+    /// 位图 —— 字体里的 `✕`（U+2715）在思源黑体 / Noto CJK 缺字形，会渲染成方框
+    /// （2026-10-11 锁屏真机反馈）。掩码 / 明文两态共用同一删除按钮。
+    pub fn set_delete_icon(&mut self, icon: Option<kanesumi_canvas::Icon>) {
+        self.boxed.set_delete_icon(icon);
+    }
+
+    /// 链式设置删除按钮图标。参 [`Self::set_delete_icon`]。
+    pub fn with_delete_icon(mut self, icon: Option<kanesumi_canvas::Icon>) -> Self {
+        self.boxed.set_delete_icon(icon);
+        self
+    }
+
     /// 明文。
     pub fn password(&self) -> String {
         self.boxed.field.text()
@@ -365,6 +378,25 @@ mod tests {
         }
         assert_eq!(p.password(), "sec");
         assert_eq!(p.boxed.field.display_text(), "●●●");
+    }
+
+    /// 密码框（掩码变体）继承 TextBox 的行盒：在**边框内侧矩形**内垂直居中
+    /// （圆点 / 明文两态同基准）。参裁定 §145。
+    #[test]
+    fn line_box_centers_in_inner_rect() {
+        let th = MetroTheme::ether_dark();
+        let body = Rect::new(0.0, 0.0, 296.0, 35.0);
+        let p = MetroPasswordBox::new();
+        let b = p.boxed.border_thickness();
+        let inner = crate::text_box::text_input_inner_rect(body, b);
+        let line = p.boxed.line_rect(&th, body);
+        assert!(
+            (line.center().y - inner.center().y).abs() < 0.01,
+            "行框中心 {} 应等于内侧矩形中心 {}",
+            line.center().y,
+            inner.center().y
+        );
+        assert_eq!(line.size.height, th.typography.body.line_height);
     }
 
     #[test]

@@ -427,7 +427,9 @@ fn encode_scene(
         scale: f32,
         _transparent: bool,
     ) -> Result<Self, RendererError> {
+        let t_caps = std::time::Instant::now();
         let caps = surface.get_capabilities(&ctx.adapter);
+        let caps_ms = t_caps.elapsed().as_secs_f64() * 1000.0;
         let format = ctx.format;
         if !caps.formats.contains(&format) {
             return Err(RendererError::IncompatibleFormat { wanted: format });
@@ -463,7 +465,10 @@ fn encode_scene(
             // 与 v1 一致：优先 Mailbox（acquire 立返），其次 Immediate，最后 FIFO。
             present_mode: choose_present_mode(&caps.present_modes),
         };
+        let t_cfg = std::time::Instant::now();
         surface.configure(device, &config);
+        let configure_ms = t_cfg.elapsed().as_secs_f64() * 1000.0;
+        log::info!("kanesumi CanvasV2 表面计时：caps={caps_ms:.1}ms configure={configure_ms:.1}ms");
         Self::build(
             ctx,
             Some(surface),
@@ -519,9 +524,12 @@ fn encode_scene(
         present_copy: bool,
     ) -> Result<Self, RendererError> {
         let device = &ctx.device;
+        let t_cache = std::time::Instant::now();
         // 管线缓存：设备支持且磁盘有上次数据 → 管线创建走驱动缓存（首帧 < 20 ms 目标）。
         let cache = load_pipeline_cache(&ctx);
         let cache_ref = cache.as_ref().map(|(c, _)| c);
+        let cache_ms = t_cache.elapsed().as_secs_f64() * 1000.0;
+        let t_pipe = std::time::Instant::now();
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("kanesumi-c2-shader"),
@@ -652,6 +660,11 @@ fn encode_scene(
             cache: cache_ref,
         });
 
+        let pipe_ms = t_pipe.elapsed().as_secs_f64() * 1000.0;
+        log::info!(
+            "kanesumi CanvasV2 构建计时：cache_load={cache_ms:.1}ms pipelines={pipe_ms:.1}ms cache={}",
+            if cache.is_some() { "on" } else { "n/a" }
+        );
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("kanesumi-c2-sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -1470,7 +1483,41 @@ impl CanvasV2 {
             },
             None => None, // 全量损伤
         };
-        let is_incremental = !forced_full && self.target_valid && phys_d.is_some();
+        let mut is_incremental = !forced_full && self.target_valid && phys_d.is_some();
+
+        let mut insts = std::mem::take(&mut self.insts_buf);
+        let mut own = std::mem::take(&mut self.pending_own);
+        insts.clear();
+        own.clear();
+
+        // 图集换代同帧防护（参任务 k-atlas-epoch）：encode_scene 途中字形页 / 图片页放满会
+        // rebuild_glyph_page / rebuild_image_page —— 换新纹理页、epoch+1、refresh_bind_group。
+        // 此前已编码实例的 UV 仍是旧页坐标，却会被新页 bind group 采样 → 错位字形 / 图片；
+        // 且本帧仍按旧损伤只清损伤区。故记下编码前的页级次，编码后若变化，丢弃本批实例，
+        // 按全幅（cull=None、非增量）重新编码一次 —— 此时图集已扩容完毕，不会再换代。
+        let glyph_epoch0 = self.glyphs.epoch;
+        let image_epoch0 = self.images.epoch;
+        let cull_rect = if is_incremental { phys_d } else { None };
+        self.encode_scene(engine, scene, cull_rect, &mut insts, &mut own);
+        if self.glyphs.epoch != glyph_epoch0 || self.images.epoch != image_epoch0 {
+            insts.clear();
+            own.clear();
+            let glyph_epoch1 = self.glyphs.epoch;
+            let image_epoch1 = self.images.epoch;
+            self.encode_scene(engine, scene, None, &mut insts, &mut own);
+            if self.glyphs.epoch != glyph_epoch1 || self.images.epoch != image_epoch1 {
+                // 第二次编码仍换代（不应发生）：照全幅绘制并记警告，不得循环。
+                log::warn!(
+                    "CanvasV2 图集换代二次编码仍发生（字形 {glyph_epoch1}→{}，图片 {image_epoch1}→{}），本帧按全幅绘制",
+                    self.glyphs.epoch,
+                    self.images.epoch,
+                );
+            }
+            if is_incremental {
+                log::debug!("CanvasV2 图集换代当帧由增量改全幅绘制");
+            }
+            is_incremental = false;
+        }
 
         let (inc, dmg_pct) = if let (true, Some(pd)) = (is_incremental, phys_d) {
             let dmg_w = (pd[2] - pd[0]).max(0.0);
@@ -1484,12 +1531,6 @@ impl CanvasV2 {
         self.last_inc = inc;
         self.last_dmg_pct = dmg_pct;
 
-        let mut insts = std::mem::take(&mut self.insts_buf);
-        let mut own = std::mem::take(&mut self.pending_own);
-        insts.clear();
-        own.clear();
-        let cull_rect = if is_incremental { phys_d } else { None };
-        self.encode_scene(engine, scene, cull_rect, &mut insts, &mut own);
         self.last_insts = insts.len() as u32;
         self.insts_buf = insts;
         self.pending_own = own;

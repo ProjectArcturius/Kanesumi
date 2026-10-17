@@ -413,6 +413,43 @@ where
     }
 }
 
+/// 后端指定的对拍（k-cold-start-gpu）：缺省是 Vulkan 优先 / GL 回退，此处对 GL 回退路径
+/// 单独与 CPU 对拍，确认换后端不改变画布逐像素结果（诊断 A/B 用）。
+/// 参任务 k-cold-start-gpu §不做「不改画布绘制结果」。
+fn run_for_both_scales_backend<F>(name: &str, backends: &[wgpu::Backends], make_scene: F)
+where
+    F: Fn() -> Scene,
+{
+    let _serial = GPU_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let ctx = match GpuContext::headless_with_backends(backends) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("环境不支持无头 {backends:?} GPU（{e:?}），跳过 {name} 后端对照");
+            return;
+        }
+    };
+    let engine = get_test_engine();
+    let scene = make_scene();
+    for scale in [1.0f32, 2.0f32] {
+        assert_golden_match(&ctx, &engine, &format!("{name}[{backends:?}]"), scale, &scene);
+    }
+}
+
+#[test]
+fn test_golden_gl_solid_rect() {
+    run_for_both_scales_backend("solid_rect", &[wgpu::Backends::GL], scene_solid_rect);
+}
+
+#[test]
+fn test_golden_gl_text_shaped() {
+    run_for_both_scales_backend("text_shaped", &[wgpu::Backends::GL], scene_text_shaped);
+}
+
+#[test]
+fn test_golden_gl_translucent() {
+    run_for_both_scales_backend("translucent_blend", &[wgpu::Backends::GL], scene_translucent_blend);
+}
+
 #[test]
 fn test_golden_solid_rect() {
     run_for_both_scales("solid_rect", scene_solid_rect);
