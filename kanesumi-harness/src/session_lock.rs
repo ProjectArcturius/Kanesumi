@@ -115,6 +115,10 @@ struct OutputSlot {
     raster_dims: Option<(i32, i32, i32)>,
     /// 已提交过至少一帧。
     presented: bool,
+    /// 最近提交的场景（与本次相同且尺寸未变 → 跳过光栅与提交）。图层模式下主表面只是静态背板，
+    /// 认证内容每次变化（打字 / 光标闪烁）都会触发全部输出重画；不跳过就每次重传整屏 23 MB
+    /// （2026-10-17 真机阻塞日志 collect:lock）。
+    last_scene: Option<kanesumi_canvas::Scene>,
 }
 
 /// 锁屏合成图层：主输出锁屏表面下的一个 desync 子表面（纯视觉，空输入区域）。
@@ -517,6 +521,9 @@ impl LockShell {
         let size = Size::new(lw as f32, lh as f32);
         let scene = self.app.render_lock(&self.engine, size, primary);
         let dims = (lw, lh, scale);
+        if slot.presented && slot.raster_dims == Some(dims) && slot.last_scene.as_ref() == Some(&scene) {
+            return;
+        }
         let cpu = slot
             .cpu
             .get_or_insert_with(|| CpuRenderer::new(size.width, size.height, scale as f32));
@@ -570,6 +577,7 @@ impl LockShell {
         wl.commit();
         log::debug!("锁屏渲染输出 #{i}：{lw}x{lh}@{scale} 命令 {} 条", scene.commands.len());
         slot.buffer = Some(buffer);
+        slot.last_scene = Some(scene);
         if !slot.presented {
             slot.presented = true;
             if !self.first_frame_reported {
@@ -616,6 +624,7 @@ impl LockShell {
             buffer: None,
             raster_dims: None,
             presented: false,
+            last_scene: None,
         });
         log::info!("锁屏输出 #{index} {name}（逻辑 {info_logical:?} scale {scale}，主={primary}）");
         self.app
