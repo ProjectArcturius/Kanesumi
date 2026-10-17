@@ -26,7 +26,7 @@ use smithay_client_toolkit::{
         Capability, SeatHandler, SeatState,
         keyboard::{KeyEvent as SctkKeyEvent, Keymap as SctkKeymap, KeyboardHandler, Keysym, RepeatInfo as SctkRepeatInfo},
         pointer::{
-            AxisScroll, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, PointerEvent, PointerEventKind,
+            AxisScroll, PointerEvent, PointerEventKind,
             PointerHandler,
         },
     },
@@ -3732,12 +3732,7 @@ fn create_floating_surface(
 
 /// Wayland 按钮 → PointerButton。
 fn map_button(button: u32) -> PointerButton {
-    match button {
-        BTN_LEFT => PointerButton::Left,
-        BTN_RIGHT => PointerButton::Right,
-        BTN_MIDDLE => PointerButton::Middle,
-        _ => PointerButton::Left,
-    }
+    PointerButton::from_evdev(button)
 }
 
 // ── KeyboardHandler ────────────────────────────────────────────────────

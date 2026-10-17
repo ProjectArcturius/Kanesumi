@@ -15,6 +15,48 @@ pub enum PointerButton {
     Left,
     Right,
     Middle,
+    /// 浏览器后退侧键（Linux BTN_SIDE / BTN_BACK）。
+    Back,
+    /// 浏览器前进侧键（Linux BTN_EXTRA / BTN_FORWARD）。
+    Forward,
+    /// 保留其它按钮身份，禁止把未识别按钮当成左键激活控件。
+    Other(u32),
+}
+
+impl PointerButton {
+    /// Wayland 使用 Linux evdev 按钮码；在无平台依赖层保留其完整身份。
+    pub fn from_evdev(button: u32) -> Self {
+        match button {
+            0x110 => Self::Left,
+            0x111 => Self::Right,
+            0x112 => Self::Middle,
+            0x113 | 0x116 => Self::Back,
+            0x114 | 0x115 => Self::Forward,
+            other => Self::Other(other),
+        }
+    }
+}
+
+#[cfg(test)]
+mod pointer_button_tests {
+    use super::PointerButton;
+
+    #[test]
+    fn evdev_buttons_preserve_navigation_and_unknown_identity() {
+        for (code, expected) in [
+            (0x110, PointerButton::Left),
+            (0x111, PointerButton::Right),
+            (0x112, PointerButton::Middle),
+            (0x113, PointerButton::Back),
+            (0x116, PointerButton::Back),
+            (0x114, PointerButton::Forward),
+            (0x115, PointerButton::Forward),
+            (0x117, PointerButton::Other(0x117)),
+            (0xffff, PointerButton::Other(0xffff)),
+        ] {
+            assert_eq!(PointerButton::from_evdev(code), expected);
+        }
+    }
 }
 
 /// 逻辑键。可打印字符 → `Char`；控制键 → 具名变体；未分类 → `Unknown`（原始 keysym）。
