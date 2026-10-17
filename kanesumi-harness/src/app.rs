@@ -261,6 +261,9 @@ pub trait App {
     /// 实现者应保存该主题并在 [`App::theme`] 中返回，且置脏重绘。
     fn set_theme(&mut self, _theme: MetroTheme) {}
 
+    /// 壁纸与亚克力参数独立于配色，不能由 MetroTheme 是否相等决定是否通知。
+    fn set_backdrop(&mut self, _backdrop: crate::system_theme::Backdrop) {}
+
     /// 字体路径。外壳据此加载 `TextEngine` 注入 `render`（排版唯一真源，SD §IX 禁止静默回退）。
     /// 默认 `None` → 外壳按 KANESUMI_TEST_FONT → 系统字体顺序查找。
     fn font_path(&self) -> Option<std::path::PathBuf> {

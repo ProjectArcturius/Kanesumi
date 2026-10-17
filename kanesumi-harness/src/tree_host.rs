@@ -51,6 +51,9 @@ pub trait TreeApp {
     /// 系统主题变更通知（树已自行重排重画；App 只在自持颜色时需要处理）。
     fn on_theme(&mut self, _theme: MetroTheme) {}
 
+    /// 系统背板参数变更；应用按需更新既有节点，不必重建整棵树。
+    fn on_backdrop(&mut self, _backdrop: crate::system_theme::Backdrop) {}
+
     fn font_path(&self) -> Option<std::path::PathBuf> {
         None
     }
@@ -385,6 +388,10 @@ impl<A: TreeApp> App for TreeHost<A> {
             }
             self.app.on_theme(theme);
         }
+    }
+
+    fn set_backdrop(&mut self, backdrop: crate::system_theme::Backdrop) {
+        self.app.on_backdrop(backdrop);
     }
 
     fn font_path(&self) -> Option<std::path::PathBuf> {

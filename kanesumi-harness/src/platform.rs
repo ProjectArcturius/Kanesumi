@@ -296,6 +296,8 @@ impl Shell {
         self.theme_fingerprint = crate::system_theme::fingerprint();
         let theme = self.system_theme;
         guard("set_theme", || self.app.set_theme(theme));
+        let backdrop = crate::system_theme::load_backdrop();
+        guard("set_backdrop", || self.app.set_backdrop(backdrop));
         self.dirty = true;
     }
 
