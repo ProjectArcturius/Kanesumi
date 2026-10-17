@@ -20,7 +20,7 @@ use kanesumi_core::typography::TextVAlign;
 use kanesumi_core::{MetroTheme, MetroTypography, Point, Rect, TextStyle};
 
 use crate::dropdown_menu::{MenuItem, MetroDropdownMenu};
-use crate::popup::{PopupState, place_popup};
+use crate::popup::{PopupState, place_popup, snap_edge};
 
 /// MenuBar header 高（UWP MenuBarHeight = 40）。
 const HEADER_HEIGHT: f32 = 40.0;
@@ -138,22 +138,26 @@ impl MetroMenuBar {
     }
 
     /// 可见 header 矩形。只保留完整落在宿主内的项，渲染、命中与弹层锚点共用。
+    ///
+    /// 边缘吸附到物理像素网格：header 宽度来自文字量测（小数），相邻两块的高亮底若落在
+    /// 半个像素上，2× 下会互相之间露出一条 1 px 缝（真机已知问题 #18 的横向版本）。
     pub fn header_rects(&self, engine: &TextEngine, rect: Rect) -> Vec<Rect> {
         let rect = rect.normalized();
         let mut out = Vec::with_capacity(self.items.len());
-        let mut cursor = rect.origin.x;
+        let mut cursor = snap_edge(rect.origin.x);
         for i in 0..self.items.len() {
             let w = self.header_width(engine, i);
-            if cursor + w > rect.right() + f32::EPSILON {
+            let right = snap_edge(cursor + w);
+            if right > rect.right() + f32::EPSILON {
                 break;
             }
             out.push(Rect::new(
                 cursor,
                 rect.origin.y,
-                w,
+                (right - cursor).max(0.0),
                 self.header_height.min(rect.size.height),
             ));
-            cursor += w;
+            cursor = right;
         }
         out
     }
