@@ -322,15 +322,11 @@ fn c4_lumia_segments() {
 /// 60 / 120 / 165 Hz 与固定种子随机抖动（±4 ms）四种采样各跑，1 ms 网格公共时刻位置差 < 1e-9。
 #[test]
 fn c5_sampling_independence() {
-    // 手势：0→0.02 s 下移 120、0.02→0.04 s 再 120（越过下界 200 进入回程区），0.04 s 松手。
+    // 按时间交错送手势、采样与 settle，避免在最终状态上倒查已被丢弃的跟手历史。
     let build = || {
         let mut tr = ScrollTracker::new(TrackerParams::default());
         tr.set_bounds([-1.0e5, -1.0e5], [1.0e5, 200.0]);
         tr.set_position(0.0, 0.0, 0.0);
-        tr.finger_begin(0.0);
-        tr.finger_delta(0.02, 0.0, 120.0);
-        tr.finger_delta(0.04, 0.0, 120.0);
-        tr.finger_end(0.04);
         tr
     };
     // 四种采样时刻序列。
@@ -350,20 +346,41 @@ fn c5_sampling_independence() {
     let schedules = [hz, hz120, hz165, jitter];
 
     // 1 ms 网格公共时刻。
-    let grid: Vec<f64> = (0..400).map(|i| i as f64 / 1000.0).collect();
-    let mut baseline: Option<Vec<f64>> = None;
+    let grid: Vec<f64> = (0..=1000).map(|i| i as f64 / 1000.0).collect();
+    let mut baseline: Option<Vec<([f64; 2], Phase)>> = None;
     for sched in &schedules {
-        let tr = build();
-        // 按本采样序列驱动（`sample` 是纯函数，不改状态）。
-        for &ts in sched {
-            let _ = tr.sample(ts);
+        let mut tr = build();
+        // 同刻先送输入，再取公共采样，最后模拟可选帧末 settle。
+        let mut events: Vec<_> = sched.iter().map(|&t| (t, 2u8, 0usize)).collect();
+        events.extend(grid.iter().enumerate().map(|(i, &t)| (t, 1, i)));
+        events.extend([(0.0, 0, 0), (0.02, 0, 1), (0.04, 0, 2), (0.05, 0, 3)]);
+        events.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        let mut vals = Vec::new();
+        for (t, kind, i) in events {
+            match (kind, i) {
+                (0, 0) => tr.finger_begin(t),
+                (0, 1 | 2) => tr.finger_delta(t, 0.0, 120.0),
+                (0, _) => tr.finger_end(t),
+                (1, _) => vals.push(tr.sample(t)),
+                _ => {
+                    let before = tr.sample(t);
+                    tr.settle(t);
+                    assert_eq!(tr.sample(t), before);
+                }
+            }
         }
-        let vals: Vec<f64> = grid.iter().map(|&g| tr.sample(g).0[1]).collect();
+        assert_eq!(vals[10].1, Phase::Interacting);
+        assert_eq!(vals[30].0[1], 120.0);
+        assert!(vals[45].0[1] > 200.0);
+        assert_eq!(vals[60].1, Phase::Inertia);
+        assert_eq!(vals[1000].1, Phase::Idle);
         match &baseline {
             None => baseline = Some(vals),
             Some(b) => {
                 for i in 0..grid.len() {
-                    assert!((b[i] - vals[i]).abs() < 1.0e-9, "t={} 位置差 {}", grid[i], (b[i] - vals[i]).abs());
+                    let diff = (b[i].0[1] - vals[i].0[1]).abs();
+                    assert!(diff < 1.0e-9, "t={} 位置差 {diff}", grid[i]);
+                    assert_eq!(b[i].1, vals[i].1);
                 }
             }
         }
