@@ -242,7 +242,7 @@ use kanesumi_canvas::set_surface_scale;
 /// **主路径必须持久**（`~/.local/state/ether/`）—— Debian 会话里崩溃/黑屏后无法开终端，
 /// 只能重启回主系统读盘；只写 tmpfs（`/tmp`）会随重启丢失（参 `AGENTS.md` 铁律）。
 /// 另外在 `$XDG_RUNTIME_DIR` 留一份便于会话内即时查看（无持久性要求）。
-mod layers;
+pub(crate) mod layers;
 mod popups;
 
 fn write_diag(name: &str, content: &str) {
