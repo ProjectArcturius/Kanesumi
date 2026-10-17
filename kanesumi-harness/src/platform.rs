@@ -2214,6 +2214,12 @@ impl Shell {
                 self.floating_dirty[i] = true;
                 // 隐藏期间缓冲内容不可信 → 重新显示的首帧整幅。
                 self.floating_full[i] = true;
+                // 重新显示时重置出帧节流：隐藏期间该表面不渲染、也就收不到帧回调，
+                // 残留的「本周期已出帧 / 回调挂起」会把首帧硬拖到下一次回调或 100 ms 超时——
+                // 实测 Launcher 覆盖层首帧因此晚 31 ms，正对上真机 `start_latency_ms=33.3`。
+                if i < self.floating_throttle.len() {
+                    self.floating_throttle[i] = crate::frame_clock::PacingThrottle::new();
+                }
             }
             self.floating_visible_cache[i] = visible;
         }
