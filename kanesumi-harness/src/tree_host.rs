@@ -187,6 +187,9 @@ pub struct TreeHost<A: TreeApp> {
     timer_dt: f64,
     /// 上一帧的损伤（外壳在 render 之后经 `damage_hint` 取走）。
     damage: Option<Rect>,
+    /// 上一帧是否整幅（元素树 `full=true`）。`damage == None` 同时表示「整幅」与「尚未出帧」，
+    /// 桥接层（如锁屏外壳）要把树损伤转给旧 `App::damage_hint` 时必须能区分这两者。
+    damage_full: bool,
     /// 最近指针位置（滚轮事件不带坐标，命中要用）。
     pointer: Point,
     /// 弹层分离模式下需重画的弹层（key = `WidgetId::to_u64`）。
@@ -221,6 +224,7 @@ impl<A: TreeApp> TreeHost<A> {
             pending_dt: 0.0,
             timer_dt: 0.0,
             damage: None,
+            damage_full: true,
             pointer: Point::new(0.0, 0.0),
             popup_dirty: std::collections::HashSet::new(),
             floating,
@@ -355,6 +359,12 @@ impl<A: TreeApp> TreeHost<A> {
             }
         }
         log::error!("TreeHost: 动作链 16 轮仍未收敛，疑似控件间循环触发");
+    }
+
+    /// 上一帧树帧是否整幅（`full=true`）。桥接层把树损伤转给旧 `App::damage_hint`
+    /// 时，`damage == None` 的两种含义（整幅 / 尚未出帧）必须分开，否则会把整幅当局部。
+    pub fn last_frame_full(&self) -> bool {
+        self.damage_full
     }
 }
 
@@ -634,6 +644,7 @@ impl<A: TreeApp> App for TreeHost<A> {
         crate::timeline::note_once("render_into_start");
         let dt = std::mem::take(&mut self.pending_dt);
         let frame = self.tree.frame(engine, size, dt);
+        self.damage_full = frame.full;
         // 本帧产物即将由外壳提交：汇报进入提交的节点（内容就绪门控就绪信号）。
         // 平台提交点紧随本调用（platform.rs 主循环），故就绪与解挂同帧生效。
         self.tree.report_content_committed(&frame.painted);
