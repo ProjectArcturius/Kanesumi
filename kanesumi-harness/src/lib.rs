@@ -19,8 +19,10 @@ pub mod system_theme;
 pub mod timeline;
 pub mod tree_host;
 
+#[cfg(target_os = "linux")]
 pub mod canvas_v2;
 pub use kanesumi_render::cpu_raster;
+#[cfg(target_os = "linux")]
 pub(crate) use kanesumi_render::glyph_layout;
 
 /// 文字浓度实验旋钮（tx1 spike）。经 `CpuRenderer::set_text_tuning` 传入。

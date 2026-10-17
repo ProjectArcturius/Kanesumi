@@ -92,10 +92,7 @@ pub fn canvas_v2_enabled() -> bool {
     canvas_v2_active(std::env::var("KANESUMI_CANVAS").ok().as_deref())
 }
 
-/// [`canvas_v2_enabled`] 的纯判定：只有显式 `1` 退回 v1。
-pub fn canvas_v2_active(env: Option<&str>) -> bool {
-    env != Some("1")
-}
+pub use crate::renderer_policy::canvas_v2_active;
 
 /// 表面渲染器枚举：v1 / v2 对外接口对齐，创建处统一经 [`SurfaceRenderer::with_context`]。
 /// allow：v1 `Renderer` 自身 1560 字节（顶点缓冲句柄等），v2 已 Box 仍超 clippy 的

@@ -181,6 +181,11 @@ pub fn one_canvas() -> bool {
     one_canvas_active(env.as_deref())
 }
 
+/// 画布版本的纯判定：只有显式 `1` 退回 v1；平台外壳复用此处。
+pub fn canvas_v2_active(env: Option<&str>) -> bool {
+    env != Some("1")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,9 +197,9 @@ mod tests {
         assert!(one_canvas_active(Some("2")));
         assert!(one_canvas_active(Some("")));
         assert!(one_canvas_active(Some("1")));
-        assert!(crate::platform::canvas_v2_active(None), "v2 缺省开");
-        assert!(!crate::platform::canvas_v2_active(Some("1")), "显式 1 退回 v1");
-        assert!(crate::platform::canvas_v2_active(Some("2")));
+        assert!(canvas_v2_active(None), "v2 缺省开");
+        assert!(!canvas_v2_active(Some("1")), "显式 1 退回 v1");
+        assert!(canvas_v2_active(Some("2")));
     }
 
     #[test]
