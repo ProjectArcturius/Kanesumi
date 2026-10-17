@@ -46,6 +46,11 @@ pub(super) struct CompLayer {
     scale: f32,
     /// 回落模式下模拟的视觉偏移（有协议时不用）。
     offset: (f32, f32),
+    /// 光栅好但未能提交的内容（两槽缓冲都在合成器手里 → 本次提交被跳过）。
+    /// 图层内容只在变化时交一次，跳过即永久丢失 —— 2026-10-17 Launcher 背板全透明的根因：
+    /// 背板第 3、4 次内容（不透明的那两次）都被跳过，合成器一直显示首帧暂隐时的透明内容。
+    /// 缓冲释放时与每帧处理图层命令时补交。
+    pending: Option<Scene>,
 }
 
 /// Shell 持有的图层总状态。
@@ -71,6 +76,7 @@ impl Composition {
 impl Shell {
     /// 每帧（App::update 之后）取走 App 的图层命令并执行。
     pub(super) fn process_layer_commands(&mut self, qh: &QueueHandle<Shell>) {
+        self.retry_pending_layers(qh);
         let cmds = self.app.take_layer_commands();
         if cmds.is_empty() {
             return;
@@ -82,6 +88,23 @@ impl Shell {
         }
         for c in cmds {
             self.apply_layer_command(c, qh);
+        }
+    }
+
+    /// 补交被跳过的图层内容（缓冲释放 / 每帧调用；无待补交时零成本）。
+    pub(super) fn retry_pending_layers(&mut self, qh: &QueueHandle<Shell>) {
+        let ids: Vec<LayerId> = self
+            .comp
+            .layers
+            .iter()
+            .filter(|l| l.pending.is_some())
+            .map(|l| l.id)
+            .collect();
+        for id in ids {
+            let Some(i) = self.layer_index(id) else { continue };
+            if let Some(scene) = self.comp.layers[i].pending.take() {
+                self.set_layer_content(id, &scene, qh);
+            }
         }
     }
 
@@ -206,6 +229,7 @@ impl Shell {
             rect,
             scale,
             offset: (0.0, 0.0),
+            pending: None,
         };
         place(&mut l);
         self.comp.layers.push(l);
@@ -220,7 +244,9 @@ impl Shell {
         let cpu = l.cpu.get_or_insert_with(|| CpuRenderer::new(w, h, l.scale));
         let (pw, ph) = cpu.physical_size();
         let rgba = cpu.render(engine, scene, None);
-        l.out.commit(qh, shm.as_ref(), dmabuf, &l.surface, pw, ph, rgba, l.scale, None);
+        let committed = l.out.commit(qh, shm.as_ref(), dmabuf, &l.surface, pw, ph, rgba, l.scale, None);
+        // 跳过 → 记下最新内容，缓冲释放后补交（只留最新一份，旧的作废）。
+        l.pending = if committed { None } else { Some(scene.clone()) };
     }
 }
 

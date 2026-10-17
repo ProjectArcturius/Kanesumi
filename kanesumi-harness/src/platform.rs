@@ -976,7 +976,8 @@ impl SurfaceOutput {
         self.dmabuf.set_feedback(main_device, formats.to_vec());
     }
 
-    /// 提交一帧：dmabuf 优先，失败回退 SHM。
+    /// 提交一帧：dmabuf 优先，失败回退 SHM。返回是否真的提交了（两槽都在合成器手里 → 跳过，false）。
+    /// 每帧重画的表面下一帧自然补上；只交一次内容的图层须据此登记待补交（参 platform/layers.rs）。
     #[allow(clippy::too_many_arguments)]
     fn commit(
         &mut self,
@@ -989,14 +990,15 @@ impl SurfaceOutput {
         rgba: &[u8],
         scale: f32,
         damage: Option<kanesumi_core::Rect>,
-    ) {
+    ) -> bool {
         use crate::dmabuf::CommitOutcome;
         if self.allow {
             match self
                 .dmabuf
                 .commit(qh, surface, dmabuf_state, width, height, rgba, scale, damage)
             {
-                CommitOutcome::Committed | CommitOutcome::Skipped => return,
+                CommitOutcome::Committed => return true,
+                CommitOutcome::Skipped => return false,
                 CommitOutcome::Unavailable => {
                     // 单表面失败 → 该表面永久回退 SHM（其它表面不受影响）。
                     self.allow = false;
@@ -1004,8 +1006,11 @@ impl SurfaceOutput {
                 }
             }
         }
-        if let Some(shm) = shm {
-            commit_shm_buffers(shm, qh, surface, &mut self.shm, width, height, rgba, scale, damage);
+        match shm {
+            Some(shm) => {
+                commit_shm_buffers(shm, qh, surface, &mut self.shm, width, height, rgba, scale, damage)
+            }
+            None => false,
         }
     }
 
@@ -4050,6 +4055,10 @@ impl DmabufHandler for Shell {
         if self.main_out.mark_released(buffer) {
             return;
         }
+        if self.comp.mark_released(buffer) {
+            self.retry_pending_layers(_qh);
+            return;
+        }
         for out in self.floating_out.iter_mut() {
             if out.mark_released(buffer) {
                 return;
@@ -4905,14 +4914,14 @@ fn commit_shm_buffers(
     bgra: &[u8],
     scale: f32,
     damage: Option<Rect>,
-) {
+) -> bool {
     use std::os::fd::AsFd;
 
     let expected = (width as usize)
         .saturating_mul(height as usize)
         .saturating_mul(4);
     if bgra.len() < expected || width == 0 || height == 0 {
-        return;
+        return false;
     }
     // 尺寸变化或 pool 未建 → 重建（pool 大小 = 2×expected，容纳双缓冲）。
     let fresh_pool = state.pool.is_none() || state.width != width || state.height != height;
@@ -4924,7 +4933,7 @@ fn commit_shm_buffers(
                 "ether-shm-error.log",
                 "shm_open 失败：无法为 wl_shm 建立共享内存池（/dev/shm 是否已满？）\n",
             );
-            return;
+            return false;
         };
         state.pool.take().map(|p| p.destroy());
         for b in state.buffers.iter_mut() {
@@ -4960,7 +4969,7 @@ fn commit_shm_buffers(
     } else if !state.in_flight[1 - state.next] {
         1 - state.next
     } else {
-        return;
+        return false;
     };
     // 本槽位需写入区（物理像素）：
     // - 全量帧 / 槽位内容不可用（新建）→ 整面；
@@ -5043,6 +5052,7 @@ fn commit_shm_buffers(
         state.in_flight[idx] = true;
         state.next = 1 - idx;
     }
+    true
 }
 
 // ── SHM 相关空事件处理（wl_shm / pool / buffer，无事件需处理）──────────────
@@ -5088,6 +5098,7 @@ impl Dispatch<wl_buffer::WlBuffer, ()> for Shell {
                 return;
             }
             if state.comp.mark_released(proxy) {
+                state.retry_pending_layers(_qh);
                 return;
             }
             for slot in &mut state.floating_out {
