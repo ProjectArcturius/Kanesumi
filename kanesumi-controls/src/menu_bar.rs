@@ -126,8 +126,13 @@ impl MetroMenuBar {
             return 0.0;
         }
         let style = Self::header_style();
-        engine.measure_with_spacing_weighted(&self.items[index].label, style.size, style.letter_spacing_em, style.weight)
-            + HEADER_PAD_X * 2.0
+        let width = engine.measure_with_spacing_weighted(
+            &self.items[index].label, style.size, style.letter_spacing_em, style.weight,
+        ) + HEADER_PAD_X * 2.0;
+        // 背景吸附不能把文字框缩得比塑形结果窄，否则 View 会在空余空间中变成 Vi…。
+        // 参 CONTROL_SPEC §8.5。
+        let scale = kanesumi_canvas::surface_scale().max(1.0);
+        (width * scale).ceil() / scale
     }
 
     /// 全部 header 累加总宽（不含 rect 起点）。
@@ -137,27 +142,31 @@ impl MetroMenuBar {
             .sum()
     }
 
-    /// 可见 header 矩形。只保留完整落在宿主内的项，渲染、命中与弹层锚点共用。
+    /// 可见 header 矩形。只保留自然宽度完整放得下的项，渲染、命中与弹层锚点共用。
+    /// 吸附后的背景边缘仍由宿主裁剪收束，不改变文字的可用自然宽度。
     ///
     /// 边缘吸附到物理像素网格：header 宽度来自文字量测（小数），相邻两块的高亮底若落在
     /// 半个像素上，2× 下会互相之间露出一条 1 px 缝（真机已知问题 #18 的横向版本）。
     pub fn header_rects(&self, engine: &TextEngine, rect: Rect) -> Vec<Rect> {
         let rect = rect.normalized();
         let mut out = Vec::with_capacity(self.items.len());
-        let mut cursor = snap_edge(rect.origin.x);
+        let mut consumed = 0.0;
         for i in 0..self.items.len() {
             let w = self.header_width(engine, i);
-            let right = snap_edge(cursor + w);
-            if right > rect.right() + f32::EPSILON {
+            let next = consumed + w;
+            // 可见性只由已分配宽度决定；绝对起点向右吸附不能让末项凭空消失。
+            if next > rect.size.width + f32::EPSILON {
                 break;
             }
+            let cursor = snap_edge(rect.origin.x + consumed);
+            let right = snap_edge(rect.origin.x + next);
             out.push(Rect::new(
                 cursor,
                 rect.origin.y,
                 (right - cursor).max(0.0),
                 self.header_height.min(rect.size.height),
             ));
-            cursor = right;
+            consumed = next;
         }
         out
     }
