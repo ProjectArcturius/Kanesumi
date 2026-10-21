@@ -11,6 +11,7 @@ kanesumi-core = { path = "../kanesumi-core" }
 kanesumi-canvas = { path = "../kanesumi-canvas" }
 kanesumi-anim = { path = "../kanesumi-anim" }
 kanesumi-element = { path = "../kanesumi-element" }
+kanesumi-i18n = { path = "../kanesumi-i18n" }
 
 # 离屏像素门（tests/textbox_vcenter.rs）用 CanvasV2/GpuContext 光栅真实像素。
 [dev-dependencies]

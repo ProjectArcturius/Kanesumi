@@ -108,9 +108,9 @@ pub struct MetroSwitch {
     pub shape: SwitchShape,
     /// 顶部标题（可选）—— UWP `Header`。
     pub header: String,
-    /// ON 状态文本，默认 "On"。UWP `OnContent`。
+    /// ON 状态文本，缺省取文案 `common-on`（随界面语言）。UWP `OnContent`。
     pub on_text: String,
-    /// OFF 状态文本，默认 "Off"。UWP `OffContent`。
+    /// OFF 状态文本，缺省取文案 `common-off`。UWP `OffContent`。
     pub off_text: String,
     /// Knob 滑动进度 [0,1]，由 `update(dt)` 推进 或 拖动时 jump_to。
     knob: MetroAnim,
@@ -125,8 +125,9 @@ impl Default for MetroSwitch {
             state: ControlState::Normal,
             shape: SwitchShape::Capsule,
             header: String::new(),
-            on_text: "On".into(),
-            off_text: "Off".into(),
+            // 参 Ether docs/I18N_PLAN.md §Ⅱ-1：控件缺省文案归 common 域。
+            on_text: kanesumi_i18n::tr("common-on"),
+            off_text: kanesumi_i18n::tr("common-off"),
             knob: MetroAnim::new(0.15, UwpEasing::Cubic, EasingMode::EaseOut),
             drag: None,
         }
