@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "kanesumi-core",
+    "kanesumi-i18n",
     "kanesumi-anim",
     "kanesumi-canvas",
     "kanesumi-render",

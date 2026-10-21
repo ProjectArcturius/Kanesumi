@@ -1,0 +1,13 @@
+[package]
+name = "kanesumi-i18n"
+description = "Kanesumi（矩隅）· 文案层：界面语言判定 / Fluent 资源加载 / 回落链（对标 WinRT ResourceLoader）"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["Project Arcturius"]
+
+[dependencies]
+fluent-bundle = "0.16"
+fluent-syntax = "0.12"
+unic-langid = "0.9"
+log = "0.4"
