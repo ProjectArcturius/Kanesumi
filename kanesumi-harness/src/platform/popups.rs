@@ -81,6 +81,68 @@ pub(super) struct PopupVisual(pub(super) u64);
 const ENTER_SERIAL: u32 = 1;
 const EXIT_SERIAL: u32 = 2;
 
+/// 已存在弹层表面参与比对的判据（纯数据 —— 复用判据要能脱离 Wayland 单测）。
+#[derive(Debug, Clone, Copy)]
+pub(super) struct HostedMeta {
+    key: u64,
+    grab: bool,
+    /// 上次同步时树申报的矩形。`rect.size` 变了 = 内容换了尺寸（不是换表面）。
+    rect: Rect,
+    /// 入场是否已起跑。表面复用期间必须保持 —— 归零就会重播入场。
+    entered: bool,
+    configured: bool,
+    closing: bool,
+}
+
+/// 一个申报弹层参与比对的判据（`PopupRequest` 的裁剪）。
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RequestMeta {
+    key: u64,
+    grab: bool,
+    size: Size,
+}
+
+/// 一轮弹层表面同步的决策：前 `keep` 个表面复用，其余按 xdg-shell 逆序销毁后按请求新建。
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct PopupSync {
+    keep: usize,
+    /// 复用里尺寸变了的（同一表面换缓冲：不新建表面、不重播入场）。
+    resized: Vec<usize>,
+    /// 复用里该起跑入场的（只有「该 key 首次出现、且首帧内容已提交」那一轮）。
+    enters: Vec<usize>,
+}
+
+impl PopupSync {
+    /// 同一性判据 = `(key, grab)`。
+    ///
+    /// `rect` **不**进比对：内容变高 / 变矮只是同一个表面换缓冲尺寸 —— xdg_popup 没有 resize
+    /// 请求，但「同一表面提交不同尺寸的缓冲」是合法的，合成器按缓冲尺寸绘制。旧判据把 `rect`
+    /// 算进同一性，tb-net 展开一行就把整块面板连同上各层销毁重建，`entered` 随之归零 →
+    /// 下一轮重播 300 ms 入场（用户看到「点一条 Wi-Fi，面板消失又重新滑进来」）。
+    ///
+    /// `grab` 仍进比对：抓取弹层的父子关系与输入路由随它变，且 xdg-shell 只许自顶向下销毁，
+    /// 故 grab 一变就从该层起全部拆掉重建 —— 这是正确行为。
+    ///
+    /// `closing` 同样不进比对（先例）：退场是同一个表面上的动画，重建就断了接续。
+    fn plan(hosted: &[HostedMeta], reqs: &[RequestMeta]) -> Self {
+        let mut plan = Self::default();
+        for (i, (h, r)) in hosted.iter().zip(reqs.iter()).enumerate() {
+            if h.key != r.key || h.grab != r.grab {
+                break;
+            }
+            plan.keep = i + 1;
+            if h.rect.size != r.size {
+                plan.resized.push(i);
+            }
+            // 入场只在「该 key 首次出现」时起跑；表面复用（含尺寸变化）一律保持 `entered`。
+            if !h.closing && !h.entered && h.configured {
+                plan.enters.push(i);
+            }
+        }
+        plan
+    }
+}
+
 impl HostedPopup {
     /// 起跑一段表面动画（先由创建时设好的起点出发；`animate` 从当前呈现值过渡到终值）。
     ///
@@ -125,6 +187,18 @@ impl HostedPopup {
 impl HostedPopup {
     fn wl_surface(&self) -> &wl_surface::WlSurface {
         self.popup.wl_surface()
+    }
+
+    /// 本轮比对用的判据快照（见 [`PopupSync::plan`]）。
+    fn meta(&self) -> HostedMeta {
+        HostedMeta {
+            key: self.key,
+            grab: self.grab,
+            rect: self.rect,
+            entered: self.entered,
+            configured: self.configured,
+            closing: self.closing,
+        }
     }
 }
 
@@ -177,13 +251,18 @@ impl Shell {
         let app = &self.app;
         let reqs = guard("popups", || app.popups()).unwrap_or_default();
         // 自底向上比对：第一处不一致起，其上各层全部逆序销毁（xdg-shell 只许销毁最上层）。
-        // `closing` 不进比对：退场是同一个表面上的动画，重建表面就断了接续。
-        let keep = self
-            .popups
+        // 判据 = `(key, grab)`：`rect` / `closing` 不进比对（见 `PopupSync::plan`）。
+        let hosted: Vec<HostedMeta> = self.popups.iter().map(HostedPopup::meta).collect();
+        let req_meta: Vec<RequestMeta> = reqs
             .iter()
-            .zip(reqs.iter())
-            .take_while(|(h, r)| h.key == r.key && h.rect == r.rect && h.grab == r.grab)
-            .count();
+            .map(|r| RequestMeta {
+                key: r.key,
+                grab: r.grab,
+                size: r.rect.size,
+            })
+            .collect();
+        let plan = PopupSync::plan(&hosted, &req_meta);
+        let keep = plan.keep;
         // 保留者里刚被标退场的：在**同一个** visual 上起跑 PopOut（不重建表面）。
         let mut done_now: Vec<u64> = Vec::new();
         for (i, r) in reqs.iter().take(keep).enumerate() {
@@ -192,10 +271,17 @@ impl Shell {
             if !self.popups[i].closing {
                 self.popups[i].exit = r.exit;
             }
+            // 位置记账跟着树走：rect 原点客户端改不了（positioner 固定），但在这一层之上新建
+            // 抓取子弹层时父偏移取的就是它 —— 不更新会按旧原点算子层落点。
+            self.popups[i].rect = r.rect;
+            // 尺寸变化走同一条表面：换缓冲 + 重画，表面身份（entered / 动画 / 抓取）一格不动。
+            if plan.resized.contains(&i) {
+                self.resize_popup(i, r.rect);
+            }
             // 入场：首帧内容**上一轮**已提交（本轮之前合成器已经导入过这个表面）→ 现在起跑。
             // 晚一帧是有意的：新表面的首次导入 / 上传要花掉一整帧，若与动画首帧挤在一起，
             // 入场的前两帧就会迟到（实测 drops=1~2）。
-            if !self.popups[i].closing && !self.popups[i].entered && self.popups[i].configured {
+            if plan.enters.contains(&i) {
                 self.start_popup_enter(i);
             }
             if r.closing && !self.popups[i].closing && !self.start_popup_exit(i) {
@@ -226,6 +312,45 @@ impl Shell {
             let app = &mut self.app;
             let _ = guard("popup_motion_done", || app.popup_motion_done(key));
         }
+    }
+
+    /// 同一表面换内容尺寸：只换缓冲与光栅器，表面身份（`entered` / 动画 / 抓取）一格不动。
+    ///
+    /// 位置由创建时的 positioner 固定 —— xdg_popup 没有「改已有弹层几何」的请求（
+    /// `xdg_popup.reposition` 落在合成器的 `reposition_request`，本仓合成器目前是空实现，
+    /// 参 compositor/src/state/xdg_shell.rs），故这里只换**尺寸**：内容随高度长 / 收，
+    /// 顶边留在创建时的位置。
+    ///
+    /// 尺寸变化那一帧落一行 `弹层:<名字> 尺寸 <w>×<h>`（名字沿用 `motion_name`）：
+    /// 无头与真机都靠它核对「没建新表面、只是同一表面换了缓冲」。
+    fn resize_popup(&mut self, i: usize, rect: Rect) {
+        let size = rect.size;
+        let p = &mut self.popups[i];
+        if p.size != size {
+            p.size = size;
+            // 渲染器可能还没建（惰性创建读 `p.size`）；已建的按新尺寸重设缓冲。
+            if let Some(cpu) = p.cpu.as_mut() {
+                cpu.resize(size.width, size.height, p.scale);
+            }
+            if let Some(r) = p.renderer.as_mut() {
+                r.resize(size.width, size.height, p.scale);
+            }
+        }
+        // 整幅重画（不等 damage）：缩小时尤其重要 —— 新缓冲必须先画满再提交，
+        // 否则露出来的那块是上一帧的旧像素（收起一行会闪一帧残影）。
+        p.dirty = true;
+        self.dirty = true;
+        // 帧节拍日志：与入场 / 退场同一份（`ether-harness-pacing.log`），按时间排在一起。
+        let ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        crate::perf::write_pacing(&format!(
+            "t={ms} {} 尺寸 {}×{}\n",
+            p.motion_name,
+            size.width.round() as i32,
+            size.height.round() as i32
+        ));
     }
 
     /// 在已有表面上升起退场动画。返回 false = 该弹层没有 visual / 没有退场动画（调用方直接回报 Done）。
@@ -685,5 +810,147 @@ impl PopupHandler for Shell {
             let _ = guard("popup_dismissed", || app.popup_dismissed(key));
         }
         self.dirty = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! 弹层表面**同一性判据**的单元测试（不碰 Wayland：判据是纯函数）。
+    //!
+    //! 回归对象：tb-net 面板展开一行会让整块面板重建表面并重播 300 ms 入场。
+    //! 判据一旦把 `rect` 算进同一性就会复现；判据一旦收掉 `grab` 就会把抓取弹层的
+    //! 父子关系 / 输入路由拆错。
+
+    use super::*;
+
+    fn hosted(key: u64, grab: bool, w: f32, h: f32) -> HostedMeta {
+        HostedMeta {
+            key,
+            grab,
+            rect: Rect::new(0.0, 30.0, w, h),
+            entered: false,
+            configured: true,
+            closing: false,
+        }
+    }
+
+    fn entered(mut h: HostedMeta) -> HostedMeta {
+        h.entered = true;
+        h
+    }
+
+    fn req(key: u64, grab: bool, w: f32, h: f32) -> RequestMeta {
+        RequestMeta {
+            key,
+            grab,
+            size: Size::new(w, h),
+        }
+    }
+
+    /// 同一 key、同一 grab、**高度变了**：复用同一表面（不新建 / 不销毁 / 不重播入场）。
+    #[test]
+    fn rect_change_reuses_same_surface() {
+        let h = [entered(hosted(7, true, 360.0, 400.0))];
+        let r = [req(7, true, 360.0, 444.0)];
+        let plan = PopupSync::plan(&h, &r);
+        assert_eq!(plan.keep, 1, "同一 key + 同一 grab → 复用，不重建");
+        assert_eq!(h.len() - plan.keep, 0, "销毁表面数 0");
+        assert_eq!(r.len() - plan.keep, 0, "新建表面数 0");
+        assert_eq!(plan.resized, vec![0], "尺寸变化走同一条表面");
+        assert!(plan.enters.is_empty(), "复用不得再起跑入场（entered 保持）");
+    }
+
+    /// 收起一行（变矮）同样是「同一表面换尺寸」，不是重建。
+    #[test]
+    fn rect_shrink_also_reuses_same_surface() {
+        let h = [entered(hosted(7, true, 360.0, 444.0))];
+        let r = [req(7, true, 360.0, 400.0)];
+        let plan = PopupSync::plan(&h, &r);
+        assert_eq!((plan.keep, plan.resized.as_slice()), (1, &[0][..]));
+        assert!(plan.enters.is_empty());
+    }
+
+    /// 尺寸没变 → 既不复用触发重画，也不入场。
+    #[test]
+    fn unchanged_rect_is_noop() {
+        let h = [entered(hosted(7, true, 360.0, 400.0))];
+        let r = [req(7, true, 360.0, 400.0)];
+        let plan = PopupSync::plan(&h, &r);
+        assert_eq!(plan.keep, 1);
+        assert!(plan.resized.is_empty(), "尺寸没变不重设缓冲");
+        assert!(plan.enters.is_empty());
+    }
+
+    /// 入场只在「该 key 首次出现、且首帧内容已提交」那一轮起跑一次。
+    #[test]
+    fn enter_starts_once_per_key() {
+        let h = [hosted(7, true, 360.0, 400.0)];
+        let r = [req(7, true, 360.0, 400.0)];
+        assert_eq!(PopupSync::plan(&h, &r).enters, vec![0], "首次出现 → 起跑入场");
+
+        // 入场已起跑 + 内容换尺寸：不得再起跑（这正是「面板重滑一次」的回归点）。
+        let h2 = [entered(hosted(7, true, 360.0, 400.0))];
+        let r2 = [req(7, true, 360.0, 444.0)];
+        assert!(
+            PopupSync::plan(&h2, &r2).enters.is_empty(),
+            "尺寸变化那一轮不得有第二条入场"
+        );
+    }
+
+    /// 首帧内容还没提交（未 configure）→ 晚一轮再起跑入场。
+    #[test]
+    fn enter_waits_for_first_commit() {
+        let mut h = hosted(7, true, 360.0, 400.0);
+        h.configured = false;
+        let r = [req(7, true, 360.0, 400.0)];
+        assert!(PopupSync::plan(&[h], &r).enters.is_empty());
+        h.configured = true;
+        assert_eq!(PopupSync::plan(&[h], &r).enters, vec![0]);
+    }
+
+    /// `grab` 变化仍按原判据重建（拆开 / 重建是正确行为：父子关系与输入路由都变了）。
+    #[test]
+    fn grab_change_rebuilds() {
+        let h = [entered(hosted(7, true, 360.0, 400.0))];
+        let r = [req(7, false, 360.0, 400.0)];
+        let plan = PopupSync::plan(&h, &r);
+        assert_eq!(plan.keep, 0, "grab 变化 → 该层起全部重建");
+        assert_eq!(h.len() - plan.keep, 1, "销毁 1 个表面");
+        assert_eq!(r.len() - plan.keep, 1, "新建 1 个表面");
+        assert!(plan.resized.is_empty());
+    }
+
+    /// key 变化（换了另一个弹层）→ 重建。
+    #[test]
+    fn key_change_rebuilds() {
+        let h = [entered(hosted(7, true, 360.0, 400.0))];
+        let r = [req(8, true, 360.0, 400.0)];
+        assert_eq!(PopupSync::plan(&h, &r).keep, 0);
+    }
+
+    /// xdg-shell 只许自顶向下销毁：下层尺寸变了照旧复用，只有**其上的**层拆掉重建。
+    #[test]
+    fn upper_layer_change_rebuilds_only_above_it() {
+        let h = [
+            entered(hosted(1, true, 200.0, 100.0)),
+            entered(hosted(2, true, 120.0, 80.0)),
+        ];
+        let reqs = [req(1, true, 200.0, 140.0), req(3, true, 120.0, 80.0)];
+        let plan = PopupSync::plan(&h, &reqs);
+        assert_eq!(plan.keep, 1, "下层（key=1）仍复用");
+        assert_eq!(2 - plan.keep, 1, "只销毁其上的第 2 层");
+        assert_eq!(plan.resized, vec![0], "下层尺寸变化仍在同一表面上生效");
+        assert!(plan.enters.is_empty(), "两层都已入场过");
+    }
+
+    /// 退场期间不改判据：closing 不进同一性，且退场中不再起跑入场。
+    #[test]
+    fn closing_not_part_of_identity() {
+        let mut h = entered(hosted(7, true, 360.0, 400.0));
+        h.closing = true;
+        let r = [req(7, true, 360.0, 400.0)];
+        let plan = PopupSync::plan(&[h], &r);
+        assert_eq!(plan.keep, 1, "退场是同一表面上的动画");
+        assert!(plan.enters.is_empty());
     }
 }
