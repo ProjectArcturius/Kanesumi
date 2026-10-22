@@ -19,15 +19,17 @@ use std::time::Instant;
 use kanesumi_canvas::Scene;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_core::{Rect, Size};
+use kanesumi_element::VisualAnim;
 use smithay_client_toolkit::compositor::Surface;
 use smithay_client_toolkit::shell::xdg::XdgPositioner;
 use smithay_client_toolkit::shell::xdg::popup::{Popup, PopupConfigure, PopupHandler};
 use wayland_client::protocol::wl_surface;
-use wayland_client::{Connection, QueueHandle};
+use wayland_client::{Connection, Dispatch, QueueHandle};
 use wayland_protocols::xdg::shell::client::xdg_positioner::{
     Anchor as PosAnchor, ConstraintAdjustment, Gravity,
 };
 
+use super::layers::proto::ether_visual_v1::{self, EtherVisualV1};
 use super::{Shell, SurfaceOutput, SurfaceRenderer, guard};
 use crate::app::{InputEvent, PopupRequest};
 use crate::cpu_raster::CpuRenderer;
@@ -51,6 +53,73 @@ pub(super) struct HostedPopup {
     scale: f32,
     pub(super) out: SurfaceOutput,
     dirty: bool,
+    /// 弹层表面的 `ether_visual_v1`（视觉偏移 + 不透明度）。挂在**弹层自己的表面**上：
+    /// 合成器按 vsync 推进整块弹层的位移 / 淡出，弹层内容一帧都不重画（参 FEEL_PLAN §Ⅰ-4）。
+    /// 合成器不支持 `ether_composition_v1` 时为 `None` → 直接到终值（旧行为）。
+    visual: Option<EtherVisualV1>,
+    /// 入场 / 退场视觉量（由元素树给出；入场起跑后清空）。
+    enter: Option<VisualAnim>,
+    exit: Option<VisualAnim>,
+    /// 是否已退场（外壳据此停投输入、不再重复起跑）。
+    closing: bool,
+    /// 入场是否已起跑（首帧内容提交后起跑，只一次）。
+    entered: bool,
+    /// 帧节拍日志名（`弹层:<锚点角色>`，元素树给）。
+    motion_name: String,
+    /// 进行中的动画段名（`<motion_name> 入场|退场`）；`None` = 没有动画在跑。
+    active_motion: Option<String>,
+    /// 最近一次 animate 请求的时刻（诊断：合成器从请求到 Done 的真实耗时）。
+    anim_sent_at: Option<Instant>,
+}
+
+/// 弹层表面 visual 的 Wayland 用户数据（key = 弹层 key，Done / Cancelled 按它回查）。
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PopupVisual(pub(super) u64);
+
+/// 弹层表面动画的序号：同一表面同一时刻只有一段动画，入场 / 退场各用固定值。
+/// 合成器在被打断时回 `Cancelled{serial}`，据此区分「谁是过期的」。
+const ENTER_SERIAL: u32 = 1;
+const EXIT_SERIAL: u32 = 2;
+
+impl HostedPopup {
+    /// 起跑一段表面动画（先由创建时设好的起点出发；`animate` 从当前呈现值过渡到终值）。
+    ///
+    /// `ether_visual_v1` 的请求是**双缓冲**的：必须提交弹层表面才被合成器采纳。
+    fn start_visual_anim(&mut self, a: &VisualAnim, serial: u32) -> bool {
+        let Some(v) = self.visual.as_ref() else {
+            return false;
+        };
+        let [x1, y1, x2, y2] = a.curve;
+        v.animate(
+            serial,
+            a.duration_ms,
+            a.delay_ms,
+            x1 as f64,
+            y1 as f64,
+            x2 as f64,
+            y2 as f64,
+            a.to_x as f64,
+            a.to_y as f64,
+            a.to_opacity.clamp(0.0, 1.0) as f64,
+        );
+        self.popup.wl_surface().commit();
+        self.anim_sent_at = Some(Instant::now());
+        true
+    }
+
+    /// 动画段收尾（落一行帧节拍日志；被打断也照落，便于对照）。
+    fn finish_motion(&mut self) {
+        if let Some(name) = self.active_motion.take() {
+            crate::perf::pacing_finish(&name, Instant::now());
+        }
+    }
+
+    /// 销毁 visual（弹层表面即将销毁）：先显式 destroy，合成器把表面视觉复位。
+    fn drop_visual(&mut self) {
+        if let Some(v) = self.visual.take() {
+            v.destroy();
+        }
+    }
 }
 
 impl HostedPopup {
@@ -108,22 +177,104 @@ impl Shell {
         let app = &self.app;
         let reqs = guard("popups", || app.popups()).unwrap_or_default();
         // 自底向上比对：第一处不一致起，其上各层全部逆序销毁（xdg-shell 只许销毁最上层）。
+        // `closing` 不进比对：退场是同一个表面上的动画，重建表面就断了接续。
         let keep = self
             .popups
             .iter()
             .zip(reqs.iter())
             .take_while(|(h, r)| h.key == r.key && h.rect == r.rect && h.grab == r.grab)
             .count();
+        // 保留者里刚被标退场的：在**同一个** visual 上起跑 PopOut（不重建表面）。
+        let mut done_now: Vec<u64> = Vec::new();
+        for (i, r) in reqs.iter().take(keep).enumerate() {
+            self.popups[i].motion_name = r.motion_name.clone();
+            // 退场动画随「closing 翻转」的那一帧才下发：先收进表面状态，再起跑。
+            if !self.popups[i].closing {
+                self.popups[i].exit = r.exit;
+            }
+            // 入场：首帧内容**上一轮**已提交（本轮之前合成器已经导入过这个表面）→ 现在起跑。
+            // 晚一帧是有意的：新表面的首次导入 / 上传要花掉一整帧，若与动画首帧挤在一起，
+            // 入场的前两帧就会迟到（实测 drops=1~2）。
+            if !self.popups[i].closing && !self.popups[i].entered && self.popups[i].configured {
+                self.start_popup_enter(i);
+            }
+            if r.closing && !self.popups[i].closing && !self.start_popup_exit(i) {
+                // 没有 visual（合成器不支持图层动画）：直接到终值，立刻回报，树随即摘掉弹层。
+                done_now.push(r.key);
+            }
+        }
         while self.popups.len() > keep {
-            if let Some(p) = self.popups.pop() {
+            if let Some(mut p) = self.popups.pop() {
                 log::debug!("子弹层销毁 key={}", p.key);
+                // 动画没收尾就销毁（例如退场被新的开合打断）：先落日志行，再撤 visual。
+                p.finish_motion();
+                p.drop_visual();
                 drop(p);
                 self.dirty = true;
             }
         }
         for r in reqs.into_iter().skip(keep) {
+            if r.closing {
+                // 开合发生在同一帧内（打开即关闭）：不值得建表面再播退场 —— 直接回报，
+                // 否则用户会看到一块「一闪而过」的弹层。
+                done_now.push(r.key);
+                continue;
+            }
             self.create_popup(qh, r);
         }
+        for key in done_now {
+            let app = &mut self.app;
+            let _ = guard("popup_motion_done", || app.popup_motion_done(key));
+        }
+    }
+
+    /// 在已有表面上升起退场动画。返回 false = 该弹层没有 visual / 没有退场动画（调用方直接回报 Done）。
+    fn start_popup_exit(&mut self, i: usize) -> bool {
+        let now = Instant::now();
+        let predicted = self.frame_clock.current_predicted_present();
+        let name = self.popups[i].motion_name.clone();
+        self.popups[i].finish_motion();
+        let p = &mut self.popups[i];
+        p.closing = true;
+        p.enter = None;
+        let Some(a) = p.exit.take() else {
+            log::debug!("弹层退场：请求里没有退场动画 → 直接到终值");
+            return false;
+        };
+        if !p.start_visual_anim(&a, EXIT_SERIAL) {
+            log::debug!("弹层退场：没有 visual（合成器不支持图层动画）→ 直接到终值");
+            return false;
+        }
+        log::debug!("弹层 {name} 起跑（{} ms，visual={}）", a.duration_ms, p.visual.is_some());
+        p.active_motion = Some(format!("{name} 退场"));
+        let seg = format!("{name} 退场");
+        crate::perf::pacing_begin(&seg, now);
+        // 起跑这一帧本身也是「动画的一帧」：记一帧，段才不会因客户端随后空闲而帧数为 0
+        // （`FramePacing::finish` 对零帧的段不落行 —— 那样退场段会整条消失）。
+        crate::perf::pacing_present_named(&seg, now, predicted);
+        true
+    }
+
+    /// 动画段结束（合成器回报 Done / Cancelled）。
+    fn finish_popup_motion(&mut self, i: usize, serial: u32, done: bool) {
+        let closing = self.popups[i].closing;
+        // 只认「当前阶段」的回报：入场被退场打断时，合成器会补一个 `Cancelled{ENTER}`，
+        // 而退场段已经在跑（`start_popup_exit` 已把入场段收尾）—— 此时若照收，
+        // 会把退场的统计截断成几帧，验收看到的「退场掉了帧」就是假的。
+        let phase_matches = (serial == EXIT_SERIAL) == closing;
+        if !phase_matches {
+            return;
+        }
+        // 两段动画都要告诉树「这段结束了」：入场结束 → 树摘掉计划（不再逐帧推进）；
+        // 退场结束 → 树真正移除弹层节点（下一轮 `popups()` 比对销毁表面）。
+        self.popups[i].finish_motion();
+        if closing && !done {
+            // 退场被打断（理论上只有表面即将销毁）：等树的兜底收尾。
+            return;
+        }
+        let key = self.popups[i].key;
+        let app = &mut self.app;
+        let _ = guard("popup_motion_done", || app.popup_motion_done(key));
     }
 
     fn create_popup(&mut self, qh: &QueueHandle<Self>, req: PopupRequest) {
@@ -191,6 +342,20 @@ impl Shell {
         }
         let scale = self.scale.ceil().max(1.0);
         popup.wl_surface().set_buffer_scale(scale as i32);
+        // 表面视觉：整块弹层的位移 / 淡入淡出交给合成器。起点在**首帧内容提交之前**设好，
+        // 合成器第一帧就按起点呈现 —— 不会先闪一帧终值再跳回起点。
+        let visual = if req.enter.is_some() || req.exit.is_some() {
+            self.comp
+                .manager
+                .as_ref()
+                .map(|m| m.get_visual(popup.wl_surface(), qh, PopupVisual(req.key)))
+        } else {
+            None
+        };
+        if let (Some(v), Some(a)) = (visual.as_ref(), req.enter) {
+            v.set_offset(a.from_x as f64, a.from_y as f64);
+            v.set_opacity(a.from_opacity.clamp(0.0, 1.0) as f64);
+        }
         popup.wl_surface().commit();
         log::debug!(
             "子弹层创建 key={} rect={:?} grab={}",
@@ -214,6 +379,14 @@ impl Shell {
             scale,
             out,
             dirty: true,
+            visual,
+            enter: req.enter,
+            exit: req.exit,
+            closing: false,
+            entered: false,
+            motion_name: req.motion_name,
+            active_motion: None,
+            anim_sent_at: None,
         });
     }
 
@@ -379,6 +552,33 @@ impl Shell {
         }
     }
 
+    /// 首帧内容提交后起跑入场动画（只起一次；合成器不支持图层动画时立即回报 Done）。
+    fn start_popup_enter(&mut self, i: usize) {
+        if self.popups.get(i).is_none_or(|p| p.entered) {
+            return;
+        }
+        let now = Instant::now();
+        let p = &mut self.popups[i];
+        p.entered = true;
+        let Some(a) = p.enter.take() else {
+            return;
+        };
+        let (key, animated) = (p.key, p.start_visual_anim(&a, ENTER_SERIAL));
+        if !animated {
+            // 没有 visual（合成器不支持 ether_composition_v1）：直接到终值，并告诉树
+            // 「这段动画结束了」—— 否则树会一直以为动画在跑，白白逐帧推进。
+            let app = &mut self.app;
+            let _ = guard("popup_motion_done", || app.popup_motion_done(key));
+            return;
+        }
+        let name = format!("{} 入场", p.motion_name);
+        log::debug!("弹层 {name} 起跑（{} ms）", a.duration_ms);
+        p.active_motion = Some(name.clone());
+        let predicted = self.frame_clock.current_predicted_present();
+        crate::perf::pacing_begin(&name, now);
+        crate::perf::pacing_present_named(&name, now, predicted);
+    }
+
     /// 弹层表面输入 → App（App 自行平移回树坐标）。事件到达即置脏（I-4）。
     pub(super) fn emit_popup_input(&mut self, key: u64, event: InputEvent) {
         let app = &mut self.app;
@@ -397,6 +597,39 @@ impl Shell {
         buffer: &wayland_client::protocol::wl_buffer::WlBuffer,
     ) -> bool {
         self.popups.iter_mut().any(|p| p.out.mark_released(buffer))
+    }
+}
+
+impl Dispatch<EtherVisualV1, PopupVisual> for Shell {
+    fn event(
+        state: &mut Self,
+        _proxy: &EtherVisualV1,
+        event: ether_visual_v1::Event,
+        data: &PopupVisual,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        let key = data.0;
+        log::debug!(
+            "弹层表面 visual 事件 key={key} {event:?}（请求后 {} ms）",
+            state
+                .popups
+                .iter()
+                .find(|p| p.key == key)
+                .and_then(|p| p.anim_sent_at)
+                .map_or(-1.0, |t| t.elapsed().as_secs_f32() * 1000.0) as i64
+        );
+        let Some(i) = state.popups.iter().position(|p| p.key == key) else {
+            return;
+        };
+        match event {
+            ether_visual_v1::Event::Done { serial } => {
+                state.finish_popup_motion(i, serial, true)
+            }
+            ether_visual_v1::Event::Cancelled { serial } => {
+                state.finish_popup_motion(i, serial, false)
+            }
+        }
     }
 }
 

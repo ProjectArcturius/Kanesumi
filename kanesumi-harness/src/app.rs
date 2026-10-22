@@ -232,7 +232,7 @@ pub enum LockEvent {
 /// `state → progress → resolved spatial state → render`。
 /// App 只产出 `Scene` 绘制命令，GPU 光栅化由 harness 外壳承担——保持纯逻辑、跨平台可测。
 /// 子弹层申报（`App::popups`）：外壳为每一项开一个 xdg_popup 表面。参 Ether docs/POPUP_PLAN.md。
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PopupRequest {
     /// 稳定身份（元素树弹层 = `WidgetId::to_u64`）。
     pub key: u64,
@@ -240,6 +240,15 @@ pub struct PopupRequest {
     pub rect: Rect,
     /// 点外部由合成器关闭（`xdg_popup.grab`；关闭后回调 `popup_dismissed`）。
     pub grab: bool,
+    /// 正在退场：弹层表面仍要画（合成器在放退场动画），但**不再接收输入**。
+    /// 外壳在动画结束（或合成器不支图层动画时立刻）回调 [`App::popup_motion_done`]。
+    pub closing: bool,
+    /// 入场表面动画（首次内容提交后起跑一次；`None` = 不动画）。
+    pub enter: Option<kanesumi_element::VisualAnim>,
+    /// 退场表面动画（`closing` 时才有；播完才销毁表面）。
+    pub exit: Option<kanesumi_element::VisualAnim>,
+    /// 帧节拍日志名（`弹层:<锚点角色>`），入场 / 退场各追加「入场」「退场」后缀。
+    pub motion_name: String,
 }
 
 pub trait App {
@@ -366,6 +375,11 @@ pub trait App {
 
     /// 合成器关闭了弹层（点外部 / 抓取被夺）。
     fn popup_dismissed(&mut self, _key: u64) {}
+
+    /// 弹层表面动画结束（`PopupRequest::exit` 播完 / 被打断 / 合成器不支持图层动画而直接到终值）。
+    ///
+    /// 收到后弹层表面的使命就结束了：树可以摘掉该弹层，外壳下一轮 `popups()` 比对时销毁表面。
+    fn popup_motion_done(&mut self, _key: u64) {}
 
     /// 每帧 tick。`dt` 单位为秒（外壳从 frame callback 计算，参 PLAN.md §4.2 合成器时钟）。
     ///

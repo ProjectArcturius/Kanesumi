@@ -375,6 +375,25 @@ impl<A: TreeApp> TreeHost<A> {
     pub fn last_frame_full(&self) -> bool {
         self.damage_full
     }
+
+    /// 给进行中的弹层表面动画记一帧（帧节拍日志）。参 `Tree::popup_motion`。
+    ///
+    /// 弹层动画由合成器按 vsync 推进，客户端**不提交弹层帧**：本函数只记「客户端在动画
+    /// 窗口内自己出过的帧」，因此条数天然接近零 —— 呈现帧数的判据在合成器侧
+    /// （`ether-frame-pacing.log` 的 `surface:NN` 段，vblank 对齐）。参 tools/perf/popup_motion.sh。
+    fn note_popup_motion_frames(&self) {
+        let now = std::time::Instant::now();
+        for id in self.tree.popups().collect::<Vec<_>>() {
+            let Some(plan) = self.tree.popup_motion(id) else {
+                continue;
+            };
+            let Some(base) = self.tree.popup_motion_name(id) else {
+                continue;
+            };
+            let phase = if plan.closing() { "退场" } else { "入场" };
+            crate::perf::pacing_present_named(&format!("{base} {phase}"), now, None);
+        }
+    }
 }
 
 impl<A: TreeApp> App for TreeHost<A> {
@@ -472,11 +491,20 @@ impl<A: TreeApp> App for TreeHost<A> {
                     return None; // 尚未排版（打开当帧）
                 }
                 let spec = self.tree.popup_spec(id)?;
+                let plan = self.tree.popup_motion(id);
                 Some(PopupRequest {
                     key: id.to_u64(),
                     rect,
                     // 模态弹层不抓取：点外部不能关闭它（合成器抓取语义就是「点外部 popup_done」）。
                     grab: spec.light_dismiss && !spec.modal,
+                    // 退场中仍申报（表面要接着画），但外壳据此停投输入。
+                    closing: plan.as_ref().is_some_and(|p| p.closing()),
+                    enter: plan.as_ref().and_then(|p| p.enter),
+                    exit: plan.as_ref().and_then(|p| p.exit),
+                    motion_name: self
+                        .tree
+                        .popup_motion_name(id)
+                        .unwrap_or_else(|| "弹层".to_string()),
                 })
             })
             .collect()
@@ -494,14 +522,36 @@ impl<A: TreeApp> App for TreeHost<A> {
     }
 
     fn popup_input(&mut self, key: u64, event: InputEvent) {
+        // 退场期间不接收输入：合成器抓取还没撤，指针事件仍会投进来 —— 一律丢弃，
+        // 不能让用户「点到正在消失的面板」（参 FEEL_PLAN §Ⅰ-4）。
+        if self
+            .popup_id(key)
+            .is_some_and(|id| self.tree.popup_closing(id))
+        {
+            return;
+        }
         if let Some(ev) = self.popup_to_tree(key, event) {
             self.handle_input(ev);
         }
     }
 
     fn popup_dismissed(&mut self, key: u64) {
+        log::debug!("合成器 popup_done：弹层 key={key}");
         if let Some(id) = self.popup_id(key) {
+            // 已在退场 → `close_popup` 不重复发 `PopupClosed`（内部早退）。
             self.tree.close_popup(id);
+            // 这条路径上表面已被合成器销毁（xdg-shell：popup_done 之后客户端必须销毁弹层），
+            // 没有表面可放动画 → 立刻结算，否则会拖到兜底超时、期间 `popups()` 还会把它重建出来。
+            self.tree.on_popup_motion_done(id);
+            self.drain_actions();
+        }
+    }
+
+    fn popup_motion_done(&mut self, key: u64) {
+        log::debug!("弹层动画结束回调 key={key}");
+        if let Some(id) = self.popup_id(key) {
+            // 退场播完：此刻才真正摘掉元素树弹层，下一轮 `popups()` 比对销毁表面。
+            self.tree.on_popup_motion_done(id);
             self.drain_actions();
         }
     }
@@ -672,6 +722,10 @@ impl<A: TreeApp> App for TreeHost<A> {
 
     fn render_into(&mut self, engine: &TextEngine, size: Size, out: &mut Scene) {
         crate::timeline::note_once("render_into_start");
+        // 弹层表面动画的帧节拍：动画由合成器按 vsync 推进，客户端**不提交弹层帧**，
+        // 所以只能按「主表面真实出帧」记（外壳每渲染一帧调一次本函数，渲染又受帧节流
+        // 约束）。段名与 `platform/popups.rs` 的起 / 收一致，同一进程同一线程共享计数器。
+        self.note_popup_motion_frames();
         let dt = std::mem::take(&mut self.pending_dt);
         let frame = self.tree.frame(engine, size, dt);
         self.damage_full = frame.full;

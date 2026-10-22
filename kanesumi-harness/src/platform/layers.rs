@@ -405,6 +405,7 @@ impl Dispatch<EtherVisualV1, LayerId> for Shell {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+        log::debug!("图层 visual 事件 id={:?} {event:?}", id);
         let e = match event {
             ether_visual_v1::Event::Done { serial } => LayerEvent::Done { id: *id, serial },
             ether_visual_v1::Event::Cancelled { serial } => LayerEvent::Cancelled { id: *id, serial },

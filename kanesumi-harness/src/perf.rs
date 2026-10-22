@@ -809,6 +809,17 @@ pub fn pacing_mark(name: &str, active: bool, trigger: std::time::Instant, now: s
     }
 }
 
+/// 结束一段动画并落盘（未提交过帧时静默丢弃：日志里不会出现 frames=0 的空行）。
+///
+/// 用于「有明确终点」的动画段：合成器回报 Done 时收尾，比 `pacing_mark(false)` 直白
+/// （后者要传两次 `now` 且语义是「状态声明」）。
+pub fn pacing_finish(name: &str, now: std::time::Instant) {
+    let line = PACING.with(|p| p.borrow_mut().finish(name, now));
+    if let Some(line) = line {
+        write_pacing(&line);
+    }
+}
+
 /// 一帧提交（全部进行中动画；单表面进程可用）。
 pub fn pacing_present(now: std::time::Instant) {
     PACING.with(|p| p.borrow_mut().on_present(now));
