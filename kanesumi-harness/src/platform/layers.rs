@@ -46,6 +46,8 @@ pub(super) struct CompLayer {
     scale: f32,
     /// 回落模式下模拟的视觉偏移（有协议时不用）。
     offset: (f32, f32),
+    /// 上次提交的内容（只用于算提交损伤；`None` = 还没有可比对的上一帧 → 整幅）。
+    last_scene: Option<Scene>,
     /// 光栅好但未能提交的内容（两槽缓冲都在合成器手里 → 本次提交被跳过）。
     /// 图层内容只在变化时交一次，跳过即永久丢失 —— 2026-10-17 Launcher 背板全透明的根因：
     /// 背板第 3、4 次内容（不透明的那两次）都被跳过，合成器一直显示首帧暂隐时的透明内容。
@@ -229,25 +231,147 @@ impl Shell {
             rect,
             scale,
             offset: (0.0, 0.0),
+            last_scene: None,
             pending: None,
         };
         place(&mut l);
         self.comp.layers.push(l);
+        // dk3-perf：新建图层子表面（建 CpuRenderer / 首帧上传）单独标出来。
+        self.surface_created = true;
     }
 
     /// 光栅内容并提交（只在内容变化时由 App 触发；动画期间不会走到这里）。
     fn set_layer_content(&mut self, id: LayerId, scene: &Scene, qh: &QueueHandle<Shell>) {
         let Some(i) = self.layer_index(id) else { return };
+        let t = std::time::Instant::now();
         let Shell { engine, comp, shm, dmabuf, .. } = self;
         let l = &mut comp.layers[i];
         let (w, h) = (l.rect.size.width.max(1.0), l.rect.size.height.max(1.0));
         let cpu = l.cpu.get_or_insert_with(|| CpuRenderer::new(w, h, l.scale));
         let (pw, ph) = cpu.physical_size();
         let rgba = cpu.render(engine, scene, None);
-        let committed = l.out.commit(qh, shm.as_ref(), dmabuf, &l.surface, pw, ph, rgba, l.scale, None);
+        let encode_ms = t.elapsed().as_secs_f32() * 1000.0;
+        // 内容只在变化时提交，但提交缓冲默认整幅拷贝：Dock 悬停只改一个图标的颜色，
+        // 也要把 1.87 MB 全写一遍（真机尖峰里 submit 占了大头）。用场景差异算出损伤区，
+        // 只写变化的行；差异算不出（结构变化 / 首帧）就退回整幅，语义不变。
+        let damage = scene_damage(l.last_scene.as_ref(), scene, l.rect.size);
+        l.last_scene = Some(scene.clone());
+        let t = std::time::Instant::now();
+        let committed = l.out.commit(
+            qh,
+            shm.as_ref(),
+            dmabuf,
+            &l.surface,
+            pw,
+            ph,
+            rgba,
+            l.scale,
+            damage,
+        );
+        let submit_ms = t.elapsed().as_secs_f32() * 1000.0;
         // 跳过 → 记下最新内容，缓冲释放后补交（只留最新一份，旧的作废）。
         l.pending = if committed { None } else { Some(scene.clone()) };
+        // dk3-perf：图层内容帧（Dock 图标 / 亚克力、Launcher 背板都在这里光栅）。
+        // 与父表面分开记 —— 它是「Dock 内容重画」，不是父表面场景变慢。
+        let timing = crate::perf::FrameTiming {
+            encode_ms,
+            submit_ms,
+            scene_cmds: scene.commands.len() as u32,
+            upload_bytes: (pw as u64) * (ph as u64) * 4,
+            new_surface: std::mem::take(&mut self.surface_created),
+            ..Default::default()
+        };
+        let p = self.perf_layers.entry(id.0).or_default();
+        p.record(0.0, encode_ms, submit_ms);
+        p.record_phases(&timing);
+        crate::perf::maybe_spike(
+            &self.perf_proc,
+            &format!("{:?}", self.role),
+            &format!("layer{}", id.0),
+            &timing,
+        );
     }
+}
+
+/// 一帧场景里一条命令的绘制外框（逻辑坐标）。裁剪命令返回 None（不直接绘制）。
+fn cmd_bounds(c: &kanesumi_canvas::SceneCommand) -> Option<Rect> {
+    use kanesumi_canvas::SceneCommand as C;
+    match c {
+        C::FillRect { rect, .. } | C::StrokeRect { rect, .. } | C::Text { rect, .. } | C::Image { rect, .. } => Some(*rect),
+        C::Arc { center, radius, thickness, .. } => {
+            let r = radius + thickness / 2.0;
+            Some(Rect::new(center.x - r, center.y - r, r * 2.0, r * 2.0))
+        }
+        C::Triangle { p0, p1, p2, .. } => {
+            let x0 = p0.x.min(p1.x).min(p2.x);
+            let y0 = p0.y.min(p1.y).min(p2.y);
+            let x1 = p0.x.max(p1.x).max(p2.x);
+            let y1 = p0.y.max(p1.y).max(p2.y);
+            Some(Rect::new(x0, y0, x1 - x0, y1 - y0))
+        }
+        C::PushClip { .. } | C::PopClip => None,
+    }
+}
+
+/// 命令是否等价（图像按 `Arc` 身份比较：`Image` 的 `PartialEq` 会逐字节比对整幅位图，
+/// 全屏背板 23 MB，绝不能用在热路径上）。
+fn cmd_same(a: &kanesumi_canvas::SceneCommand, b: &kanesumi_canvas::SceneCommand) -> bool {
+    use kanesumi_canvas::SceneCommand as C;
+    match (a, b) {
+        (
+            C::Image { rgba: ra, width: wa, height: ha, rect: r1, tint: t1, opacity: o1 },
+            C::Image { rgba: rb, width: wb, height: hb, rect: r2, tint: t2, opacity: o2 },
+        ) => {
+            std::sync::Arc::ptr_eq(ra, rb)
+                && wa == wb
+                && ha == hb
+                && r1 == r2
+                && t1 == t2
+                && o1 == o2
+        }
+        _ => a == b,
+    }
+}
+
+/// 两次图层内容之间的**提交损伤**（逻辑坐标）：`None` = 整幅（首帧 / 结构变化 / 裁剪变化）。
+///
+/// 只用于决定「写多少行缓冲」，不影响光栅结果；算不准就退回整幅，不会画错。
+fn scene_damage(prev: Option<&Scene>, next: &Scene, size: kanesumi_core::Size) -> Option<Rect> {
+    let prev = prev?;
+    if prev.commands.len() != next.commands.len() {
+        return None;
+    }
+    let mut out: Option<Rect> = None;
+    for (a, b) in prev.commands.iter().zip(next.commands.iter()) {
+        if cmd_same(a, b) {
+            continue;
+        }
+        // 裁剪变了会影响其后所有命令的可见区 → 直接整幅，避免漏刷。
+        let is_clip = |c: &kanesumi_canvas::SceneCommand| {
+            matches!(c, kanesumi_canvas::SceneCommand::PushClip { .. } | kanesumi_canvas::SceneCommand::PopClip)
+        };
+        if is_clip(a) || is_clip(b) {
+            return None;
+        }
+        for c in [a, b] {
+            if let Some(r) = cmd_bounds(c) {
+                out = Some(match out {
+                    Some(u) => super::union_rect(u, r),
+                    None => r,
+                });
+            }
+        }
+    }
+    let d = out?;
+    // 外扩 1 px：描边 / AA / 图标边缘不留接缝；裁到表面内。
+    let d = Rect::new(d.origin.x - 1.0, d.origin.y - 1.0, d.size.width + 2.0, d.size.height + 2.0);
+    let clipped = d.intersect(Rect::new(0.0, 0.0, size.width, size.height))?;
+    // 大面积变化（> 60%）直接整幅：分行循环 + buffer-age 回补还不如一次整幅拷贝。
+    let full = size.width * size.height;
+    if full > 0.0 && clipped.size.width * clipped.size.height > full * 0.6 {
+        return None;
+    }
+    Some(clipped)
 }
 
 /// 子表面位置 = 图层矩形原点（+ 回落模式下的模拟偏移）。位置随父表面下次提交生效 → 立即空提交父表面。
@@ -286,5 +410,79 @@ impl Dispatch<EtherVisualV1, LayerId> for Shell {
             ether_visual_v1::Event::Cancelled { serial } => LayerEvent::Cancelled { id: *id, serial },
         };
         state.app.on_layer_event(e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kanesumi_canvas::{Scene, SceneCommand};
+    use kanesumi_core::Color;
+
+    fn fill(x: f32, y: f32, w: f32, h: f32, c: Color) -> SceneCommand {
+        SceneCommand::FillRect { color: c, rect: Rect::new(x, y, w, h), corner_radius: 0.0 }
+    }
+
+    #[test]
+    fn scene_damage_is_none_without_previous_frame() {
+        let mut s = Scene::default();
+        s.commands.push(fill(0.0, 0.0, 10.0, 10.0, Color::new(1.0, 0.0, 0.0, 1.0)));
+        assert_eq!(scene_damage(None, &s, kanesumi_core::Size::new(100.0, 100.0)), None);
+    }
+
+    #[test]
+    fn scene_damage_covers_only_changed_commands() {
+        let size = kanesumi_core::Size::new(200.0, 100.0);
+        let a = Color::new(1.0, 0.0, 0.0, 1.0);
+        let b = Color::new(0.0, 1.0, 0.0, 1.0);
+        let mut prev = Scene::default();
+        prev.commands.push(fill(0.0, 0.0, 10.0, 10.0, a));
+        prev.commands.push(fill(50.0, 20.0, 10.0, 10.0, a));
+        let mut next = prev.clone();
+        next.commands[1] = fill(50.0, 20.0, 10.0, 10.0, b);
+        let d = scene_damage(Some(&prev), &next, size).expect("有损伤");
+        // 只有第二条变：损伤 = 它的外框 + 1 px 外扩。
+        assert!((d.origin.x - 49.0).abs() < 1e-4, "{d:?}");
+        assert!((d.origin.y - 19.0).abs() < 1e-4, "{d:?}");
+        assert!((d.size.width - 12.0).abs() < 1e-4, "{d:?}");
+        assert!((d.size.height - 12.0).abs() < 1e-4, "{d:?}");
+    }
+
+    #[test]
+    fn scene_damage_falls_back_to_full_on_structure_or_clip_change() {
+        let size = kanesumi_core::Size::new(200.0, 100.0);
+        let c = Color::new(1.0, 0.0, 0.0, 1.0);
+        let mut prev = Scene::default();
+        prev.commands.push(fill(0.0, 0.0, 10.0, 10.0, c));
+        let mut more = prev.clone();
+        more.commands.push(fill(20.0, 0.0, 10.0, 10.0, c));
+        assert_eq!(scene_damage(Some(&prev), &more, size), None, "命令数变化 → 整幅");
+        let mut clip = prev.clone();
+        clip.commands[0] = SceneCommand::PushClip { rect: Rect::new(0.0, 0.0, 5.0, 5.0) };
+        assert_eq!(scene_damage(Some(&prev), &clip, size), None, "裁剪变化 → 整幅");
+    }
+
+    #[test]
+    fn scene_damage_compares_image_by_identity_not_bytes() {
+        let size = kanesumi_core::Size::new(200.0, 100.0);
+        let rgba: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![255u8; 4 * 4 * 4]);
+        let mk = |rgba: std::sync::Arc<[u8]>, x: f32| SceneCommand::Image {
+            rgba,
+            width: 4,
+            height: 4,
+            rect: Rect::new(x, 0.0, 4.0, 4.0),
+            tint: None,
+            opacity: 1.0,
+        };
+        let mut prev = Scene::default();
+        prev.commands.push(mk(rgba.clone(), 0.0));
+        let mut same = prev.clone();
+        same.commands[0] = mk(rgba, 0.0);
+        assert_eq!(scene_damage(Some(&prev), &same, size), None, "同一份图像 → 无损伤");
+        let other: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![0u8; 4 * 4 * 4]);
+        let mut moved = prev.clone();
+        moved.commands[0] = mk(other, 100.0);
+        let d = scene_damage(Some(&prev), &moved, size).expect("换图 + 移位 → 有损伤");
+        assert!(d.size.width >= 100.0, "两处外框都要覆盖：{d:?}");
     }
 }

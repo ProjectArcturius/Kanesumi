@@ -253,6 +253,26 @@ fn upload_entry(
 
 // ── 渲染器 ───────────────────────────────────────────────────────────────
 
+/// 一帧分段耗时（毫秒）与上传量。
+///
+/// 为什么在渲染层记（dk3-perf）：`one_canvas` 缺省开启时所有表面都走 CanvasV2，
+/// 真机 Dock 的 raster 尖峰只有拆成 encode（场景 → 实例 + 图集上传）/ acquire（等合成器
+/// 放缓冲）/ submit（命令编码 + 队列提交）/ present（交换链呈现）才能归因。harness 侧的
+/// `perf::FrameTiming` 是本结构的超集（另加 tick / scene / 命令数）。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct FramePhases {
+    pub encode_ms: f32,
+    pub acquire_ms: f32,
+    pub submit_ms: f32,
+    pub present_ms: f32,
+    /// 本帧新上传的图集字节（字形 R8 与图标 RGBA 合计）。
+    pub upload_bytes: u64,
+    /// 本帧新上传的图片张数。
+    pub upload_images: u32,
+    /// 本帧新上传的字形张数。
+    pub upload_glyphs: u32,
+}
+
 /// 单表面的实例化批渲染光栅化器。对外接口与 v1 `Renderer` 对齐，platform 侧经
 /// `SurfaceRenderer`（位于 harness 平台层）分派。
 pub struct CanvasV2 {
@@ -308,6 +328,12 @@ pub struct CanvasV2 {
     last_inc: bool,
     last_dmg_pct: f32,
     last_insts: u32,
+    /// dk3-perf：最近一帧分段耗时与上传量（`take_frame_phases` 取走即清零）。
+    last_phases: FramePhases,
+    /// 本帧已上传的图集字节 / 图片张数 / 字形张数（`render_with_damage` 开始时清零）。
+    upload_bytes: u64,
+    upload_images: u32,
+    upload_glyphs: u32,
     /// 自检（仅 debug 构建）：第二张整幅目标纹理（与 target 逐字节比对）。
     #[cfg(debug_assertions)]
     verify_tex: Option<wgpu::Texture>,
@@ -764,6 +790,10 @@ fn encode_scene(
             last_inc: false,
             last_dmg_pct: 0.0,
             last_insts: 0,
+            last_phases: FramePhases::default(),
+            upload_bytes: 0,
+            upload_images: 0,
+            upload_glyphs: 0,
             #[cfg(debug_assertions)]
             verify_tex: None,
             #[cfg(debug_assertions)]
@@ -1137,6 +1167,8 @@ impl CanvasV2 {
                     1,
                     bitmap,
                 );
+                self.upload_bytes = self.upload_bytes.saturating_add((w as u64) * (h as u64));
+                self.upload_glyphs = self.upload_glyphs.saturating_add(1);
                 self.glyphs.slots.insert(key, at);
                 Some((at.0, at.1, w, h))
             }
@@ -1172,6 +1204,8 @@ impl CanvasV2 {
         for (k, (w, h), b) in entries {
             if let Some(at) = self.glyphs.page.atlas.alloc(w, h) {
                 upload_entry(&self.ctx.queue, &self.glyphs.page.texture, at, (w, h), 1, &b);
+                self.upload_bytes = self.upload_bytes.saturating_add((w as u64) * (h as u64));
+                self.upload_glyphs = self.upload_glyphs.saturating_add(1);
                 self.glyphs.slots.insert(k, at);
             }
         }
@@ -1297,6 +1331,10 @@ impl CanvasV2 {
                     4,
                     rgba,
                 );
+                self.upload_bytes = self
+                    .upload_bytes
+                    .saturating_add((w as u64) * (h as u64) * 4);
+                self.upload_images = self.upload_images.saturating_add(1);
                 self.images.slots.insert(key, (at.0, at.1, w, h));
                 self.images.sources.insert(key, (rgba.clone(), w, h));
                 Some((at.0, at.1, w, h))
@@ -1332,6 +1370,10 @@ impl CanvasV2 {
         for (k, (rgba, w, h)) in entries {
             if let Some(at) = self.images.page.atlas.alloc(w, h) {
                 upload_entry(&self.ctx.queue, &self.images.page.texture, at, (w, h), 4, &rgba);
+                self.upload_bytes = self
+                    .upload_bytes
+                    .saturating_add((w as u64) * (h as u64) * 4);
+                self.upload_images = self.upload_images.saturating_add(1);
                 self.images.slots.insert(k, (at.0, at.1, w, h));
             } else {
                 // 升级后仍放不下的单张（不应发生：4096 ≥ 1024+2 边界）走独立纹理。
@@ -1368,6 +1410,10 @@ impl CanvasV2 {
             view_formats: &[],
         });
         upload_entry(&self.ctx.queue, &texture, (0, 0), (width, height), 4, rgba);
+        self.upload_bytes = self
+            .upload_bytes
+            .saturating_add((width as u64) * (height as u64) * 4);
+        self.upload_images = self.upload_images.saturating_add(1);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("kanesumi-c2-own-image-bg"),
@@ -1473,6 +1519,12 @@ impl CanvasV2 {
         if damage.is_some_and(|d| d.size.width <= 0.0 || d.size.height <= 0.0) {
             return;
         }
+        // dk3-perf：本帧分段与上传量从零起算。
+        self.upload_bytes = 0;
+        self.upload_images = 0;
+        self.upload_glyphs = 0;
+        self.last_phases = FramePhases::default();
+        let t_encode = std::time::Instant::now();
         self.ensure_target();
 
         let forced_full = canvas_full_forced();
@@ -1547,10 +1599,14 @@ impl CanvasV2 {
             ]),
         );
 
+        // 编码（场景 → 实例，含图集上传）到此结束；后面是取缓冲 / 提交 / 呈现。
+        self.last_phases.encode_ms = t_encode.elapsed().as_secs_f32() * 1000.0;
         if let Some(surface) = &self.surface {
             let acquire_at = std::time::Instant::now();
             let acquired = surface.get_current_texture();
-            self.last_acquire_ms = Some(acquire_at.elapsed().as_secs_f32() * 1000.0);
+            let acquire_ms = acquire_at.elapsed().as_secs_f32() * 1000.0;
+            self.last_acquire_ms = Some(acquire_ms);
+            self.last_phases.acquire_ms = acquire_ms;
             let surface_texture = match acquired {
                 Ok(t) => t,
                 Err(e) => {
@@ -1563,6 +1619,14 @@ impl CanvasV2 {
             self.last_acquire_ms = None;
             self.draw_and_present(is_incremental, phys_d, None);
         }
+        self.last_phases.upload_bytes = self.upload_bytes;
+        self.last_phases.upload_images = self.upload_images;
+        self.last_phases.upload_glyphs = self.upload_glyphs;
+    }
+
+    /// dk3-perf：取走最近一帧的分段耗时与上传量（取走即清零）。
+    pub fn take_frame_phases(&mut self) -> FramePhases {
+        std::mem::take(&mut self.last_phases)
     }
 
     /// 绘制 target（全幅清或增量重画）并可选呈现到交换链（copy 或 blit）。
@@ -1573,6 +1637,7 @@ impl CanvasV2 {
         surface_texture: Option<wgpu::SurfaceTexture>,
     ) {
         let (pw, ph) = (self.config.width, self.config.height);
+        let t_submit = std::time::Instant::now();
         let mut draws = 0u32;
         let mut encoder = self
             .ctx
@@ -1722,8 +1787,11 @@ impl CanvasV2 {
         if let Some(t) = self.gpu_timer.as_mut() {
             t.end(&self.ctx.device, true);
         }
+        self.last_phases.submit_ms = t_submit.elapsed().as_secs_f32() * 1000.0;
         if let Some(surface_texture) = surface_texture {
+            let t_present = std::time::Instant::now();
             surface_texture.present();
+            self.last_phases.present_ms = t_present.elapsed().as_secs_f32() * 1000.0;
         }
         self.last_draws = draws;
         self.pending_own.clear();

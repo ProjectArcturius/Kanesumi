@@ -78,12 +78,74 @@ impl Ring {
     }
 }
 
+/// 单帧分段耗时（毫秒）与上传量。
+///
+/// 为什么要有它（dk3-perf）：真机 Dock 主表面 `raster` 单帧尖峰 130 ms，而 `raster` 只是
+/// 一个总和，看不出是画得慢、等缓冲，还是别的表面的首帧把同一条 GPU 队列堵住。这里把一帧
+/// 拆成场景 / 构造 / 提交 / 取缓冲 / 呈现，并单独记上传量，尖峰才能归到具体那一段。
+///
+/// `scene_ms` = 元素树 `frame()`（量测 + 排布 + 绘制 + 拼接）的整段。它**没有**再拆
+/// layout / paint：两者在 `kanesumi-element::Tree::frame` 内部相邻，拆开需要元素树埋点，
+/// 超出本件允许改动的路径（只动 kanesumi-harness）。`scene_cmds` 记本帧场景命令数，
+/// 用来区分「场景很小但还是慢」与「场景巨大」。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct FrameTiming {
+    /// 本帧之前的 App update（定时器 + App::tick + 各浮层 tick），毫秒。
+    pub tick_ms: f32,
+    /// 场景录制（元素树 frame：量测 / 排布 / 绘制 / 拼接），毫秒。
+    pub scene_ms: f32,
+    /// GPU：Scene → 顶点（build_frame）。CPU：CpuRenderer 光栅化。
+    pub encode_ms: f32,
+    /// GPU：字形 / 图像上传 + 命令编码 + queue.submit。CPU：写 SHM / dmabuf 缓冲。
+    pub submit_ms: f32,
+    /// GPU：swapchain `present()`（阻塞时计在这里）。CPU：0（提交即返回）。
+    pub present_ms: f32,
+    /// GPU：`get_current_texture` 等合成器放缓冲的墙钟。CPU：0。
+    pub acquire_ms: f32,
+    /// 本帧新上传的图像 + 字形纹理字节数。
+    pub upload_bytes: u64,
+    /// 本帧新上传的图标 / 图像张数。
+    pub upload_images: u32,
+    /// 本帧新上传的字形张数。
+    pub upload_glyphs: u32,
+    /// 本帧场景命令数。
+    pub scene_cmds: u32,
+    /// 本帧是否新建了表面（弹层 / 浮层 / 渲染器）。
+    pub new_surface: bool,
+}
+
+impl FrameTiming {
+    /// 一帧总耗时（毫秒）：各段相加，含等缓冲。
+    pub fn total_ms(&self) -> f32 {
+        self.tick_ms
+            + self.scene_ms
+            + self.encode_ms
+            + self.acquire_ms
+            + self.submit_ms
+            + self.present_ms
+    }
+}
+
 /// 单表面三段耗时 + GPU 耗时 + 帧数（一窗）。
 #[derive(Default, Clone, Copy)]
 pub struct SurfacePerf {
     pub render: Ring,
     pub raster: Ring,
     pub commit: Ring,
+    /// dk3-perf：分段耗时（与 `render` / `raster` / `commit` 并存的细粒度视图）。
+    pub tick: Ring,
+    pub scene: Ring,
+    pub encode: Ring,
+    pub submit: Ring,
+    pub present: Ring,
+    /// 整帧总耗时（`FrameTiming::total_ms`）。
+    pub frame: Ring,
+    /// 本帧场景命令数。
+    pub cmds: Ring,
+    /// 窗口内新上传的字节总数与图像 / 字形张数。
+    pub upload_bytes: u64,
+    pub upload_images: u64,
+    pub upload_glyphs: u64,
     /// GPU 时间戳实测（毫秒；仅 WGPU 路径且设备支持时间戳查询时有样本）。
     /// 空环 = 不支持 / 尚未回读到 → 日志写 `gpu=n/a`。
     pub gpu: Ring,
@@ -107,6 +169,16 @@ impl SurfacePerf {
             render: Ring::new(),
             raster: Ring::new(),
             commit: Ring::new(),
+            tick: Ring::new(),
+            scene: Ring::new(),
+            encode: Ring::new(),
+            submit: Ring::new(),
+            present: Ring::new(),
+            frame: Ring::new(),
+            cmds: Ring::new(),
+            upload_bytes: 0,
+            upload_images: 0,
+            upload_glyphs: 0,
             gpu: Ring::new(),
             acquire: Ring::new(),
             draws: Ring::new(),
@@ -122,6 +194,23 @@ impl SurfacePerf {
         self.raster.record(raster_ms);
         self.commit.record(commit_ms);
         self.frames += 1;
+    }
+
+    /// 记一帧的分段耗时与上传量（dk3-perf）。
+    ///
+    /// 与 `record` 并存：`render` / `raster` / `commit` 是既有字段（旧解析脚本依赖），
+    /// 分段是新增的细粒度视图。上传量只累计总量（字节数没有分位数意义）。
+    pub fn record_phases(&mut self, t: &FrameTiming) {
+        self.tick.record(t.tick_ms);
+        self.scene.record(t.scene_ms);
+        self.encode.record(t.encode_ms);
+        self.submit.record(t.submit_ms);
+        self.present.record(t.present_ms);
+        self.frame.record(t.total_ms());
+        self.cmds.record(t.scene_cmds as f32);
+        self.upload_bytes = self.upload_bytes.saturating_add(t.upload_bytes);
+        self.upload_images = self.upload_images.saturating_add(t.upload_images as u64);
+        self.upload_glyphs = self.upload_glyphs.saturating_add(t.upload_glyphs as u64);
     }
 
     /// 记一个已回读到的 GPU 帧耗时（异步、滞后数帧，故与 `record` 分开调用）。
@@ -185,13 +274,75 @@ pub fn format_line(proc: &str, role: &str, surface: &str, p: &SurfacePerf) -> St
     let insts = if p.insts.is_empty() { "n/a".to_string() } else { seg(&p.insts) };
     // acquire 放行尾：既有解析脚本（tools/perf/gpu_t1_ab.py）按字段名取值，不受影响。
     let acquire = if p.acquire.is_empty() { "n/a".to_string() } else { seg(&p.acquire) };
+    // dk3-perf 分段：全部追加在 acquire 之后，老字段的位置与含义不变。
+    let phase = |r: &Ring| if r.is_empty() { "n/a".to_string() } else { seg(r) };
+    let cmds = phase(&p.cmds);
+    let up = format!("{}/{}", p.upload_bytes, p.upload_images);
+    // p99 单列：性能门按 p99 判（p95 掩盖尾部，max 又太受单帧噪声影响）。
+    let p99 = |r: &Ring| if r.is_empty() { 0.0 } else { r.percentile(0.99) };
     format!(
-        "{proc} {role} t={secs} surface={surface} frames={} render={} raster={} commit={} gpu={gpu} draws={draws} inc={inc} dmg_pct={dmg_pct} insts={insts} acquire={acquire}\n",
+        "{proc} {role} t={secs} surface={surface} frames={} render={} raster={} commit={} gpu={gpu} draws={draws} inc={inc} dmg_pct={dmg_pct} insts={insts} acquire={acquire} tick={} scene={} encode={} submit={} present={} frame={} cmds={cmds} up={up} up_glyphs={} raster_p99={:.2} frame_p99={:.2}\n",
         p.frames,
         seg(&p.render),
         seg(&p.raster),
         seg(&p.commit),
+        phase(&p.tick),
+        phase(&p.scene),
+        phase(&p.encode),
+        phase(&p.submit),
+        phase(&p.present),
+        phase(&p.frame),
+        p.upload_glyphs,
+        p99(&p.raster),
+        p99(&p.frame),
     )
+}
+
+/// 尖峰阈值（毫秒）：单帧总耗时严格大于它就写一行到尖峰日志。
+pub const SPIKE_MS: f32 = 8.0;
+/// 尖峰日志名（`$HOME/.local/state/ether/`）。
+pub const SPIKE_LOG: &str = "ether-harness-spike.log";
+
+/// 一帧尖峰日志行：表面名、各段毫秒、上传字节、场景命令数、是否新建表面。
+///
+/// 真机排障要求「零交互、一次成型」（参 AGENTS.md）：这些行直接落持久路径，
+/// 用户部署后跑一段即可把尖峰归到具体段，不必再抓一次。
+pub fn spike_line(proc: &str, role: &str, surface: &str, t: &FrameTiming) -> String {
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!(
+        "t={ms} proc={proc} role={role} surface={surface} total_ms={:.2} tick={:.2} scene={:.2} encode={:.2} acquire={:.2} submit={:.2} present={:.2} cmds={} up_bytes={} up_images={} up_glyphs={} new_surface={}\n",
+        t.total_ms(),
+        t.tick_ms,
+        t.scene_ms,
+        t.encode_ms,
+        t.acquire_ms,
+        t.submit_ms,
+        t.present_ms,
+        t.scene_cmds,
+        t.upload_bytes,
+        t.upload_images,
+        t.upload_glyphs,
+        t.new_surface as u8,
+    )
+}
+
+/// 是否算尖峰（严格大于 [`SPIKE_MS`]）。
+pub fn is_spike(t: &FrameTiming) -> bool {
+    t.total_ms() > SPIKE_MS
+}
+
+/// 超过 [`SPIKE_MS`] 才写尖峰日志；返回是否写了（单测直接断言）。
+pub fn maybe_spike(proc: &str, role: &str, surface: &str, t: &FrameTiming) -> bool {
+    if !is_spike(t) {
+        return false;
+    }
+    if let Some(path) = state_log_path(SPIKE_LOG) {
+        write_log(&path, &spike_line(proc, role, surface, t));
+    }
+    true
 }
 
 /// 进程启动自证行（每进程一次性写在 perf 日志首行）：进程名 + 实际 MSAA 采样数 +
@@ -785,13 +936,17 @@ mod tests {
         assert!(!line.contains("gpu=n/a"));
     }
 
-    /// 取帧阻塞时长单列在行尾：无样本 n/a，有样本 p50/p95/max。
+    /// 取帧阻塞时长单列在既有字段末尾：无样本 n/a，有样本 p50/p95/max。
+    ///
+    /// dk3-perf 在其后追加了分段字段（`tick=` 起），故这里断言「acquire 是最后一个既有字段」，
+    /// 不再断言整行以它结尾 —— 既有解析脚本按 `acquire=` 取值，位置不变即可。
     #[test]
     fn format_line_acquire_field() {
         let mut p = SurfacePerf::new();
         p.record(1.0, 2.0, 3.0);
         let line = format_line("ether-settings", "Browser", "main", &p);
-        assert!(line.ends_with("acquire=n/a\n"), "{line}");
+        assert!(line.contains("acquire=n/a tick=n/a "), "{line}");
+        assert!(!line.contains("acquire=n/a\n"), "分段字段应跟在 acquire 之后：{line}");
         for v in [16.0, 17.0, 33.0] {
             p.record_acquire(v);
         }
@@ -966,5 +1121,97 @@ mod tests {
         p.record_present("Settings:main", t0 + p60 * 2, Some(t0 + p60 * 2));
         let line = p.finish("Settings:main", t0 + p60 * 2).unwrap();
         assert!(line.contains("phase_int=1.00"), "{line}");
+    }
+
+    // ── dk3-perf：分段计时与尖峰日志 ──────────────────────────────────────
+
+    fn timing_sample() -> FrameTiming {
+        FrameTiming {
+            tick_ms: 0.5,
+            scene_ms: 2.0,
+            encode_ms: 1.0,
+            submit_ms: 3.0,
+            present_ms: 0.25,
+            acquire_ms: 0.5,
+            upload_bytes: 4096,
+            upload_images: 2,
+            upload_glyphs: 7,
+            scene_cmds: 57,
+            new_surface: true,
+        }
+    }
+
+    #[test]
+    fn frame_timing_total_sums_all_phases() {
+        let t = timing_sample();
+        assert!((t.total_ms() - 7.25).abs() < 1e-5, "tick+scene+encode+acquire+submit+present");
+    }
+
+    #[test]
+    fn spike_threshold_is_strictly_greater_than_8ms() {
+        let mut t = FrameTiming { scene_ms: SPIKE_MS, ..Default::default() };
+        assert!(!is_spike(&t), "恰好 8 ms 不算尖峰");
+        t.scene_ms = SPIKE_MS + 0.01;
+        assert!(is_spike(&t));
+    }
+
+    #[test]
+    fn spike_line_carries_surface_phases_upload_and_cmds() {
+        let line = spike_line("ether-launcher", "Launcher", "main", &timing_sample());
+        for key in [
+            "proc=ether-launcher",
+            "role=Launcher",
+            "surface=main",
+            "total_ms=7.25",
+            "tick=0.50",
+            "scene=2.00",
+            "encode=1.00",
+            "acquire=0.50",
+            "submit=3.00",
+            "present=0.25",
+            "cmds=57",
+            "up_bytes=4096",
+            "up_images=2",
+            "up_glyphs=7",
+            "new_surface=1",
+        ] {
+            assert!(line.contains(key), "缺 {key}: {line}");
+        }
+        assert!(line.ends_with('\n'));
+    }
+
+    #[test]
+    fn record_phases_accumulates_uploads_and_rings() {
+        let mut p = SurfacePerf::new();
+        for _ in 0..3 {
+            p.record_phases(&timing_sample());
+        }
+        assert_eq!(p.upload_bytes, 3 * 4096);
+        assert_eq!(p.upload_images, 6);
+        assert_eq!(p.upload_glyphs, 21);
+        assert_eq!(p.cmds.percentile(0.5), 57.0);
+        assert!((p.frame.max() - 7.25).abs() < 1e-4, "整帧总耗时进 frame 环");
+        assert!((p.tick.max() - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn format_line_appends_phase_fields_without_moving_legacy_ones() {
+        let mut p = SurfacePerf::new();
+        p.record(2.0, 3.0, 0.5);
+        p.record_phases(&timing_sample());
+        let line = format_line("ether-launcher", "Launcher", "main", &p);
+        // 老字段顺序与名字不变（既有解析脚本依赖）。
+        let legacy = [" frames=", " render=", " raster=", " commit=", " gpu=", " draws=", " inc=", " dmg_pct=", " insts=", " acquire="];
+        let mut at = 0;
+        for key in legacy {
+            let found = line[at..].find(key).map(|i| i + at).unwrap_or_else(|| panic!("缺 {key}: {line}"));
+            assert!(found >= at);
+            at = found;
+        }
+        for key in [" tick=", " scene=", " encode=", " submit=", " present=", " frame=", " cmds=", " up=", " up_glyphs="] {
+            assert!(line.contains(key), "缺 {key}: {line}");
+        }
+        assert!(line.contains("up=4096/2"), "{line}");
+        assert!(line.contains("up_glyphs=7"), "{line}");
     }
 }

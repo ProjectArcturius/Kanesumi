@@ -203,6 +203,10 @@ pub struct TreeHost<A: TreeApp> {
     layer_ids: std::collections::HashMap<(usize, WidgetId), crate::layers::LayerId>,
     layer_rev: std::collections::HashMap<crate::layers::LayerId, (usize, WidgetId)>,
     next_layer: u32,
+    /// dk3-perf：最近一次 `update` 里主树 tick 的墙钟（毫秒）。
+    last_tick_ms: f32,
+    /// dk3-perf：最近一次 `update` 里各浮层 tick 的墙钟（毫秒，与 `floating` 同序）。
+    last_floating_tick_ms: Vec<f32>,
 }
 
 /// 树图层的外壳 id 从高位段分配，避免与 App 自建图层（`TreeApp::take_layer_commands`）冲突。
@@ -234,6 +238,8 @@ impl<A: TreeApp> TreeHost<A> {
             layer_ids: std::collections::HashMap::new(),
             layer_rev: std::collections::HashMap::new(),
             next_layer: TREE_LAYER_BASE,
+            last_tick_ms: 0.0,
+            last_floating_tick_ms: Vec::new(),
         }
     }
 
@@ -521,14 +527,31 @@ impl<A: TreeApp> App for TreeHost<A> {
         self.tree.tick_timers(timers);
         // 每步积分类逻辑（App tick / 控件 hover 过渡）仍用限幅 dt 防跳变。
         let logic = dt.min(0.05);
+        // dk3-perf：tick 是同一主线程上的工作，Dock 的下一帧会被它推迟；分表面记下来。
+        let t_main = std::time::Instant::now();
         self.app.tick(&mut self.tree, logic);
+        self.last_tick_ms = t_main.elapsed().as_secs_f32() * 1000.0;
+        self.last_floating_tick_ms.clear();
         for (i, f) in self.floating.iter_mut().enumerate() {
             let ft = std::mem::take(&mut f.timer_dt);
             f.tree.tick_timers(ft);
+            let t = std::time::Instant::now();
             self.app.tick_floating(i, &mut f.tree, logic);
+            let ms = t.elapsed().as_secs_f32() * 1000.0;
+            self.last_floating_tick_ms.push(ms);
         }
         self.drain_actions();
         crate::timeline::note_once("app_update_done");
+    }
+
+    /// dk3-perf：最近一次 update 的主树 tick 墙钟（毫秒）。
+    fn last_tick_ms(&self) -> f32 {
+        self.last_tick_ms
+    }
+
+    /// dk3-perf：最近一次 update 某浮层的 tick 墙钟（毫秒）。
+    fn last_floating_tick_ms(&self, index: usize) -> f32 {
+        self.last_floating_tick_ms.get(index).copied().unwrap_or(0.0)
     }
 
     fn needs_redraw(&self) -> bool {

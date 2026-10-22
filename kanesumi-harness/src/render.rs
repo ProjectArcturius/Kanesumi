@@ -325,6 +325,13 @@ pub struct Renderer {
     /// 最近一次 `get_current_texture` 的阻塞时长（毫秒）。真机上取帧会等合成器释放缓冲 / vblank，
     /// 这段墙钟不是绘制成本——单独记，免得与光栅混为一谈。参 Ether docs/CANVAS_PLAN.md §Ⅰ。
     last_acquire_ms: Option<f32>,
+    /// dk3-perf：最近一帧的分段耗时与上传量（`encode` / `submit` / `present` / 上传）。
+    /// `scene_ms` / `tick_ms` 由外壳填（本层看不到元素树与 App tick）。
+    last_timing: crate::perf::FrameTiming,
+    /// 本帧新上传的纹理字节 / 图像张数 / 字形张数（`draw_frame` 开始时清零）。
+    upload_bytes: u64,
+    upload_images: u32,
+    upload_glyphs: u32,
     /// 逻辑 → 物理缩放（整数，通常 1 或 2）。
     scale: f32,
     /// 逻辑尺寸。
@@ -807,6 +814,10 @@ impl Renderer {
             msaa_samples: msaa,
             gpu_timer,
             last_acquire_ms: None,
+            last_timing: crate::perf::FrameTiming::default(),
+            upload_bytes: 0,
+            upload_images: 0,
+            upload_glyphs: 0,
             scale,
             width,
             height,
@@ -914,10 +925,15 @@ impl Renderer {
         if damage.is_some_and(|d| d.size.width <= 0.0 || d.size.height <= 0.0) {
             return;
         }
+        // dk3-perf：分段计时。`build_frame` = 场景 → 顶点（encode），
+        // `draw_frame` = 上传 + 命令编码 + submit，`present` 单列（阻塞时能看出来）。
+        let t_encode = std::time::Instant::now();
         let frame = self.build_frame(engine, scene);
+        let encode_ms = t_encode.elapsed().as_secs_f32() * 1000.0;
         let acquire_at = std::time::Instant::now();
         let acquired = self.surface.get_current_texture();
-        self.last_acquire_ms = Some(acquire_at.elapsed().as_secs_f32() * 1000.0);
+        let acquire_ms = acquire_at.elapsed().as_secs_f32() * 1000.0;
+        self.last_acquire_ms = Some(acquire_ms);
         let surface_texture = match acquired {
             Ok(t) => t,
             Err(e) => {
@@ -928,8 +944,30 @@ impl Renderer {
         let view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let t_submit = std::time::Instant::now();
         self.draw_frame(&frame, &view, damage);
+        let submit_ms = t_submit.elapsed().as_secs_f32() * 1000.0;
+        let t_present = std::time::Instant::now();
         surface_texture.present();
+        let present_ms = t_present.elapsed().as_secs_f32() * 1000.0;
+        self.last_timing = crate::perf::FrameTiming {
+            encode_ms,
+            submit_ms,
+            present_ms,
+            acquire_ms,
+            upload_bytes: self.upload_bytes,
+            upload_images: self.upload_images,
+            upload_glyphs: self.upload_glyphs,
+            scene_cmds: scene.commands.len() as u32,
+            ..Default::default()
+        };
+    }
+
+    /// 取走最近一帧的分段耗时（`scene_ms` / `tick_ms` / `new_surface` 由外壳补）。
+    ///
+    /// 取走即清零，避免无帧的渲染路径把上一帧的数值重复记一次。
+    pub fn take_frame_timing(&mut self) -> crate::perf::FrameTiming {
+        std::mem::take(&mut self.last_timing)
     }
 
     /// 构建一帧顶点与绘制步（Scene → 顶点）。present 路径专用。
@@ -1168,6 +1206,10 @@ impl Renderer {
         resolve: &wgpu::TextureView,
         damage: Option<Rect>,
     ) {
+        // dk3-perf：本帧上传量从零起算（只在真正新建纹理时累加）。
+        self.upload_bytes = 0;
+        self.upload_images = 0;
+        self.upload_glyphs = 0;
         // 先建字形纹理（借用分离）
         for key in &frame.pending_glyphs {
             self.ensure_glyph(*key);
@@ -1459,6 +1501,9 @@ impl Renderer {
                 depth_or_array_layers: 1,
             },
         );
+        // dk3-perf：字形纹理 R8，字节 = w × h。
+        self.upload_bytes = self.upload_bytes.saturating_add((w as u64) * (h as u64));
+        self.upload_glyphs = self.upload_glyphs.saturating_add(1);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("kanesumi-glyph-bg"),
@@ -1528,6 +1573,11 @@ impl Renderer {
                 depth_or_array_layers: 1,
             },
         );
+        // dk3-perf：图标 / 图像纹理 RGBA8，字节 = w × h × 4。
+        self.upload_bytes = self
+            .upload_bytes
+            .saturating_add((width as u64) * (height as u64) * 4);
+        self.upload_images = self.upload_images.saturating_add(1);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("kanesumi-image-bg"),

@@ -163,6 +163,26 @@ impl SurfaceRenderer {
         }
     }
 
+    /// dk3-perf：取走最近一帧的分段耗时与上传量（V1 / V2 同口径）。
+    pub fn take_frame_timing(&mut self) -> crate::perf::FrameTiming {
+        match self {
+            SurfaceRenderer::V1(r) => r.take_frame_timing(),
+            SurfaceRenderer::V2(r) => {
+                let p = r.take_frame_phases();
+                crate::perf::FrameTiming {
+                    encode_ms: p.encode_ms,
+                    acquire_ms: p.acquire_ms,
+                    submit_ms: p.submit_ms,
+                    present_ms: p.present_ms,
+                    upload_bytes: p.upload_bytes,
+                    upload_images: p.upload_images,
+                    upload_glyphs: p.upload_glyphs,
+                    ..Default::default()
+                }
+            }
+        }
+    }
+
     pub fn gpu_timing_supported(&self) -> bool {
         match self {
             SurfaceRenderer::V1(r) => r.gpu_timing_supported(),
@@ -869,6 +889,13 @@ pub(crate) struct Shell {
     perf_proc: String,
     /// 进程启动自证行（msaa / gpu 计时）是否已写 —— perf 日志首行只写一次。
     perf_header_done: bool,
+    /// dk3-perf：自上次出帧以来是否新建了表面 / 渲染器（弹层 / 浮层）。
+    /// 尖峰日志里的 `new_surface=1` 用来区分「稳态慢」与「建表面那一下」。
+    surface_created: bool,
+    /// dk3-perf：合成图层子表面（Dock / Launcher 背板等真实内容所在）的分段耗时，
+    /// 按 `LayerId` 归集。这些内容由 CpuRenderer 光栅后提交，不计入父表面的 perf 行，
+    /// 不单独统计就会把「Dock 内容重画」误归到父表面上。
+    perf_layers: std::collections::HashMap<u32, crate::perf::SurfacePerf>,
 
     // ── 系统主题（Chorus）─────
     /// 当前生效的系统主题。外壳拥有并在启动 / 配置变更时推给 App（`App::set_theme`）。
@@ -1554,6 +1581,8 @@ impl Shell {
             perf_flush_at: Instant::now(),
             perf_proc,
             perf_header_done: false,
+            surface_created: false,
+            perf_layers: std::collections::HashMap::new(),
             system_theme: MetroTheme::ether_dark(),
             theme_fingerprint: None,
             next_theme_check: Instant::now(),
@@ -1672,6 +1701,7 @@ impl Shell {
                         r.render(&self.engine, &Scene::default());
                         log::info!("浮层 wgpu 渲染器已创建（{}）", r.diagnostics());
                         self.floating[idx].renderer = Some(r);
+                        self.surface_created = true;
                         return;
                     }
                     Err(e) => {
@@ -1685,6 +1715,7 @@ impl Shell {
         let cpu = CpuRenderer::new(fw, fh, fscale);
         log::info!("浮层 CPU 光栅化器已创建（{:.0}x{:.0}）", fw, fh);
         self.floating[idx].cpu = Some(cpu);
+        self.surface_created = true;
     }
 
     /// 渲染浮层帧：ensure 渲染器（透明底）→ App::render_floating → 光栅化 → 提交。
@@ -1773,6 +1804,9 @@ impl Shell {
         let mut draws: Option<u32> = None;
         let mut acquire_ms: Option<f32> = None;
         let mut c15_stats: Option<(bool, f32, u32)> = None;
+        // dk3-perf：与主表面同口径的分段记录（GPU 由渲染器给，CPU 在外壳侧对应）。
+        let mut gpu_timing: Option<crate::perf::FrameTiming> = None;
+        let mut cpu_upload_bytes = 0u64;
         if let Some(cpu) = f.cpu.as_mut() {
             let (pw, ph) = cpu.physical_size();
             let t = Instant::now();
@@ -1781,6 +1815,15 @@ impl Shell {
             if damage.is_some_and(|d| d.size.width <= 0.0 || d.size.height <= 0.0) {
                 return;
             }
+            cpu_upload_bytes = damage.map_or_else(
+                || (pw as u64) * (ph as u64) * 4,
+                |d| {
+                    let sc = f.scale.max(1.0);
+                    (d.size.width * sc).round().max(0.0) as u64
+                        * (d.size.height * sc).round().max(0.0) as u64
+                        * 4
+                },
+            );
             let rgba = cpu.render(&self.engine, &scene, damage);
             raster_ms = t.elapsed().as_secs_f32() * 1000.0;
             // 浮层同样走 dmabuf 直通（默认）—— 控制面板 / Launcher / 菜单等浮层一并受益。
@@ -1836,6 +1879,7 @@ impl Shell {
             let t = Instant::now();
             r.render_with_damage(&self.engine, &scene, damage);
             raster_ms = t.elapsed().as_secs_f32() * 1000.0;
+            gpu_timing = Some(r.take_frame_timing());
             if idx < self.floating_throttle.len() {
                 self.floating_throttle[idx].on_frame_rendered();
             }
@@ -1861,6 +1905,27 @@ impl Shell {
                 p.record_c15(inc, dmg_pct, insts);
             }
         }
+        // dk3-perf：分段耗时 + 尖峰日志（浮层同样逐帧记，>8 ms 一行）。
+        let cpu_path = gpu_timing.is_none();
+        let mut timing = gpu_timing.unwrap_or_default();
+        timing.scene_ms = render_ms;
+        timing.tick_ms = self.app.last_floating_tick_ms(idx);
+        timing.scene_cmds = scene.commands.len() as u32;
+        if cpu_path {
+            timing.encode_ms = raster_ms;
+            timing.submit_ms = commit_ms;
+            timing.upload_bytes = cpu_upload_bytes;
+        }
+        timing.new_surface = std::mem::take(&mut self.surface_created);
+        if let Some(p) = self.perf_floating.get_mut(idx) {
+            p.record_phases(&timing);
+        }
+        crate::perf::maybe_spike(
+            &self.perf_proc,
+            &format!("{:?}", self.role),
+            &format!("floating{idx}"),
+            &timing,
+        );
         // 掉帧计数：浮层本帧已提交（零面积早退分支不计）；按表面分别记避免污染间隔。参 perf.rs。
         crate::perf::pacing_present_named(
             &self.pacing_floating_name(idx),
@@ -2483,11 +2548,25 @@ impl Shell {
         let mut gpu_samples: Vec<f32> = Vec::new();
         let mut acquire_ms: Option<f32> = None;
         let mut draws: Option<u32> = None;
+        // dk3-perf：GPU 路径的分段由渲染器记（encode / submit / present / 上传），
+        // CPU 路径在外壳侧按「光栅 = encode、写缓冲 = submit」对应。
+        let mut gpu_timing: Option<crate::perf::FrameTiming> = None;
+        let mut cpu_upload_bytes = 0u64;
         if let Some(cpu) = self.cpu.as_mut() {
             let (pw, ph) = cpu.physical_size();
             let t = Instant::now();
             let rgba = cpu.render(&self.engine, &self.scene_buf, damage);
             raster_ms = t.elapsed().as_secs_f32() * 1000.0;
+            // 上传量 = 本帧写进 SHM / dmabuf 的像素字节（损伤区；None = 整幅）。
+            cpu_upload_bytes = damage.map_or_else(
+                || (pw as u64) * (ph as u64) * 4,
+                |d| {
+                    let s = self.scale.max(1.0);
+                    (d.size.width * s).round().max(0.0) as u64
+                        * (d.size.height * s).round().max(0.0) as u64
+                        * 4
+                },
+            );
             // dmabuf 直通优先（零 CPU 上传），不可用自动回退 SHM。参 LINUX_DMABUF_PLAN §1。
             let t = Instant::now();
             self.main_out.commit(
@@ -2507,6 +2586,7 @@ impl Shell {
             let t = Instant::now();
             r.render_with_damage(&self.engine, &self.scene_buf, damage);
             raster_ms = t.elapsed().as_secs_f32() * 1000.0;
+            gpu_timing = Some(r.take_frame_timing());
             self.main_throttle.on_frame_rendered();
             gpu_samples = r.drain_gpu_samples();
             acquire_ms = r.take_acquire_ms();
@@ -2538,6 +2618,25 @@ impl Shell {
         for ms in gpu_samples {
             self.perf_main.record_gpu(ms);
         }
+        // dk3-perf：分段耗时 + 尖峰日志（>8 ms 一帧一行，含新建表面标记）。
+        let cpu_path = gpu_timing.is_none();
+        let mut timing = gpu_timing.unwrap_or_default();
+        timing.scene_ms = render_ms;
+        timing.tick_ms = self.app.last_tick_ms();
+        timing.scene_cmds = self.scene_buf.commands.len() as u32;
+        if cpu_path {
+            timing.encode_ms = raster_ms;
+            timing.submit_ms = commit_ms;
+            timing.upload_bytes = cpu_upload_bytes;
+        }
+        timing.new_surface = std::mem::take(&mut self.surface_created);
+        self.perf_main.record_phases(&timing);
+        crate::perf::maybe_spike(
+            &self.perf_proc,
+            &format!("{:?}", self.role),
+            "main",
+            &timing,
+        );
         // 掉帧计数：主表面本帧已提交（零面积早退分支不计）。参 perf.rs。
         crate::perf::pacing_present_named(
             &self.pacing_main_name(),
@@ -2600,6 +2699,18 @@ impl Shell {
                     &self.perf_floating[i],
                 ));
                 self.perf_floating[i].reset();
+            }
+        }
+        // dk3-perf：合成图层子表面（Dock 图标 / 亚克力、Launcher 背板…）。
+        let mut layer_ids: Vec<u32> = self.perf_layers.keys().copied().collect();
+        layer_ids.sort_unstable();
+        for id in layer_ids {
+            if let Some(p) = self.perf_layers.get_mut(&id)
+                && !p.is_empty()
+            {
+                let name = format!("layer{id}");
+                out.push_str(&crate::perf::format_line(&proc, &role, &name, p));
+                p.reset();
             }
         }
         if !self.perf_im_popup.is_empty() {
@@ -4783,6 +4894,9 @@ impl Shell {
         let mut draws = None;
         let mut acquire_ms = None;
         let mut c15_stats = None;
+        // dk3-perf：候选窗同样逐帧记分段（打字时每键一帧，尖峰要能归段）。
+        let mut gpu_timing: Option<crate::perf::FrameTiming> = None;
+        let mut cpu_upload_bytes = 0u64;
 
         if let Some(im_popup) = self.im_popup.as_mut() {
             if let Some(cpu) = im_popup.cpu.as_mut() {
@@ -4790,6 +4904,7 @@ impl Shell {
                 let t = Instant::now();
                 let rgba = cpu.render(&self.engine, &scene, None);
                 raster_ms = t.elapsed().as_secs_f32() * 1000.0;
+                cpu_upload_bytes = (srw as u64) * (srh as u64) * 4;
                 // 候选窗同样走 dmabuf 直通（打字时每键一提交 → 收益最直接的表面）。
                 let t = Instant::now();
                 let surface = im_popup.surface.clone();
@@ -4809,6 +4924,7 @@ impl Shell {
                 let t = Instant::now();
                 r.render_with_damage(&self.engine, &scene, None);
                 raster_ms = t.elapsed().as_secs_f32() * 1000.0;
+                gpu_timing = Some(r.take_frame_timing());
                 gpu_samples = r.drain_gpu_samples();
                 draws = r.last_draws();
                 acquire_ms = r.take_acquire_ms();
@@ -4829,6 +4945,24 @@ impl Shell {
         if let Some((inc, dmg_pct, insts)) = c15_stats {
             self.perf_im_popup.record_c15(inc, dmg_pct, insts);
         }
+        // dk3-perf：分段耗时 + 尖峰日志。
+        let cpu_path = gpu_timing.is_none();
+        let mut timing = gpu_timing.unwrap_or_default();
+        timing.scene_ms = render_ms;
+        timing.scene_cmds = scene.commands.len() as u32;
+        if cpu_path {
+            timing.encode_ms = raster_ms;
+            timing.submit_ms = commit_ms;
+            timing.upload_bytes = cpu_upload_bytes;
+        }
+        timing.new_surface = std::mem::take(&mut self.surface_created);
+        self.perf_im_popup.record_phases(&timing);
+        crate::perf::maybe_spike(
+            &self.perf_proc,
+            &format!("{:?}", self.role),
+            "im_popup",
+            &timing,
+        );
         crate::perf::pacing_present_named(
             &format!("{:?}:im_popup", self.role),
             Instant::now(),

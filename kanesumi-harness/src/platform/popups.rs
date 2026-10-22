@@ -130,6 +130,8 @@ impl Shell {
         let Some(wm_base) = self.xdg_shell.as_ref() else {
             return;
         };
+        // dk3-perf：新建弹层表面要付 wgpu 表面 / 管线 / 首帧上传，尖峰日志用它归因。
+        self.surface_created = true;
         let w = req.rect.size.width.round().max(1.0) as i32;
         let h = req.rect.size.height.round().max(1.0) as i32;
         // 父表面：抓取弹层叠在最上层抓取弹层之上；否则挂主表面。
@@ -303,11 +305,15 @@ impl Shell {
             let mut draws = None;
             let mut acquire_ms = None;
             let mut c15_stats = None;
+            // dk3-perf：弹层表面同样逐帧记分段（与主表面 / 浮层同口径）。
+            let mut gpu_timing: Option<crate::perf::FrameTiming> = None;
+            let mut cpu_upload_bytes = 0u64;
             if let Some(cpu) = p.cpu.as_mut() {
                 let (pw, ph) = cpu.physical_size();
                 let t = Instant::now();
                 let rgba = cpu.render(engine, &scene, None);
                 raster_ms = t.elapsed().as_secs_f32() * 1000.0;
+                cpu_upload_bytes = (pw as u64) * (ph as u64) * 4;
                 // 子弹层同主表面 / 浮层走 dmabuf 直通（SHM 为回退）。
                 let t = Instant::now();
                 let surface = p.popup.wl_surface().clone();
@@ -328,6 +334,7 @@ impl Shell {
                 let t = Instant::now();
                 r.render_with_damage(engine, &scene, None);
                 raster_ms = t.elapsed().as_secs_f32() * 1000.0;
+                gpu_timing = Some(r.take_frame_timing());
                 gpu_samples = r.drain_gpu_samples();
                 draws = r.last_draws();
                 acquire_ms = r.take_acquire_ms();
@@ -346,6 +353,24 @@ impl Shell {
             if let Some((inc, dmg_pct, insts)) = c15_stats {
                 self.perf_popup.record_c15(inc, dmg_pct, insts);
             }
+            // dk3-perf：分段耗时 + 尖峰日志（弹层往往正是「建表面那一下」的尖峰来源）。
+            let cpu_path = gpu_timing.is_none();
+            let mut timing = gpu_timing.unwrap_or_default();
+            timing.scene_ms = render_ms;
+            timing.scene_cmds = scene.commands.len() as u32;
+            if cpu_path {
+                timing.encode_ms = raster_ms;
+                timing.submit_ms = commit_ms;
+                timing.upload_bytes = cpu_upload_bytes;
+            }
+            timing.new_surface = std::mem::take(&mut self.surface_created);
+            self.perf_popup.record_phases(&timing);
+            crate::perf::maybe_spike(
+                &self.perf_proc,
+                &format!("{:?}", self.role),
+                "popup",
+                &timing,
+            );
             crate::perf::pacing_present_named(
                 &format!("{:?}:popup", self.role),
                 Instant::now(),

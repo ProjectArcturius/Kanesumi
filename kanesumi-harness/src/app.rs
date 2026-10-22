@@ -279,6 +279,19 @@ pub trait App {
         None
     }
 
+    /// dk3-perf：最近一次 `update` 里主树 tick 的墙钟（毫秒）。
+    ///
+    /// 只用于分段计时：tick 与出帧在同一主线程，Dock 的下一帧会被它推迟，
+    /// 尖峰必须能把这段算进去。不实现 = 0（旧行为）。
+    fn last_tick_ms(&self) -> f32 {
+        0.0
+    }
+
+    /// dk3-perf：最近一次 `update` 里第 `index` 个浮层 tick 的墙钟（毫秒）。
+    fn last_floating_tick_ms(&self, _index: usize) -> f32 {
+        0.0
+    }
+
     /// 浮层表面列表（与主表面解耦的独立 layer-shell surface）。
     /// 外壳启动时为每个浮层创建 surface + 渲染器（透明底），每帧按 `render_floating`
     /// 产出 Scene。面板关闭时 App 应渲染空 Scene（透明不可见）。
