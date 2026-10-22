@@ -5,6 +5,7 @@
 // 的布局产物 —— 正是用户眼睛看到的那一帧（画在哪就点在哪）。
 
 use std::any::Any;
+use std::time::Instant;
 
 use kanesumi_anim::Animation;
 use kanesumi_canvas::decode::{DecodeKey, Job};
@@ -16,7 +17,10 @@ use crate::event::{Event, Key, Modifiers, PointerButton, ScrollInput};
 use crate::id::WidgetId;
 use crate::layer::{LayerAnimSpec, LayerOp, LayerState};
 use crate::ime::ImeContext;
-use crate::transitions::{ActiveTransition, GatedAnim, GatedStart, PendingStart};
+use crate::transitions::{
+    ActiveTransition, Edge, GatedAnim, GatedStart, PendingStart, Transition, TransitionParams,
+    VisualAnim, visual_at_ms,
+};
 use crate::props::{Align, LayoutProps};
 use crate::widget::{
     ArrangeCtx, ControlStates, EventCtx, MeasureCtx, PaintCtx, RealizeCtx, UpdateCtx, Widget,
@@ -44,6 +48,123 @@ pub enum PopupSide {
     Center,
 }
 
+/// 弹层表面动画策略。参 `docs/FEEL_PLAN.md` §Ⅰ-2 / §Ⅰ-4、`transitions.rs`。
+///
+/// 动画施加在**弹层自己的表面**上（分离模式下 = 一个 xdg_popup），位移 / 不透明度交给合成器的
+/// `ether_visual_v1` 按 vsync 推进：弹层内容一帧都不重画、不重新量测（参 ELEMENT_TREE「图层」）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PopupMotion {
+    /// 入场 `PopIn` / 退场 `PopOut`：时长 / 位移 / 曲线取 `TransitionParams::POP_IN` / `POP_OUT`
+    /// （UWP Flyout 一手源 300 ms / 150 ms，不得在此另立数值）。
+    #[default]
+    Default,
+    /// 不动画：打开即到终值、关闭立即销毁。工具提示（`passthrough`）缺省用它 ——
+    /// 提示是「跟随指针的即时反馈」，加动画只会拖后腿（参 INTERACTION_CANON §Ⅲ）。
+    None,
+}
+
+/// 弹层表面动画计划（外壳每帧对每个打开的弹层取一次）。
+///
+/// 分工：元素树决定「播什么」（方位 → `Edge`、时长 / 曲线、中断接续的起点），外壳负责
+/// 「怎么播」（把视觉量翻译成 `ether_visual_v1` 请求并发给合成器）。合成器不支持图层动画时
+/// 外壳直接到终值并回调 [`Tree::on_popup_motion_done`]。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PopupMotionPlan {
+    /// 入场动画：首帧内容提交后起跑**一次**（外壳自己记「已起跑」，重复读不会重播）。
+    /// 退场中为 `None`。
+    pub enter: Option<VisualAnim>,
+    /// 退场动画：`Some` = 该弹层正在退场，播完（或超时）后才真正移除节点。
+    pub exit: Option<VisualAnim>,
+    /// 退场已过毫秒（退场中才有意义；中断接续与诊断用）。
+    pub exit_ms: f64,
+}
+
+impl PopupMotionPlan {
+    /// 是否正在退场（外壳据此停投输入、起跑退场动画）。
+    pub fn closing(&self) -> bool {
+        self.exit.is_some()
+    }
+}
+
+/// 只当容器用的控件类型名：锚点是它们时「锚点角色」没有信息量（`弹层:Border` 帮不了排障），
+/// 改用面板自身类型名。参 `Tree::popup_motion_name`。
+const GENERIC_CONTAINERS: [&str; 6] = ["Border", "Stack", "Row", "Column", "Scroll", "Overlay"];
+
+/// 弹层动画 Done 丢失时的兜底余量（毫秒）：动画时长之外再多等这么久才强制收尾。
+///
+/// 存在的理由：合成器不支持 `ether_visual_v1`、或外壳漏回报 `Done` 时，弹层不能永久留在
+/// 树上（会挡住点击）、外壳也不能永远以为「动画在跑」。
+///
+/// 为什么是 1 s（而不是几十毫秒）：这里是**帧 dt 时钟**，而外壳的 dt 取「预测呈现时刻」之差，
+/// 无头后端实测可比墙钟快 2~3 倍（2026-10-22：150 ms 的退场在 dt 上已走完 450 ms，墙钟才
+/// 180 ms，合成器的 Done 还在路上 → 提前移除，退场动画被吞）。兜底只需「最终一定收尾」，
+/// 不在乎晚；真机 60 Hz 上 Done 总在动画结束那一帧到达，走不到这里。
+pub const POPUP_EXIT_GRACE_MS: f64 = 1000.0;
+
+
+/// 弹层转场的方位：`PopupSide` 是「面板在锚点的哪一侧」，入场方向相反（面板在下方 →
+/// 从上方滑下来 = `Edge::Top`）。点锚定（右键菜单）无方位可言，缺省自上向下。
+fn popup_edge(spec: &PopupSpec) -> Option<Edge> {
+    if spec.at.is_some() {
+        // 右键菜单：面板左上角落在指针点，从上方滑出（UWP 上下文菜单同款）。
+        return Some(Edge::Top);
+    }
+    match spec.side {
+        PopupSide::Bottom => Some(Edge::Top),
+        PopupSide::Top => Some(Edge::Bottom),
+        PopupSide::Left => Some(Edge::Right),
+        PopupSide::Right => Some(Edge::Left),
+        // 居中弹层（对话框）没有方位可依据：只淡入淡出，不做方向性位移。
+        PopupSide::Center => None,
+    }
+}
+
+/// 弹层入场 / 退场的视觉量。`edge = None` → 纯淡入淡出（位移归零）。
+fn popup_visual(enter: bool, edge: Option<Edge>) -> VisualAnim {
+    let (t, p) = if enter {
+        (
+            Transition::PopIn {
+                edge: edge.unwrap_or(Edge::Top),
+            },
+            TransitionParams::POP_IN,
+        )
+    } else {
+        (
+            Transition::PopOut {
+                edge: edge.unwrap_or(Edge::Top),
+            },
+            TransitionParams::POP_OUT,
+        )
+    };
+    let mut v = t.visual(p, Point::ORIGIN);
+    if edge.is_none() {
+        v.from_x = 0.0;
+        v.from_y = 0.0;
+        v.to_x = 0.0;
+        v.to_y = 0.0;
+    }
+    v
+}
+
+/// 弹层表面动画的树内状态。
+#[derive(Debug, Clone, Copy)]
+struct PopupMotionState {
+    /// 入场动画（外壳起跑后不再用；退场开始时清掉）。
+    enter: Option<VisualAnim>,
+    /// 入场起跑时刻（**墙钟**：合成器按 vsync 推进，帧 dt 时钟可能快慢不一）。
+    enter_started: Instant,
+    /// 退场动画（`Some` = 正在退场）。
+    exit: Option<VisualAnim>,
+    /// 退场起跑时刻（同上；中断接续取「当前呈现值」也用它）。
+    exit_started: Instant,
+}
+
+impl PopupMotionState {
+    fn elapsed_ms(started: Instant) -> f64 {
+        started.elapsed().as_secs_f64() * 1000.0
+    }
+}
+
 /// 弹层规格。参 ELEMENT_TREE §Ⅴ.2。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PopupSpec {
@@ -69,6 +190,8 @@ pub struct PopupSpec {
     /// 输入穿透（工具提示）：框架不把它当作「顶层弹层」参与轻触关闭 / Esc / 焦点陷阱，
     /// 落在它上面的点击继续投给下层内容。参见 `Tree::top_popup`。
     pub passthrough: bool,
+    /// 表面动画策略（缺省 PopIn / PopOut；工具提示 / IME 类瞬时弹层用 `None`）。
+    pub motion: PopupMotion,
 }
 
 impl Default for PopupSpec {
@@ -83,6 +206,7 @@ impl Default for PopupSpec {
             light_dismiss: true,
             scrim: false,
             passthrough: false,
+            motion: PopupMotion::Default,
         }
     }
 }
@@ -202,6 +326,8 @@ pub struct Tree {
     press_target: Option<WidgetId>,
     context_target: Option<WidgetId>,
     popups: Vec<(WidgetId, PopupSpec)>,
+    /// 弹层表面动画状态（与 `popups` 同 key 的子集：只有开了动画的弹层在这里有一项）。
+    popup_motions: Vec<(WidgetId, PopupMotionState)>,
     actions: Vec<(WidgetId, Action)>,
     /// 待绘节点集合（去重）。`invalidate_paint` / 新建 / 排列改矩形时入队，
     /// `frame` 只处理这些节点，不再每帧递归整棵树找 `needs_paint`（参 ELEMENT_TREE）。
@@ -285,6 +411,7 @@ impl Tree {
             press_target: None,
             context_target: None,
             popups: Vec::new(),
+            popup_motions: Vec::new(),
             actions: Vec::new(),
             paint_queue: Vec::new(),
             anim: Vec::new(),
@@ -476,6 +603,7 @@ impl Tree {
             self.timers.retain(|(t, _)| t != cur);
             self.parked.retain(|p| p != cur);
             self.popups.retain(|(p, _)| p != cur);
+            self.popup_motions.retain(|(p, _)| p != cur);
             self.drop_transition_state(*cur);
             let slot = cur.slot();
             self.nodes[slot] = None;
@@ -840,6 +968,9 @@ impl Tree {
     /// 工具提示计时也在此推进（等待期不占帧，靠 `next_timer` 唤醒）。
     pub fn tick_timers(&mut self, dt: f64) {
         self.tick_tooltip(dt);
+        // 弹层动画计时：外壳传的是**真实经过时间**（定时器口径，可与帧时钟不同步），
+        // 正好是「这段动画该结束了吗」该用的钟。不产生绘制，也不需要逐帧出帧。
+        self.tick_popup_motions(dt);
         if self.timers.is_empty() {
             return;
         }
@@ -865,9 +996,32 @@ impl Tree {
             .into_iter()
             .flatten()
             .reduce(f64::min);
-        match (widget, tooltip) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
+        // 弹层动画的兜底截止时刻：到点要醒来收尾（空闲时外壳按它安排唤醒，不必逐帧出帧）。
+        let popup = self
+            .popup_motions
+            .iter()
+            .map(|(_, st)| {
+                let enter = st.enter.map(|e| {
+                    e.duration_ms as f64 + e.delay_ms as f64 + POPUP_EXIT_GRACE_MS
+                        - PopupMotionState::elapsed_ms(st.enter_started)
+                });
+                let exit = st.exit.map(|e| {
+                    e.duration_ms as f64 + e.delay_ms as f64 + POPUP_EXIT_GRACE_MS
+                        - PopupMotionState::elapsed_ms(st.exit_started)
+                });
+                match (enter, exit) {
+                    (Some(a), Some(b)) => a.min(b),
+                    (a, b) => a.or(b).unwrap_or(f64::INFINITY),
+                }
+            })
+            .reduce(f64::min)
+            .map(|ms| (ms.max(0.0)) / 1000.0);
+        match (widget, tooltip, popup) {
+            (a, b, Some(c)) => [a, b].into_iter().flatten().reduce(f64::min).map_or(Some(c), |m| Some(m.min(c))),
+            (a, b, None) => match (a, b) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            },
         }
     }
 
@@ -883,7 +1037,10 @@ impl Tree {
     /// 是否需要出新帧（有失效 / 动画 / 状态变化）。
     pub fn needs_frame(&self) -> bool {
         // 有挂起动画时须持续出帧以推进超时（空表判断，非遍历）。
-        self.dirty || !self.anim.is_empty() || !self.gated_starts.is_empty()
+        self.dirty
+            || !self.anim.is_empty()
+            || !self.gated_starts.is_empty()
+
     }
 
     /// 节点是否标记为待绘（paint dirty）。
@@ -1356,6 +1513,11 @@ impl Tree {
     }
 
     fn hit_rec(&self, id: WidgetId, pos: Point, clip: Option<Rect>) -> Option<WidgetId> {
+        // 退场中的弹层不参与命中：它在视觉上正在消失，不能再接点击（参 FEEL_PLAN §Ⅰ-4）。
+        // 外层判断避免命中热路径为空表时也走一次线性查找。
+        if !self.popup_motions.is_empty() && self.popup_closing(id) {
+            return None;
+        }
         let n = self.node(id)?;
         if !n.props.visible {
             return None;
@@ -1866,17 +2028,93 @@ impl Tree {
     // ── 覆盖层 ──────────────────────────────────────────────────────────────
 
     /// 打开弹层：挂到覆盖层根。返回弹层节点 id。
+    ///
+    /// 分离模式（外壳另开 xdg_popup 承载）且 `motion` 为缺省时，同时登记入场动画计划 ——
+    /// 外壳在弹层表面首帧内容提交后起跑一次（参 `popup_motion`）。退场中重开同一弹层
+    /// （同锚点 / 同点位）时，新弹层从**当前呈现值**接续，不跳回起点（参 `continuation`）。
     pub fn open_popup(&mut self, widget: impl Widget, spec: PopupSpec) -> WidgetId {
         if spec.scrim {
             self.full_repaint = true;
         }
         let id = self.insert(self.overlay, widget);
+        if self.popup_motion_enabled(&spec) {
+            let mut enter = popup_visual(true, popup_edge(&spec));
+            if let Some((off, op)) = self.close_old_exiting_popup(&spec) {
+                // 退场中重开：起点 = 被打断那一帧的呈现值（库已支持打断接续）。
+                enter = enter.continue_from(off, op);
+            }
+            self.popup_motions.push((
+                id,
+                PopupMotionState {
+                    enter: Some(enter),
+                    enter_started: Instant::now(),
+                    exit: None,
+                    exit_started: Instant::now(),
+                },
+            ));
+        }
         self.popups.push((id, spec));
         id
     }
 
+    /// 该弹层是否走表面动画：只有**分离模式**的弹层有自己的表面可动；
+    /// `motion: None`、工具提示（passthrough）不动。
+    fn popup_motion_enabled(&self, spec: &PopupSpec) -> bool {
+        self.detached_popups && spec.motion == PopupMotion::Default && !spec.passthrough
+    }
+
+    /// 弹层表面动画计划（外壳每帧取一次）。`None` = 该弹层不动画。
+    pub fn popup_motion(&self, id: WidgetId) -> Option<PopupMotionPlan> {
+        let st = self.popup_motion_state(id)?;
+        let closing = st.exit.is_some();
+        Some(PopupMotionPlan {
+            enter: if closing { None } else { st.enter },
+            exit: st.exit,
+            exit_ms: PopupMotionState::elapsed_ms(st.exit_started),
+        })
+    }
+
+    fn popup_motion_state(&self, id: WidgetId) -> Option<&PopupMotionState> {
+        self.popup_motions
+            .iter()
+            .find(|(p, _)| *p == id)
+            .map(|(_, s)| s)
+    }
+
+    /// 该弹层是否正在退场（外壳据此不把输入投给它）。
+    pub fn popup_closing(&self, id: WidgetId) -> bool {
+        self.popup_motion_state(id).is_some_and(|s| s.exit.is_some())
+    }
+
+    /// 帧节拍日志名：`弹层:<锚点角色>`。
+    ///
+    /// 角色取锚点控件的类型名末段（`ClockButton` / `AvatarButton` 等）——元素树不依赖应用的
+    /// 字符串表，类型名是唯一现成的稳定身份。锚点是零宽布局占位（TopBar 的贴边锚点就是
+    /// 一个空 `Border`）时改用**面板自身**的类型名：那才是用户看到的那个东西。
+    pub fn popup_motion_name(&self, id: WidgetId) -> Option<String> {
+        let spec = self.popup_spec(id)?;
+        let short = |w: WidgetId| {
+            self.type_name(w)
+                .rsplit("::")
+                .next()
+                .unwrap_or("弹层")
+                .to_string()
+        };
+        let role = spec
+            .anchor
+            .filter(|a| self.contains(*a))
+            .map(short)
+            .filter(|n| !GENERIC_CONTAINERS.contains(&n.as_str()))
+            .unwrap_or_else(|| short(id));
+        Some(format!("弹层:{role}"))
+    }
+
     /// 关闭弹层。锚点收到 `Event::PopupClosed`；若焦点原在弹层内，交还锚点
     /// （XAML Flyout 关闭后焦点回到触发器，键盘用户不会「掉焦点」）。
+    ///
+    /// 开了表面动画的弹层：焦点交还与 `PopupClosed` **立即**发生（应用状态不该等动画），
+    /// 节点保留到退场结束（[`Tree::on_popup_motion_done`] / 兜底超时）才移除 —— 期间
+    /// `popups()` 仍列出它（外壳还要画），但它不参与输入（`top_popup` 跳过退场者）。
     pub fn close_popup(&mut self, id: WidgetId) {
         // 提示弹层被任意路径关闭：同步清掉提示状态，防止悬垂 id。
         if self.tooltip_popup == Some(id) {
@@ -1887,19 +2125,137 @@ impl Tree {
         let Some(pos) = self.popups.iter().position(|(p, _)| *p == id) else {
             return;
         };
+        // 已在退场：不重复发 `PopupClosed`（那会让应用重跑一遍关闭逻辑）。
+        if self.popup_closing(id) {
+            return;
+        }
         let spec = self.popups[pos].1;
         if spec.scrim {
             self.full_repaint = true;
         }
         let focus_inside = self.focus.is_some_and(|f| self.is_ancestor_or_self(id, f));
         let keyboard = self.focus_keyboard;
-        self.remove(id);
+        let exiting = self.popup_motion_enabled(&spec);
+        if exiting {
+            // 退场：起跑 PopOut，节点留到 Done。焦点 / 关闭通知同帧结算。
+            let exit = popup_visual(false, popup_edge(&spec));
+            if let Some((_, st)) = self.popup_motions.iter_mut().find(|(p, _)| *p == id) {
+                st.enter = None;
+                st.exit = Some(exit);
+                st.exit_started = Instant::now();
+            } else {
+                self.popup_motions.push((
+                    id,
+                    PopupMotionState {
+                        enter: None,
+                        enter_started: Instant::now(),
+                        exit: Some(exit),
+                        exit_started: Instant::now(),
+                    },
+                ));
+            }
+            log::debug!(
+                "弹层 {id:?} 开始退场（{} ms）：节点留到动画结束",
+                self.popup_motion_state(id).and_then(|s| s.exit).map_or(0, |e| e.duration_ms)
+            );
+            // 分离模式：弹层在自己的表面上，主表面不必因此重画（重画等于白烧一帧）。
+            if !self.detached_popups {
+                self.mark_dirty();
+            }
+        } else {
+            log::debug!("弹层 {id:?} 立即关闭（motion: None / 非分离模式 / passthrough）");
+            self.remove(id);
+        }
         if let Some(anchor) = spec.anchor.filter(|a| self.contains(*a)) {
             if focus_inside {
                 self.focus(anchor, keyboard);
             }
             self.deliver(anchor, &Event::PopupClosed { popup: id });
         }
+    }
+
+    /// 弹层表面动画结束（外壳回报 Done / 被打断，或兜底超时）。
+    ///
+    /// 退场结束 → 真正移除弹层节点；入场结束 → 摘掉计划（该弹层此后不再需要外壳逐帧推进）。
+    pub fn on_popup_motion_done(&mut self, id: WidgetId) {
+        if self.popup_closing(id) {
+            self.finish_popup_exit(id);
+            return;
+        }
+        self.popup_motions.retain(|(p, _)| *p != id);
+    }
+
+    /// 退场结算：摘掉动画状态并移除节点（`popups` 随之少一项，外壳下一帧销毁表面）。
+    fn finish_popup_exit(&mut self, id: WidgetId) {
+        log::debug!("弹层 {id:?} 退场结束，移除节点");
+        self.popup_motions.retain(|(p, _)| *p != id);
+        if self.popups.iter().any(|(p, _)| *p == id) {
+            self.remove(id);
+        }
+    }
+
+    /// 检查弹层动画是否该兜底收尾（Done 丢失 / 合成器不支持动画且外壳没回报）。
+    ///
+    /// 用**墙钟**判到期：弹层动画由合成器按 vsync 推进，而元素树的帧 dt 是「预测呈现时刻」
+    /// 之差（无头实测可比墙钟快 2~3 倍）—— 用 dt 判到期会在动画还没放完时就把弹层拆掉
+    /// （2026-10-22 实测：150 ms 的退场只呈现了 5 帧就被销毁）。`dt` 只用来做「无事可做」的快路径。
+    fn tick_popup_motions(&mut self, _dt: f64) {
+        if self.popup_motions.is_empty() {
+            return;
+        }
+        let mut expired: Vec<(WidgetId, bool)> = Vec::new();
+        for (id, st) in &self.popup_motions {
+            if let Some(enter) = st.enter {
+                let done_at = enter.duration_ms as f64 + enter.delay_ms as f64 + POPUP_EXIT_GRACE_MS;
+                if PopupMotionState::elapsed_ms(st.enter_started) >= done_at {
+                    expired.push((*id, false));
+                    continue;
+                }
+            }
+            if let Some(exit) = st.exit {
+                let done_at = exit.duration_ms as f64 + exit.delay_ms as f64 + POPUP_EXIT_GRACE_MS;
+                if PopupMotionState::elapsed_ms(st.exit_started) >= done_at {
+                    expired.push((*id, true));
+                }
+            }
+        }
+        for (id, closing) in expired {
+            if closing {
+                log::warn!("弹层 {id:?} 退场动画未回报 Done，按超时移除（外壳 / 合成器事件丢失）");
+                self.finish_popup_exit(id);
+            } else {
+                log::warn!("弹层 {id:?} 入场动画未回报 Done，摘掉计划");
+                self.popup_motions.retain(|(p, _)| *p != id);
+            }
+        }
+    }
+
+    /// 退场中重开同一弹层：把仍在退场的旧弹层按「当前呈现值」结算掉，返回那一刻的视觉值。
+    ///
+    /// 判据 = 同点位（`at`）或同锚点（`anchor` 相同且都没点位）；`side` 也须一致，
+    /// 否则是另一块面板（例如同一个按钮开了不同方向的面板），不该互相打断。
+    fn close_old_exiting_popup(&mut self, spec: &PopupSpec) -> Option<(Point, f32)> {
+        let old = self
+            .popup_motions
+            .iter()
+            .filter(|(_, st)| st.exit.is_some())
+            .map(|(p, st)| (*p, *st))
+            .find(|(p, st)| {
+                let Some(os) = self.popup_spec(*p) else {
+                    return false;
+                };
+                os.side == spec.side
+                    && match (os.at, spec.at) {
+                        (Some(a), Some(b)) => a == b,
+                        (None, None) => os.anchor == spec.anchor,
+                        _ => false,
+                    }
+                    && st.exit.is_some()
+            })?;
+        let exit = old.1.exit?;
+        let visual = visual_at_ms(&exit, PopupMotionState::elapsed_ms(old.1.exit_started));
+        self.finish_popup_exit(old.0);
+        Some(visual)
     }
 
     fn dismiss_popup(&mut self, id: WidgetId) {
@@ -1933,7 +2289,7 @@ impl Tree {
         self.popups
             .iter()
             .rev()
-            .find(|(_, s)| !s.passthrough)
+            .find(|(p, s)| !s.passthrough && !self.popup_closing(*p))
             .map(|(p, s)| (*p, *s))
     }
 
@@ -2072,6 +2428,8 @@ impl Tree {
             modal: false,
             scrim: false,
             passthrough: true,
+            // 提示是即时反馈：不做表面动画（入场动画会让人等 300 ms 才看到提示）。
+            motion: PopupMotion::None,
             ..PopupSpec::default()
         };
         let id = self.open_popup(Tooltip::new(text), spec);

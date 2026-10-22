@@ -26,8 +26,12 @@ pub use layer::{LayerAnimSpec, LayerOp};
 pub use props::{Align, Insets, LayoutProps};
 pub use transitions::{
     Edge, LayerOutcome, STAGGER_MAX_ITEMS, Transition, TransitionHandle, TransitionParams,
+    VisualAnim, visual_at_ms,
 };
-pub use tree::{Action, EditCtx, FrameOutput, PopupDismissed, PopupSide, PopupSpec, Tree};
+pub use tree::{
+    Action, EditCtx, FrameOutput, PopupDismissed, PopupMotion, PopupMotionPlan, PopupSide,
+    PopupSpec, Tree,
+};
 pub use visual_state::VisualState;
 pub use widget::{
     AccessInfo, AccessRole, ArrangeCtx, ControlStates, EventCtx, MeasureCtx, PaintCtx, RealizeCtx,

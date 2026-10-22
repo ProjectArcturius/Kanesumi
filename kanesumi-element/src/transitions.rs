@@ -299,6 +299,99 @@ struct Resolved {
     to_opacity: f32,
 }
 
+/// 一次转场的**视觉量**：初值 / 终值 + 时长 / 曲线。由 [`Transition::visual`] 解析。
+///
+/// 与 `LayerAnimSpec` 的分工：图层动画（`set_layer` + `animate_layer`）把节点内容搬进一个
+/// 独立子表面，由外壳光栅一次；**表面级**动画不搬内容 —— 弹层整体就是一个 xdg_popup 表面，
+/// 位移 / 不透明度直接交给合成器的 `ether_visual_v1` 推进，客户端一帧都不重画。
+/// 故这里只有视觉值与曲线，没有序号 / 图层身份。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VisualAnim {
+    pub duration_ms: u32,
+    pub delay_ms: u32,
+    /// cubic-bezier (x1, y1, x2, y2)。
+    pub curve: [f32; 4],
+    pub from_x: f32,
+    pub from_y: f32,
+    pub from_opacity: f32,
+    pub to_x: f32,
+    pub to_y: f32,
+    pub to_opacity: f32,
+}
+
+impl VisualAnim {
+    /// 以 `now` 的呈现值为新起点（中断接续）：初值改成当前值，终值不变。
+    pub fn continue_from(mut self, offset: Point, opacity: f32) -> Self {
+        self.from_x = offset.x;
+        self.from_y = offset.y;
+        self.from_opacity = opacity;
+        self
+    }
+}
+
+impl Transition {
+    /// 解析成本次转场的视觉量（`rect_origin` = 节点当前布局原点，仅 `Reposition` 用到）。
+    pub fn visual(self, p: TransitionParams, rect_origin: Point) -> VisualAnim {
+        let r = self.resolve(p, rect_origin);
+        VisualAnim {
+            duration_ms: p.duration_ms,
+            delay_ms: p.delay_ms,
+            curve: p.curve,
+            from_x: r.from_offset.x,
+            from_y: r.from_offset.y,
+            from_opacity: r.from_opacity,
+            to_x: r.to_offset.x,
+            to_y: r.to_offset.y,
+            to_opacity: r.to_opacity,
+        }
+    }
+}
+
+/// 视觉动画在「已过 `elapsed_ms`」时的呈现值 `(偏移, 不透明度)`。
+///
+/// 与 `estimate` 同一套贝塞尔反解，差别只在时钟来源：这里由调用方给累计毫秒（元素树的
+/// 弹层退场按帧 dt 累计，测试因此能精确复现；`Instant` 版本测不了毫秒级中间值）。
+pub fn visual_at_ms(a: &VisualAnim, elapsed_ms: f64) -> (Point, f32) {
+    lerp_visual(
+        a.curve,
+        a.duration_ms.max(1) as f64,
+        a.delay_ms as f64,
+        Point::new(a.from_x, a.from_y),
+        a.from_opacity,
+        Point::new(a.to_x, a.to_y),
+        a.to_opacity,
+        elapsed_ms,
+    )
+}
+
+/// 视觉值插值的唯一实现（`estimate` 与 `visual_at_ms` 共用，防止两处缓动分叉）。
+#[allow(clippy::too_many_arguments)]
+fn lerp_visual(
+    curve: [f32; 4],
+    duration_ms: f64,
+    delay_ms: f64,
+    from_offset: Point,
+    from_opacity: f32,
+    to_offset: Point,
+    to_opacity: f32,
+    elapsed_ms: f64,
+) -> (Point, f32) {
+    let e = elapsed_ms - delay_ms;
+    if e <= 0.0 {
+        return (from_offset, from_opacity);
+    }
+    let t = (e / duration_ms.max(1.0)).clamp(0.0, 1.0) as f32;
+    let k = bezier_y(curve, t);
+    let lerp = |from: f32, to: f32| from + (to - from) * k;
+    (
+        Point::new(
+            lerp(from_offset.x, to_offset.x),
+            lerp(from_offset.y, to_offset.y),
+        ),
+        lerp(from_opacity, to_opacity),
+    )
+}
+
 impl Tree {
     /// 给节点（`Entrance { stagger: true }` 时改为其直接子项）发转场：自动 `set_layer`、
     /// 放初值、`animate_layer` 到终值。返回本次转场句柄。
@@ -540,19 +633,15 @@ impl Tree {
 /// 估算一条进行中转场在 `now` 的视觉值。
 fn estimate(a: &ActiveTransition, now: Instant) -> (Point, f32) {
     let elapsed = now.saturating_duration_since(a.start).as_secs_f64() * 1000.0;
-    let e = elapsed - a.delay_ms;
-    if e <= 0.0 {
-        return (a.from_offset, a.from_opacity);
-    }
-    let t = (e / a.duration_ms).clamp(0.0, 1.0) as f32;
-    let k = bezier_y(a.curve, t);
-    let lerp = |from: f32, to: f32| from + (to - from) * k;
-    (
-        Point::new(
-            lerp(a.from_offset.x, a.to_offset.x),
-            lerp(a.from_offset.y, a.to_offset.y),
-        ),
-        lerp(a.from_opacity, a.to_opacity),
+    lerp_visual(
+        a.curve,
+        a.duration_ms,
+        a.delay_ms,
+        a.from_offset,
+        a.from_opacity,
+        a.to_offset,
+        a.to_opacity,
+        elapsed,
     )
 }
 
@@ -932,8 +1021,7 @@ mod tests {
     }
 
     #[test]
-    fn reposition_offsets_from_old_position() {
-        let (mut h, node) = setup_single();
+    fn reposition_offsets_from_old_position() {        let (mut h, node) = setup_single();
         let origin = h.tree.rect(node).unwrap().origin;
         let old = Point::new(origin.x + 50.0, origin.y + 30.0);
         h.tree
@@ -1137,6 +1225,88 @@ mod tests {
                 .iter()
                 .any(|o| matches!(o, LayerOp::Animate { .. })),
             "内容首帧后遮罩起跑"
+        );
+    }
+
+    // ── 表面级视觉量（弹层整体动画用；内容不搬进图层）──────────────────────
+
+    /// `Transition::visual` 与 `LayerAnimSpec` 的取值必须同源：同一转场、同一参数，
+    /// 图层动画与表面动画的时长 / 曲线 / 起终值不得分叉（两处缓动不一致会「弹层抖动」）。
+    #[test]
+    fn visual_matches_layer_animation_values() {
+        let (mut h, node) = setup_single();
+        h.tree.play_transition(
+            node,
+            Transition::PopIn { edge: Edge::Top },
+            TransitionParams::POP_IN,
+        );
+        h.frame();
+        let ops = h.tree.take_layer_ops();
+        let spec = ops.iter().find_map(animate_spec).expect("图层动画");
+        let start = ops.iter().find_map(offset_of).expect("初值");
+        let start_op = ops.iter().find_map(opacity_of).expect("初值");
+
+        let v = Transition::PopIn { edge: Edge::Top }.visual(TransitionParams::POP_IN, Point::ORIGIN);
+        assert_eq!((v.from_x, v.from_y), start, "起跑偏移同源");
+        assert_eq!(v.from_opacity, start_op, "起跑不透明度同源");
+        assert_eq!(
+            (v.to_x, v.to_y, v.to_opacity),
+            (spec.to_x, spec.to_y, spec.to_opacity),
+            "终值同源"
+        );
+        assert_eq!((v.duration_ms, v.delay_ms), (spec.duration_ms, spec.delay_ms));
+        assert_eq!(v.curve, spec.curve);
+    }
+
+    /// 四个方向的起跑偏移：由 `Edge` 的单位向量 × 位移幅度 24。
+    #[test]
+    fn visual_directions_match_edges() {
+        let p = TransitionParams::POP_IN;
+        let at = |e| Transition::PopIn { edge: e }.visual(p, Point::ORIGIN);
+        assert_eq!((at(Edge::Top).from_x, at(Edge::Top).from_y), (0.0, -24.0));
+        assert_eq!((at(Edge::Bottom).from_x, at(Edge::Bottom).from_y), (0.0, 24.0));
+        assert_eq!((at(Edge::Left).from_x, at(Edge::Left).from_y), (-24.0, 0.0));
+        assert_eq!((at(Edge::Right).from_x, at(Edge::Right).from_y), (24.0, 0.0));
+        // 退场同理，方向相反（离场向锚点）。
+        let out = Transition::PopOut { edge: Edge::Top }.visual(TransitionParams::POP_OUT, Point::ORIGIN);
+        assert_eq!((out.to_x, out.to_y, out.to_opacity), (0.0, -24.0, 0.0));
+    }
+
+    /// `visual_at_ms` = 贝塞尔反解：0 ms 在起点、中点 = 曲线在 0.5 处的值、终点在终值。
+    #[test]
+    fn visual_at_ms_follows_curve_and_endpoints() {
+        let v = Transition::PopIn { edge: Edge::Top }.visual(TransitionParams::POP_IN, Point::ORIGIN);
+        assert_eq!(visual_at_ms(&v, 0.0).0, Point::new(0.0, -24.0), "0 ms 在起点");
+        assert_eq!(
+            visual_at_ms(&v, v.duration_ms as f64),
+            (Point::ORIGIN, 1.0),
+            "时长到点即终值"
+        );
+        assert_eq!(
+            visual_at_ms(&v, 10_000.0),
+            (Point::ORIGIN, 1.0),
+            "超时不得越界"
+        );
+        let (mid, mid_op) = visual_at_ms(&v, v.duration_ms as f64 / 2.0);
+        let k = bezier_y(CURVE_UWP_OPEN, 0.5);
+        assert!((mid.y - (-24.0 + 24.0 * k)).abs() < 0.01, "中点 {mid:?}");
+        assert!((mid_op - k).abs() < 0.01);
+    }
+
+    /// 中断接续：`continue_from` 只改起点，时长 / 曲线 / 终值不变。
+    #[test]
+    fn continue_from_keeps_target_and_curve() {
+        let v = Transition::PopIn { edge: Edge::Top }
+            .visual(TransitionParams::POP_IN, Point::ORIGIN)
+            .continue_from(Point::new(0.0, -8.0), 0.4);
+        assert_eq!((v.from_x, v.from_y, v.from_opacity), (0.0, -8.0, 0.4));
+        assert_eq!((v.to_x, v.to_y, v.to_opacity), (0.0, 0.0, 1.0));
+        assert_eq!(v.duration_ms, TransitionParams::POP_IN.duration_ms);
+        assert_eq!(v.curve, TransitionParams::POP_IN.curve);
+        assert_eq!(
+            visual_at_ms(&v, 0.0),
+            (Point::new(0.0, -8.0), 0.4),
+            "接续后从当前呈现值起跑"
         );
     }
 }
