@@ -41,41 +41,122 @@ impl Acrylic {
     }
 }
 
-/// 生成背板图（直通 alpha，不透明）。`width × height` 是要铺满的逻辑尺寸；
-/// 返回图的像素尺寸可能小于目标（模糊时降采样），绘制时按目标矩形拉伸即可。
+/// 生成背板图（直通 alpha，不透明）。`width × height` 是要铺满的**逻辑**尺寸；
+/// 输出像素尺寸 = 该尺寸取整（1× 表面下 1:1 铺图，paint 不重采样）。
 pub fn backdrop(src: &Icon, width: f32, height: f32, spec: &Acrylic) -> Icon {
+    let target = (
+        width.max(1.0).round() as u32,
+        height.max(1.0).round() as u32,
+    );
+    backdrop_at(src, width, height, target, spec)
+}
+
+/// 目标**物理像素**尺寸版：返回图的像素尺寸 = `target`，绘制时按同尺寸铺开即 1:1 拷贝。
+///
+/// 为什么需要它（任务 lx2-backdrop）：整数 2× 输出下背板图层是 3072×1920，而模糊域只有
+/// 768×480；若把升采样留给 paint，`CpuRenderer` 每帧要对 590 万像素做双线性（真机首开
+/// `encode` 152 ms 的来源，参 Ether docs/CANVAS_PLAN.md §Ⅴ-1「paint 不做解码 / 重采样」）。
+/// 升采样放在**工作线程**、随缓存只做一次：降采样域做模糊（省时），再升回目标尺寸。
+pub fn backdrop_at(
+    src: &Icon,
+    width: f32,
+    height: f32,
+    target: (u32, u32),
+    spec: &Acrylic,
+) -> Icon {
     let (tw, th) = (width.max(1.0), height.max(1.0));
-    // 1. 封面裁切：取与目标同宽高比、居中的源矩形。
+    let (ow_t, oh_t) = (target.0.max(1), target.1.max(1));
+    // 1. 封面裁切：取与目标同宽高比、居中的源矩形（源像素坐标）。
     let (sw, sh) = (src.width.max(1) as f32, src.height.max(1) as f32);
     let scale = (tw / sw).max(th / sh);
     let (cw, ch) = (tw / scale, th / scale);
     let (cx, cy) = ((sw - cw) / 2.0, (sh - ch) / 2.0);
-    // 2. 输出分辨率：模糊时 1/4，否则不超过源裁切区分辨率（不放大）。
-    let down = if spec.blur > 0.0 { 4.0 } else { 1.0 };
-    let ow = ((tw / down).min(cw).round() as u32).max(1);
-    let oh = ((th / down).min(ch).round() as u32).max(1);
-    let mut px = area_resample(src, cx, cy, cw, ch, ow, oh);
-    // 3. 模糊：半径换算到输出像素。
+    // 2. 模糊域：模糊时目标 /4（盒式模糊代价与半径无关）；不模糊时取裁切区原生分辨率，
+    //    但不超过目标（放大交给第 4 步的一次升采样）。
+    let (bw, bh) = blur_domain(cw, ch, (ow_t, oh_t), spec);
+    let mut px = area_resample(src, cx, cy, cw, ch, bw, bh);
+    // 3. 模糊：半径从目标像素换算到模糊域像素。
     if spec.blur > 0.0 {
-        let r = ((spec.blur / down) * (ow as f32 / (tw / down))).round().max(1.0) as usize;
+        let r = ((spec.blur * (bw as f32 / tw)).round()).max(1.0) as usize;
         let mut tmp = vec![0f32; px.len()];
         for _ in 0..3 {
-            box_blur_h(&px, &mut tmp, ow as usize, oh as usize, r);
-            box_blur_v(&tmp, &mut px, ow as usize, oh as usize, r);
+            box_blur_h(&px, &mut tmp, bw as usize, bh as usize, r);
+            box_blur_v(&tmp, &mut px, bw as usize, bh as usize, r);
         }
     }
-    // 4. 着色 + 打包。
+    // 4. 着色（在模糊域做，线性混合与升采样可交换）→ 一次升采样到目标像素 + 打包。
     let t = [spec.tint.r, spec.tint.g, spec.tint.b];
     let k = spec.tint_opacity.clamp(0.0, 1.0);
-    let mut rgba = Vec::with_capacity((ow * oh * 4) as usize);
-    for p in px.chunks_exact(3) {
-        for c in 0..3 {
-            let v = p[c] * (1.0 - k) + t[c] * k;
-            rgba.push((v.clamp(0.0, 1.0) * 255.0).round() as u8);
+    if k > 0.0 {
+        for p in px.chunks_exact_mut(3) {
+            for c in 0..3 {
+                p[c] = (p[c] * (1.0 - k) + t[c] * k).clamp(0.0, 1.0);
+            }
         }
-        rgba.push(255);
     }
-    Icon { rgba: Arc::from(rgba), width: ow, height: oh }
+    let rgba = upsample_rgba(&px, bw, bh, ow_t, oh_t);
+    Icon { rgba: Arc::from(rgba), width: ow_t, height: oh_t }
+}
+
+/// 模糊域尺寸：模糊时目标 /4；不模糊时取裁切区原生分辨率（不超过目标，放大只做一次）。
+fn blur_domain(cw: f32, ch: f32, target: (u32, u32), spec: &Acrylic) -> (u32, u32) {
+    if spec.blur > 0.0 {
+        ((target.0 / 4).max(1), (target.1 / 4).max(1))
+    } else {
+        (
+            (cw.round() as u32).min(target.0).max(1),
+            (ch.round() as u32).min(target.1).max(1),
+        )
+    }
+}
+
+/// 双线性升采样到目标尺寸并打包直通 RGBA（alpha 恒 255）。
+///
+/// 与 `CpuRenderer` 的 `resample_bilinear` 同语义（sRGB 解码后线性插值、再编码），
+/// 否则「worker 升采样」与「paint 升采样」会有肉眼可见的亮度差（验收要求 ≤ 2 级色差）。
+fn upsample_rgba(src: &[f32], sw: u32, sh: u32, tw: u32, th: u32) -> Vec<u8> {
+    // 先把模糊域的浮点值量化回 u8：paint 路径当年解码的就是这份 8 位结果，量化点必须一致。
+    let quant: Vec<u8> = src.iter().map(|v| (v * 255.0).round() as u8).collect();
+    let mut out = vec![255u8; (tw * th * 4) as usize];
+    let inv_w = sw as f32 / tw as f32;
+    let inv_h = sh as f32 / th as f32;
+    for y in 0..th {
+        let v = ((y as f32 + 0.5) * inv_h - 0.5).clamp(0.0, sh as f32 - 1.0);
+        let v0 = v.floor() as u32;
+        let v1 = (v0 + 1).min(sh - 1);
+        let fv = v - v0 as f32;
+        for x in 0..tw {
+            let u = ((x as f32 + 0.5) * inv_w - 0.5).clamp(0.0, sw as f32 - 1.0);
+            let u0 = u.floor() as u32;
+            let u1 = (u0 + 1).min(sw - 1);
+            let fu = u - u0 as f32;
+            let o = ((y * tw + x) * 4) as usize;
+            for c in 0..3 {
+                let at = |sx: u32, sy: u32| {
+                    let i = ((sy * sw + sx) * 3 + c) as usize;
+                    srgb_decode_byte(quant[i])
+                };
+                let l = at(u0, v0) * (1.0 - fu) * (1.0 - fv)
+                    + at(u1, v0) * fu * (1.0 - fv)
+                    + at(u0, v1) * (1.0 - fu) * fv
+                    + at(u1, v1) * fu * fv;
+                out[o + c as usize] = (srgb_encode(l) * 255.0 + 0.5) as u8;
+            }
+        }
+    }
+    out
+}
+
+/// sRGB 8 位 → 线性 0..1（与 `kanesumi-render` 同公式）。
+fn srgb_decode_byte(v: u8) -> f32 {
+    let c = v as f32 / 255.0;
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+/// 线性 0..1 → sRGB 0..1（与 `kanesumi-render` 同公式）。
+fn srgb_encode(c: f32) -> f32 {
+    let c = c.clamp(0.0, 1.0);
+    if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
 }
 
 /// 面积平均重采样（降采样不混叠）。输出 RGB f32（0..1，sRGB 值域；alpha 视作不透明）。
@@ -180,8 +261,25 @@ mod tests {
         let src = checker(256, 256);
         let spec = Acrylic { blur: 40.0, tint: Color::BLACK, tint_opacity: 0.0 };
         let out = backdrop(&src, 256.0, 256.0, &spec);
-        assert!(out.width <= 64 && out.height <= 64, "模糊时 1/4 降采样");
+        assert_eq!((out.width, out.height), (256, 256), "输出尺寸 = 目标尺寸（1:1 铺图）");
         assert!(variance(&out) < variance(&src) * 0.05, "棋盘被抹平");
+    }
+
+    /// 模糊仍在降采样域做（任务 lx2-backdrop §1）：2× 目标 512×512 时模糊域是 128×128。
+    #[test]
+    fn blur_runs_in_downsampled_domain_then_upsamples_to_target() {
+        let src = checker(1024, 1024);
+        let spec = Acrylic { blur: 30.0, tint: Color::BLACK, tint_opacity: 0.0 };
+        assert_eq!(blur_domain(512.0, 512.0, (512, 512), &spec), (128, 128));
+        // 物理 2× 的目标（1024×1024）同样是 1/4 模糊域，输出回到 1024×1024。
+        assert_eq!(blur_domain(512.0, 512.0, (1024, 1024), &spec), (256, 256));
+        let out = backdrop_at(&src, 512.0, 512.0, (1024, 1024), &spec);
+        assert_eq!((out.width, out.height), (1024, 1024));
+        // 升采样后仍平滑：相邻像素差远小于 1/4 分辨率直接糊上去的块状边界。
+        let row: Vec<i32> = (0..out.width as usize)
+            .map(|x| out.rgba[(512 * out.width as usize + x) * 4] as i32)
+            .collect();
+        assert!(row.windows(2).all(|w| (w[1] - w[0]).abs() <= 3), "升采样后无块状接缝");
     }
 
     #[test]
