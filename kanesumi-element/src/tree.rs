@@ -227,6 +227,31 @@ pub struct FrameOutput {
     pub painted: Vec<WidgetId>,
 }
 
+/// 一帧里「内容入场行」的重画统计（按弹层聚合）。
+///
+/// 面板是单一自绘控件，逐项入场由面板在绘制命令上加位移 / 透明完成（不是行节点图层），
+/// 因此代价只能从 `paint_node` 的墙钟量。`rows` = 本帧参与入场的行数（>0 才记）。
+/// 参 docs/research/tb_content/README.md。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ContentFrameStats {
+    pub content_ms: f32,
+    pub rows: u32,
+}
+
+thread_local! {
+    /// 最近一帧各弹层的内容重画统计（宿主线程读取；弹层表面重画在 `Tree::frame` 之后）。
+    static POPUP_CONTENT_STATS: std::cell::RefCell<
+        std::collections::BTreeMap<u64, ContentFrameStats>,
+    > = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// 读最近一帧某弹层（`WidgetId::to_u64()`）的内容重画统计。无入场 / 未重画 → None。
+///
+/// 由 harness 在弹层表面渲染时取走，写进 `ether-harness-spike.log` 的 `content_ms` / `rows`。
+pub fn popup_content_stats(key: u64) -> Option<ContentFrameStats> {
+    POPUP_CONTENT_STATS.with(|m| m.borrow().get(&key).copied())
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct Flags {
     needs_measure: bool,
@@ -374,6 +399,11 @@ pub struct Tree {
     pub(crate) gated_starts: std::collections::BTreeMap<WidgetId, GatedStart>,
     /// 本帧绘制产物进入提交的节点（`paint_node` 收集，`FrameOutput::painted` 交给外壳汇报）。
     frame_painted: Vec<WidgetId>,
+    /// 内容入场中的弹层根 → 本帧参与入场的行数。由 App 每帧登记（`set_content_motion`），
+    /// `paint_node` 据此把该节点的重画墙钟记进 `frame_content`。参 `ContentFrameStats`。
+    content_motion_nodes: std::collections::BTreeMap<WidgetId, u32>,
+    /// 本帧各弹层的内容重画毫秒 / 行数；帧末发布到线程局部表供外壳读。
+    frame_content: std::collections::BTreeMap<WidgetId, ContentFrameStats>,
     /// 转场动画序号（外壳按此回报 Done / Cancelled）。
     pub(crate) next_layer_serial: u32,
     /// compose 时允许进入的图层根：拼某图层内容时 = 该图层；拼主场景时 = None（跳过所有图层子树）。
@@ -425,6 +455,8 @@ impl Tree {
             pending_starts: std::collections::BTreeMap::new(),
             gated_starts: std::collections::BTreeMap::new(),
             frame_painted: Vec::new(),
+            content_motion_nodes: std::collections::BTreeMap::new(),
+            frame_content: std::collections::BTreeMap::new(),
             next_layer_serial: 1,
             compose_layer: std::cell::Cell::new(None),
             full_repaint: true,
@@ -1135,6 +1167,7 @@ impl Tree {
         let epoch0 = self.invalidate_epoch;
         self.frame_dt = dt;
         self.frame_painted.clear();
+        self.frame_content.clear();
         // 内容就绪门控：推进挂起动画的等待时长，超时者解挂放行（早于 sync_layers，
         // 解挂产生的 pending_starts 本帧即被 flush）。
         self.tick_gated();
@@ -1234,6 +1267,7 @@ impl Tree {
         // 帧内产生过失效（布局改矩形 / 实现钩子增删 / 绘制期登记动画等）→ 留给下一帧；
         // 否则本帧工作已消费干净，可以进入空闲。
         self.dirty = self.invalidate_epoch != epoch0;
+        self.publish_content_stats();
         FrameOutput {
             scene,
             damage: frame_damage,
@@ -1375,6 +1409,9 @@ impl Tree {
             // 控件正被回调持有（理论上不会出现在此）：留下次再画。
             return;
         };
+        // 内容入场计时：只量登记过的弹层根（面板自绘行），不含布局 / 表面提交。
+        let content_rows = self.content_motion_nodes.get(&id).copied();
+        let paint_t0 = Instant::now();
         let mut scene = Scene::default();
         let mut ctx = PaintCtx {
             tree: self,
@@ -1386,6 +1423,7 @@ impl Tree {
         w.paint(&mut ctx, &mut scene);
         let mut after = Scene::default();
         w.paint_after(&mut ctx, &mut after);
+        let paint_ms = paint_t0.elapsed().as_secs_f32() * 1000.0;
         // 焦点视觉画在节点外一圈，一并计入绘制范围。
         let mut bounds = w.paint_overflow().inflate(rect);
         if w.focusable() && w.focus_visual() {
@@ -1407,6 +1445,36 @@ impl Tree {
             n.painted_bounds = Some(bounds);
             // 不在此清 needs_paint / paint_queued —— 绘制期新产生的失效已在上面入队。
         }
+        if let Some(rows) = content_rows
+            && let Some(popup) = self.enclosing_popup(id)
+        {
+            let e = self.frame_content.entry(popup).or_default();
+            e.content_ms += paint_ms;
+            e.rows = e.rows.max(rows);
+        }
+    }
+
+    /// `id` 所属的（最近的）打开弹层根；不在任何弹层里 → None。
+    fn enclosing_popup(&self, mut id: WidgetId) -> Option<WidgetId> {
+        loop {
+            if self.popups.iter().any(|(p, _)| *p == id) {
+                return Some(id);
+            }
+            id = self.parent(id)?;
+        }
+    }
+
+    /// 帧末发布内容重画统计：本帧没有重画的弹层写 0（清掉上一帧的旧值）。
+    fn publish_content_stats(&self) {
+        let mut next = std::collections::BTreeMap::new();
+        for (pid, _) in &self.popups {
+            if let Some(s) = self.frame_content.get(pid)
+                && s.rows > 0
+            {
+                next.insert(pid.to_u64(), *s);
+            }
+        }
+        POPUP_CONTENT_STATS.with(|m| *m.borrow_mut() = next);
     }
 
     /// 拼接 `id` 子树到 Scene。`cull` = 有效裁剪矩形（`None` = 不剔除，弹层独立 Surface 用）；
@@ -1834,6 +1902,24 @@ impl Tree {
 
     pub fn detached_popups(&self) -> bool {
         self.detached_popups
+    }
+
+    /// 登记 / 注销某弹层的内容入场（`rows` = 本帧参与入场的行数；0 = 结束）。
+    ///
+    /// 只影响 `content_ms` / `rows` 计时：面板在 `paint` 里按行加位移 / 透明，
+    /// `paint_node` 用本表判断该节点的重画是否算内容段。由 App 在每帧 `tick` 末尾登记，
+    /// 动画结束后清 0。参 `ContentFrameStats`。
+    pub fn set_content_motion(&mut self, popup: WidgetId, rows: u32) {
+        if rows == 0 {
+            self.content_motion_nodes.remove(&popup);
+        } else {
+            self.content_motion_nodes.insert(popup, rows);
+        }
+    }
+
+    /// 某弹层当前是否登记了内容入场（诊断 / 测试）。
+    pub fn content_motion_rows(&self, popup: WidgetId) -> Option<u32> {
+        self.content_motion_nodes.get(&popup).copied()
     }
 
     /// 弹层规格（外壳据 `light_dismiss` 决定是否 `xdg_popup.grab`）。

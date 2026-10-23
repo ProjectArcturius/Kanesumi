@@ -23,6 +23,37 @@ use crate::tree::Tree;
 /// 容器传播的错位上限：第 `stagger` 个之后的子项与第 `STAGGER_MAX_ITEMS` 个同时。
 pub const STAGGER_MAX_ITEMS: usize = 10;
 
+/// 内容入场（`Transition::Content` 的逐行排期）相邻行错位毫秒数。
+/// 一手源：Win10 `ContentThemeTransition` 容器 stagger 20 ms（参 ANIMATION_SPEC §Ⅱ）。
+pub const CONTENT_STAGGER_MS: u32 = 20;
+
+/// 内容入场最多错位的行数：第 10 行（下标 9）之后的全部行与它同拍。
+/// 上限的意义是「不得无限拖延」—— 通知很多时最后一条也不能比第 10 行晚。
+pub const CONTENT_STAGGER_MAX_ITEMS: usize = 10;
+
+/// 内容入场期间面板要重画的总时长（末行 300 ms 动画 + 9×20 ms 错位）。
+pub const CONTENT_TOTAL_MS: f64 =
+    (TransitionParams::CONTENT.duration_ms + CONTENT_STAGGER_MS * (CONTENT_STAGGER_MAX_ITEMS as u32 - 1))
+        as f64;
+
+/// 第 `index` 行内容入场的起始延迟（毫秒）。第 10 行及之后同拍。
+pub fn content_row_delay(index: usize) -> u32 {
+    index.min(CONTENT_STAGGER_MAX_ITEMS - 1) as u32 * CONTENT_STAGGER_MS
+}
+
+/// 第 `index` 行内容入场在 `elapsed_ms` 时的视觉值 `(上移偏移, 不透明度)`。
+///
+/// 面板是单一自绘控件（不是由行节点组成的容器），所以逐项入场在**弹层表面内**
+/// 给每行的绘制命令加位移 / 透明，而不是给行建元素树图层。时间与曲线仍走
+/// `Transition::Content` 的缺省值，保证与其它入口动画同源。
+pub fn content_row_visual(index: usize, elapsed_ms: f64) -> (Point, f32) {
+    let p = TransitionParams {
+        delay_ms: content_row_delay(index),
+        ..TransitionParams::CONTENT
+    };
+    visual_at_ms(&Transition::Content.visual(p, Point::ORIGIN), elapsed_ms)
+}
+
 /// 弹层进出的锚点方位（从哪一侧滑入 / 滑出）。参 `PopupSide`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Edge {
@@ -1291,6 +1322,53 @@ mod tests {
         let k = bezier_y(CURVE_UWP_OPEN, 0.5);
         assert!((mid.y - (-24.0 + 24.0 * k)).abs() < 0.01, "中点 {mid:?}");
         assert!((mid_op - k).abs() < 0.01);
+    }
+
+    // ── Content 逐行排期（面板内容入场）──────────────────────────────────────
+
+    /// 相邻行错位 20 ms；第 10 行之后的全部与第 10 行同拍（不无限拖延）。
+    #[test]
+    fn content_rows_stagger_by_20ms_and_cap_at_ten() {
+        let delays: Vec<u32> = (0..14).map(content_row_delay).collect();
+        assert_eq!(
+            &delays[..10],
+            &[0, 20, 40, 60, 80, 100, 120, 140, 160, 180],
+            "前 10 行按 20 ms 递增"
+        );
+        assert!(
+            delays[9..].iter().all(|d| *d == 180),
+            "第 10 行之后同拍：{delays:?}"
+        );
+    }
+
+    /// 末行在 300 + 9×20 = 480 ms 内到位（含第 10 行同拍的迟到行）。
+    #[test]
+    fn content_row_reaches_target_by_480ms() {
+        let (off, op) = content_row_visual(0, 0.0);
+        assert_eq!(off, Point::new(0.0, 16.0), "起点：下移 16（视觉上向上入场）");
+        assert_eq!(op, 0.0, "起点透明");
+        for i in [0usize, 9, 13] {
+            if i >= 9 {
+                let (before, before_op) = content_row_visual(i, 479.0);
+                assert!(
+                    before.y > 0.0 && before_op < 1.0,
+                    "第 {i} 行 479 ms 尚未到位：{before:?} {before_op}"
+                );
+            } else {
+                let (mid, mid_op) = content_row_visual(i, 299.0);
+                assert!(mid.y > 0.0 && mid_op < 1.0, "第 {i} 行 299 ms 尚未到位");
+            }
+            assert_eq!(
+                content_row_visual(i, CONTENT_TOTAL_MS),
+                (Point::ORIGIN, 1.0),
+                "第 {i} 行 480 ms 必须到位"
+            );
+            assert_eq!(
+                content_row_visual(i, 10_000.0),
+                (Point::ORIGIN, 1.0),
+                "超时不得越界"
+            );
+        }
     }
 
     /// 中断接续：`continue_from` 只改起点，时长 / 曲线 / 终值不变。
