@@ -169,6 +169,12 @@ pub struct CpuRenderer {
     scaled_prev_used: HashSet<ScaledImageKey>,
     /// 布局 miss 计数（诊断/测试：静态文本重复渲染应不增长）。
     layout_misses: u64,
+    /// 1:1 不透明图像的**按行拷贝**累计行数（诊断/测试：验证逐行 memcpy 快路径真的按行走，
+    /// 而不是又退回逐像素）。
+    image_row_blits: u64,
+    /// 测试专用：置真 → 禁用逐行 memcpy 快路径（用来和「通用路径」逐像素对照）。
+    #[cfg(test)]
+    no_row_blit: bool,
     /// 文字浓度旋钮（§112 生产默认 contrast 0.2 / gamma 1.0；恒等档见
     /// `TextRenderTuning::identity`）。
     text_tuning: TextRenderTuning,
@@ -198,6 +204,9 @@ impl CpuRenderer {
             scaled_used: HashSet::new(),
             scaled_prev_used: HashSet::new(),
             layout_misses: 0,
+            image_row_blits: 0,
+            #[cfg(test)]
+            no_row_blit: false,
             text_tuning: TextRenderTuning::default(),
         };
         r.resize(width, height, scale);
@@ -252,6 +261,11 @@ impl CpuRenderer {
     /// 物理像素尺寸（SHM 提交用）。
     pub fn physical_size(&self) -> (u32, u32) {
         (self.w, self.h)
+    }
+
+    /// 累计按行拷贝的图像行数（诊断 / 测试：1:1 不透明图的逐行 memcpy 快路径是否生效）。
+    pub fn image_row_blits(&self) -> u64 {
+        self.image_row_blits
     }
 
     /// 把一帧 Scene 光栅化进像素缓冲，返回 RGBA bytes。
@@ -1028,6 +1042,47 @@ impl CpuRenderer {
             self.scaled_used.insert(key);
             return self.emit_image(&scaled, tw, th, rect, tint, opacity, clip);
         }
+        // 逐行 memcpy 快路径（任务 lx2-copy §1）：像素对齐 + 目标尺寸 == 源尺寸 + 白 tint +
+        // 不透明度 1 + **源区域整幅不透明** 时，一行一次 `copy_from_slice`，不进逐像素循环。
+        //
+        // 为什么：下面 `fast` 分支虽然省掉了双线性，仍是逐像素 `texel` + 分支 + 4 字节拷贝 ——
+        // 3072×1920 的亚克力背板（590 万像素）实测 encode 11.1~11.5 ms，`< 10 ms` 的判门就卡在
+        // 这条下限上（参 docs/research/lx2_backdrop §4.1）。整行连续拷贝是同一份像素的 memcpy。
+        //
+        // 裁剪：矩形裁剪对每一行仍是**连续列段**，故裁过的 1:1 图照样整段拷；缩放 / 半透明 /
+        // 染色 / 非整数落点一律落到下面的原路径，像素结果与改前逐字节一致。
+        let one_to_one = aligned
+            && (dst_w - sw as f32).abs() < 0.01
+            && (dst_h - sh as f32).abs() < 0.01
+            && dst_w.round() as u32 == sw
+            && dst_h.round() as u32 == sh;
+        #[cfg(test)]
+        let row_blit_allowed = !self.no_row_blit;
+        #[cfg(not(test))]
+        let row_blit_allowed = true;
+        if one_to_one && tint_is_white && opacity >= 1.0 && row_blit_allowed {
+            let (sx, sy) = (x0.round() as i64, y0.round() as i64);
+            let (u0, v0) = (px0 as i64 - sx, py0 as i64 - sy);
+            let cols = (px1 - px0) as usize;
+            let rows = (py1 - py0) as usize;
+            let inside = u0 >= 0
+                && v0 >= 0
+                && u0 + cols as i64 <= sw as i64
+                && v0 + rows as i64 <= sh as i64;
+            if inside
+                && cols > 0
+                && rows > 0
+                && region_is_opaque(src, sw, u0 as usize, v0 as usize, cols, rows)
+            {
+                for r in 0..rows {
+                    let s = ((v0 as usize + r) * sw as usize + u0 as usize) * 4;
+                    let d = ((py0 as usize + r) * self.w as usize + px0 as usize) * 4;
+                    self.buf[d..d + cols * 4].copy_from_slice(&src[s..s + cols * 4]);
+                    self.image_row_blits += 1;
+                }
+                return;
+            }
+        }
         let fast = aligned && tint_is_white && opacity >= 1.0;
         for py in py0..py1 {
             for px in px0..px1 {
@@ -1207,6 +1262,33 @@ fn texel(src: &[u8], sw: u32, x: u32, y: u32) -> [u8; 4] {
     [src[idx], src[idx + 1], src[idx + 2], src[idx + 3]]
 }
 
+/// 源图指定区域是否**整幅不透明**（α 全 255）。
+///
+/// 用途：`emit_image` 的逐行 memcpy 快路径前置判定 —— 半透明像素必须逐像素混合，
+/// 不能整行拷。一次比对 8 字节（2 像素）的 α 字节掩码，遇到第一个非 255 立即退出：
+/// 带透明边缘的图标通常在头几个像素就返回，代价可忽略；整屏亚克力背板（全不透明）
+/// 才扫满全幅，换掉的是逐像素 texel + 分支的 590 万次循环。
+fn region_is_opaque(src: &[u8], sw: u32, u0: usize, v0: usize, cols: usize, rows: usize) -> bool {
+    // 每 4 字节像素的第 4 字节（α）在高位：两个像素 = 0xFF00_0000_FF00_0000。
+    const ALPHA: u64 = 0xFF00_0000_FF00_0000;
+    for r in 0..rows {
+        let start = ((v0 + r) * sw as usize + u0) * 4;
+        let row = &src[start..start + cols * 4];
+        let mut it = row.chunks_exact(8);
+        for w in &mut it {
+            let v = u64::from_ne_bytes([w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]]);
+            if v & ALPHA != ALPHA {
+                return false;
+            }
+        }
+        // 奇数像素的行尾（正常不会出现：行字节数 = 4 × 像素数）。
+        if it.remainder().chunks_exact(4).any(|p| p[3] != 255) {
+            return false;
+        }
+    }
+    true
+}
+
 /// FNV-1a 32 位哈希 —— 图标内容去重（同 render.rs）。
 fn fnv1a(data: &[u8]) -> u32 {
     let mut h: u32 = 0x811c_9dc5;
@@ -1344,11 +1426,138 @@ mod tests {
         assert_eq!(px[3], 255); // a = 0.5 + 1*(1-0.5) = 1
     }
 
+    /// 不透明测试图：每像素 RGB 由坐标决定（保证行内、行间都不同），α 恒 255。
+    fn opaque_test_image(w: u32, h: u32) -> Vec<u8> {
+        let mut v = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                v.extend_from_slice(&[(x * 13 + 7) as u8, (y * 29 + 3) as u8, (x + y) as u8, 255]);
+            }
+        }
+        v
+    }
+
+    /// 同一张图分别用「逐行 memcpy 快路径」与「通用逐像素路径」光栅，返回 (快, 通用)。
+    fn render_both_paths(
+        icon: &kanesumi_canvas::icon::Icon,
+        rect: Rect,
+        surface: (f32, f32),
+        clip: Option<Rect>,
+    ) -> (CpuRenderer, CpuRenderer) {
+        let run = |no_row_blit: bool| {
+            let mut scene = Scene::default();
+            if let Some(c) = clip {
+                scene.push_clip(c);
+                scene.image(icon, rect, None);
+                scene.pop_clip();
+            } else {
+                scene.image(icon, rect, None);
+            }
+            let mut r = CpuRenderer::new(surface.0, surface.1, 1.0);
+            r.no_row_blit = no_row_blit;
+            r.render_inner(None, &scene, None);
+            r
+        };
+        (run(false), run(true))
+    }
+
+    /// 任务 lx2-copy §1：不透明 1:1 图走**逐行 memcpy**（行数 = 高度），且与通用路径逐像素相同。
+    #[test]
+    fn opaque_1to1_image_copies_rows_and_matches_generic_path() {
+        use kanesumi_canvas::icon::Icon;
+        let (w, h) = (16u32, 9u32);
+        let src = opaque_test_image(w, h);
+        let icon = Icon { rgba: src.clone().into(), width: w, height: h };
+        let (fast, generic) = render_both_paths(
+            &icon,
+            Rect::new(0.0, 0.0, w as f32, h as f32),
+            (w as f32, h as f32),
+            None,
+        );
+        assert_eq!(fast.image_row_blits(), h as u64, "按行拷贝次数 = 图高");
+        assert_eq!(generic.image_row_blits(), 0, "通用路径不作行拷贝");
+        assert_eq!(fast.buf, src, "整行拷出的像素 = 源像素");
+        assert_eq!(fast.buf, generic.buf, "与通用路径逐像素相同");
+    }
+
+    /// 裁剪后每行仍是连续列段 → 仍走行拷贝；像素与通用路径相同。
+    #[test]
+    fn clipped_1to1_opaque_image_row_copies_and_matches_generic_path() {
+        use kanesumi_canvas::icon::Icon;
+        let (w, h) = (16u32, 9u32);
+        let src = opaque_test_image(w, h);
+        let icon = Icon { rgba: src.clone().into(), width: w, height: h };
+        let clip = Rect::new(3.0, 2.0, 8.0, 5.0);
+        let (fast, generic) = render_both_paths(
+            &icon,
+            Rect::new(0.0, 0.0, w as f32, h as f32),
+            (w as f32, h as f32),
+            Some(clip),
+        );
+        assert_eq!(fast.image_row_blits(), 5, "裁剪仍整行连续：行数 = 裁剪高");
+        assert_eq!(fast.buf, generic.buf, "裁剪快路径与通用路径逐像素相同");
+        // 裁剪框外仍是透明底（行拷贝没有越界写）。
+        assert_eq!(px_at(&fast, 0, 0), [0, 0, 0, 0], "裁剪上边界外不写");
+        assert_eq!(px_at(&fast, 12, 2), [0, 0, 0, 0], "裁剪右边界外不写");
+    }
+
+    /// 缩放（目标尺寸 ≠ 源尺寸）：双线性重采样**仍走原路径**（`scaled` 缓存），只有缓存命中后的
+    /// 同尺寸那一遍才按行拷贝 —— 像素与改前逐字节相同（与通用路径逐像素相同）。
+    #[test]
+    fn scaled_image_resamples_then_row_copies_like_before() {
+        use kanesumi_canvas::icon::Icon;
+        let (w, h) = (8u32, 6u32);
+        let icon = Icon { rgba: opaque_test_image(w, h).into(), width: w, height: h };
+        let (fast, generic) = render_both_paths(
+            &icon,
+            Rect::new(0.0, 0.0, 16.0, 12.0),
+            (16.0, 12.0),
+            None,
+        );
+        // 12 行 = 重采样后 16×12 缓存的那一遍 1:1 拷贝（重采样本身不是行拷贝）。
+        assert_eq!(fast.image_row_blits(), 12, "先重采样再按行拷，行数 = 目标高");
+        assert_eq!(fast.buf, generic.buf, "缩放结果与通用路径逐像素相同");
+        assert!(painted_count(&fast) > 0, "确实画了内容");
+    }
+
+    /// 半透明源（α 不足 255）即使 1:1 也不许整行拷：走原路径，像素与通用路径相同。
+    #[test]
+    fn translucent_1to1_image_keeps_generic_path() {
+        use kanesumi_canvas::icon::Icon;
+        let (w, h) = (16u32, 9u32);
+        let mut src = opaque_test_image(w, h);
+        for i in (3..src.len()).step_by(4) {
+            src[i] = 128;
+        }
+        let icon = Icon { rgba: src.into(), width: w, height: h };
+        let (fast, generic) = render_both_paths(
+            &icon,
+            Rect::new(0.0, 0.0, w as f32, h as f32),
+            (w as f32, h as f32),
+            None,
+        );
+        assert_eq!(fast.image_row_blits(), 0, "半透明源不进逐行 memcpy 快路径");
+        assert_eq!(fast.buf, generic.buf, "半透明结果与通用路径逐像素相同");
+        assert_eq!(px_at(&fast, 0, 0)[3], 128, "半透明像素真的混出去了");
+    }
+
+    /// 区域不透明判定：整幅 255 为真；任一 α ≠ 255 为假；只认给定区域。
+    #[test]
+    fn region_is_opaque_checks_alpha_bytes() {
+        let (w, h) = (4u32, 3u32);
+        let src = opaque_test_image(w, h);
+        assert!(region_is_opaque(&src, w, 0, 0, 4, 3));
+        let mut one = src.clone();
+        one[(1 * 4 + 2) * 4 + 3] = 254;
+        assert!(!region_is_opaque(&one, w, 0, 0, 4, 3), "一个半透明像素即否");
+        // 只扫给定区域：损坏像素在区域外不影响判定。
+        assert!(region_is_opaque(&one, w, 0, 0, 4, 1));
+    }
+
     /// Image opacity 乘子（R2）：不透明白图，opacity 0 / 0.5 / 1 的像素值。
     /// 0.5 叠透明底 → 线性 0.5 → sRGB 188，alpha 128。
     #[test]
-    fn image_opacity_scales_pixel() {
-        use kanesumi_canvas::icon::Icon;
+    fn image_opacity_scales_pixel() {        use kanesumi_canvas::icon::Icon;
         let icon = Icon {
             rgba: vec![255u8; 2 * 2 * 4].into(),
             width: 2,
