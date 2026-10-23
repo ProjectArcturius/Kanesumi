@@ -110,6 +110,11 @@ pub struct FrameTiming {
     pub upload_glyphs: u32,
     /// 本帧场景命令数。
     pub scene_cmds: u32,
+    /// 本帧「内容入场行」重画的墙钟（毫秒；不含布局 / 光栅 / 表面提交）。
+    /// 只在弹层内容入场时非 0（参 `kanesumi_element::ContentFrameStats`）。
+    pub content_ms: f32,
+    /// 本帧参与内容入场的行数（0 = 无内容入场）。
+    pub content_rows: u32,
     /// 本帧是否新建了表面（弹层 / 浮层 / 渲染器）。
     pub new_surface: bool,
 }
@@ -142,6 +147,8 @@ pub struct SurfacePerf {
     pub frame: Ring,
     /// 本帧场景命令数。
     pub cmds: Ring,
+    /// 内容入场行重画耗时（毫秒；p99 供判读）。参 `FrameTiming::content_ms`。
+    pub content: Ring,
     /// 窗口内新上传的字节总数与图像 / 字形张数。
     pub upload_bytes: u64,
     pub upload_images: u64,
@@ -176,6 +183,7 @@ impl SurfacePerf {
             present: Ring::new(),
             frame: Ring::new(),
             cmds: Ring::new(),
+            content: Ring::new(),
             upload_bytes: 0,
             upload_images: 0,
             upload_glyphs: 0,
@@ -208,6 +216,7 @@ impl SurfacePerf {
         self.present.record(t.present_ms);
         self.frame.record(t.total_ms());
         self.cmds.record(t.scene_cmds as f32);
+        self.content.record(t.content_ms);
         self.upload_bytes = self.upload_bytes.saturating_add(t.upload_bytes);
         self.upload_images = self.upload_images.saturating_add(t.upload_images as u64);
         self.upload_glyphs = self.upload_glyphs.saturating_add(t.upload_glyphs as u64);
@@ -281,7 +290,7 @@ pub fn format_line(proc: &str, role: &str, surface: &str, p: &SurfacePerf) -> St
     // p99 单列：性能门按 p99 判（p95 掩盖尾部，max 又太受单帧噪声影响）。
     let p99 = |r: &Ring| if r.is_empty() { 0.0 } else { r.percentile(0.99) };
     format!(
-        "{proc} {role} t={secs} surface={surface} frames={} render={} raster={} commit={} gpu={gpu} draws={draws} inc={inc} dmg_pct={dmg_pct} insts={insts} acquire={acquire} tick={} scene={} encode={} submit={} present={} frame={} cmds={cmds} up={up} up_glyphs={} raster_p99={:.2} frame_p99={:.2}\n",
+        "{proc} {role} t={secs} surface={surface} frames={} render={} raster={} commit={} gpu={gpu} draws={draws} inc={inc} dmg_pct={dmg_pct} insts={insts} acquire={acquire} tick={} scene={} encode={} submit={} present={} frame={} cmds={cmds} up={up} up_glyphs={} raster_p99={:.2} frame_p99={:.2} content_p99={:.2}\n",
         p.frames,
         seg(&p.render),
         seg(&p.raster),
@@ -295,6 +304,7 @@ pub fn format_line(proc: &str, role: &str, surface: &str, p: &SurfacePerf) -> St
         p.upload_glyphs,
         p99(&p.raster),
         p99(&p.frame),
+        p99(&p.content),
     )
 }
 
@@ -313,7 +323,7 @@ pub fn spike_line(proc: &str, role: &str, surface: &str, t: &FrameTiming) -> Str
         .map(|d| d.as_millis())
         .unwrap_or(0);
     format!(
-        "t={ms} proc={proc} role={role} surface={surface} total_ms={:.2} tick={:.2} scene={:.2} encode={:.2} acquire={:.2} submit={:.2} present={:.2} cmds={} up_bytes={} up_images={} up_glyphs={} new_surface={}\n",
+        "t={ms} proc={proc} role={role} surface={surface} total_ms={:.2} tick={:.2} scene={:.2} encode={:.2} acquire={:.2} submit={:.2} present={:.2} cmds={} up_bytes={} up_images={} up_glyphs={} new_surface={} content_ms={:.2} rows={}\n",
         t.total_ms(),
         t.tick_ms,
         t.scene_ms,
@@ -326,12 +336,17 @@ pub fn spike_line(proc: &str, role: &str, surface: &str, t: &FrameTiming) -> Str
         t.upload_images,
         t.upload_glyphs,
         t.new_surface as u8,
+        t.content_ms,
+        t.content_rows,
     )
 }
 
 /// 是否算尖峰（严格大于 [`SPIKE_MS`]）。
+///
+/// 内容入场帧虽然总耗时可能低于阈值，也必须落一行：`content_ms` 是本件要判读的代价，
+/// 只在「内容行重画」时出现，漏掉就无从判断入场有没有触发。
 pub fn is_spike(t: &FrameTiming) -> bool {
-    t.total_ms() > SPIKE_MS
+    t.content_rows > 0 || t.total_ms() > SPIKE_MS
 }
 
 /// 超过 [`SPIKE_MS`] 才写尖峰日志；返回是否写了（单测直接断言）。
@@ -1148,6 +1163,8 @@ mod tests {
             upload_images: 2,
             upload_glyphs: 7,
             scene_cmds: 57,
+            content_ms: 0.0,
+            content_rows: 0,
             new_surface: true,
         }
     }
@@ -1164,6 +1181,38 @@ mod tests {
         assert!(!is_spike(&t), "恰好 8 ms 不算尖峰");
         t.scene_ms = SPIKE_MS + 0.01;
         assert!(is_spike(&t));
+    }
+
+    /// 内容入场帧必须落尖峰行（即使总耗时没超阈值），否则 content_ms 无从判读。
+    #[test]
+    fn content_entrance_frame_is_always_written() {
+        let t = FrameTiming {
+            scene_ms: 0.5,
+            content_ms: 1.25,
+            content_rows: 7,
+            ..Default::default()
+        };
+        assert!(is_spike(&t), "有内容行重画即算尖峰");
+        let line = spike_line("ether-settings", "TopBar", "popup", &t);
+        assert!(line.contains("content_ms=1.25"), "{line}");
+        assert!(line.contains("rows=7"), "{line}");
+    }
+
+    /// 周期行尾追加 content_p99；无内容入场时为 0.00。
+    #[test]
+    fn format_line_has_content_p99() {
+        let mut p = SurfacePerf::new();
+        p.record_phases(&timing_sample());
+        let line = format_line("ether-settings", "TopBar", "popup", &p);
+        assert!(line.ends_with("content_p99=0.00\n"), "{line}");
+        let t = FrameTiming {
+            content_ms: 2.5,
+            content_rows: 3,
+            ..Default::default()
+        };
+        p.record_phases(&t);
+        let line = format_line("ether-settings", "TopBar", "popup", &p);
+        assert!(line.contains("content_p99=2.50"), "{line}");
     }
 
     #[test]

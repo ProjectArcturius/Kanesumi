@@ -662,6 +662,13 @@ impl Shell {
                 timing.upload_bytes = cpu_upload_bytes;
             }
             timing.new_surface = std::mem::take(&mut self.surface_created);
+            // 内容入场：行重画发生在主树 `frame()`（面板自绘），这里取该弹层最近一帧的
+            // content 段；无入场 / 未重画 → 0。参 kanesumi_element::ContentFrameStats。
+            let content = kanesumi_element::tree::popup_content_stats(key);
+            // content 段 = 面板自绘（行重画）+ 该弹层表面光栅，**不含** commit。
+            // 首帧常含表面/管线创建，稳态帧才是内容入场本身的代价（README 判读口径）。
+            timing.content_ms = content.map_or(0.0, |s| s.content_ms + raster_ms);
+            timing.content_rows = content.map_or(0, |s| s.rows);
             self.perf_popup.record_phases(&timing);
             crate::perf::maybe_spike(
                 &self.perf_proc,
