@@ -365,6 +365,18 @@ pub trait App {
         false
     }
 
+    /// 弹层表面本帧的损伤（逻辑像素，相对弹层原点）。与主表面 `damage_hint` 同语义：
+    /// `None` = 整幅（首帧 / 尺寸变化 / App 不做局部渲染）；零面积 = 本帧什么都没变
+    ///（外壳跳过光栅与提交）。
+    ///
+    /// **调用时机：外壳先调 [`App::render_popup`]，再调本方法** —— 这样 App 可以拿本帧
+    /// Scene 与上一帧的差异回答「变了哪一块」（元素树外壳的 `scene_damage` 即如此；
+    /// 整块自绘的弹层根不这样算，就只能退回整幅）。缺省 `None` 保住既有整幅语义。
+    /// 参 docs/research/tb_card_perf/README.md。
+    fn popup_damage(&mut self, _key: u64) -> Option<Rect> {
+        None
+    }
+
     /// 画弹层（Scene 以弹层左上为原点，`size` = 弹层尺寸）。
     fn render_popup(&mut self, _engine: &TextEngine, _key: u64, _size: Size) -> Scene {
         Scene::default()

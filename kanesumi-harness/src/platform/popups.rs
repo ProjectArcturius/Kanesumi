@@ -53,6 +53,10 @@ pub(super) struct HostedPopup {
     scale: f32,
     pub(super) out: SurfaceOutput,
     dirty: bool,
+    /// 下一次渲染必须整幅：首帧 / 换尺寸 / **合成器 configure 改了尺寸**。
+    /// 新缓冲的像素是空的，按局部写会露出未初始化的区域（原点移动不需要 —— 场景以弹层
+    /// 左上为原点，表面平移不改变缓冲像素）。
+    needs_full: bool,
     /// 弹层表面的 `ether_visual_v1`（视觉偏移 + 不透明度）。挂在**弹层自己的表面**上：
     /// 合成器按 vsync 推进整块弹层的位移 / 淡出，弹层内容一帧都不重画（参 FEEL_PLAN §Ⅰ-4）。
     /// 合成器不支持 `ether_composition_v1` 时为 `None` → 直接到终值（旧行为）。
@@ -273,10 +277,29 @@ impl Shell {
             }
             // 位置记账跟着树走：rect 原点客户端改不了（positioner 固定），但在这一层之上新建
             // 抓取子弹层时父偏移取的就是它 —— 不更新会按旧原点算子层落点。
+            //
+            // ⚠ 原点变化**不**触发整幅重画：Scene 以弹层左上为原点（`popup_scene` 已按
+            // extent 平移），表面移动不改变缓冲里的像素。旧实现把「rect 变了」一律当整幅，
+            // 而行展开动画期间布局原点每帧抖动 < 0.01 pt → 每个稳定尺寸的帧也整块重光栅
+            //（2026-10-24 逐帧日志实测）。尺寸变化另有 `plan.resized` 走换缓冲。
             self.popups[i].rect = r.rect;
             // 尺寸变化走同一条表面：换缓冲 + 重画，表面身份（entered / 动画 / 抓取）一格不动。
+            //
+            // 判据量化到**物理像素**：行展开动画末端的高度会以 0.1 pt 级步进逼近终值，
+            // 逻辑尺寸每帧都「变了」但缓冲尺寸一个像素都没变 —— 换缓冲就意味着整块重光栅，
+            // 而画面其实没动（2026-10-24 逐帧日志：稳定 360×280 的帧被逐帧换缓冲）。
             if plan.resized.contains(&i) {
-                self.resize_popup(i, r.rect);
+                let sc = self.popups[i].scale.max(1.0);
+                let old = self.popups[i].size;
+                let quant = |v: f32| (v * sc).round() as i32;
+                if quant(old.width) != quant(r.rect.size.width)
+                    || quant(old.height) != quant(r.rect.size.height)
+                {
+                    self.resize_popup(i, r.rect);
+                } else {
+                    // 逻辑尺寸跟上（排版 / 场景坐标用），缓冲与光栅器不动。
+                    self.popups[i].size = r.rect.size;
+                }
             }
             // 入场：首帧内容**上一轮**已提交（本轮之前合成器已经导入过这个表面）→ 现在起跑。
             // 晚一帧是有意的：新表面的首次导入 / 上传要花掉一整帧，若与动画首帧挤在一起，
@@ -339,6 +362,7 @@ impl Shell {
         // 整幅重画（不等 damage）：缩小时尤其重要 —— 新缓冲必须先画满再提交，
         // 否则露出来的那块是上一帧的旧像素（收起一行会闪一帧残影）。
         p.dirty = true;
+        p.needs_full = true;
         self.dirty = true;
         // 帧节拍日志：与入场 / 退场同一份（`ether-harness-pacing.log`），按时间排在一起。
         let ms = std::time::SystemTime::now()
@@ -504,6 +528,7 @@ impl Shell {
             scale,
             out,
             dirty: true,
+            needs_full: true,
             visual,
             enter: req.enter,
             exit: req.exit,
@@ -575,6 +600,10 @@ impl Shell {
 
     /// 渲染脏弹层：App::render_popup → 光栅（GPU 直出 / CPU→dmabuf）→ 提交。
     pub(super) fn render_popups(&mut self, qh: &QueueHandle<Self>) {
+        // TextEngine::clone 零拷贝（共享字体栈与塑形缓存）：先借出一份，避免与 `&mut self.app`
+        // / `ensure_popup_renderer(&mut self)` 抢 self 的借用。
+        let engine_owned = self.engine.clone();
+        let engine: &TextEngine = &engine_owned;
         for i in 0..self.popups.len() {
             let key = self.popups[i].key;
             let wants = {
@@ -585,17 +614,64 @@ impl Shell {
                 continue;
             }
             self.popups[i].dirty = false;
-            // 惰性创建渲染器：GPU 一张画布优先，失败回退 CPU（逐表面）。
-            self.ensure_popup_renderer(i);
+            // 先要 Scene，再问损伤：损伤由 App 比对**本帧 Scene 与上一帧**得出（元素树外壳
+            // 的 `scene_damage`）—— 整块自绘的弹层根（网络卡这类）只有这样才知道「变了哪一块」。
+            // 合成 Scene 只是拼已有绘制命令（不重排、不光栅），稳态 0.02 ms 量级。
+            let needs_full = std::mem::take(&mut self.popups[i].needs_full);
             let size = self.popups[i].size;
             let t_render = Instant::now();
-            let engine: &TextEngine = &self.engine;
             let app = &mut self.app;
             let scene = match guard("render_popup", || app.render_popup(engine, key, size)) {
                 Some(s) => s,
-                None => continue,
+                None => {
+                    // 没画成：整幅标记留给下一轮，别把首帧弄成局部。
+                    self.popups[i].needs_full = needs_full;
+                    continue;
+                }
             };
             let render_ms = t_render.elapsed().as_secs_f32() * 1000.0;
+            let app_damage = {
+                let app = &mut self.app;
+                guard("popup_damage", || app.popup_damage(key)).unwrap_or(None)
+            };
+            // 首帧 / 换尺寸 → 整幅；零面积 = 本帧什么都没变 → 不光栅、不提交。
+            let forced = popup_full_forced();
+            let damage = if needs_full || forced { None } else { app_damage };
+            if damage.is_some_and(|d| d.size.width <= 0.0 || d.size.height <= 0.0) {
+                // 输入 / 时钟之类的唤醒没有改动任何视觉：不产生弹层帧。
+                // Scene 已作为下一帧的差异基准留存（App 侧），像素与上一帧相同。
+                continue;
+            }
+            // 惰性创建渲染器：GPU 一张画布优先，失败回退 CPU（逐表面）。
+            self.ensure_popup_renderer(i);
+            // 逐帧损伤（RUST_LOG=kanesumi_harness::platform=debug）：判断「这一帧为什么画」
+            // 与「局部占比多少」的唯一直接证据，真机与无头同一行格式。
+            log::debug!(
+                "弹层帧 key={key} size={:.0}×{:.0} dmg={} src={}",
+                size.width,
+                size.height,
+                match damage {
+                    None => "全幅".to_string(),
+                    Some(d) => format!(
+                        "{:.0}×{:.0}@{:.0},{:.0}（{:.1}%）",
+                        d.size.width,
+                        d.size.height,
+                        d.origin.x,
+                        d.origin.y,
+                        100.0 * d.size.width * d.size.height
+                            / (size.width * size.height).max(1.0)
+                    ),
+                },
+                if forced {
+                    "整幅(KANESUMI_POPUP_FULL)"
+                } else if needs_full {
+                    "整幅(首帧/换尺寸)"
+                } else if app_damage.is_none() {
+                    "整幅(场景差异)"
+                } else {
+                    "Scene差异"
+                },
+            );
             let p = &mut self.popups[i];
             let mut raster_ms = 0.0f32;
             let mut commit_ms = 0.0f32;
@@ -609,9 +685,19 @@ impl Shell {
             if let Some(cpu) = p.cpu.as_mut() {
                 let (pw, ph) = cpu.physical_size();
                 let t = Instant::now();
-                let rgba = cpu.render(engine, &scene, None);
+                // 局部光栅：只重画损伤区，其余像素保留上一帧（与主表面 / 浮层同一条路径）。
+                let rgba = cpu.render(engine, &scene, damage);
                 raster_ms = t.elapsed().as_secs_f32() * 1000.0;
-                cpu_upload_bytes = (pw as u64) * (ph as u64) * 4;
+                // 上传量 = 本帧写进 dmabuf / SHM 的像素字节（损伤区；None = 整幅）。
+                cpu_upload_bytes = damage.map_or_else(
+                    || (pw as u64) * (ph as u64) * 4,
+                    |d| {
+                        let sc = p.scale.max(1.0);
+                        (d.size.width * sc).round().max(0.0) as u64
+                            * (d.size.height * sc).round().max(0.0) as u64
+                            * 4
+                    },
+                );
                 // 子弹层同主表面 / 浮层走 dmabuf 直通（SHM 为回退）。
                 let t = Instant::now();
                 let surface = p.popup.wl_surface().clone();
@@ -624,13 +710,14 @@ impl Shell {
                     ph,
                     rgba,
                     p.scale,
-                    None,
+                    damage,
                 );
                 commit_ms = t.elapsed().as_secs_f32() * 1000.0;
             } else if let Some(r) = p.renderer.as_mut() {
-                // GPU（C2）：v2 增量画布整幅提交（子弹层仅在脏帧渲染，无损伤裁剪需求）。
+                // GPU（C2）：v2 增量画布 —— 部分损伤走 scissor + 保留上一帧其余像素
+                //（与主表面同一条路径；整幅帧传 None）。
                 let t = Instant::now();
-                r.render_with_damage(engine, &scene, None);
+                r.render_with_damage(engine, &scene, damage);
                 raster_ms = t.elapsed().as_secs_f32() * 1000.0;
                 gpu_timing = Some(r.take_frame_timing());
                 gpu_samples = r.drain_gpu_samples();
@@ -795,6 +882,8 @@ impl PopupHandler for Shell {
         }
         p.configured = true;
         p.dirty = true;
+        // 首次 configure / 合成器给的尺寸与申报不同都要先画满一块新缓冲。
+        p.needs_full = true;
     }
 
     fn done(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, popup: &Popup) {
@@ -818,6 +907,15 @@ impl PopupHandler for Shell {
         }
         self.dirty = true;
     }
+}
+
+/// 诊断 / 回退开关：`KANESUMI_POPUP_FULL=1` 时弹层表面每帧整幅重画（= 改前的提交行为）。
+///
+/// 两个用途：① 无头验收拿它当「改前基线」做逐字节对照（局部重画与整幅重画必须像素一致）；
+/// ② 真机上局部损伤若出现残影，可一键回到整幅，不必回滚版本。
+fn popup_full_forced() -> bool {
+    static FORCED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FORCED.get_or_init(|| std::env::var_os("KANESUMI_POPUP_FULL").is_some_and(|v| v != "0"))
 }
 
 #[cfg(test)]

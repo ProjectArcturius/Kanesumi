@@ -17,6 +17,7 @@
 // | enable_popups 等    | 弹层分离：覆盖层弹层各由外壳开 xdg_popup 承载（POPUP_PLAN）|
 
 use kanesumi_canvas::Scene;
+use kanesumi_canvas::scene::SceneCommand;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
 use kanesumi_element::{Action, Key, Modifiers, Tree, WidgetId};
@@ -197,6 +198,11 @@ pub struct TreeHost<A: TreeApp> {
     pointer: Point,
     /// 弹层分离模式下需重画的弹层（key = `WidgetId::to_u64`）。
     popup_dirty: std::collections::HashSet<u64>,
+    /// 各弹层上一帧的 Scene —— 逐条比对得出本帧真正变了的区域（参 `scene_damage`）。
+    popup_scene: std::collections::HashMap<u64, Scene>,
+    /// 各弹层表面本帧的损伤（key 在场 = 已算出；值 `None` = 整幅，`Some` = 局部）。
+    /// `render_popup` 写入，外壳随后经 `popup_damage` 取走。
+    popup_damage: std::collections::HashMap<u64, Option<Rect>>,
     /// 浮层表面的树（与 `TreeApp::floating_layers` 一一对应）。
     floating: Vec<FloatingTree>,
     /// 元素树图层（G3-c）↔ 外壳图层 id。key = (表面序号：0 主表面 / i+1 第 i 浮层, 节点)。
@@ -234,6 +240,8 @@ impl<A: TreeApp> TreeHost<A> {
             damage_full: true,
             pointer: Point::new(0.0, 0.0),
             popup_dirty: std::collections::HashSet::new(),
+            popup_scene: std::collections::HashMap::new(),
+            popup_damage: std::collections::HashMap::new(),
             floating,
             layer_ids: std::collections::HashMap::new(),
             layer_rev: std::collections::HashMap::new(),
@@ -514,11 +522,31 @@ impl<A: TreeApp> App for TreeHost<A> {
         self.popup_dirty.contains(&key)
     }
 
+    fn popup_damage(&mut self, key: u64) -> Option<Rect> {
+        // 外壳在 `render_popup` **之后**调用（顺序见 platform/popups.rs）：损伤由本帧 Scene
+        // 与上一帧的差异算出（参 `scene_damage`）。
+        match self.popup_damage.remove(&key) {
+            // `Some(None)` = 整幅；`Some(Some(d))` = 局部。
+            Some(d) => d,
+            // 没有记录 = 本帧没画这个弹层 → 零面积（外壳跳过光栅与提交）。
+            None => Some(Rect::new(0.0, 0.0, 0.0, 0.0)),
+        }
+    }
+
     fn render_popup(&mut self, _engine: &TextEngine, key: u64, _size: Size) -> Scene {
         self.popup_dirty.remove(&key);
-        self.popup_id(key)
-            .and_then(|id| self.tree.popup_scene(id))
-            .unwrap_or_default()
+        let Some(id) = self.popup_id(key) else {
+            return Scene::default();
+        };
+        let Some(scene) = self.tree.popup_scene(id) else {
+            return Scene::default();
+        };
+        // 上一帧的 Scene 留着做下一帧的差异基准；clone 只复制命令与 `Arc`，不复制像素。
+        let prev = self.popup_scene.insert(key, scene.clone());
+        // 没有上一帧（首帧 / 表面重建）= 整幅；其余按差异。
+        let damage = scene_damage(prev.as_ref(), &scene);
+        self.popup_damage.insert(key, damage);
+        scene
     }
 
     fn popup_input(&mut self, key: u64, event: InputEvent) {
@@ -732,16 +760,25 @@ impl<A: TreeApp> App for TreeHost<A> {
         // 本帧产物即将由外壳提交：汇报进入提交的节点（内容就绪门控就绪信号）。
         // 平台提交点紧随本调用（platform.rs 主循环），故就绪与解挂同帧生效。
         self.tree.report_content_committed(&frame.painted);
-        // 弹层分离：本帧损伤（None = 全量）碰到的弹层要重画其表面。
+        // 弹层分离：判定本帧哪些弹层**参与**重画；画什么由 `render_popup` 的 Scene 差异定
+        //（参 `scene_damage`）。弹层节点与主表面同树，但画在**自己的表面**上：主表面为什么
+        // 重画，不代表弹层内容变了。旧实现把 `frame.damage == None` 当整幅（它同时表示
+        // 「什么都没变」），且任意与弹层矩形相交的主表面损伤都整块重画弹层 —— 面板开着不动
+        // 时每帧整幅光栅 + 整块上传（真机 `surface=popup` 的 `dmg_pct` 恒 100.00，2026-10-23）。
+        // 参 docs/research/tb_card_perf/README.md §根因。
         if self.tree.detached_popups() {
-            for id in self.tree.popups().collect::<Vec<_>>() {
-                let hit = match (frame.damage, self.tree.popup_extent(id)) {
-                    (None, _) => true,
-                    (Some(d), Some(r)) => d.intersect(r).is_some(),
-                    (Some(_), None) => false,
+            let ids = self.tree.popups().collect::<Vec<_>>();
+            // 已关弹层的残留记账清掉（key = WidgetId 的 index+generation，可被复用）。
+            let live = |k: &u64| ids.iter().any(|id| id.to_u64() == *k);
+            self.popup_damage.retain(|k, _| live(k));
+            self.popup_scene.retain(|k, _| live(k));
+            for id in ids {
+                let Some(extent) = self.tree.popup_extent(id) else {
+                    continue;
                 };
-                if hit {
-                    self.popup_dirty.insert(id.to_u64());
+                let key = id.to_u64();
+                if popup_damage_hits(frame.full, frame.damage, extent) {
+                    self.popup_dirty.insert(key);
                 }
             }
         }
@@ -752,6 +789,251 @@ impl<A: TreeApp> App for TreeHost<A> {
             (Some(a), Some(b)) => Some(union(a, b)),
         };
         *out = frame.scene;
+    }
+}
+
+/// 本帧主表面损伤是否碰到该弹层 —— 只决定「参与不参与判定」。
+///
+/// 两个易错点：
+/// 1. `damage == None` 且 `full == false` 表示「本帧没变」，**不是**整幅（旧实现按整幅处理，
+///    面板开着不动时每帧重画弹层）；
+/// 2. 与弹层**相交不到**的主表面损伤（例如条上状态图标的重画）不得唤醒弹层。
+fn popup_damage_hits(full: bool, damage: Option<Rect>, extent: Rect) -> bool {
+    if full {
+        return true;
+    }
+    match damage {
+        Some(d) if d.size.width > 0.0 && d.size.height > 0.0 => d.intersect(extent).is_some(),
+        _ => false,
+    }
+}
+
+/// 两帧弹层 Scene 的差异 → 本帧要画的局部损伤（`None` = 整幅）。
+///
+/// 为什么要在外壳比对 Scene：弹层根通常是一个**整块自绘**的自定义控件（网络卡 / 音量卡…），
+/// 元素树对它的重画只能记「整块绘制范围」→ 每帧整块光栅 + 整块上传（真机 `dmg_pct=100`）。
+/// Scene 是最终绘制指令，比对「哪些命令变了」就能得出真正变了的区域，且对任何 App 成立，
+/// 不要求控件自己维护损伤账本（漏记一次就是残影）。
+///
+/// 按**内容**匹配而不是按位置：悬停高亮常在某个位置插入 / 移除一条 `FillRect`，按位置比对
+/// 会让其后所有命令都「变了」→ 退化成整幅。这里做多重集匹配（同一条命令可出现多次），
+/// 只把「新增 / 消失」的命令矩形算进损伤；匹配后的相对顺序必须单调，否则说明命令跨越了
+/// 彼此的绘制顺序（叠放关系变了，像素可能变而命令值不变）→ 整幅。
+///
+/// 保守规则（宁可多画，绝不漏画）：
+/// - 没有上一帧（首帧）→ `None`；
+/// - `PushClip` / `PopClip` 新增 / 消失 / 改值 → `None`（裁剪变了，其后命令的可见区域都变）；
+/// - 匹配顺序出现倒置（重排 / 跨裁剪移动）→ `None`；
+/// - 其余取新增 ∪ 消失命令的矩形之并，并外扩 1 pt 吸收抗锯齿边缘。
+fn scene_damage(prev: Option<&Scene>, next: &Scene) -> Option<Rect> {
+    let prev = prev?;
+    let mut used = vec![false; prev.commands.len()];
+    let mut order: Vec<usize> = Vec::with_capacity(next.commands.len());
+    let mut damage: Option<Rect> = None;
+    for b in &next.commands {
+        // 预筛：变体 + 绘制矩形一致的才做逐字段比较（文本内容 / 颜色等）。
+        let hit = prev.commands.iter().enumerate().find(|(i, a)| {
+            !used[*i] && command_rect(a) == command_rect(b) && same_command(a, b)
+        });
+        match hit.map(|(i, _)| i) {
+            Some(i) => {
+                used[i] = true;
+                order.push(i);
+            }
+            None => {
+                if is_clip(b) {
+                    return None;
+                }
+                // 新增命令：它盖住的区域要重画（底下的旧像素被覆盖 / 新像素要出现）。
+                damage = union_opt(damage, command_rect(b));
+            }
+        }
+    }
+    for (i, a) in prev.commands.iter().enumerate() {
+        if used[i] {
+            continue;
+        }
+        if is_clip(a) {
+            return None;
+        }
+        // 消失命令：它原来盖住的区域要露出底下的内容。
+        damage = union_opt(damage, command_rect(a));
+    }
+    // 匹配顺序必须单调：倒置 = 绘制顺序变了（叠放关系影响像素），保守整幅。
+    if order.windows(2).any(|w| w[0] >= w[1]) {
+        return None;
+    }
+    Some(match damage {
+        Some(d) => Rect::new(
+            d.origin.x - DAMAGE_BLEED,
+            d.origin.y - DAMAGE_BLEED,
+            d.size.width + DAMAGE_BLEED * 2.0,
+            d.size.height + DAMAGE_BLEED * 2.0,
+        ),
+        None => Rect::new(0.0, 0.0, 0.0, 0.0),
+    })
+}
+
+fn is_clip(c: &SceneCommand) -> bool {
+    matches!(c, SceneCommand::PushClip { .. } | SceneCommand::PopClip)
+}
+
+fn union_opt(acc: Option<Rect>, r: Option<Rect>) -> Option<Rect> {
+    match (acc, r) {
+        (Some(a), Some(b)) => Some(union(a, b)),
+        (None, Some(b)) => Some(b),
+        (a, None) => a,
+    }
+}
+
+/// 抗锯齿 / 亚像素字形的边缘可能越过命令矩形 1 px 以内：损伤外扩吸收，
+/// 否则局部重画会在边缘留下上一帧的残色。
+const DAMAGE_BLEED: f32 = 1.0;
+
+/// 命令的绘制范围（逻辑像素）。`PopClip` 自身不画东西。
+fn command_rect(c: &SceneCommand) -> Option<Rect> {
+    use SceneCommand::*;
+    match c {
+        FillRect { rect, .. } | Text { rect, .. } | Image { rect, .. } => Some(*rect),
+        // 描边以矩形边线为中心，向外扩 thickness/2。
+        StrokeRect { rect, thickness, .. } => Some(Rect::new(
+            rect.origin.x - thickness * 0.5,
+            rect.origin.y - thickness * 0.5,
+            rect.size.width + thickness,
+            rect.size.height + thickness,
+        )),
+        Arc {
+            center,
+            radius,
+            thickness,
+            ..
+        } => {
+            let r = *radius + thickness * 0.5;
+            Some(Rect::new(center.x - r, center.y - r, r * 2.0, r * 2.0))
+        }
+        Triangle { p0, p1, p2, .. } => {
+            let (x0, x1) = (p0.x.min(p1.x).min(p2.x), p0.x.max(p1.x).max(p2.x));
+            let (y0, y1) = (p0.y.min(p1.y).min(p2.y), p0.y.max(p1.y).max(p2.y));
+            Some(Rect::new(x0, y0, x1 - x0, y1 - y0))
+        }
+        PushClip { rect } => Some(*rect),
+        PopClip => None,
+    }
+}
+
+/// 两条命令是否画出**完全相同**的像素。位图用 `Arc::ptr_eq`：同一份缓冲零拷贝复用，
+/// 内容必然相同；直接比内容会在每帧对整张图标做一次逐字节比较。
+fn same_command(a: &SceneCommand, b: &SceneCommand) -> bool {
+    use SceneCommand::*;
+    match (a, b) {
+        (
+            FillRect {
+                color: c1,
+                rect: r1,
+                corner_radius: k1,
+            },
+            FillRect {
+                color: c2,
+                rect: r2,
+                corner_radius: k2,
+            },
+        ) => c1 == c2 && r1 == r2 && k1 == k2,
+        (
+            StrokeRect {
+                color: c1,
+                rect: r1,
+                thickness: t1,
+                corner_radius: k1,
+            },
+            StrokeRect {
+                color: c2,
+                rect: r2,
+                thickness: t2,
+                corner_radius: k2,
+            },
+        ) => c1 == c2 && r1 == r2 && t1 == t2 && k1 == k2,
+        (
+            Text {
+                content: s1,
+                rect: r1,
+                color: c1,
+                style: y1,
+                align: a1,
+                wrap: w1,
+                max_lines: m1,
+                overflow: o1,
+            },
+            Text {
+                content: s2,
+                rect: r2,
+                color: c2,
+                style: y2,
+                align: a2,
+                wrap: w2,
+                max_lines: m2,
+                overflow: o2,
+            },
+        ) => s1 == s2 && r1 == r2 && c1 == c2 && y1 == y2 && a1 == a2 && w1 == w2 && m1 == m2 && o1 == o2,
+        (
+            Arc {
+                center: p1,
+                radius: r1,
+                thickness: t1,
+                color: c1,
+                start_deg: s1,
+                end_deg: e1,
+            },
+            Arc {
+                center: p2,
+                radius: r2,
+                thickness: t2,
+                color: c2,
+                start_deg: s2,
+                end_deg: e2,
+            },
+        ) => p1 == p2 && r1 == r2 && t1 == t2 && c1 == c2 && s1 == s2 && e1 == e2,
+        (PushClip { rect: r1 }, PushClip { rect: r2 }) => r1 == r2,
+        (PopClip, PopClip) => true,
+        (
+            Image {
+                rgba: g1,
+                width: w1,
+                height: h1,
+                rect: r1,
+                tint: t1,
+                opacity: o1,
+            },
+            Image {
+                rgba: g2,
+                width: w2,
+                height: h2,
+                rect: r2,
+                tint: t2,
+                opacity: o2,
+            },
+        ) => {
+            std::sync::Arc::ptr_eq(g1, g2)
+                && w1 == w2
+                && h1 == h2
+                && r1 == r2
+                && t1 == t2
+                && o1 == o2
+        }
+        (
+            Triangle {
+                p0: a0,
+                p1: a1,
+                p2: a2,
+                color: c1,
+            },
+            Triangle {
+                p0: b0,
+                p1: b1,
+                p2: b2,
+                color: c2,
+            },
+        ) => a0 == b0 && a1 == b1 && a2 == b2 && c1 == c2,
+        _ => false,
     }
 }
 
@@ -1114,5 +1396,109 @@ mod tests {
             frame(&mut h, &e);
         }
         assert!(!h.needs_redraw(), "动画完成后外壳转空闲");
+    }
+
+    // ── 弹层局部损伤（tb-card-perf）────────────────────────────────────────────
+    //
+    // 弹层根常是整块自绘的自定义控件（网络卡 / 音量卡），元素树只能给它整块绘制范围。
+    // 外壳按 Scene 差异算损伤 —— 下面钉住「只重画变化那块」与几条保守回退规则。
+
+    /// 一张 360×340 的卡：整块底色 + 一行（可选高亮），全部在一层裁剪里。
+    fn card_scene(row_hl: bool) -> Scene {
+        let mut s = Scene::default();
+        s.fill_rect(
+            kanesumi_core::Color::rgb(0.10, 0.10, 0.10),
+            Rect::new(0.0, 0.0, 360.0, 340.0),
+        );
+        s.push_clip(Rect::new(0.0, 0.0, 360.0, 340.0));
+        let c = if row_hl {
+            kanesumi_core::Color::rgb(0.20, 0.20, 0.20)
+        } else {
+            kanesumi_core::Color::rgb(0.15, 0.15, 0.15)
+        };
+        s.fill_rect(c, Rect::new(16.0, 56.0, 328.0, 56.0));
+        s.pop_clip();
+        s
+    }
+
+    /// 只换一行的底色 → 损伤 = 那一行（外扩 1 pt 吸收抗锯齿），不是整块。
+    #[test]
+    fn popup_scene_diff_is_local_for_a_row_change() {
+        let (a, b) = (card_scene(false), card_scene(true));
+        let d = scene_damage(Some(&a), &b).expect("应得局部损伤");
+        assert!(
+            (d.origin.x - 15.0).abs() < 0.01
+                && (d.origin.y - 55.0).abs() < 0.01
+                && (d.size.width - 330.0).abs() < 0.01
+                && (d.size.height - 58.0).abs() < 0.01,
+            "损伤应恰为那一行外扩 1 pt：{d:?}"
+        );
+        assert!(
+            d.size.width * d.size.height < 360.0 * 340.0 * 0.4,
+            "局部损伤必须远小于整卡（门 < 40%）：{d:?}"
+        );
+    }
+
+    /// 两帧一模一样 → 零面积（外壳据此跳过光栅与提交，不产生新帧）。
+    #[test]
+    fn popup_scene_diff_of_identical_frames_is_empty() {
+        let a = card_scene(false);
+        let d = scene_damage(Some(&a), &a.clone()).expect("应得零面积");
+        assert_eq!((d.size.width, d.size.height), (0.0, 0.0), "无变化 = 零面积");
+    }
+
+    /// 首帧（没有上一帧）必须整幅；裁剪命令消失也整幅 —— 宁可多画。
+    #[test]
+    fn popup_scene_diff_falls_back_to_full() {
+        let a = card_scene(false);
+        assert!(scene_damage(None, &a).is_none(), "首帧整幅");
+
+        let mut clipped = a.clone();
+        clipped.commands[1] = SceneCommand::PushClip {
+            rect: Rect::new(0.0, 0.0, 360.0, 300.0),
+        };
+        assert!(scene_damage(Some(&a), &clipped).is_none(), "裁剪变化整幅");
+    }
+
+    /// 悬停高亮这类「插入一条命令」只该重画那条命令的范围，不能退化成整幅。
+    #[test]
+    fn popup_scene_diff_handles_inserted_command() {
+        let a = card_scene(false);
+        let mut b = a.clone();
+        // 第 2 条（裁剪之后）插入一行悬停底：其后命令整体后移一位。
+        b.commands.insert(
+            2,
+            SceneCommand::FillRect {
+                color: kanesumi_core::Color::rgb(0.25, 0.25, 0.25),
+                rect: Rect::new(16.0, 120.0, 328.0, 56.0),
+                corner_radius: 0.0,
+            },
+        );
+        let d = scene_damage(Some(&a), &b).expect("插入命令应得局部损伤");
+        assert!(
+            (d.origin.y - 119.0).abs() < 0.01 && (d.size.height - 58.0).abs() < 0.01,
+            "只该重画插入的那一行：{d:?}"
+        );
+    }
+
+    /// 两条命令互换了绘制顺序（叠放关系变了，像素可能变而命令值不变）→ 整幅。
+    #[test]
+    fn popup_scene_diff_reorder_is_full() {
+        let mut a = card_scene(false);
+        a.commands.swap(0, 2);
+        assert!(scene_damage(Some(&card_scene(false)), &a).is_none(), "重排整幅");
+    }
+
+    /// 主表面损伤是否唤醒弹层：没变（`None` + 非整幅）不唤醒，碰不到弹层的损伤也不唤醒。
+    #[test]
+    fn popup_wakeup_requires_intersecting_damage() {
+        let extent = Rect::new(100.0, 30.0, 360.0, 340.0);
+        assert!(!popup_damage_hits(false, None, extent), "没变不得唤醒弹层");
+        assert!(
+            !popup_damage_hits(false, Some(Rect::new(0.0, 0.0, 30.0, 30.0)), extent),
+            "条上图标的损伤不得唤醒弹层"
+        );
+        assert!(popup_damage_hits(false, Some(Rect::new(120.0, 60.0, 10.0, 10.0)), extent));
+        assert!(popup_damage_hits(true, None, extent), "主表面整幅 → 全部参与判定");
     }
 }
