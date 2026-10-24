@@ -158,3 +158,43 @@ fn clamp_axis(v: f32, min: f32, max: f32) -> f32 {
     let v = if v.is_nan() { 0.0 } else { v.max(0.0) };
     v.min(max).max(min.max(0.0))
 }
+
+/// 焦点组的移动轴（正典 §Ⅳ：方向键在组内移动，UWP XYFocus）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FocusGroupAxis {
+    /// 纵向列表：Up / Down 移动。
+    #[default]
+    Vertical,
+    /// 横向条：Left / Right 移动。
+    Horizontal,
+    /// 网格：按声明列数行主序移动（Up / Down ±列数，Left / Right 行内 ±1）。
+    Grid,
+}
+
+/// 焦点组声明。容器经 `Tree::set_focus_group` 声明后：
+///
+/// - 方向键在组内**可聚焦**子元素间移动（跳过禁用 / 不可见），到端**不循环**，
+///   与 UWP 列表一致（任务 k-keyboard-nav §设计 1）；
+/// - 嵌套焦点组在组间移动时按**整体**经过（入口项 = 其上次焦点或首项），
+///   与该组轴无关的方向键向外层组穿越（如横向缩略图行内按 Down 走到行下方项）；
+/// - Home / End 到组内首末；组本身占**一个** Tab 停靠位（进组落入口项）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FocusGroupSpec {
+    pub axis: FocusGroupAxis,
+    /// `Grid` 的列数（≥1，行主序按树先序）；其余轴忽略。
+    pub columns: usize,
+}
+
+impl FocusGroupSpec {
+    pub fn vertical() -> Self {
+        Self { axis: FocusGroupAxis::Vertical, columns: 1 }
+    }
+
+    pub fn horizontal() -> Self {
+        Self { axis: FocusGroupAxis::Horizontal, columns: 1 }
+    }
+
+    pub fn grid(columns: usize) -> Self {
+        Self { axis: FocusGroupAxis::Grid, columns: columns.max(1) }
+    }
+}

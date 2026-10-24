@@ -9,8 +9,8 @@ use kanesumi_core::{Color, Point, Rect, Size};
 use kanesumi_element::testing::TestHarness;
 use kanesumi_element::widgets::{Border, Label, Stack};
 use kanesumi_element::{
-    Align, ArrangeCtx, Event, EventCtx, Insets, Key, LayoutProps, MeasureCtx, PaintCtx,
-    PointerButton, PopupDismissed, PopupSpec, UpdateCtx, VisualState, Widget,
+    Align, ArrangeCtx, Event, EventCtx, FocusGroupSpec, Insets, Key, LayoutProps, MeasureCtx,
+    PaintCtx, PointerButton, PopupDismissed, PopupSpec, UpdateCtx, VisualState, Widget,
 };
 
 // ── 测试控件 ──────────────────────────────────────────────────────────────────
@@ -1511,4 +1511,142 @@ fn tooltip_delay_and_hide_expire_by_real_elapsed_time() {
     assert!(h.tree.tooltip_popup().is_some());
     h.idle(4.0); // 累计 6 s，越过 5 s 隐藏计时
     assert_eq!(h.tree.tooltip_popup(), None, "隐藏计时按真实时间到期");
+}
+
+// ── 焦点组（任务 k-keyboard-nav，正典 §Ⅳ）───────────────────────────────────
+
+/// 纵向组内方向键移动：跳过禁用 / 隐藏，到端不循环（键仍消费），Home / End 到首末。
+#[test]
+fn focus_group_arrows_move_and_skip_disabled_and_stop_at_ends() {
+    let mut h = TestHarness::new(300.0, 300.0);
+    let col = h.tree.insert(h.root(), Stack::column());
+    h.tree.set_focus_group(col, Some(FocusGroupSpec::vertical()));
+    let a = h.tree.insert(col, TestButton::new(50.0, 20.0));
+    let b = h.tree.insert(col, TestButton::new(50.0, 20.0));
+    let c = h.tree.insert(col, TestButton::new(50.0, 20.0));
+    let d = h.tree.insert(col, TestButton::new(50.0, 20.0));
+    h.tree.set_enabled(b, false);
+    h.tree.update_props(c, |p| p.visible = false);
+    h.frame();
+    assert!(h.tree.focus(a, true));
+    assert!(h.key(Key::Down), "组内方向键应被消费");
+    assert_eq!(h.tree.focused(), Some(d), "禁用 b 与隐藏 c 被跳过");
+    assert!(h.key(Key::Down));
+    assert_eq!(h.tree.focused(), Some(d), "到端不循环：焦点停在末项");
+    assert!(h.key(Key::Up));
+    assert_eq!(h.tree.focused(), Some(a), "回到首项后再 Up 同样不循环");
+    assert!(h.key(Key::Home));
+    assert_eq!(h.tree.focused(), Some(a));
+    assert!(h.key(Key::End));
+    assert_eq!(h.tree.focused(), Some(d));
+}
+
+/// 组是单个 Tab 停靠位：进组落入口项（首次首项），出组跳过组内其余项，
+/// Shift+Tab 回组落「上次键盘焦点」（入口记忆）。
+#[test]
+fn focus_group_is_single_tab_stop_with_memory() {
+    let mut h = TestHarness::new(300.0, 300.0);
+    let col = h.tree.insert(h.root(), Stack::column());
+    h.tree.set_focus_group(col, Some(FocusGroupSpec::vertical()));
+    let a = h.tree.insert(col, TestButton::new(50.0, 20.0));
+    let b = h.tree.insert(col, TestButton::new(50.0, 20.0));
+    let c = h.tree.insert(col, TestButton::new(50.0, 20.0));
+    let d = h.tree.insert_with(h.root(), TestButton::new(50.0, 20.0), fixed(50.0, 20.0));
+    h.tree.update_props(d, |p| p.margin = Insets::new(0.0, 120.0, 0.0, 0.0));
+    h.frame();
+    h.tab();
+    assert_eq!(h.tree.focused(), Some(a), "首个停靠位是组，落组内首项");
+    assert!(h.key(Key::Down));
+    assert_eq!(h.tree.focused(), Some(b));
+    h.tab();
+    assert_eq!(h.tree.focused(), Some(d), "出组直接到组外的下一停靠位");
+    h.tab();
+    assert_eq!(h.tree.focused(), Some(b), "末尾环绕回组停靠位，落上次焦点（入口记忆）");
+    h.shift_tab();
+    assert_eq!(h.tree.focused(), Some(d));
+    h.shift_tab();
+    assert_eq!(h.tree.focused(), Some(b), "Shift+Tab 进组落上次焦点，不回首项");
+    let _ = c;
+}
+
+/// 网格组按声明列数行主序移动：行内 Left / Right、跨行 Up / Down，行列到界不动。
+#[test]
+fn focus_group_grid_moves_row_major() {
+    let mut h = TestHarness::new(300.0, 300.0);
+    let grid = h.tree.insert(h.root(), Stack::column());
+    h.tree.set_focus_group(grid, Some(FocusGroupSpec::grid(3)));
+    let mut ids = Vec::new();
+    for i in 0..7 {
+        ids.push(h.tree.insert(grid, TestButton::new(50.0, 20.0)));
+    }
+    h.frame();
+    assert!(h.tree.focus(ids[0], true));
+    h.key(Key::Right);
+    assert_eq!(h.tree.focused(), Some(ids[1]));
+    h.key(Key::Down);
+    assert_eq!(h.tree.focused(), Some(ids[4]), "Down 跨一行（±3）");
+    h.key(Key::Down);
+    assert_eq!(h.tree.focused(), Some(ids[4]), "第 1 列下方无项（末行 1 项），原地不动");
+    h.key(Key::Down);
+    assert_eq!(h.tree.focused(), Some(ids[4]), "到端不循环");
+    h.key(Key::End);
+    assert_eq!(h.tree.focused(), Some(ids[6]));
+}
+
+/// 嵌套组：外层纵向、内层横向行。行内 Right / Left 走行轴；行内 Down 穿越到
+/// 外层组的下一项；外层 Down 进入行时落其入口项。
+#[test]
+fn focus_group_nested_group_crosses_axes_outward() {
+    let mut h = TestHarness::new(300.0, 300.0);
+    let outer = h.tree.insert(h.root(), Stack::column());
+    h.tree.set_focus_group(outer, Some(FocusGroupSpec::vertical()));
+    let above = h.tree.insert(outer, TestButton::new(50.0, 20.0));
+    let row = h.tree.insert(outer, Stack::row());
+    h.tree.set_focus_group(row, Some(FocusGroupSpec::horizontal()));
+    let r1 = h.tree.insert(row, TestButton::new(30.0, 20.0));
+    let r2 = h.tree.insert(row, TestButton::new(30.0, 20.0));
+    let below = h.tree.insert(outer, TestButton::new(50.0, 20.0));
+    h.frame();
+    assert!(h.tree.focus(above, true));
+    h.key(Key::Down);
+    assert_eq!(h.tree.focused(), Some(r1), "外层 Down 进内层行，落行入口项");
+    h.key(Key::Right);
+    assert_eq!(h.tree.focused(), Some(r2), "行内 Right 沿行轴");
+    h.key(Key::Down);
+    assert_eq!(h.tree.focused(), Some(below), "行内 Down 穿越到外层纵向轴");
+    h.key(Key::Up);
+    assert_eq!(h.tree.focused(), Some(r2), "外层 Up 回行停靠项（上次焦点）");
+    h.key(Key::Left);
+    assert_eq!(h.tree.focused(), Some(r1), "回行后 Left 沿行轴");
+}
+
+/// 弹层：打开后焦点移入弹层（控件职责），方向键在弹层内的焦点组里移动；
+/// 轻触关闭后焦点归还锚点（框架 `close_popup` 契约）。
+#[test]
+fn popup_group_focus_enters_moves_and_returns_to_anchor() {
+    let mut h = TestHarness::new(300.0, 300.0);
+    let anchor = h
+        .tree
+        .insert_with(h.root(), TestButton::new(80.0, 30.0), fixed(80.0, 30.0));
+    h.frame();
+    let pop = h.tree.open_popup(
+        panel(),
+        PopupSpec {
+            anchor: Some(anchor),
+            light_dismiss: true,
+            ..PopupSpec::default()
+        },
+    );
+    let col = h.tree.insert(pop, Stack::column());
+    h.tree.set_focus_group(col, Some(FocusGroupSpec::vertical()));
+    let p1 = h.tree.insert(col, TestButton::new(50.0, 20.0));
+    let p2 = h.tree.insert(col, TestButton::new(50.0, 20.0));
+    h.frame();
+    // 控件开弹层后自行把焦点移入（menu_flyout 等的既有模式）。
+    assert!(h.tree.focus(p1, true));
+    assert!(h.key(Key::Down));
+    assert_eq!(h.tree.focused(), Some(p2), "弹层内的组照常工作");
+    h.key(Key::Escape);
+    assert!(!h.tree.contains(pop), "Esc 关闭轻触弹层");
+    assert_eq!(h.tree.focused(), Some(anchor), "关闭后焦点归还锚点");
 }

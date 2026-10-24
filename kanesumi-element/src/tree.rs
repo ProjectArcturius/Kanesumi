@@ -21,7 +21,7 @@ use crate::transitions::{
     ActiveTransition, Edge, GatedAnim, GatedStart, PendingStart, Transition, TransitionParams,
     VisualAnim, visual_at_ms,
 };
-use crate::props::{Align, LayoutProps};
+use crate::props::{Align, FocusGroupAxis, FocusGroupSpec, LayoutProps};
 use crate::widget::{
     ArrangeCtx, ControlStates, EventCtx, MeasureCtx, PaintCtx, RealizeCtx, UpdateCtx, Widget,
 };
@@ -285,6 +285,10 @@ struct Node {
     state: ControlStates,
     /// 挂在本节点上的工具提示文字（`Tree::set_tooltip`）。空 / `None` = 无提示。
     tooltip: Option<String>,
+    /// 焦点组声明（`Tree::set_focus_group`）。`Some` = 本节点是方向键组的组容器。
+    focus_group: Option<FocusGroupSpec>,
+    /// 本组（仅组容器上有意义）最近一次键盘焦点落在的子项：Tab 进组与组间折叠的入口。
+    group_last_focus: Option<WidgetId>,
 }
 
 impl Node {
@@ -311,6 +315,8 @@ impl Node {
             painted_bounds: None,
             state: ControlStates::default(),
             tooltip: None,
+            focus_group: None,
+            group_last_focus: None,
         }
     }
 }
@@ -1839,6 +1845,9 @@ impl Tree {
         }
         match key {
             Key::Tab => self.focus_next(modifiers.shift),
+            Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End => {
+                self.focus_group_move(key)
+            }
             Key::Escape => {
                 if let Some((top, spec)) = self.top_popup()
                     && spec.light_dismiss
@@ -1983,6 +1992,11 @@ impl Tree {
         self.focus
     }
 
+    /// 当前焦点是否为键盘焦点（外壳换视图后据此决定是否落回停靠位）。
+    pub fn focus_is_keyboard(&self) -> bool {
+        self.focus_keyboard
+    }
+
     /// 程序化聚焦。不可聚焦 → 忽略并返回 false。
     pub fn focus(&mut self, id: WidgetId, keyboard: bool) -> bool {
         if !self.is_focusable(id) {
@@ -2024,6 +2038,12 @@ impl Tree {
             self.deliver(n, &Event::FocusIn { keyboard });
             if keyboard {
                 self.bring_into_view(n);
+            }
+            // 记进所属焦点组（最近组）的入口记忆：Tab 进组与组间折叠都落回这里。
+            if let Some(g) = self.enclosing_focus_group(n)
+                && let Some(gn) = self.node_mut(g)
+            {
+                gn.group_last_focus = Some(n);
             }
         }
         // 焦点变化会改变提示目标：指针悬停优先，其次键盘焦点（正典 §Ⅲ，UWP 行为）。
@@ -2083,22 +2103,257 @@ impl Tree {
         }
     }
 
+    /// Tab 停靠点：`focus_order` 的焦点组折叠版 —— 每个焦点组整体占一个停靠位，
+    /// 组内子项不再单独出现。弹层作用域与 `focus_order` 相同（模态陷阱）。
+    fn tab_stops(&self) -> Vec<WidgetId> {
+        let scope = match self.top_popup() {
+            Some((top, spec)) if spec.modal => vec![top],
+            Some((top, _)) => vec![top, self.root],
+            None => vec![self.root],
+        };
+        let mut out = Vec::new();
+        for s in scope {
+            self.collect_tab_stops(s, &mut out);
+        }
+        out
+    }
+
+    fn collect_tab_stops(&self, id: WidgetId, out: &mut Vec<WidgetId>) {
+        let Some(n) = self.node(id) else { return };
+        if !n.props.visible || n.flags.disabled {
+            return;
+        }
+        if n.focus_group.is_some() {
+            out.push(id);
+            return;
+        }
+        if n.widget.as_ref().is_some_and(|w| w.focusable()) {
+            out.push(id);
+        }
+        for &c in &n.children {
+            self.collect_tab_stops(c, out);
+        }
+    }
+
+    /// 把容器声明为方向键焦点组（`spec = None` 撤销并清入口记忆）。
+    /// 语义参 `FocusGroupSpec` 与正典 §Ⅳ。
+    pub fn set_focus_group(&mut self, id: WidgetId, spec: Option<FocusGroupSpec>) {
+        if let Some(n) = self.node_mut(id)
+            && n.focus_group != spec
+        {
+            n.focus_group = spec;
+            n.group_last_focus = None;
+        }
+    }
+
+    /// 某节点所在（或自身即）的最近焦点组。
+    fn enclosing_focus_group(&self, id: WidgetId) -> Option<WidgetId> {
+        let mut cur = Some(id);
+        while let Some(c) = cur {
+            let n = self.node(c)?;
+            if n.focus_group.is_some() {
+                return Some(c);
+            }
+            cur = n.parent;
+        }
+        None
+    }
+
+    /// `id` 是否仍在组 `g` 的直接管辖范围（`g` 子树内，且不穿过更深的焦点组）。
+    fn within_group_scope(&self, id: WidgetId, g: WidgetId) -> bool {
+        let mut cur = Some(id);
+        while let Some(c) = cur {
+            if c == g {
+                return true;
+            }
+            let Some(n) = self.node(c) else { return false };
+            if c != id && n.focus_group.is_some() {
+                return false;
+            }
+            cur = n.parent;
+        }
+        false
+    }
+
+    /// 组的入口项：上次键盘焦点仍在其管辖范围内且可聚焦 → 它；否则组内第一个可聚焦项。
+    fn group_entry(&self, g: WidgetId) -> Option<WidgetId> {
+        if let Some(last) = self.node(g).and_then(|n| n.group_last_focus) {
+            if self.is_focusable(last) && self.within_group_scope(last, g) {
+                return Some(last);
+            }
+        }
+        self.group_nav_items(g).into_iter().next()
+    }
+
+    /// 组 `g` 的导航序列：子树先序中可聚焦项；嵌套焦点组折叠为其入口项（不再下钻）。
+    fn group_nav_items(&self, g: WidgetId) -> Vec<WidgetId> {
+        let mut out = Vec::new();
+        self.collect_group_items(g, g, &mut out);
+        out
+    }
+
+    fn collect_group_items(&self, id: WidgetId, g: WidgetId, out: &mut Vec<WidgetId>) {
+        let Some(n) = self.node(id) else { return };
+        if !n.props.visible || n.flags.disabled {
+            return;
+        }
+        if id != g && n.focus_group.is_some() {
+            if let Some(entry) = self.group_entry(id) {
+                out.push(entry);
+            }
+            return;
+        }
+        if self.is_focusable(id) {
+            out.push(id);
+        }
+        for &c in &n.children {
+            self.collect_group_items(c, g, out);
+        }
+    }
+
+    /// 方向键 / Home / End 的焦点组移动（正典 §Ⅳ + 任务 k-keyboard-nav §设计 1）。
+    ///
+    /// Home / End 作用于最近组；方向键从最近组**向外**找第一个轴匹配的组
+    /// （嵌套组跨层：横向缩略图行内按 Down 落到行下方项）。到端不循环但**消费**
+    /// 该键（UWP 行为）；无组 / 焦点不可聚焦 / 组为空 → 不消费，交回外壳。
+    fn focus_group_move(&mut self, key: Key) -> bool {
+        let Some(f) = self.focus else { return false };
+        if !self.is_focusable(f) {
+            return false;
+        }
+        let Some(g0) = self.enclosing_focus_group(f) else { return false };
+        if matches!(key, Key::Home | Key::End) {
+            return self.move_in_group(g0, f, key);
+        }
+        let mut g = g0;
+        loop {
+            let Some(spec) = self.node(g).and_then(|n| n.focus_group) else { return false };
+            let axis_hit = matches!(
+                (spec.axis, key),
+                (FocusGroupAxis::Vertical, Key::Up | Key::Down)
+                    | (FocusGroupAxis::Horizontal, Key::Left | Key::Right)
+                    | (FocusGroupAxis::Grid, Key::Up | Key::Down | Key::Left | Key::Right)
+            );
+            if axis_hit {
+                return self.move_in_group(g, f, key);
+            }
+            let Some(up) = self
+                .node(g)
+                .and_then(|n| n.parent)
+                .and_then(|p| self.enclosing_focus_group(p))
+            else {
+                return false;
+            };
+            g = up;
+        }
+    }
+
+    fn move_in_group(&mut self, g: WidgetId, f: WidgetId, key: Key) -> bool {
+        let Some(spec) = self.node(g).and_then(|n| n.focus_group) else { return false };
+        let items = self.group_nav_items(g);
+        if items.is_empty() {
+            return false;
+        }
+        if matches!(key, Key::Home | Key::End) {
+            let t = if key == Key::Home { items[0] } else { items[items.len() - 1] };
+            self.set_focus(Some(t), true);
+            return true;
+        }
+        // 焦点自身的序号；嵌套组的成员按该组折叠成的入口项计。
+        let Some(pos) = items
+            .iter()
+            .position(|i| *i == f)
+            .or_else(|| self.collapsed_pos(f, g, &items))
+        else {
+            return false;
+        };
+        let last = items.len() - 1;
+        let next = match (spec.axis, key) {
+            (FocusGroupAxis::Vertical, Key::Up) | (FocusGroupAxis::Horizontal, Key::Left) => {
+                pos.checked_sub(1)
+            }
+            (FocusGroupAxis::Vertical, Key::Down) | (FocusGroupAxis::Horizontal, Key::Right) => {
+                (pos < last).then_some(pos + 1)
+            }
+            (FocusGroupAxis::Grid, Key::Left) if pos % spec.columns > 0 => Some(pos - 1),
+            (FocusGroupAxis::Grid, Key::Right)
+                if pos % spec.columns + 1 < spec.columns && pos < last =>
+            {
+                Some(pos + 1)
+            }
+            (FocusGroupAxis::Grid, Key::Up) => pos.checked_sub(spec.columns),
+            (FocusGroupAxis::Grid, Key::Down) if pos + spec.columns <= last => {
+                Some(pos + spec.columns)
+            }
+            _ => None, // 已在端（到端不循环）或组合不发生（轴不匹配已被外层拦截）
+        };
+        let Some(i) = next else {
+            return true;
+        };
+        self.set_focus(Some(items[i]), true);
+        true
+    }
+
+    /// 焦点不在导航序列里（在嵌套组内）时，按该嵌套组折叠成的入口项求序号。
+    fn collapsed_pos(&self, f: WidgetId, g: WidgetId, items: &[WidgetId]) -> Option<usize> {
+        let mut cur = self.node(f).and_then(|n| n.parent);
+        while let Some(c) = cur {
+            if c == g {
+                return None;
+            }
+            if let Some(i) = items.iter().position(|i| self.is_ancestor_or_self(c, *i)) {
+                return Some(i);
+            }
+            cur = self.node(c).and_then(|n| n.parent);
+        }
+        None
+    }
+
     /// Tab / Shift+Tab。返回是否有节点获得焦点。
+    ///
+    /// 焦点组整体占一个停靠位（`tab_stops`）；进组落组内入口项（上次键盘焦点，
+    /// 首次为组内首个可聚焦项，正典 §Ⅳ + 任务 k-keyboard-nav §设计 1）。
     pub fn focus_next(&mut self, backward: bool) -> bool {
-        let order = self.focus_order();
-        if order.is_empty() {
+        let stops = self.tab_stops();
+        if stops.is_empty() {
             self.set_focus(None, false);
             return false;
         }
-        let n = order.len();
-        let next = match self.focus.and_then(|f| order.iter().position(|o| *o == f)) {
-            Some(i) if backward => order[(i + n - 1) % n],
-            Some(i) => order[(i + 1) % n],
-            None if backward => order[n - 1],
-            None => order[0],
+        let n = stops.len();
+        // 当前停靠位：焦点自身，或向上第一个占据停靠位的祖先（嵌套组折叠语义）。
+        let cur = self.focus.and_then(|f| {
+            let mut c = Some(f);
+            while let Some(x) = c {
+                if let Some(i) = stops.iter().position(|s| *s == x) {
+                    return Some(i);
+                }
+                c = self.node(x).and_then(|nd| nd.parent);
+            }
+            None
+        });
+        let mut idx = match cur {
+            Some(i) if backward => (i + n - 1) % n,
+            Some(i) => (i + 1) % n,
+            None if backward => n - 1,
+            None => 0,
         };
-        self.set_focus(Some(next), true);
-        true
+        // 组停靠位解析为入口项；组空（无可聚焦项）则跳往下一个停靠位。
+        for _ in 0..n {
+            let stop = stops[idx];
+            let target = if self.node(stop).and_then(|nd| nd.focus_group).is_some() {
+                self.group_entry(stop)
+            } else {
+                Some(stop)
+            };
+            match target {
+                Some(t) => {
+                    self.set_focus(Some(t), true);
+                    return true;
+                }
+                None => idx = if backward { (idx + n - 1) % n } else { (idx + 1) % n },
+            }
+        }
+        false
     }
 
     /// 焦点节点被隐藏 / 禁用 / 删除后清除焦点。

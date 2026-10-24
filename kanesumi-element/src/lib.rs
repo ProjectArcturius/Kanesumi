@@ -23,7 +23,7 @@ pub use event::{Event, Key, Modifiers, PointerButton, ScrollInput, ScrollPhase, 
 pub use id::WidgetId;
 pub use ime::{ImeContentHint, ImeContext};
 pub use layer::{LayerAnimSpec, LayerClipSpec, LayerInsets, LayerOp};
-pub use props::{Align, Insets, LayoutProps};
+pub use props::{Align, FocusGroupAxis, FocusGroupSpec, Insets, LayoutProps};
 pub use transitions::{
     Edge, LayerOutcome, STAGGER_MAX_ITEMS, Transition, TransitionHandle, TransitionParams,
     VisualAnim, visual_at_ms,
