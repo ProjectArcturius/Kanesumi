@@ -25,6 +25,27 @@ pub struct LayerAnimSpec {
     pub to_opacity: f32,
 }
 
+/// 图层裁剪内缩（逻辑像素，自图层四边向内量；全 0 = 不裁）。语义同 harness `LayerInsets`、
+/// 协议 `ether_visual_v1.set_clip`（v2）：只影响绘制，不影响布局与命中。
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct LayerInsets {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
+/// 一次合成器裁剪动画（从当前呈现内缩过渡到 `to`）。与位移 / 不透明度动画是两路，互不取消。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LayerClipSpec {
+    pub serial: u32,
+    pub duration_ms: u32,
+    pub delay_ms: u32,
+    /// cubic-bezier (x1, y1, x2, y2)。
+    pub curve: [f32; 4],
+    pub to: LayerInsets,
+}
+
 /// 元素树产出的图层操作（每帧经 `Tree::take_layer_ops` 取走）。
 #[derive(Debug, Clone)]
 pub enum LayerOp {
@@ -37,6 +58,9 @@ pub enum LayerOp {
     Offset { id: WidgetId, x: f32, y: f32 },
     Opacity { id: WidgetId, opacity: f32 },
     Animate { id: WidgetId, spec: LayerAnimSpec },
+    /// 立即设裁剪内缩（取消进行中的裁剪动画，不碰位移 / 不透明度动画）。
+    Clip { id: WidgetId, insets: LayerInsets },
+    AnimateClip { id: WidgetId, spec: LayerClipSpec },
     /// 图层不再存在（取消标记 / 节点删除 / 不可见）。
     Remove { id: WidgetId },
 }

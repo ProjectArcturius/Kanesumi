@@ -15,7 +15,7 @@ use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
 use crate::event::{Event, Key, Modifiers, PointerButton, ScrollInput};
 use crate::id::WidgetId;
-use crate::layer::{LayerAnimSpec, LayerOp, LayerState};
+use crate::layer::{LayerAnimSpec, LayerClipSpec, LayerInsets, LayerOp, LayerState};
 use crate::ime::ImeContext;
 use crate::transitions::{
     ActiveTransition, Edge, GatedAnim, GatedStart, PendingStart, Transition, TransitionParams,
@@ -397,6 +397,8 @@ pub struct Tree {
     pub(crate) pending_starts: std::collections::BTreeMap<WidgetId, PendingStart>,
     /// 等待内容就绪的动画（门控挂起队列）。就绪事件 / 超时后解挂。参 transitions.rs。
     pub(crate) gated_starts: std::collections::BTreeMap<WidgetId, GatedStart>,
+    /// 等待内容就绪的裁剪动画（与 `gated_starts` 分开：同一图层的位移与裁剪可各挂一条）。
+    pub(crate) gated_clips: std::collections::BTreeMap<WidgetId, GatedStart>,
     /// 本帧绘制产物进入提交的节点（`paint_node` 收集，`FrameOutput::painted` 交给外壳汇报）。
     frame_painted: Vec<WidgetId>,
     /// 内容入场中的弹层根 → 本帧参与入场的行数。由 App 每帧登记（`set_content_motion`），
@@ -454,6 +456,7 @@ impl Tree {
             transitions: std::collections::BTreeMap::new(),
             pending_starts: std::collections::BTreeMap::new(),
             gated_starts: std::collections::BTreeMap::new(),
+            gated_clips: std::collections::BTreeMap::new(),
             frame_painted: Vec::new(),
             content_motion_nodes: std::collections::BTreeMap::new(),
             frame_content: std::collections::BTreeMap::new(),
@@ -1072,6 +1075,7 @@ impl Tree {
         self.dirty
             || !self.anim.is_empty()
             || !self.gated_starts.is_empty()
+            || !self.gated_clips.is_empty()
 
     }
 
@@ -2620,6 +2624,7 @@ impl Tree {
         } else {
             // 取消图层：等待中的门控动画作废（目标已不再是图层）。
             self.gated_starts.remove(&id);
+            self.gated_clips.remove(&id);
             if let Some(st) = self.layers.remove(&id)
                 && st.created
             {
@@ -2700,6 +2705,42 @@ impl Tree {
     pub(crate) fn push_animate(&mut self, id: WidgetId, spec: LayerAnimSpec) {
         if self.layers.contains_key(&id) {
             self.layer_ops.push(LayerOp::Animate { id, spec });
+        }
+    }
+
+    /// 请求合成器裁剪动画（协议 v2）：裁剪内缩从当前呈现值过渡到 `spec.to`。与位移 / 不透明度
+    /// 动画是两路，互不取消。门控同 `animate_layer`（目标子树首个内容提交后才起跑）。
+    ///
+    /// 典型用法：背板「上沿推开、内容钉在屏幕上」—— 先 `set_layer_clip(top = 高度)` 藏起，
+    /// 再 `animate_layer_clip(top → 0)`；图层偏移保持 0，模糊内容不随板子移动。
+    pub fn animate_layer_clip(&mut self, id: WidgetId, spec: LayerClipSpec) {
+        self.animate_layer_clip_gated_on(id, id, spec);
+    }
+
+    /// 显式门版本（参 `animate_layer_gated_on`）。
+    pub fn animate_layer_clip_gated_on(&mut self, id: WidgetId, gate: WidgetId, spec: LayerClipSpec) {
+        if !self.layers.contains_key(&id) {
+            return;
+        }
+        if !self.node_content_ready(gate) {
+            self.gated_clips.insert(id, GatedStart { anim: GatedAnim::Clip(spec), gate, age: 0.0 });
+            return;
+        }
+        self.push_animate_clip(id, spec);
+    }
+
+    /// 原样发出裁剪动画（不做就绪检查）。
+    pub(crate) fn push_animate_clip(&mut self, id: WidgetId, spec: LayerClipSpec) {
+        if self.layers.contains_key(&id) {
+            self.layer_ops.push(LayerOp::AnimateClip { id, spec });
+        }
+    }
+
+    /// 立即设图层裁剪内缩（取消进行中 / 挂起的裁剪动画，不碰位移动画）。
+    pub fn set_layer_clip(&mut self, id: WidgetId, insets: LayerInsets) {
+        if self.layers.contains_key(&id) {
+            self.gated_clips.remove(&id);
+            self.layer_ops.push(LayerOp::Clip { id, insets });
         }
     }
 

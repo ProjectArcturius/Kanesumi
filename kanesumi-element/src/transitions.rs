@@ -17,7 +17,7 @@ use kanesumi_anim::{CURVE_EASE_OUT_CUBIC, CURVE_UWP_CLOSE, CURVE_UWP_OPEN, bezie
 use kanesumi_core::Point;
 
 use crate::id::WidgetId;
-use crate::layer::LayerAnimSpec;
+use crate::layer::{LayerAnimSpec, LayerClipSpec};
 use crate::tree::Tree;
 
 /// 容器传播的错位上限：第 `stagger` 个之后的子项与第 `STAGGER_MAX_ITEMS` 个同时。
@@ -154,7 +154,8 @@ pub(crate) struct PendingStart {
 /// `docs/ELEMENT_TREE.md`「内容就绪与动画门控」。
 ///
 /// `Transition` 在解挂时把 `active.start` 补记为解挂时刻（t=0），转场从起始位置起跑；
-/// `Layer` 是 `animate_layer` 的直接请求，解挂时原样发出。
+/// `Layer` 是 `animate_layer` 的直接请求，解挂时原样发出；`Clip` 同理（`animate_layer_clip`，
+/// 挂在独立的 `gated_clips` 队列里 —— 裁剪与位移是两路，同一图层可各挂一条）。
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum GatedAnim {
     Transition {
@@ -162,6 +163,7 @@ pub(crate) enum GatedAnim {
         active: ActiveTransition,
     },
     Layer(LayerAnimSpec),
+    Clip(LayerClipSpec),
 }
 
 /// 一条挂起动画 + 其等待时长（秒）。`frame` 按真实 dt 推进 `age`，达超时解挂。
@@ -639,6 +641,7 @@ impl Tree {
         for (id, _) in std::mem::take(&mut self.gated_starts) {
             self.set_layer(id, false);
         }
+        self.gated_clips.clear();
     }
 
     /// 图层建好后发出暂存的起始命令（`Create` → 初值 → `Animate`）。每帧 `sync_layers` 之后调用。
@@ -682,6 +685,7 @@ impl Tree {
         self.transitions.remove(&id);
         self.pending_starts.remove(&id);
         self.gated_starts.remove(&id);
+        self.gated_clips.remove(&id);
     }
 }
 
@@ -727,9 +731,18 @@ impl Tree {
                 .filter(|(_, g)| ready.contains(&g.gate))
                 .map(|(id, _)| *id)
                 .collect();
+            let clips_to_release: Vec<WidgetId> = self
+                .gated_clips
+                .iter()
+                .filter(|(_, g)| ready.contains(&g.gate))
+                .map(|(id, _)| *id)
+                .collect();
             let now = Instant::now();
             for id in to_release {
                 self.release_gated(id, now);
+            }
+            for id in clips_to_release {
+                self.release_gated_clip(id);
             }
         }
         newly
@@ -738,7 +751,7 @@ impl Tree {
     /// 推进挂起动画的等待时长；达 `CONTENT_READY_TIMEOUT_SECS` 解挂并记 WARN。
     /// 每帧调用（`tree.rs::frame`）。无挂起时为一次空表判断，无遍历。
     pub(crate) fn tick_gated(&mut self) {
-        if self.gated_starts.is_empty() {
+        if self.gated_starts.is_empty() && self.gated_clips.is_empty() {
             return;
         }
         let timeout = kanesumi_core::interaction::CONTENT_READY_TIMEOUT_SECS;
@@ -749,6 +762,17 @@ impl Tree {
             if g.age >= timeout {
                 expired.push(*id);
             }
+        }
+        let mut expired_clips = Vec::new();
+        for (id, g) in self.gated_clips.iter_mut() {
+            g.age += dt;
+            if g.age >= timeout {
+                expired_clips.push(*id);
+            }
+        }
+        for id in expired_clips {
+            log::warn!("内容就绪超时（{timeout}s）未到，节点 {id:?} 裁剪动画解挂放行");
+            self.release_gated_clip(id);
         }
         let now = Instant::now();
         for id in expired {
@@ -774,6 +798,16 @@ impl Tree {
                 self.emit_pending_start(id, pending);
             }
             GatedAnim::Layer(spec) => self.push_animate(id, spec),
+            GatedAnim::Clip(spec) => self.push_animate_clip(id, spec),
+        }
+    }
+
+    /// 解挂一条裁剪动画（独立队列 `gated_clips`）。
+    fn release_gated_clip(&mut self, id: WidgetId) {
+        if let Some(g) = self.gated_clips.remove(&id)
+            && let GatedAnim::Clip(spec) = g.anim
+        {
+            self.push_animate_clip(id, spec);
         }
     }
 }
@@ -1193,6 +1227,74 @@ mod tests {
             ops.iter().any(|o| matches!(o, LayerOp::Animate { .. })),
             "就绪后发出挂起的动画：{ops:?}"
         );
+    }
+
+    /// 裁剪动画（协议 v2）：同样等内容就绪才发；与同一图层挂起的位移动画各占一格、都能放行。
+    #[test]
+    fn clip_and_offset_anims_gate_independently() {
+        use crate::layer::{LayerClipSpec, LayerInsets};
+        let mut h = TestHarness::new(400.0, 300.0);
+        let node = empty_container(&mut h);
+        h.tree.set_layer(node, true);
+        h.frame();
+        h.tree.take_layer_ops();
+
+        let spec = LayerAnimSpec {
+            serial: 7,
+            duration_ms: 100,
+            delay_ms: 0,
+            curve: CURVE_UWP_OPEN,
+            to_x: 0.0,
+            to_y: 0.0,
+            to_opacity: 1.0,
+        };
+        let clip = LayerClipSpec {
+            serial: 8,
+            duration_ms: 300,
+            delay_ms: 0,
+            curve: CURVE_UWP_OPEN,
+            to: LayerInsets::default(),
+        };
+        h.tree.animate_layer(node, spec);
+        h.tree.animate_layer_clip(node, clip);
+        assert!(h.tree.take_layer_ops().is_empty(), "未就绪两路都不发");
+
+        h.tree.insert_with(
+            node,
+            Border::new().background(ThemeColor::Background),
+            fixed_props(0.0, 0.0, 120.0, 40.0),
+        );
+        h.frame();
+        let ops = h.tree.take_layer_ops();
+        assert!(ops.iter().any(|o| matches!(o, LayerOp::Animate { spec, .. } if spec.serial == 7)), "{ops:?}");
+        assert!(ops.iter().any(|o| matches!(o, LayerOp::AnimateClip { spec, .. } if spec.serial == 8)), "{ops:?}");
+    }
+
+    /// set_layer_clip 立即发出，并作废挂起的裁剪动画（不再在就绪后反把裁剪推回去）。
+    #[test]
+    fn set_layer_clip_cancels_pending_clip_anim() {
+        use crate::layer::{LayerClipSpec, LayerInsets};
+        let mut h = TestHarness::new(400.0, 300.0);
+        let node = empty_container(&mut h);
+        h.tree.set_layer(node, true);
+        h.frame();
+        h.tree.take_layer_ops();
+        let hidden = LayerInsets { top: 300.0, ..LayerInsets::default() };
+        h.tree.animate_layer_clip(
+            node,
+            LayerClipSpec { serial: 3, duration_ms: 300, delay_ms: 0, curve: CURVE_UWP_OPEN, to: LayerInsets::default() },
+        );
+        h.tree.set_layer_clip(node, hidden);
+        let ops = h.tree.take_layer_ops();
+        assert!(matches!(ops[..], [LayerOp::Clip { insets, .. }] if insets == hidden), "{ops:?}");
+        h.tree.insert_with(
+            node,
+            Border::new().background(ThemeColor::Background),
+            fixed_props(0.0, 0.0, 120.0, 40.0),
+        );
+        h.frame();
+        let ops = h.tree.take_layer_ops();
+        assert!(!ops.iter().any(|o| matches!(o, LayerOp::AnimateClip { .. })), "{ops:?}");
     }
 
     /// 内容已就绪的节点立即起跑（其余调用方行为不变）。

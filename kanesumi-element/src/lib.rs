@@ -22,7 +22,7 @@ pub mod widgets;
 pub use event::{Event, Key, Modifiers, PointerButton, ScrollInput, ScrollPhase, ScrollSource};
 pub use id::WidgetId;
 pub use ime::{ImeContentHint, ImeContext};
-pub use layer::{LayerAnimSpec, LayerOp};
+pub use layer::{LayerAnimSpec, LayerClipSpec, LayerInsets, LayerOp};
 pub use props::{Align, Insets, LayoutProps};
 pub use transitions::{
     Edge, LayerOutcome, STAGGER_MAX_ITEMS, Transition, TransitionHandle, TransitionParams,
