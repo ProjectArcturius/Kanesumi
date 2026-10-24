@@ -155,6 +155,20 @@ pub fn fallback_clip_events(id: LayerId, anim: &LayerClipAnim) -> [LayerEvent; 1
 /// 协议 v2（裁剪）起始版本：visual 代理版本 ≥ 此值才发 set_clip / animate_clip。
 pub const CLIP_SINCE_VERSION: u32 = 2;
 
+/// 协议 v3（父表面矩形裁剪）起始版本：visual 代理版本 ≥ 此值才发 set_clip_rect / unset_clip。
+/// 与 v2 内缩是两条独立通道，main 的 v2 行为不变；< 3 时矩形裁剪回退为不裁。
+pub const CLIP_RECT_SINCE_VERSION: u32 = 3;
+
+/// 协议 v3（合成器驱动滚动）起始版本：manager 版本 ≥ 此值才发 get_scroller。
+/// < 3 时回退为客户端自己滚动（没有合成器跟随 / 惯性）。
+pub const SCROLLER_SINCE_VERSION: u32 = 3;
+
+/// 合成器是否支持 v3 的矩形裁剪 / 滚动器。绑 `set_clip_rect` / `unset_clip` / `get_scroller`
+/// 前先探；返回 false 时调用方走「不裁 / 客户端自己滚」的回退，不报错。
+pub fn supports_v3(proxy_version: u32) -> bool {
+    proxy_version >= SCROLLER_SINCE_VERSION
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +194,15 @@ mod tests {
     fn fallback_completes_immediately() {
         let anim = LayerAnim { serial: 9, duration_ms: 200, delay_ms: 0, curve: CURVE_UWP_CLOSE, to_x: 0.0, to_y: 40.0, to_opacity: 0.0 };
         assert_eq!(fallback_events(LayerId(1), &anim), [LayerEvent::Done { id: LayerId(1), serial: 9 }]);
+    }
+
+    /// v3 门：< 3 一律回退（不裁 / 客户端自己滚），≥ 3 才允许绑新请求。
+    #[test]
+    fn v3_gate_requires_version_three() {
+        assert_eq!((CLIP_SINCE_VERSION, CLIP_RECT_SINCE_VERSION, SCROLLER_SINCE_VERSION), (2, 3, 3));
+        assert!(!supports_v3(0));
+        assert!(!supports_v3(2), "v2 只保证内缩裁剪，矩形裁剪与滚动器须 >= 3");
+        assert!(supports_v3(3));
+        assert!(supports_v3(4));
     }
 }

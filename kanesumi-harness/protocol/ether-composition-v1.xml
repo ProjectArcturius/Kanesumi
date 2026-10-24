@@ -11,9 +11,16 @@
     compositor re-composites the already submitted buffers every frame. This is the
     DirectComposition-style split: clients provide content once, the compositor owns motion.
     See Ether docs/GPU_COMPOSITION_PLAN.md (G3).
+
+    Version 2 adds inset clipping (ether_visual_v1.set_clip / animate_clip).
+    Version 3 adds parent-coordinate rectangle clipping (ether_visual_v1.set_clip_rect /
+    unset_clip) and compositor-driven scrolling (ether_scroller_v1): the compositor follows
+    touchpad fingers, runs inertia and wheel animations on its own clock and samples them at
+    each frame's target presentation time, so scrolling never waits for the client.
+    See Ether tools/dispatch/tasks/fp4-compositor-scroll.md.
   </description>
 
-  <interface name="ether_composition_manager_v1" version="2">
+  <interface name="ether_composition_manager_v1" version="3">
     <description summary="creates visuals for surfaces"/>
 
     <request name="destroy" type="destructor"/>
@@ -29,10 +36,22 @@
 
     <enum name="error">
       <entry name="visual_exists" value="0" summary="the surface already has a visual"/>
+      <entry name="scroller_exists" value="1" summary="the visual already has a scroller" since="3"/>
     </enum>
+
+    <request name="get_scroller" since="3">
+      <description summary="create a compositor-driven scroller for a visual">
+        The visual's surface is the content surface: a subsurface whose buffer holds the
+        realized part of the scrollable content. The compositor positions it (through the
+        visual offset) from the scroll position it samples every frame. At most one scroller
+        may exist per visual.
+      </description>
+      <arg name="id" type="new_id" interface="ether_scroller_v1"/>
+      <arg name="visual" type="object" interface="ether_visual_v1"/>
+    </request>
   </interface>
 
-  <interface name="ether_visual_v1" version="2">
+  <interface name="ether_visual_v1" version="3">
     <description summary="compositor-animated offset, opacity and clip of a surface subtree">
       All requests are double-buffered and applied on the next wl_surface.commit of the
       associated surface (following subsurface synchronization rules). Offset and opacity are
@@ -117,6 +136,24 @@
       <arg name="to_left" type="fixed"/>
     </request>
 
+    <!-- version 3: parent-coordinate rectangle clip (independent of the v2 inset channel) -->
+
+    <request name="set_clip_rect" since="3">
+      <description summary="clip the visual subtree to a rectangle in parent coordinates">
+        The rectangle is in the parent surface's local logical coordinates and does not move
+        with this visual's own offset. Double-buffered. This channel is independent of the
+        version 2 inset clip: when both are set on the same visual they are intersected.
+      </description>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </request>
+
+    <request name="unset_clip" since="3">
+      <description summary="remove the parent-coordinate clip rectangle (double-buffered)"/>
+    </request>
+
     <event name="done">
       <description summary="the animation (animate or animate_clip) with this serial reached its end values"/>
       <arg name="serial" type="uint"/>
@@ -124,6 +161,100 @@
 
     <event name="cancelled">
       <description summary="the animation (animate or animate_clip) with this serial was replaced or cancelled"/>
+      <arg name="serial" type="uint"/>
+    </event>
+  </interface>
+
+  <interface name="ether_scroller_v1" version="1">
+    <description summary="compositor-driven scrolling of a content surface">
+      All requests except scroll_by / scroll_to are double-buffered and applied atomically on
+      the next commit of the content surface. The viewport is both the clip of the content and
+      the scroll input area: while the pointer is inside the innermost viewport, axis events on
+      the scroller's axes go to the compositor's tracker and are not forwarded to the client
+      (except while Ctrl is held). Pointer hit-testing itself is unchanged: the content surface
+      has an empty input region and pointer events land on the parent surface; the client maps
+      viewport coordinates to content coordinates with the last offset event.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="drop the scroller; the content surface keeps its last offset"/>
+    </request>
+
+    <enum name="error">
+      <entry name="bad_realized" value="0" summary="realized size does not match the buffer"/>
+    </enum>
+
+    <enum name="phase">
+      <entry name="idle" value="0"/>
+      <entry name="interacting" value="1" summary="following fingers"/>
+      <entry name="inertia" value="2"/>
+      <entry name="animating" value="3" summary="scroll_by / scroll_to animation"/>
+    </enum>
+
+    <request name="set_viewport">
+      <description summary="viewport rectangle in parent surface logical coordinates"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </request>
+
+    <request name="set_extent">
+      <description summary="full content size; scrollable range is [0, extent - viewport]"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </request>
+
+    <request name="set_axes">
+      <description summary="scrollable axes mask: 1 = vertical, 2 = horizontal, 3 = both"/>
+      <arg name="axes" type="uint"/>
+    </request>
+
+    <request name="set_realized">
+      <description summary="content-coordinate rectangle held by the current buffer">
+        The logical buffer size of the content surface must equal width x height when the
+        commit is applied, otherwise the bad_realized error is raised.
+      </description>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </request>
+
+    <request name="set_background">
+      <description summary="fill color for viewport areas not covered by the realized content"/>
+      <arg name="argb" type="uint" summary="0xAARRGGBB, not premultiplied"/>
+    </request>
+
+    <request name="scroll_by">
+      <description summary="animate by a delta (keyboard, page keys); applied immediately"/>
+      <arg name="serial" type="uint"/>
+      <arg name="dx" type="fixed"/>
+      <arg name="dy" type="fixed"/>
+    </request>
+
+    <request name="scroll_to">
+      <description summary="scroll to a position, animated or immediate; applied immediately"/>
+      <arg name="serial" type="uint"/>
+      <arg name="x" type="fixed"/>
+      <arg name="y" type="fixed"/>
+      <arg name="animate" type="uint" summary="0 = jump, 1 = animate"/>
+    </request>
+
+    <event name="offset">
+      <description summary="scroll position sampled for an output frame">
+        Sent at most once per output frame, before that frame is submitted: the position that
+        will be shown, and the frame's target presentation time (CLOCK_MONOTONIC).
+      </description>
+      <arg name="x" type="fixed"/>
+      <arg name="y" type="fixed"/>
+      <arg name="present_ns_hi" type="uint"/>
+      <arg name="present_ns_lo" type="uint"/>
+    </event>
+
+    <event name="state">
+      <description summary="phase change; serial echoes a finished scroll_by / scroll_to (else 0)"/>
+      <arg name="phase" type="uint" enum="phase"/>
       <arg name="serial" type="uint"/>
     </event>
   </interface>
