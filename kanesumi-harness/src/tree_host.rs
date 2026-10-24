@@ -253,7 +253,7 @@ impl<A: TreeApp> TreeHost<A> {
 
     /// 取走各棵树的图层操作，翻译成外壳图层命令（G3-c）。参 kanesumi-element layer.rs。
     fn drain_tree_layers(&mut self, out: &mut Vec<crate::layers::LayerCommand>) {
-        use crate::layers::{LayerAnim, LayerCommand, LayerParent};
+        use crate::layers::{LayerAnim, LayerClipAnim, LayerCommand, LayerInsets, LayerParent};
         use kanesumi_element::LayerOp;
         let mut batches = vec![(0usize, self.tree.take_layer_ops())];
         for (i, f) in self.floating.iter_mut().enumerate() {
@@ -282,7 +282,9 @@ impl<A: TreeApp> TreeHost<A> {
                             | LayerOp::Rect { id, .. }
                             | LayerOp::Offset { id, .. }
                             | LayerOp::Opacity { id, .. }
-                            | LayerOp::Animate { id, .. } => *id,
+                            | LayerOp::Animate { id, .. }
+                            | LayerOp::Clip { id, .. }
+                            | LayerOp::AnimateClip { id, .. } => *id,
                             LayerOp::Create { .. } | LayerOp::Remove { .. } => unreachable!(),
                         };
                         let Some(&lid) = self.layer_ids.get(&(surf, wid)) else { continue };
@@ -301,6 +303,25 @@ impl<A: TreeApp> TreeHost<A> {
                                     to_x: spec.to_x,
                                     to_y: spec.to_y,
                                     to_opacity: spec.to_opacity,
+                                },
+                            },
+                            LayerOp::Clip { insets: i, .. } => LayerCommand::SetClip {
+                                id: lid,
+                                insets: LayerInsets { top: i.top, right: i.right, bottom: i.bottom, left: i.left },
+                            },
+                            LayerOp::AnimateClip { spec, .. } => LayerCommand::AnimateClip {
+                                id: lid,
+                                anim: LayerClipAnim {
+                                    serial: spec.serial,
+                                    duration_ms: spec.duration_ms,
+                                    delay_ms: spec.delay_ms,
+                                    curve: spec.curve,
+                                    to: LayerInsets {
+                                        top: spec.to.top,
+                                        right: spec.to.right,
+                                        bottom: spec.to.bottom,
+                                        left: spec.to.left,
+                                    },
                                 },
                             },
                             LayerOp::Create { .. } | LayerOp::Remove { .. } => unreachable!(),

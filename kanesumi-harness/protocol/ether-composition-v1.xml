@@ -13,7 +13,7 @@
     See Ether docs/GPU_COMPOSITION_PLAN.md (G3).
   </description>
 
-  <interface name="ether_composition_manager_v1" version="1">
+  <interface name="ether_composition_manager_v1" version="2">
     <description summary="creates visuals for surfaces"/>
 
     <request name="destroy" type="destructor"/>
@@ -32,8 +32,8 @@
     </enum>
   </interface>
 
-  <interface name="ether_visual_v1" version="1">
-    <description summary="compositor-animated offset and opacity of a surface subtree">
+  <interface name="ether_visual_v1" version="2">
+    <description summary="compositor-animated offset, opacity and clip of a surface subtree">
       All requests are double-buffered and applied on the next wl_surface.commit of the
       associated surface (following subsurface synchronization rules). Offset and opacity are
       purely visual: input hit-testing keeps using the surface's real position. Offsets are
@@ -75,13 +75,55 @@
       <arg name="to_opacity" type="fixed"/>
     </request>
 
+    <!-- version 2: compositor-animated clip -->
+
+    <request name="set_clip" since="2">
+      <description summary="set the clip insets immediately (cancels a running clip animation)">
+        The clip rectangle is the surface's own extent (its logical wl_surface size, placed
+        where the surface is presented, i.e. including the visual offset) shrunk by the four
+        insets. It clips this surface and its whole subsurface subtree; nested clips
+        intersect. Insets are logical, measured inward from each edge; negative values are
+        treated as 0, and insets that meet or cross leave nothing visible. The initial value
+        is 0, 0, 0, 0 (no clipping). Like offset and opacity the clip is purely visual:
+        input hit-testing is unaffected. Clip and offset/opacity are independent channels:
+        set_clip and animate_clip never cancel an offset/opacity animation, and set_offset,
+        set_opacity and animate never cancel a clip animation.
+      </description>
+      <arg name="top" type="fixed"/>
+      <arg name="right" type="fixed"/>
+      <arg name="bottom" type="fixed"/>
+      <arg name="left" type="fixed"/>
+    </request>
+
+    <request name="animate_clip" since="2">
+      <description summary="animate the clip insets from their presented values">
+        Same timing rules as animate (starts from the presented insets, timing begins at the
+        first frame in which the commit is applied plus delay_ms, cubic Bezier progress over
+        duration_ms; an interrupted clip animation receives the cancelled event). done and
+        cancelled are shared with animate, so the client should keep serials distinct across
+        both channels. Typical use: reveal a backdrop from its top edge while its content
+        stays fixed on screen (animate top from the surface height to 0).
+      </description>
+      <arg name="serial" type="uint" summary="client-chosen id echoed in done / cancelled"/>
+      <arg name="duration_ms" type="uint"/>
+      <arg name="delay_ms" type="uint"/>
+      <arg name="x1" type="fixed"/>
+      <arg name="y1" type="fixed"/>
+      <arg name="x2" type="fixed"/>
+      <arg name="y2" type="fixed"/>
+      <arg name="to_top" type="fixed"/>
+      <arg name="to_right" type="fixed"/>
+      <arg name="to_bottom" type="fixed"/>
+      <arg name="to_left" type="fixed"/>
+    </request>
+
     <event name="done">
-      <description summary="the animation with this serial reached its end values"/>
+      <description summary="the animation (animate or animate_clip) with this serial reached its end values"/>
       <arg name="serial" type="uint"/>
     </event>
 
     <event name="cancelled">
-      <description summary="the animation with this serial was replaced or cancelled"/>
+      <description summary="the animation (animate or animate_clip) with this serial was replaced or cancelled"/>
       <arg name="serial" type="uint"/>
     </event>
   </interface>

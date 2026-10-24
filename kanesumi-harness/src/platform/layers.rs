@@ -178,6 +178,46 @@ impl Shell {
                     }
                 }
             }
+            LayerCommand::SetClip { id, insets } => {
+                let Some(i) = self.layer_index(id) else { return };
+                let l = &self.comp.layers[i];
+                if let Some(v) = &l.visual
+                    && wayland_client::Proxy::version(v) >= crate::layers::CLIP_SINCE_VERSION
+                {
+                    v.set_clip(insets.top as f64, insets.right as f64, insets.bottom as f64, insets.left as f64);
+                    l.surface.commit();
+                }
+            }
+            LayerCommand::AnimateClip { id, anim } => {
+                let Some(i) = self.layer_index(id) else { return };
+                let l = &self.comp.layers[i];
+                match l.visual.clone() {
+                    Some(v) if wayland_client::Proxy::version(&v) >= crate::layers::CLIP_SINCE_VERSION => {
+                        let [x1, y1, x2, y2] = anim.curve;
+                        let t = anim.to;
+                        v.animate_clip(
+                            anim.serial,
+                            anim.duration_ms,
+                            anim.delay_ms,
+                            x1 as f64,
+                            y1 as f64,
+                            x2 as f64,
+                            y2 as f64,
+                            t.top as f64,
+                            t.right as f64,
+                            t.bottom as f64,
+                            t.left as f64,
+                        );
+                        l.surface.commit();
+                    }
+                    // 合成器只有 v1 / 无合成图层：不裁，立即完成（图层完整可见，没有推开动画）。
+                    _ => {
+                        for e in crate::layers::fallback_clip_events(id, &anim) {
+                            self.app.on_layer_event(e);
+                        }
+                    }
+                }
+            }
             LayerCommand::Destroy { id } => {
                 let Some(i) = self.layer_index(id) else { return };
                 let l = self.comp.layers.remove(i);

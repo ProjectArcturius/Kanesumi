@@ -1461,7 +1461,7 @@ impl Shell {
         dmabuf_device.set_recipe(dmabuf_recipe);
         // 合成图层（G3-b）：wl_subcompositor + ether_composition_v1（Ether 私有，别的合成器没有 → None 回落）。
         let comp = layers::Composition::new(
-            globals.bind::<layers::EtherCompositionManagerV1, Self, ()>(qh, 1..=1, ()).ok(),
+            globals.bind::<layers::EtherCompositionManagerV1, Self, ()>(qh, 1..=2, ()).ok(),
             smithay_client_toolkit::subcompositor::SubcompositorState::bind(
                 compositor_state.wl_compositor().clone(),
                 globals,

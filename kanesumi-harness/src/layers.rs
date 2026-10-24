@@ -14,6 +14,7 @@
 // - 图层矩形是相对父表面的逻辑坐标；层叠按创建顺序，后建的在上，全部在父表面内容之上。
 // - 合成器不支持 `ether_composition_v1` 时：Animate 直接跳到终值并立即回报 Done，
 //   SetOpacity 被忽略（`LayerEvent::Unsupported` 只发一次），功能不缺、只是没有动画。
+// - 合成器只有 v1（无裁剪）：SetClip 被忽略，AnimateClip 立即回报 Done —— 图层完整可见、没有推开动画。
 
 use kanesumi_canvas::Scene;
 use kanesumi_core::Rect;
@@ -54,6 +55,26 @@ pub struct LayerAnim {
     pub to_opacity: f32,
 }
 
+/// 裁剪内缩（逻辑像素，自图层四边向内量；全 0 = 不裁）。协议 `ether_visual_v1.set_clip`（v2）。
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct LayerInsets {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
+/// 一次合成器裁剪动画：从当前呈现内缩过渡到 `to`（v2；与 `LayerAnim` 两路独立，互不取消）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LayerClipAnim {
+    /// App 自选序号；与 `LayerAnim` 共用完成 / 打断事件，两路序号须互不重复。
+    pub serial: u32,
+    pub duration_ms: u32,
+    pub delay_ms: u32,
+    pub curve: Curve,
+    pub to: LayerInsets,
+}
+
 /// App → 外壳的图层命令。
 #[derive(Debug, Clone)]
 pub enum LayerCommand {
@@ -67,6 +88,10 @@ pub enum LayerCommand {
     /// 立即设不透明度（取消进行中的动画）。
     SetOpacity { id: LayerId, opacity: f32 },
     Animate { id: LayerId, anim: LayerAnim },
+    /// 立即设裁剪内缩（取消进行中的裁剪动画，不碰位移动画）。合成器不支持 v2 时忽略。
+    SetClip { id: LayerId, insets: LayerInsets },
+    /// 裁剪动画。合成器不支持 v2 时立即回报 Done（不裁，内容直接完整可见）。
+    AnimateClip { id: LayerId, anim: LayerClipAnim },
     Destroy { id: LayerId },
 }
 
@@ -121,6 +146,14 @@ impl LayerQueue {
 pub fn fallback_events(id: LayerId, anim: &LayerAnim) -> [LayerEvent; 1] {
     [LayerEvent::Done { id, serial: anim.serial }]
 }
+
+/// 回落语义（合成器无 v2 裁剪）：一条 AnimateClip 立即完成。
+pub fn fallback_clip_events(id: LayerId, anim: &LayerClipAnim) -> [LayerEvent; 1] {
+    [LayerEvent::Done { id, serial: anim.serial }]
+}
+
+/// 协议 v2（裁剪）起始版本：visual 代理版本 ≥ 此值才发 set_clip / animate_clip。
+pub const CLIP_SINCE_VERSION: u32 = 2;
 
 #[cfg(test)]
 mod tests {
