@@ -222,7 +222,7 @@ impl<A: TreeApp> TreeHost<A> {
     pub fn new(mut app: A) -> Self {
         // 合成滚动总开关：KANESUMI_NO_SCROLLER=1 强制全部滚动容器走应用线程自绘
         //（回退验收 / 手感对照用；参 fp4b 任务书）。锁屏外壳等非树宿主不读——它们没有树。
-        if std::env::var("KANESUMI_NO_SCROLLER").map_or(false, |v| v == "1") {
+        if std::env::var("KANESUMI_NO_SCROLLER").is_ok_and(|v| v == "1") {
             kanesumi_element::set_composed_scroll_enabled(false);
         }
         let mut tree = Tree::new(app.theme());
@@ -745,10 +745,11 @@ impl<A: TreeApp> App for TreeHost<A> {
         }
         match owner {
             Some((0, wid)) => self.app.on_layer_event(&mut self.tree, Some(wid), event),
-            Some((s, wid)) => match self.floating.get_mut(s - 1) {
-                Some(f) => self.app.on_layer_event(&mut f.tree, Some(wid), event),
-                None => {}
-            },
+            Some((s, wid)) => {
+                if let Some(f) = self.floating.get_mut(s - 1) {
+                    self.app.on_layer_event(&mut f.tree, Some(wid), event);
+                }
+            }
             None => {
                 // 「合成器不支持合成滚动」→ 撤下全部滚动器标记，控件回自绘（fp4b 回退路径）。
                 if matches!(event, LayerEvent::Unsupported) {
