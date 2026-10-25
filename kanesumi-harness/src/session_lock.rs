@@ -528,6 +528,12 @@ impl LockShell {
                 l.surface.destroy();
                 parent.commit();
             }
+            // 合成滚动命令：锁屏外壳不持元素树，不会产生滚动器；忽略防御。
+            LayerCommand::CreateScroller { .. }
+            | LayerCommand::SetScrollerGeometry { .. }
+            | LayerCommand::RealizeScroller { .. }
+            | LayerCommand::ScrollerScrollBy { .. }
+            | LayerCommand::ScrollerScrollTo { .. } => {}
         }
     }
 

@@ -31,6 +31,7 @@ pub mod proto {
 }
 
 pub(super) use proto::ether_composition_manager_v1::EtherCompositionManagerV1;
+use proto::ether_scroller_v1::EtherScrollerV1;
 use proto::ether_visual_v1::{self, EtherVisualV1};
 
 /// 一个已创建的图层。
@@ -40,6 +41,8 @@ pub(super) struct CompLayer {
     surface: wl_surface::WlSurface,
     subsurface: WlSubsurface,
     visual: Option<EtherVisualV1>,
+    /// 滚动器（fp4b）：Some 时本图层是滚动器内容子表面，位置由合成器 visual offset 驱动。
+    pub(super) scroller: Option<EtherScrollerV1>,
     pub(super) out: SurfaceOutput,
     cpu: Option<CpuRenderer>,
     rect: Rect,
@@ -53,6 +56,8 @@ pub(super) struct CompLayer {
     /// 背板第 3、4 次内容（不透明的那两次）都被跳过，合成器一直显示首帧暂隐时的透明内容。
     /// 缓冲释放时与每帧处理图层命令时补交。
     pending: Option<Scene>,
+    /// 滚器实现窗口同理（fp4b）：提交被跳过时存 (realized, scene)，缓冲释放 / 每帧补交。
+    pending_realize: Option<(Rect, Scene)>,
 }
 
 /// Shell 持有的图层总状态。
@@ -95,6 +100,15 @@ impl Shell {
 
     /// 补交被跳过的图层内容（缓冲释放 / 每帧调用；无待补交时零成本）。
     pub(super) fn retry_pending_layers(&mut self, qh: &QueueHandle<Shell>) {
+        let mut realize: Vec<(LayerId, Rect, Scene)> = Vec::new();
+        for l in self.comp.layers.iter() {
+            if let Some((r, s)) = &l.pending_realize {
+                realize.push((l.id, *r, s.clone()));
+            }
+        }
+        for (id, r, s) in realize {
+            self.realize_scroller(id, &r, &s, qh);
+        }
         let ids: Vec<LayerId> = self
             .comp
             .layers
@@ -224,9 +238,46 @@ impl Shell {
                 if let Some(v) = l.visual {
                     v.destroy();
                 }
+                if let Some(s) = l.scroller {
+                    s.destroy();
+                }
                 l.subsurface.destroy();
                 l.surface.destroy();
                 l.parent.commit();
+            }
+            // ── 合成滚动（fp4b）。参 crate::layers 头注与 Ether fp4-compositor-scroll.md §Ⅲ ──
+            LayerCommand::CreateScroller { id, parent, viewport, extent, background } => {
+                self.create_scroller(id, parent, viewport, extent, background, qh)
+            }
+            LayerCommand::SetScrollerGeometry { id, viewport, extent, background } => {
+                let Some(i) = self.layer_index(id) else { return };
+                let l = &self.comp.layers[i];
+                let Some(s) = &l.scroller else { return };
+                s.set_viewport(
+                    viewport.origin.x.round() as i32,
+                    viewport.origin.y.round() as i32,
+                    viewport.size.width.round() as i32,
+                    viewport.size.height.round() as i32,
+                );
+                s.set_extent(extent.0.round() as i32, extent.1.round() as i32);
+                s.set_background(background);
+                // 双缓冲请求随内容表面 commit 生效；子表面 desync，直接 commit。
+                l.surface.commit();
+            }
+            LayerCommand::RealizeScroller { id, realized, scene } => {
+                self.realize_scroller(id, &realized, &scene, qh)
+            }
+            LayerCommand::ScrollerScrollBy { id, serial, dy } => {
+                let Some(i) = self.layer_index(id) else { return };
+                if let Some(s) = &self.comp.layers[i].scroller {
+                    s.scroll_by(serial, 0.0, dy as f64);
+                }
+            }
+            LayerCommand::ScrollerScrollTo { id, serial, y, animate } => {
+                let Some(i) = self.layer_index(id) else { return };
+                if let Some(s) = &self.comp.layers[i].scroller {
+                    s.scroll_to(serial, 0.0, y as f64, if animate { 1 } else { 0 });
+                }
             }
         }
     }
@@ -266,6 +317,7 @@ impl Shell {
             surface,
             subsurface,
             visual,
+            scroller: None,
             out,
             cpu: None,
             rect,
@@ -273,11 +325,155 @@ impl Shell {
             offset: (0.0, 0.0),
             last_scene: None,
             pending: None,
+            pending_realize: None,
         };
         place(&mut l);
         self.comp.layers.push(l);
         // dk3-perf：新建图层子表面（建 CpuRenderer / 首帧上传）单独标出来。
         self.surface_created = true;
+    }
+
+    /// 建滚动器图层（fp4b）：内容子表面位置固定 (0,0)，摆放全部由合成器 visual offset
+    /// 驱动（`视口原点 + realized 原点 − 滚动位置`）；轴事件由合成器按视口认领。
+    /// manager 版本 < 3（无 `get_scroller`）时不建并回发 `Unsupported` —— 树侧收到后
+    /// 把全部滚动器标记撤下，控件回自绘路径。
+    fn create_scroller(
+        &mut self,
+        id: LayerId,
+        parent: LayerParent,
+        viewport: Rect,
+        extent: (f32, f32),
+        background: u32,
+        qh: &QueueHandle<Shell>,
+    ) {
+        if self.layer_index(id).is_some() {
+            log::warn!("滚动器图层 {id:?} 已存在，忽略重复 CreateScroller");
+            return;
+        }
+        let v3 = self
+            .comp
+            .manager
+            .as_ref()
+            .is_some_and(|m| wayland_client::Proxy::version(m) >= crate::layers::SCROLLER_SINCE_VERSION);
+        if !v3 {
+            if !self.comp.unsupported_reported {
+                self.comp.unsupported_reported = true;
+                log::warn!("合成器无 ether_composition_v1 v3 → 合成滚动回退为应用线程自绘");
+                self.app.on_layer_event(LayerEvent::Unsupported);
+            }
+            return;
+        }
+        let Some(sub) = self.comp.subcompositor.as_ref() else {
+            log::warn!("合成器无 wl_subcompositor，无法创建滚动器图层 {id:?}");
+            return;
+        };
+        let (parent_surface, scale) = match parent {
+            LayerParent::Main => (self.surface.clone(), self.scale),
+            LayerParent::Floating(i) => match self.floating.get(i) {
+                Some(f) => (f.surface.clone(), f.scale),
+                None => return,
+            },
+        };
+        let (subsurface, surface) = sub.create_subsurface(parent_surface.clone(), qh);
+        // desync：滚动器的 set_viewport / set_realized 双缓冲随本表面 commit 原子生效。
+        subsurface.set_desync();
+        // 位置 (0,0)：摆放交给合成器（visual offset = 视口原点 + realized 原点 − 滚动位置）。
+        subsurface.set_position(0, 0);
+        // 空输入区域：指针事件照常落在父表面，命中由 App 按布局换算（协议约定）。
+        let region = self.compositor_state.wl_compositor().create_region(qh, ());
+        surface.set_input_region(Some(&region));
+        region.destroy();
+        surface.set_buffer_scale(scale.round().max(1.0) as i32);
+        let Some(m) = self.comp.manager.clone() else { return };
+        let visual = m.get_visual(&surface, qh, id);
+        let scroller = m.get_scroller(&visual, qh, id);
+        scroller.set_viewport(
+            viewport.origin.x.round() as i32,
+            viewport.origin.y.round() as i32,
+            viewport.size.width.round() as i32,
+            viewport.size.height.round() as i32,
+        );
+        scroller.set_extent(extent.0.round() as i32, extent.1.round() as i32);
+        scroller.set_axes(1);
+        scroller.set_background(background);
+        let out = SurfaceOutput::new(self.dmabuf_allowed, self.dmabuf_device.clone());
+        let l = CompLayer {
+            id,
+            parent: parent_surface,
+            surface,
+            subsurface,
+            visual: Some(visual),
+            scroller: Some(scroller),
+            out,
+            cpu: None,
+            rect: viewport,
+            scale,
+            offset: (0.0, 0.0),
+            last_scene: None,
+            pending: None,
+            pending_realize: None,
+        };
+        self.comp.layers.push(l);
+        // 首帧几何（视口 / extent / 背景色）随这次空 commit 生效。
+        self.comp.layers.last_mut().unwrap().surface.commit();
+        self.surface_created = true;
+    }
+
+    /// 提交滚动器实现窗口：缓冲 resize → 光栅 → `set_realized` → commit（一次原子生效）。
+    fn realize_scroller(&mut self, id: LayerId, realized: &Rect, scene: &Scene, qh: &QueueHandle<Shell>) {
+        let Some(i) = self.layer_index(id) else { return };
+        let t = std::time::Instant::now();
+        let Shell { engine, comp, shm, dmabuf, .. } = self;
+        let l = &mut comp.layers[i];
+        if l.scroller.is_none() {
+            return;
+        }
+        // 协议要求缓冲逻辑尺寸 == realized 尺寸：两边都取整数（round），一致。
+        let (w, h) = (realized.size.width.round().max(1.0), realized.size.height.round().max(1.0));
+        let cpu = l.cpu.get_or_insert_with(|| CpuRenderer::new(w, h, l.scale));
+        cpu.resize(w, h, l.scale);
+        let (pw, ph) = cpu.physical_size();
+        let rgba = cpu.render(engine, scene, None);
+        let encode_ms = t.elapsed().as_secs_f32() * 1000.0;
+        l.last_scene = None;
+        let t = std::time::Instant::now();
+        // 先 set_realized（入 pending），attach + commit 时与新缓冲原子生效。
+        let committed = l.out.commit(qh, shm.as_ref(), dmabuf, &l.surface, pw, ph, rgba, l.scale, None);
+        if committed {
+            if let Some(s) = &l.scroller {
+                s.set_realized(
+                    realized.origin.x.round() as i32,
+                    realized.origin.y.round() as i32,
+                    w as i32,
+                    h as i32,
+                );
+            }
+            // 双缓冲请求随这次 commit 生效（bad_realized 校验读的就是本次新缓冲）。
+            l.surface.commit();
+            l.pending_realize = None;
+        } else {
+            // 两槽缓冲都在合成器手里 → 本次跳过；树侧已把该 Scene 记为已提交，
+            // 不补交就永久丢这一窗口。缓冲释放 / 下帧处理命令时重试（同图层内容补交）。
+            l.pending_realize = Some((*realized, scene.clone()));
+        }
+        let submit_ms = t.elapsed().as_secs_f32() * 1000.0;
+        let timing = crate::perf::FrameTiming {
+            encode_ms,
+            submit_ms,
+            scene_cmds: scene.commands.len() as u32,
+            upload_bytes: (pw as u64) * (ph as u64) * 4,
+            new_surface: std::mem::take(&mut self.surface_created),
+            ..Default::default()
+        };
+        let p = self.perf_layers.entry(id.0).or_default();
+        p.record(0.0, encode_ms, submit_ms);
+        p.record_phases(&timing);
+        crate::perf::maybe_spike(
+            &self.perf_proc,
+            &format!("{:?}", self.role),
+            &format!("scroller{}", id.0),
+            &timing,
+        );
     }
 
     /// 光栅内容并提交（只在内容变化时由 App 触发；动画期间不会走到这里）。
@@ -449,6 +645,34 @@ impl Dispatch<EtherVisualV1, LayerId> for Shell {
         let e = match event {
             ether_visual_v1::Event::Done { serial } => LayerEvent::Done { id: *id, serial },
             ether_visual_v1::Event::Cancelled { serial } => LayerEvent::Cancelled { id: *id, serial },
+        };
+        state.app.on_layer_event(e);
+    }
+}
+
+impl Dispatch<EtherScrollerV1, LayerId> for Shell {
+    fn event(
+        state: &mut Self,
+        _proxy: &EtherScrollerV1,
+        event: proto::ether_scroller_v1::Event,
+        id: &LayerId,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        use proto::ether_scroller_v1::Event as E;
+        let e = match event {
+            // 每输出帧至多一次：将要显示的位置 + 该帧目标呈现时刻（CLOCK_MONOTONIC ns）。
+            E::Offset { x, y, present_ns_hi, present_ns_lo } => LayerEvent::ScrollerOffset {
+                id: *id,
+                x: x as f32,
+                y: y as f32,
+                present_ns: ((present_ns_hi as u64) << 32) | present_ns_lo as u64,
+            },
+            E::State { phase, serial } => LayerEvent::ScrollerState {
+                id: *id,
+                phase: u32::from(phase),
+                serial,
+            },
         };
         state.app.on_layer_event(e);
     }

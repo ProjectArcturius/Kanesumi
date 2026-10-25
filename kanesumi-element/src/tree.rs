@@ -15,7 +15,9 @@ use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
 use crate::event::{Event, Key, Modifiers, PointerButton, ScrollInput};
 use crate::id::WidgetId;
-use crate::layer::{LayerAnimSpec, LayerClipSpec, LayerInsets, LayerOp, LayerState};
+use crate::layer::{
+    LayerAnimSpec, LayerClipSpec, LayerInsets, LayerOp, LayerState, ScrollerRequest, ScrollerState,
+};
 use crate::ime::ImeContext;
 use crate::transitions::{
     ActiveTransition, Edge, GatedAnim, GatedStart, PendingStart, Transition, TransitionParams,
@@ -395,6 +397,8 @@ pub struct Tree {
     damage_cull: bool,
     /// 图层（G3-c）：被标为图层的节点及其提交状态；BTreeMap 保证产出顺序稳定。参 layer.rs。
     layers: std::collections::BTreeMap<WidgetId, LayerState>,
+    /// 滚动器图层（fp4b）：节点 → 跟踪状态。参 layer.rs「合成滚动」。
+    scrollers: std::collections::BTreeMap<WidgetId, ScrollerState>,
     /// 待外壳取走的图层操作。
     layer_ops: Vec<LayerOp>,
     /// 进行中的主题转场（中断 / 估算 / 生命周期）。参 transitions.rs。
@@ -458,6 +462,7 @@ impl Tree {
             damage: None,
             damage_cull: false,
             layers: std::collections::BTreeMap::new(),
+            scrollers: std::collections::BTreeMap::new(),
             layer_ops: Vec::new(),
             transitions: std::collections::BTreeMap::new(),
             pending_starts: std::collections::BTreeMap::new(),
@@ -1496,8 +1501,22 @@ impl Tree {
         if !n.props.visible {
             return;
         }
-        // 图层子树由合成器子表面承载，不进入外层场景（拼该图层自身内容时除外）。参 layer.rs。
+        // 图层 / 滚动器子树由合成器子表面承载，不进入外层场景（拼该图层自身内容时除外）。参 layer.rs。
         if self.layers.contains_key(&id) && self.compose_layer.get() != Some(id) {
+            return;
+        }
+        // 滚动器根：内容子树在滚动器子表面，但**视口装饰**（自身 paint_after——滚动条等，
+        /// 随 offset 变化）留在主表面：进了内容缓冲的话每次滑动都会被误判为内容变化
+        /// 而重提交（fp4b）。
+        if self.scrollers.contains_key(&id) && self.compose_layer.get() != Some(id) {
+            let bounds = n.painted_bounds.unwrap_or(n.rect);
+            if let Some(c) = cull
+                && bounds.intersect(c).is_none()
+            {
+                return;
+            }
+            scene.commands.extend(n.paint.iter().cloned());
+            scene.commands.extend(n.paint_after.iter().cloned());
             return;
         }
         // 自身绘制范围；从未绘制过的节点退化为其矩形（容器）以避免误裁子树。
@@ -1509,7 +1528,12 @@ impl Tree {
         }
         scene.commands.extend(n.paint.iter().cloned());
         if !n.children.is_empty() {
-            let clip = n.widget.as_ref().is_none_or(|w| w.clips_children());
+            // 滚动器图层的根节点不裁剪：视口裁剪由合成器做（scroller viewport），
+            // 若把根矩形 clip 带进内容 Scene，其表面坐标不随滚动平移相消，滑动会被
+            // 误判为内容变化而重提交（fp4b）。
+            let is_scroller_root =
+                self.compose_layer.get() == Some(id) && self.scrollers.contains_key(&id);
+            let clip = !is_scroller_root && n.widget.as_ref().is_none_or(|w| w.clips_children());
             if clip {
                 scene.push_clip(n.rect);
             }
@@ -2894,6 +2918,96 @@ impl Tree {
         self.layers.contains_key(&id)
     }
 
+    // ── 合成滚动（fp4b）。参 layer.rs「合成滚动」、Ether fp4-compositor-scroll.md §Ⅴ ──
+
+    /// 把节点标为滚动器图层：其子树画进滚动器内容子表面，跟手 / 惯性 / 滚轮动画全部
+    /// 由合成器跟踪器完成，本树只按 `offset` 事件换算排布与命中。
+    /// 全局开关关着（`set_composed_scroll_enabled(false)`，如 `KANESUMI_NO_SCROLLER=1`）
+    /// 时**不标记并返回 false** —— 调用方据此把控件留在自绘路径。
+    pub fn set_scroller(&mut self, id: WidgetId, on: bool) -> bool {
+        if !on {
+            if let Some(st) = self.scrollers.remove(&id)
+                && st.created
+            {
+                self.layer_ops.push(LayerOp::Remove { id });
+            }
+            self.full_repaint = true;
+            self.invalidate_paint(id);
+            return false;
+        }
+        if !composed_scroll_enabled() {
+            return false;
+        }
+        self.scrollers.entry(id).or_default();
+        self.full_repaint = true;
+        self.invalidate_paint(id);
+        true
+    }
+
+    pub fn is_scroller(&self, id: WidgetId) -> bool {
+        self.scrollers.contains_key(&id)
+    }
+
+    /// 自 `id`（含自身）向上最近的滚动器图层节点。
+    pub(crate) fn enclosing_scroller(&self, id: WidgetId) -> Option<WidgetId> {
+        self.ancestors_inclusive(id).into_iter().find(|a| self.scrollers.contains_key(a))
+    }
+
+    /// EventCtx 键盘路径：给滚动器节点推一条主动滚动请求（分配 serial）。
+    pub(crate) fn push_scroller_request(&mut self, id: WidgetId, request: ScrollerRequest) -> u32 {
+        let serial = self.next_layer_serial;
+        self.next_layer_serial = self.next_layer_serial.wrapping_add(1).max(1);
+        self.layer_ops.push(LayerOp::ScrollerScroll { id, serial, request });
+        serial
+    }
+
+    /// 合成器回报的滚动偏移（每输出帧至多一次）：交给控件的
+    /// `Widget::on_scroller_offset`（更新偏移与失效，不触发内容缓冲重提交）。
+    pub fn deliver_scroller_offset(&mut self, id: WidgetId, x: f32, y: f32, present_ns: u64) {
+        let Some(mut w) = self.node_mut(id).and_then(|n| n.widget.take()) else {
+            return;
+        };
+        let mut ctx = EventCtx { tree: self, id, handled: false };
+        w.on_scroller_offset(&mut ctx, x, y, present_ns);
+        if let Some(n) = self.node_mut(id) {
+            n.widget = Some(w);
+        }
+    }
+
+    /// 合成器回报的相位变化（含 `scroll_by` / `scroll_to` 完成时的 serial）。
+    pub fn deliver_scroller_state(&mut self, id: WidgetId, phase: u32, serial: u32) {
+        let Some(mut w) = self.node_mut(id).and_then(|n| n.widget.take()) else {
+            return;
+        };
+        let mut ctx = EventCtx { tree: self, id, handled: false };
+        w.on_scroller_state(&mut ctx, phase, serial);
+        if let Some(n) = self.node_mut(id) {
+            n.widget = Some(w);
+        }
+    }
+
+    /// 撤下全部滚动器图层（外壳回报「合成器不支持合成滚动」时）：内容回主表面，
+    /// 逐个通知控件复位 composed（回自绘路径），整幅重拼一次。
+    pub fn disable_all_scrollers(&mut self) {
+        if self.scrollers.is_empty() {
+            return;
+        }
+        let ids: Vec<WidgetId> = self.scrollers.keys().copied().collect();
+        for id in ids {
+            if self.scrollers.remove(&id).is_some_and(|st| st.created) {
+                self.layer_ops.push(LayerOp::Remove { id });
+            }
+            if let Some(mut w) = self.node_mut(id).and_then(|n| n.widget.take()) {
+                w.on_scroller_disabled();
+                if let Some(n) = self.node_mut(id) {
+                    n.widget = Some(w);
+                }
+            }
+            self.invalidate_paint(id);
+        }
+        self.full_repaint = true;
+    }
+
     /// 图层是否已向外壳发过 Create（转场起始命令要等建层后才能发）。参 transitions.rs。
     pub(crate) fn layer_created(&self, id: WidgetId) -> bool {
         self.layers.get(&id).is_some_and(|st| st.created)
@@ -3020,9 +3134,13 @@ impl Tree {
 
     /// 同步全部图层：存在性、矩形、内容。每帧拼接之后调用。
     fn sync_layers(&mut self) {
-        if self.layers.is_empty() {
-            return;
+        if !self.layers.is_empty() {
+            self.sync_layers_inner();
         }
+        self.sync_scrollers();
+    }
+
+    fn sync_layers_inner(&mut self) {
         let ids: Vec<WidgetId> = self.layers.keys().copied().collect();
         for id in ids {
             let alive = self.contains(id);
@@ -3065,6 +3183,140 @@ impl Tree {
         }
     }
 
+    /// 同步全部滚动器图层：存在性、视口 / extent、实现窗口与内容缓冲。
+    /// 每帧拼接之后调用（`sync_layers` 内）。offset 只换排布（命中），**不重提交内容**：
+    /// 缓冲坐标系与 offset 无关（子节点表面坐标与平移量相抵），Scene 比对相同即零提交，
+    /// 内容只在窗口重实现（进入边缘 0.5 屏）或内容真变时重新提交。参 layer.rs。
+    fn sync_scrollers(&mut self) {
+        if self.scrollers.is_empty() {
+            return;
+        }
+        let background = theme_surface_argb(&self.theme);
+        let ids: Vec<WidgetId> = self.scrollers.keys().copied().collect();
+        for id in ids {
+            let alive = self.contains(id);
+            if !alive || !self.effectively_visible(id) {
+                if let Some(st) = self.scrollers.get_mut(&id)
+                    && st.created
+                {
+                    *st = ScrollerState::default();
+                    self.layer_ops.push(LayerOp::Remove { id });
+                }
+                if !alive {
+                    self.scrollers.remove(&id);
+                }
+                continue;
+            }
+            // 快照（含挂起的键盘滚动请求）；取不出控件（正被编辑等）就跳过本帧。
+            let Some(mut w) = self.node_mut(id).and_then(|n| n.widget.take()) else {
+                continue;
+            };
+            let snap = w.take_scroller_snapshot();
+            if let Some(n) = self.node_mut(id) {
+                n.widget = Some(w);
+            }
+            let Some(snap) = snap else { continue };
+            let Some(rect) = self.node(id).map(|n| n.rect) else { continue };
+            if rect.size.width <= 0.0 || snap.viewport.height <= 0.0 {
+                continue;
+            }
+            // 实现窗口：贴住当前 offset；旧窗口仍罩得住（边缘 ≥ 0.5 屏）且 extent 没变就沿用。
+            let extent_changed = self
+                .scrollers
+                .get(&id)
+                .is_none_or(|st| st.extent != Some(snap.extent));
+            let keep = |st: &ScrollerState| match st.realized {
+                Some(r)
+                    if !extent_changed
+                        && !crate::layer::scroller_needs_realize(
+                            snap.offset,
+                            snap.viewport.height,
+                            (r.origin.y, r.size.height),
+                            snap.extent.height,
+                        ) =>
+                {
+                    (r.origin.y, r.size.height)
+                }
+                _ => crate::layer::scroller_realized_window(
+                    snap.offset,
+                    snap.viewport.height,
+                    snap.extent.height,
+                ),
+            };
+            let (win_y, win_h) = self.scrollers.get(&id).map(keep).unwrap_or((
+                0.0,
+                0.0,
+            ));
+            // 拼子树内容 → 缓冲坐标（原点 = realized 左上角）。只拼子节点：滚动器根自身的
+            // paint_after（滚动条等视口装饰）留在主表面。子节点排在表面坐标
+            // `rect.y − offset + item_y`，平移 `−(rect.y − offset + win_y)` 后恰好是
+            // `item_y − win_y` —— 与 offset 无关，滑动不产生新 Scene。
+            self.compose_layer.set(Some(id));
+            let mut scene = Scene::default();
+            if let Some(children) = self.node(id).map(|n| n.children.clone()) {
+                for c in children {
+                    self.compose(c, &mut scene, None);
+                }
+            }
+            self.compose_layer.set(None);
+            let shift_y = rect.origin.y - snap.offset + win_y;
+            scene.translate(Point::new(-rect.origin.x, -shift_y));
+            let Some(st) = self.scrollers.get_mut(&id) else { continue };
+            let mut realize = None;
+            if !st.created {
+                st.created = true;
+                st.viewport = Some(rect);
+                st.extent = Some(snap.extent);
+                self.layer_ops.push(LayerOp::ScrollerCreate { id, rect });
+                self.layer_ops.push(LayerOp::ScrollerGeometry {
+                    id,
+                    viewport: rect,
+                    extent: snap.extent,
+                    background,
+                });
+                realize = Some(Rect::new(0.0, win_y, rect.size.width, win_h));
+            } else {
+                if st.viewport != Some(rect) || st.extent != Some(snap.extent) {
+                    st.viewport = Some(rect);
+                    st.extent = Some(snap.extent);
+                    self.layer_ops.push(LayerOp::ScrollerGeometry {
+                        id,
+                        viewport: rect,
+                        extent: snap.extent,
+                        background,
+                    });
+                }
+                if st.realized != Some(Rect::new(0.0, win_y, rect.size.width, win_h)) {
+                    realize = Some(Rect::new(0.0, win_y, rect.size.width, win_h));
+                }
+            }
+            if let Some(r) = realize {
+                // 只登记新窗口并通告控件（虚拟化列表按窗口定实现范围），**本帧不提交**：
+                // 行还没建，先提交会露一拍背景。下一帧 realize 建好行后由 scene 比对分支
+                // （st.scene 已清 None → 必发）带新窗口原子提交。
+                st.realized = Some(r);
+                st.scene = None;
+                if let Some(mut w) = self.node_mut(id).and_then(|n| n.widget.take()) {
+                    w.on_scroller_realized(r);
+                    if let Some(n) = self.node_mut(id) {
+                        n.widget = Some(w);
+                    }
+                }
+                self.invalidate_realize(id);
+            } else if st.scene.as_ref() != Some(&scene) {
+                let realized = st.realized.unwrap_or(Rect::new(0.0, win_y, rect.size.width, win_h));
+                st.scene = Some(scene.clone());
+                self.layer_ops.push(LayerOp::ScrollerRealize { id, realized, scene });
+            }
+            // 挂起的主动滚动（键盘 / bring_into_view）。
+            if let Some(request) = snap.request {
+                let serial = self.next_layer_serial;
+                self.next_layer_serial = self.next_layer_serial.wrapping_add(1).max(1);
+                self.layer_ops.push(LayerOp::ScrollerScroll { id, serial, request });
+            }
+        }
+    }
+
     /// 节点绘制缓存（测试断言用）。
     pub fn painted(&self, id: WidgetId) -> &[SceneCommand] {
         self.node(id).map(|n| n.paint.as_slice()).unwrap_or(&[])
@@ -3080,6 +3332,26 @@ impl Tree {
             .map(|w| w.type_name())
             .unwrap_or("<none>")
     }
+}
+
+// ── 合成滚动全局开关（fp4b）。外壳启动时读 `KANESUMI_NO_SCROLLER` 后设置 ─────────
+
+static COMPOSED_SCROLL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// 合成滚动总开关：关时 `Tree::set_scroller(_, true)` 不标记并返回 false（控件留自绘）。
+pub fn set_composed_scroll_enabled(on: bool) {
+    COMPOSED_SCROLL.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn composed_scroll_enabled() -> bool {
+    COMPOSED_SCROLL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 主题表面色 → 0xAARRGGBB（滚动器视口未覆盖区填充，不露黑）。
+fn theme_surface_argb(theme: &MetroTheme) -> u32 {
+    let c = theme.colors.surface;
+    let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+    (to8(c.a) << 24) | (to8(c.r) << 16) | (to8(c.g) << 8) | to8(c.b)
 }
 
 /// 锚点方位放置：首选方位放不下而对侧放得下则翻转；沿边按 `align` 对齐。

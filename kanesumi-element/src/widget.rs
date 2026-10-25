@@ -147,6 +147,29 @@ pub trait Widget: Any {
         false
     }
 
+    // ── 合成滚动（fp4b）：仅滚动器图层的控件实现。参 layer.rs「合成滚动」──────────
+
+    /// 每帧由 `Tree::sync_scrollers` 调用：取滚动几何快照与挂起的主动滚动请求。
+    /// 返回 `None` = 不是滚动容器（默认）。
+    fn take_scroller_snapshot(&mut self) -> Option<crate::layer::ScrollerSnapshot> {
+        None
+    }
+
+    /// 合成器回报的滚动偏移（每输出帧至多一次；x 恒 0，y = 纵向位置）。
+    /// 控件更新自身偏移并失效排布（命中换算）——**不**触发内容缓冲重提交（框架保证）。
+    fn on_scroller_offset(&mut self, _ctx: &mut EventCtx, _x: f32, _y: f32, _present_ns: u64) {}
+
+    /// 合成器回报的相位变化（0=idle 1=interacting 2=inertia 3=animating）。
+    /// `scroll_by` / `scroll_to` 完成时 `serial` 带其序号（否则 0）。
+    fn on_scroller_state(&mut self, _ctx: &mut EventCtx, _phase: u32, _serial: u32) {}
+
+    /// 框架判定的实现窗口变更（内容坐标矩形）：虚拟化列表据此把实现范围扩到窗口
+    /// （视口前后各一屏），下一帧随新窗口内容一起原子提交。
+    fn on_scroller_realized(&mut self, _realized: Rect) {}
+
+    /// 合成滚动被撤下（合成器不支持 v3 / 预算超限）：控件复位 composed、回自绘路径。
+    fn on_scroller_disabled(&mut self) {}
+
     /// 画出自身矩形的显式许可（徽标外溢、描边外扩）。框架据此扩展损伤；仍受祖先裁剪。
     fn paint_overflow(&self) -> Insets {
         Insets::ZERO
@@ -397,6 +420,25 @@ impl EventCtx<'_> {
         f: impl FnOnce(&mut T, &mut crate::tree::EditCtx) -> R,
     ) -> Option<R> {
         self.tree.edit(id, f)
+    }
+
+    /// 请求最近的滚动器图层做增量 / 绝对滚动（合成模式的键盘路径：Page 键、Home/End、
+    /// `bring_into_view`）。滚动由合成器跟踪器动画完成，控件本地不动。
+    /// 本节点不在任何滚动器图层内时返回 false（调用方走自绘路径）。
+    pub fn scroller_scroll_by(&mut self, delta: f32) -> bool {
+        self.scroller_scroll(crate::layer::ScrollerRequest::ScrollBy { delta })
+    }
+
+    pub fn scroller_scroll_to(&mut self, target: f32, animate: bool) -> bool {
+        self.scroller_scroll(crate::layer::ScrollerRequest::ScrollTo { target, animate })
+    }
+
+    fn scroller_scroll(&mut self, request: crate::layer::ScrollerRequest) -> bool {
+        let Some(id) = self.tree.enclosing_scroller(self.id) else {
+            return false;
+        };
+        self.tree.push_scroller_request(id, request);
+        true
     }
 }
 

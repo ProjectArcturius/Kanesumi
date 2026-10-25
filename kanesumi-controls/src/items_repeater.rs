@@ -140,6 +140,13 @@ impl ItemsRepeater {
         self
     }
 
+    /// 合成滚动模式开关（fp4b）。真生效还须 `Tree::set_scroller(节点, true)` 返回 true
+    ///（树侧总开关关着时两者都退回自绘）。开时内嵌滚动状态全部由合成器 `offset` 事件驱动，
+    /// 实现范围按**实现窗口**（视口前后各一屏）而不是视口 ± overscan。
+    pub fn set_composed_scroll(&mut self, on: bool) {
+        self.scroll.composed = on;
+    }
+
     pub fn set_layout(&mut self, layout: ItemLayout) {
         self.layout = layout;
         self.dirty = true;
@@ -263,6 +270,8 @@ impl ItemsRepeater {
     }
 
     /// 视口（含上下 overscan）内需要实现的索引集。参任务设计「可见范围 + 上下各 overscan」。
+    /// 合成模式（fp4b）改为按**实现窗口**（视口前后各一屏）实现——内容缓冲装的是整窗口，
+    /// 只实现视口会在窗口里露一拍背景。
     fn visible_indices(&self) -> Vec<usize> {
         if self.count == 0 {
             return Vec::new();
@@ -272,8 +281,14 @@ impl ItemsRepeater {
             return Vec::new();
         }
         let overscan = vp * self.overscan;
-        let lo = (self.scroll.offset - overscan).max(0.0);
-        let span = vp + overscan * 2.0;
+        let (lo, span) = if self.scroll.composed && self.scroll.realized_window.size.height > 0.0 {
+            (
+                self.scroll.realized_window.origin.y.max(0.0),
+                self.scroll.realized_window.size.height,
+            )
+        } else {
+            ((self.scroll.offset - overscan).max(0.0), vp + overscan * 2.0)
+        };
         match self.layout {
             ItemLayout::Stack { .. } => {
                 match self.repeater.visible_range(span, lo) {
@@ -288,7 +303,7 @@ impl ItemsRepeater {
                 }
                 let columns = self.columns_clamped();
                 let first_row = (lo / stride).floor() as usize;
-                let last_row = ((self.scroll.offset + vp + overscan) / stride).ceil() as usize;
+                let last_row = ((lo + span) / stride).ceil() as usize;
                 let first = (first_row * columns).min(self.count - 1);
                 let last = (last_row * columns).saturating_sub(1).min(self.count - 1);
                 (first..=last).collect()
@@ -541,6 +556,11 @@ impl Widget for ItemsRepeater {
             if self.count == 0 || self.content_length() <= self.viewport.height {
                 return;
             }
+            // 合成模式：轴事件由合成器认领（视口内 + 轴匹配 + 无 Ctrl）；不该到这里也不本地滚。
+            if self.scroll.composed {
+                ctx.set_handled();
+                return;
+            }
             let before = self.scroll.offset;
             let mut needs_tick = false;
             match source {
@@ -599,6 +619,13 @@ impl Widget for ItemsRepeater {
         let content_y = target.origin.y - rect.origin.y + self.scroll.offset;
         let index = (content_y / stride).floor().max(0.0) as usize;
         let index = index.min(self.count - 1);
+        if self.scroll.composed {
+            // 合成模式：请求由 MetroScrollView 登记成 scroll_to，下一帧 sync_scrollers 发出。
+            let target_off = self.target_offset_for(index, vp);
+            self.scroll.scroll_to(target_off, false);
+            ctx.request_anim_frame();
+            return true;
+        }
         let before = self.scroll.offset;
         let target_off = self.target_offset_for(index, vp);
         self.scroll.scroll_to(target_off, false);
@@ -615,6 +642,43 @@ impl Widget for ItemsRepeater {
 
     fn scrolls_children(&self) -> bool {
         true
+    }
+
+    // ── 合成滚动钩子（fp4b）：几何取自内嵌 `MetroScrollView`。参 kanesumi-element layer.rs ──
+
+    fn take_scroller_snapshot(&mut self) -> Option<kanesumi_element::ScrollerSnapshot> {
+        if !self.scroll.composed {
+            return None;
+        }
+        Some(kanesumi_element::ScrollerSnapshot {
+            viewport: self.viewport,
+            extent: kanesumi_core::Size::new(self.viewport.width, self.content_length()),
+            offset: self.scroll.offset,
+            request: self.scroll.take_composed_request(),
+        })
+    }
+
+    fn on_scroller_offset(&mut self, ctx: &mut EventCtx, _x: f32, y: f32, present_ns: u64) {
+        let y = y.clamp(0.0, self.scroll.max_offset());
+        if y != self.scroll.offset {
+            self.scroll.offset = y;
+            // 命中换算 + 滚动条重画 + 虚拟化范围跟进；内容缓冲不动（框架保证不重提交）。
+            ctx.invalidate_realize();
+            ctx.invalidate_arrange();
+            ctx.invalidate_paint();
+            ctx.emit(ScrollOffsetChanged(self.scroll.offset));
+        }
+        self.scroll.last_present_ns = present_ns;
+    }
+
+    fn on_scroller_state(&mut self, _ctx: &mut EventCtx, _phase: u32, _serial: u32) {}
+
+    fn on_scroller_realized(&mut self, realized: kanesumi_core::Rect) {
+        self.scroll.realized_window = realized;
+    }
+
+    fn on_scroller_disabled(&mut self) {
+        self.scroll.composed = false;
     }
 
     fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {

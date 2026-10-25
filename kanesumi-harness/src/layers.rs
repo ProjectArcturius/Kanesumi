@@ -93,15 +93,38 @@ pub enum LayerCommand {
     /// 裁剪动画。合成器不支持 v2 时立即回报 Done（不裁，内容直接完整可见）。
     AnimateClip { id: LayerId, anim: LayerClipAnim },
     Destroy { id: LayerId },
+    // ── 合成滚动（fp4b）。参 Ether fp4-compositor-scroll.md §Ⅲ / §Ⅴ ──
+    /// 建滚动器：内容子表面 + visual + scroller（manager < v3 时不建，回发 `Unsupported`）。
+    /// `viewport` 为父表面逻辑坐标（同时是输入区）；`background` 0xAARRGGBB（未覆盖区填色）。
+    CreateScroller {
+        id: LayerId,
+        parent: LayerParent,
+        viewport: Rect,
+        extent: (f32, f32),
+        background: u32,
+    },
+    /// 视口 / 内容全长 / 背景色变化（双缓冲，随内容表面 commit）。
+    SetScrollerGeometry { id: LayerId, viewport: Rect, extent: (f32, f32), background: u32 },
+    /// 提交实现窗口的内容（resize + 光栅 + `set_realized` + commit，一次原子生效）。
+    RealizeScroller { id: LayerId, realized: Rect, scene: Scene },
+    /// 客户端主动滚动（立即生效，不经 commit）。
+    ScrollerScrollBy { id: LayerId, serial: u32, dy: f32 },
+    ScrollerScrollTo { id: LayerId, serial: u32, y: f32, animate: bool },
 }
 
 /// 外壳 → App 的图层事件。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LayerEvent {
     Done { id: LayerId, serial: u32 },
     Cancelled { id: LayerId, serial: u32 },
     /// 合成器不支持 `ether_composition_v1`（只发一次）：动画会被直接跳到终值。
     Unsupported,
+    /// 滚动器每输出帧至多一次的采样位置（将要显示的值）与该帧目标呈现时刻
+    /// （CLOCK_MONOTONIC ns）。
+    ScrollerOffset { id: LayerId, x: f32, y: f32, present_ns: u64 },
+    /// 滚动器相位变化（0=idle 1=interacting 2=inertia 3=animating）；
+    /// `scroll_by` / `scroll_to` 完成时 `serial` 带其序号（否则 0）。
+    ScrollerState { id: LayerId, phase: u32, serial: u32 },
 }
 
 /// App 侧命令队列：推命令，外壳每帧 `take`。

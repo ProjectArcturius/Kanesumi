@@ -220,6 +220,11 @@ const TREE_LAYER_BASE: u32 = 0x8000_0000;
 
 impl<A: TreeApp> TreeHost<A> {
     pub fn new(mut app: A) -> Self {
+        // 合成滚动总开关：KANESUMI_NO_SCROLLER=1 强制全部滚动容器走应用线程自绘
+        //（回退验收 / 手感对照用；参 fp4b 任务书）。锁屏外壳等非树宿主不读——它们没有树。
+        if std::env::var("KANESUMI_NO_SCROLLER").map_or(false, |v| v == "1") {
+            kanesumi_element::set_composed_scroll_enabled(false);
+        }
         let mut tree = Tree::new(app.theme());
         app.build(&mut tree);
         let floating = (0..app.floating_layers().len())
@@ -270,6 +275,20 @@ impl<A: TreeApp> TreeHost<A> {
                         self.layer_rev.insert(lid, (surf, id));
                         out.push(LayerCommand::Create { id: lid, parent, rect });
                     }
+                    LayerOp::ScrollerCreate { id, rect } => {
+                        let lid = crate::layers::LayerId(self.next_layer);
+                        self.next_layer = self.next_layer.wrapping_add(1).max(TREE_LAYER_BASE);
+                        self.layer_ids.insert((surf, id), lid);
+                        self.layer_rev.insert(lid, (surf, id));
+                        out.push(LayerCommand::CreateScroller {
+                            id: lid,
+                            parent,
+                            viewport: rect,
+                            // 首帧几何随建层一起发；树侧随后每帧按需发 SetScrollerGeometry。
+                            extent: (rect.size.width, rect.size.height),
+                            background: 0,
+                        });
+                    }
                     LayerOp::Remove { id } => {
                         if let Some(lid) = self.layer_ids.remove(&(surf, id)) {
                             self.layer_rev.remove(&lid);
@@ -284,8 +303,13 @@ impl<A: TreeApp> TreeHost<A> {
                             | LayerOp::Opacity { id, .. }
                             | LayerOp::Animate { id, .. }
                             | LayerOp::Clip { id, .. }
-                            | LayerOp::AnimateClip { id, .. } => *id,
-                            LayerOp::Create { .. } | LayerOp::Remove { .. } => unreachable!(),
+                            | LayerOp::AnimateClip { id, .. }
+                            | LayerOp::ScrollerGeometry { id, .. }
+                            | LayerOp::ScrollerRealize { id, .. }
+                            | LayerOp::ScrollerScroll { id, .. } => *id,
+                            LayerOp::Create { .. }
+                            | LayerOp::Remove { .. }
+                            | LayerOp::ScrollerCreate { .. } => unreachable!(),
                         };
                         let Some(&lid) = self.layer_ids.get(&(surf, wid)) else { continue };
                         out.push(match other {
@@ -324,7 +348,34 @@ impl<A: TreeApp> TreeHost<A> {
                                     },
                                 },
                             },
-                            LayerOp::Create { .. } | LayerOp::Remove { .. } => unreachable!(),
+                            // ── 合成滚动（fp4b）──
+                            LayerOp::ScrollerGeometry { viewport, extent, background, .. } => {
+                                LayerCommand::SetScrollerGeometry {
+                                    id: lid,
+                                    viewport,
+                                    extent: (extent.width, extent.height),
+                                    background,
+                                }
+                            }
+                            LayerOp::ScrollerRealize { realized, scene, .. } => {
+                                LayerCommand::RealizeScroller { id: lid, realized, scene }
+                            }
+                            LayerOp::ScrollerScroll { serial, request, .. } => match request {
+                                kanesumi_element::layer::ScrollerRequest::ScrollBy { delta } => {
+                                    LayerCommand::ScrollerScrollBy { id: lid, serial, dy: delta }
+                                }
+                                kanesumi_element::layer::ScrollerRequest::ScrollTo { target, animate } => {
+                                    LayerCommand::ScrollerScrollTo {
+                                        id: lid,
+                                        serial,
+                                        y: target,
+                                        animate,
+                                    }
+                                }
+                            },
+                            LayerOp::Create { .. }
+                            | LayerOp::Remove { .. }
+                            | LayerOp::ScrollerCreate { .. } => unreachable!(),
                         });
                     }
                 }
@@ -666,17 +717,48 @@ impl<A: TreeApp> App for TreeHost<A> {
     fn on_layer_event(&mut self, event: crate::layers::LayerEvent) {
         use crate::layers::LayerEvent;
         // 树图层的事件交给所在那棵树、并带上节点 id；App 自建图层的事件 widget = None。
-        let owner = match event {
-            LayerEvent::Done { id, .. } | LayerEvent::Cancelled { id, .. } => self.layer_rev.get(&id).copied(),
+        let owner = match &event {
+            LayerEvent::Done { id, .. }
+            | LayerEvent::Cancelled { id, .. }
+            | LayerEvent::ScrollerOffset { id, .. }
+            | LayerEvent::ScrollerState { id, .. } => self.layer_rev.get(id).copied(),
             LayerEvent::Unsupported => None,
         };
+        // 滚动器事件先驱动对应控件（更新偏移 / 相位），再交给 App（默认空实现）。
+        if let Some((surf, wid)) = owner {
+            let tree = match surf {
+                0 => &mut self.tree,
+                s => match self.floating.get_mut(s - 1) {
+                    Some(f) => &mut f.tree,
+                    None => return,
+                },
+            };
+            match &event {
+                LayerEvent::ScrollerOffset { x, y, present_ns, .. } => {
+                    tree.deliver_scroller_offset(wid, *x, *y, *present_ns);
+                }
+                LayerEvent::ScrollerState { phase, serial, .. } => {
+                    tree.deliver_scroller_state(wid, *phase, *serial);
+                }
+                _ => {}
+            }
+        }
         match owner {
             Some((0, wid)) => self.app.on_layer_event(&mut self.tree, Some(wid), event),
             Some((s, wid)) => match self.floating.get_mut(s - 1) {
                 Some(f) => self.app.on_layer_event(&mut f.tree, Some(wid), event),
                 None => {}
             },
-            None => self.app.on_layer_event(&mut self.tree, None, event),
+            None => {
+                // 「合成器不支持合成滚动」→ 撤下全部滚动器标记，控件回自绘（fp4b 回退路径）。
+                if matches!(event, LayerEvent::Unsupported) {
+                    self.tree.disable_all_scrollers();
+                    for f in self.floating.iter_mut() {
+                        f.tree.disable_all_scrollers();
+                    }
+                }
+                self.app.on_layer_event(&mut self.tree, None, event);
+            }
         }
     }
 

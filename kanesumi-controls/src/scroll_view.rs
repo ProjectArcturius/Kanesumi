@@ -16,7 +16,7 @@ use kanesumi_core::interaction::{
     WHEEL_SMOOTH_MS,
 };
 use kanesumi_core::{Rect, Size};
-use kanesumi_element::{Event, Key, ScrollPhase, ScrollSource};
+use kanesumi_element::{Event, Key, ScrollPhase, ScrollSource, ScrollerRequest, ScrollerSnapshot};
 
 /// 滚轮离散步（正典 §Ⅴ：3 行 × 16px = 48px）。
 pub const SCROLL_WHEEL_STEP: f32 = kanesumi_core::interaction::WHEEL_STEP_PX;
@@ -72,6 +72,18 @@ pub struct MetroScrollView {
     finger_pending: f32,
     /// 最近 ~100 ms 的跟手采样，用于估松手速度。
     samples: Vec<FingerSample>,
+    /// 合成滚动模式（fp4b）：内容画进滚动器子表面，跟手 / 惯性 / 滚轮动画全部由
+    /// 合成器跟踪器完成；本控件只按 `offset` 事件换算排布与命中（自绘路径原样保留作回退）。
+    /// 宿主经 `Tree::set_scroller(id, composed)` 打开——树侧开关关着时 `set_scroller`
+    /// 返回 false，宿主须把本字段一并留在 false。
+    pub composed: bool,
+    /// 合成模式下挂起的主动滚动（键盘 / `bring_into_view` / 宿主 API），由
+    /// `take_scroller_snapshot` 取走发 `scroll_by` / `scroll_to`。`ScrollBy` 累加、`ScrollTo` 覆盖。
+    composed_request: Option<ScrollerRequest>,
+    /// 最近一次 `offset` 事件附带的帧目标呈现时刻（CLOCK_MONOTONIC ns；量尺用）。
+    pub last_present_ns: u64,
+    /// 合成模式下当前实现窗口（内容坐标；`on_scroller_realized` 回写，虚拟化列表共读）。
+    pub realized_window: Rect,
 }
 
 /// 跟手速度采样：一次 `update` 内的位移与对应时长。
@@ -106,6 +118,10 @@ impl Default for MetroScrollView {
             inertia: FrictionAnim::new(INERTIA_TAU_S as f64, INERTIA_STOP_VELOCITY as f64),
             finger_pending: 0.0,
             samples: Vec::new(),
+            composed: false,
+            composed_request: None,
+            last_present_ns: 0,
+            realized_window: Rect::new(0.0, 0.0, 0.0, 0.0),
         }
     }
 }
@@ -148,12 +164,32 @@ impl MetroScrollView {
         }
     }
 
+    /// 合成模式下登记一条主动滚动请求（`ScrollBy` 累加、`ScrollTo` 覆盖）。
+    /// 由 `take_scroller_snapshot` 取走 → `LayerOp::ScrollerScroll` → 协议 `scroll_by/scroll_to`。
+    fn composed_request(&mut self, request: ScrollerRequest) {
+        self.composed_request = Some(match (&self.composed_request, request) {
+            (Some(ScrollerRequest::ScrollBy { delta: a }), ScrollerRequest::ScrollBy { delta: b }) => {
+                ScrollerRequest::ScrollBy { delta: a + b }
+            }
+            (_, b) => b,
+        });
+    }
+
+    /// 取走挂起的主动滚动请求（`ItemsRepeater::take_scroller_snapshot` 用）。
+    pub fn take_composed_request(&mut self) -> Option<ScrollerRequest> {
+        self.composed_request.take()
+    }
+
     /// 滚轮滚动（主轴；正 = 向下）。离散步 48px（正典 §Ⅴ）。
     ///
     /// 平滑开时按「目标累加 + 150 ms 缓出追目标」：连滚三格目标 +144、从中途当前呈现值接续；
-    /// 平滑关时瞬时定位（旧行为）。Disabled 模式不滚。
+    /// 平滑关时瞬时定位（旧行为）。Disabled 模式不滚。合成模式下交给合成器跟踪器。
     pub fn scroll_wheel(&mut self, dy: f32) {
         if self.mode == ScrollMode::Disabled {
+            return;
+        }
+        if self.composed {
+            self.composed_request(ScrollerRequest::ScrollBy { delta: dy });
             return;
         }
         if !self.smooth_scroll {
@@ -166,6 +202,10 @@ impl MetroScrollView {
 
     /// 增量滚动（带平滑，对齐旧 `scroll_by` 语义）。
     pub fn scroll_by(&mut self, delta: f32) {
+        if self.composed {
+            self.composed_request(ScrollerRequest::ScrollBy { delta });
+            return;
+        }
         if !self.smooth_scroll {
             self.scroll_to(self.offset + delta, false);
             return;
@@ -175,6 +215,10 @@ impl MetroScrollView {
 
     /// 直接滚动到目标偏移（夹紧）。`animate=true` 时平滑过渡。
     pub fn scroll_to(&mut self, offset: f32, animate: bool) {
+        if self.composed {
+            self.composed_request(ScrollerRequest::ScrollTo { target: offset.clamp(0.0, self.max_offset()), animate });
+            return;
+        }
         if animate && self.smooth_scroll {
             self.begin_smooth(offset);
             return;
@@ -227,7 +271,11 @@ impl MetroScrollView {
     }
 
     /// 每帧推进平滑滚动 / 惯性（真实时钟 `dt` 秒）。返回偏移是否变化。
+    /// 合成模式下无本地动画（跟手 / 惯性 / 滚轮动画都在合成器）。
     pub fn update(&mut self, dt: f64) {
+        if self.composed {
+            return;
+        }
         self.step(dt);
     }
 
@@ -252,17 +300,20 @@ impl MetroScrollView {
         self.offset != before
     }
 
-    /// 是否正在动画（惯性，或平滑开时的滚轮追踪）。
+    /// 是否正在动画（惯性，或平滑开时的滚轮追踪）。合成模式下恒否（动画在合成器）。
     pub fn is_animating(&self) -> bool {
+        if self.composed {
+            return false;
+        }
         !self.inertia.is_steady() || (self.smooth_scroll && !self.wheel.is_steady())
     }
 
     // ── 触控板：跟手 + 松手惯性 ──────────────────────────────────────────────
 
     /// 触控板 / 连续源的位置增量：**跟手**（呈现值 1:1 直加，无动画），
-    /// 并累计本帧位移用于估松手速度。
+    /// 并累计本帧位移用于估松手速度。合成模式下无操作（跟手在合成器跟踪器）。
     pub fn scroll_finger(&mut self, dy: f32) {
-        if self.mode == ScrollMode::Disabled {
+        if self.mode == ScrollMode::Disabled || self.composed {
             return;
         }
         // 新输入立即打断惯性与滚轮平滑追踪。
@@ -335,6 +386,10 @@ impl MetroScrollView {
     /// PageUp / PageDown：步长 = 视口高 − 一行（正典 §Ⅴ）。`dir` = ±1。
     pub fn scroll_page(&mut self, dir: f32) {
         let step = (self.viewport_size.height - SCROLL_WHEEL_STEP).max(0.0);
+        if self.composed {
+            self.composed_request(ScrollerRequest::ScrollBy { delta: dir * step });
+            return;
+        }
         if !self.smooth_scroll {
             self.scroll_to(self.offset + dir * step, false);
         } else {
@@ -354,6 +409,13 @@ impl MetroScrollView {
 
     /// 平滑开时走平滑追踪，否则瞬时定位。
     fn scroll_to_smooth(&mut self, target: f32) {
+        if self.composed {
+            self.composed_request(ScrollerRequest::ScrollTo {
+                target: target.clamp(0.0, self.max_offset()),
+                animate: true,
+            });
+            return;
+        }
         if self.smooth_scroll {
             self.begin_smooth(target);
         } else {
@@ -478,6 +540,12 @@ impl kanesumi_element::Widget for MetroScrollView {
                 if !self.is_scrollable() {
                     return;
                 }
+                // 合成模式：轴事件由合成器认领（视口内 + 轴匹配 + 无 Ctrl），不该到这里；
+                // 到了（指针在视口外的链式滚动等）也不本地滚，交合成器语义。
+                if self.composed {
+                    ctx.set_handled();
+                    return;
+                }
                 let before = self.offset;
                 // 跟手帧需下一帧 `update` 采样估速（`update` 只对本节点在 `anim` 时调用）。
                 let mut needs_tick = false;
@@ -507,6 +575,34 @@ impl kanesumi_element::Widget for MetroScrollView {
                 ctx.set_handled();
             }
             Event::KeyDown { key, .. } if self.is_scrollable() => {
+                // 合成模式：键盘滚动交给合成器跟踪器动画（w-comp-ref §⑤ 步长不变）。
+                if self.composed {
+                    let handled = match key {
+                        Key::PageUp => {
+                            self.scroll_page(-1.0);
+                            true
+                        }
+                        Key::PageDown => {
+                            self.scroll_page(1.0);
+                            true
+                        }
+                        Key::Home => {
+                            self.scroll_home();
+                            true
+                        }
+                        Key::End => {
+                            self.scroll_end_key();
+                            true
+                        }
+                        _ => false,
+                    };
+                    if handled {
+                        // 登记的请求由下一帧 sync_scrollers 取走发出——要续一帧。
+                        ctx.request_anim_frame();
+                        ctx.set_handled();
+                    }
+                    return;
+                }
                 let handled = match key {
                     Key::PageUp => {
                         self.scroll_page(-1.0);
@@ -563,6 +659,12 @@ impl kanesumi_element::Widget for MetroScrollView {
         let rect = ctx.rect();
         // 表面坐标 → 内容坐标（内容原点 = 视口原点 − offset）。
         let pos = target.origin.y - rect.origin.y + self.offset;
+        if self.composed {
+            // 合成模式：硬置滚到目标（协议 scroll_to animate=0，本帧即达）。
+            self.scroll_into_view(pos, target.size.height, false);
+            ctx.request_anim_frame();
+            return true;
+        }
         let before = self.offset;
         self.scroll_into_view(pos, target.size.height, false);
         if self.offset != before {
@@ -573,6 +675,43 @@ impl kanesumi_element::Widget for MetroScrollView {
         } else {
             false
         }
+    }
+
+    // ── 合成滚动钩子（fp4b）。参 kanesumi-element layer.rs ─────────────────────
+
+    fn take_scroller_snapshot(&mut self) -> Option<ScrollerSnapshot> {
+        if !self.composed {
+            return None;
+        }
+        Some(ScrollerSnapshot {
+            viewport: self.viewport_size,
+            extent: Size::new(self.viewport_size.width.max(self.content_size.width), self.content_size.height),
+            offset: self.offset,
+            request: self.composed_request.take(),
+        })
+    }
+
+    fn on_scroller_offset(&mut self, ctx: &mut kanesumi_element::EventCtx, _x: f32, y: f32, present_ns: u64) {
+        let y = y.clamp(0.0, self.max_offset());
+        if y != self.offset {
+            self.offset = y;
+            // 命中换算（子节点排布随 offset）与滚动条重画；内容缓冲不动（框架保证不重提交）。
+            ctx.invalidate_arrange();
+            ctx.invalidate_paint();
+            ctx.emit(ScrollOffsetChanged(self.offset));
+        }
+        self.last_present_ns = present_ns;
+    }
+
+    fn on_scroller_state(&mut self, _ctx: &mut kanesumi_element::EventCtx, _phase: u32, _serial: u32) {}
+
+    fn on_scroller_realized(&mut self, realized: Rect) {
+        self.realized_window = realized;
+    }
+
+    fn on_scroller_disabled(&mut self) {
+        self.composed = false;
+        self.composed_request = None;
     }
 }
 
@@ -783,6 +922,80 @@ mod tree_tests {
             (off - (100.0 - SCROLL_WHEEL_STEP)).abs() < 1.0,
             "PageDown = 视口高 − 48，实际 {off}"
         );
+    }
+
+    // ── 合成滚动模式（fp4b）───────────────────────────────────────────────────
+
+    /// 合成模式：滚轮 / 触控板事件不再本地滚（跟手 / 惯性在合成器跟踪器），
+    /// 键盘滚动登记成主动滚动请求（`ScrollerScroll` → 协议 scroll_by）。
+    #[test]
+    fn composed_mode_ignores_axis_and_routes_keyboard() {
+        let (mut h, sv, items) = harness();
+        h.tree.edit::<MetroScrollView, _>(sv, |s, _| s.composed = true);
+        assert!(h.tree.set_scroller(sv, true));
+        h.frame();
+        h.tree.take_layer_ops();
+
+        // 轴事件：不本地滚。
+        h.tree.scroll(Point::new(50.0, 50.0), 0.0, 50.0, Modifiers::NONE);
+        h.frame();
+        assert_eq!(h.tree.get::<MetroScrollView>(sv).unwrap().offset, 0.0, "合成模式不本地滚");
+
+        // PageDown：走合成器（ScrollBy 52 = 视口 100 − 步长 48）。
+        h.tree.focus(items[0], true);
+        h.frame();
+        assert!(h.key(Key::PageDown));
+        h.frame();
+        let ops = h.tree.take_layer_ops();
+        assert!(
+            ops.iter().any(|o| matches!(
+                o,
+                kanesumi_element::LayerOp::ScrollerScroll {
+                    request: kanesumi_element::layer::ScrollerRequest::ScrollBy { delta: 52.0 },
+                    ..
+                }
+            )),
+            "PageDown 应发 ScrollerScrollBy(52)：{ops:?}"
+        );
+    }
+
+    /// 合成模式：offset 事件驱动排布与命中（换算），内容缓冲不重提交。
+    #[test]
+    fn composed_offset_event_drives_hit_without_resubmit() {
+        let (mut h, sv, items) = harness();
+        h.tree.edit::<MetroScrollView, _>(sv, |s, _| s.composed = true);
+        assert!(h.tree.set_scroller(sv, true));
+        h.frame();
+        h.frame();
+        h.tree.take_layer_ops();
+
+        h.tree.deliver_scroller_offset(sv, 0.0, 40.0, 77);
+        h.frame();
+        // 排布随 offset：项 1（y = 40−40 = 0）顶到视口顶。
+        assert_eq!(h.rect(items[1]).origin.y, 0.0, "命中 / 排布随 offset 事件换算");
+        assert_eq!(h.tree.hit(Point::new(50.0, 5.0)), Some(items[1]));
+        let ops = h.tree.take_layer_ops();
+        assert!(
+            ops.iter().all(|o| !matches!(o, kanesumi_element::LayerOp::ScrollerRealize { .. })),
+            "窗口内滑动不得重提交内容：{ops:?}"
+        );
+        assert_eq!(h.tree.get::<MetroScrollView>(sv).unwrap().last_present_ns, 77);
+    }
+
+    /// 全局开关关着（KANESUMI_NO_SCROLLER=1 语义）：set_scroller 拒绝，
+    /// 调用方把控件留在自绘路径。
+    #[test]
+    fn global_switch_off_rejects_scroller() {
+        let (mut h, sv, _items) = harness();
+        h.tree.edit::<MetroScrollView, _>(sv, |s, _| s.composed = true);
+        kanesumi_element::set_composed_scroll_enabled(false);
+        let ok = h.tree.set_scroller(sv, true);
+        kanesumi_element::set_composed_scroll_enabled(true);
+        assert!(!ok, "开关关着时不得标记");
+        assert!(!h.tree.is_scroller(sv));
+        h.frame();
+        let ops = h.tree.take_layer_ops();
+        assert!(ops.is_empty(), "不建滚动器图层：{ops:?}");
     }
 }
 
