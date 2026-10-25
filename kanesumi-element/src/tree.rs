@@ -3203,7 +3203,10 @@ impl Tree {
         if self.scrollers.is_empty() {
             return;
         }
-        let background = theme_surface_argb(&self.theme);
+        // 视口底色 = 应用背景（`colors.background`），不是面板表面（`surface`）。
+        // 视口底下本来就是页面背景：暗色下 background=#000、surface=#171717，填 surface
+        // 会让合成档多出一整块面板色（2026-10-25 三页像素比对抓到）。
+        let background = theme_background_argb(&self.theme);
         let ids: Vec<WidgetId> = self.scrollers.keys().copied().collect();
         for id in ids {
             let alive = self.contains(id);
@@ -3359,9 +3362,10 @@ pub fn composed_scroll_enabled() -> bool {
     COMPOSED_SCROLL.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// 主题表面色 → 0xAARRGGBB（滚动器视口未覆盖区填充，不露黑）。
-fn theme_surface_argb(theme: &MetroTheme) -> u32 {
-    let c = theme.colors.surface;
+/// 主题**背景**色 → 0xAARRGGBB（滚动器视口未覆盖区填充，不露黑）。
+/// 必须与页面自身的底色一致：`surface` 是导航栏 / 控件面板色，不是页面背景。
+fn theme_background_argb(theme: &MetroTheme) -> u32 {
+    let c = theme.colors.background;
     let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
     (to8(c.a) << 24) | (to8(c.r) << 16) | (to8(c.g) << 8) | to8(c.b)
 }

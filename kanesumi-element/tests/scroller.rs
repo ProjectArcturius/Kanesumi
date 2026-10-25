@@ -164,6 +164,27 @@ fn scroller_create_then_realize_next_frame() {
     assert_eq!(*realized, Rect::new(0.0, 0.0, 200.0, 300.0));
 }
 
+/// 视口底色取**页面背景**（`colors.background`），不是面板表面（`surface`）：
+/// 内容不足一屏时底色铺在视口下半，取错色会让合成档多出一整块面板色
+/// （2026-10-25 三页像素比对抓到；暗色下 background=#000、surface=#171717）。
+#[test]
+fn scroller_background_uses_page_background() {
+    let (mut h, _) = harness();
+    let ops = h.tree.take_layer_ops();
+    let bg = ops
+        .iter()
+        .find_map(|o| match o {
+            LayerOp::ScrollerGeometry { background, .. } => Some(*background),
+            _ => None,
+        })
+        .expect("首帧应有 ScrollerGeometry");
+    let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+    let argb = |c: Color| (to8(c.a) << 24) | (to8(c.r) << 16) | (to8(c.g) << 8) | to8(c.b);
+    let theme = *h.tree.theme();
+    assert_eq!(bg, argb(theme.colors.background), "视口底色应是页面背景");
+    assert_ne!(bg, argb(theme.colors.surface), "不得用面板表面色（会多出一块面板）");
+}
+
 #[test]
 fn offset_event_updates_layout_without_resubmitting_content() {
     let (mut h, pane) = harness();
