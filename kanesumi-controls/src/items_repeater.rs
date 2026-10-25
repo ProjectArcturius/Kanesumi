@@ -147,6 +147,11 @@ impl ItemsRepeater {
         self.scroll.composed = on;
     }
 
+    /// 是否处于合成滚动模式。
+    pub fn scroll_composed(&self) -> bool {
+        self.scroll.composed
+    }
+
     pub fn set_layout(&mut self, layout: ItemLayout) {
         self.layout = layout;
         self.dirty = true;
@@ -660,6 +665,7 @@ impl Widget for ItemsRepeater {
 
     fn on_scroller_offset(&mut self, ctx: &mut EventCtx, _x: f32, y: f32, present_ns: u64) {
         let y = y.clamp(0.0, self.scroll.max_offset());
+        crate::scroll_meter_line("fr", y, &format!(" present_ns={present_ns}"));
         if y != self.scroll.offset {
             self.scroll.offset = y;
             // 命中换算 + 滚动条重画 + 虚拟化范围跟进；内容缓冲不动（框架保证不重提交）。

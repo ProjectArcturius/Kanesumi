@@ -1460,8 +1460,10 @@ impl Shell {
         let dmabuf_device = crate::dmabuf::DmabufDevice::default();
         dmabuf_device.set_recipe(dmabuf_recipe);
         // 合成图层（G3-b）：wl_subcompositor + ether_composition_v1（Ether 私有，别的合成器没有 → None 回落）。
+        // 绑定范围须含 v3（get_scroller / set_clip_rect）；绑到的版本由 Proxy::version 反映，
+        // 滚动器 / 矩形裁剪按 layers.rs 的 SCROLLER_SINCE_VERSION 门控。
         let comp = layers::Composition::new(
-            globals.bind::<layers::EtherCompositionManagerV1, Self, ()>(qh, 1..=2, ()).ok(),
+            globals.bind::<layers::EtherCompositionManagerV1, Self, ()>(qh, 1..=3, ()).ok(),
             smithay_client_toolkit::subcompositor::SubcompositorState::bind(
                 compositor_state.wl_compositor().clone(),
                 globals,

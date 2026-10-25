@@ -1444,11 +1444,16 @@ impl Tree {
         if w.focusable() && w.focus_visual() {
             bounds = crate::props::Insets::all(FOCUS_VISUAL_THICKNESS).inflate(bounds);
         }
-        let old = self.node(id).and_then(|n| n.painted_bounds);
-        if let Some(o) = old {
-            self.add_damage(o);
+        // 图层 / 滚动器子树的内容不进主场景（compose 剔除），重画只更新其内容缓冲，
+        // 不得记入主表面损伤——否则滚动期间每帧虚报半幅，主表面无谓整段重传（fp4b）。
+        let in_layer_subtree = self.enclosing_composited_root(id).is_some();
+        if !in_layer_subtree {
+            let old = self.node(id).and_then(|n| n.painted_bounds);
+            if let Some(o) = old {
+                self.add_damage(o);
+            }
+            self.add_damage(bounds);
         }
-        self.add_damage(bounds);
         // 非空绘制 = 本帧有内容进入提交缓冲。交给外壳提交后经 `report_content_committed` 汇报。
         if !scene.commands.is_empty() || !after.commands.is_empty() {
             self.frame_painted.push(id);
@@ -1506,8 +1511,8 @@ impl Tree {
             return;
         }
         // 滚动器根：内容子树在滚动器子表面，但**视口装饰**（自身 paint_after——滚动条等，
-        /// 随 offset 变化）留在主表面：进了内容缓冲的话每次滑动都会被误判为内容变化
-        /// 而重提交（fp4b）。
+        // 随 offset 变化）留在主表面：进了内容缓冲的话每次滑动都会被误判为内容变化
+        // 而重提交（fp4b）。
         if self.scrollers.contains_key(&id) && self.compose_layer.get() != Some(id) {
             let bounds = n.painted_bounds.unwrap_or(n.rect);
             if let Some(c) = cull
@@ -2946,6 +2951,13 @@ impl Tree {
 
     pub fn is_scroller(&self, id: WidgetId) -> bool {
         self.scrollers.contains_key(&id)
+    }
+
+    /// 自 `id`（含自身）向上的合成子表面根（普通图层或滚动器图层）；不在其子树 → None。
+    pub(crate) fn enclosing_composited_root(&self, id: WidgetId) -> Option<WidgetId> {
+        self.ancestors_inclusive(id)
+            .into_iter()
+            .find(|a| self.layers.contains_key(a) || self.scrollers.contains_key(a))
     }
 
     /// 自 `id`（含自身）向上最近的滚动器图层节点。

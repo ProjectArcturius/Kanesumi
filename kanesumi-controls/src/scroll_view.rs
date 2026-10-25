@@ -282,6 +282,10 @@ impl MetroScrollView {
     /// 动画推进一步。返回偏移是否变化（调用方据此失效重画）。
     fn step(&mut self, dt: f64) -> bool {
         let before = self.offset;
+        if crate::scroll_meter_on() && !self.composed {
+            // 量尺：帧推进的逐帧 offset（自绘档曲线数据源）。
+            crate::scroll_meter_line("fr", self.offset, "");
+        }
         // 跟手采样独立于动画：即使无动画也要把本帧累计位移计入速度估计。
         self.record_finger_sample(dt);
         if !self.inertia.is_steady() {
@@ -325,6 +329,7 @@ impl MetroScrollView {
         let before = self.offset;
         self.offset = (self.offset + dy).clamp(0.0, self.max_offset());
         self.finger_pending += self.offset - before;
+        crate::scroll_meter_line("ev", self.offset, &format!(" dy={dy:.2}"));
     }
 
     /// 手指离开（`End`）：按估计速度决定是否续惯性。
@@ -341,6 +346,7 @@ impl MetroScrollView {
             self.inertia.start(self.offset as f64, v as f64);
         }
         self.samples.clear();
+        crate::scroll_meter_line("end", self.offset, &format!(" v={v:.0}"));
     }
 
     /// 估计最近 ~100 ms 的跟手速度（px/s，正 = 向下）。
@@ -693,6 +699,7 @@ impl kanesumi_element::Widget for MetroScrollView {
 
     fn on_scroller_offset(&mut self, ctx: &mut kanesumi_element::EventCtx, _x: f32, y: f32, present_ns: u64) {
         let y = y.clamp(0.0, self.max_offset());
+        crate::scroll_meter_line("fr", y, &format!(" present_ns={present_ns}"));
         if y != self.offset {
             self.offset = y;
             // 命中换算（子节点排布随 offset）与滚动条重画；内容缓冲不动（框架保证不重提交）。

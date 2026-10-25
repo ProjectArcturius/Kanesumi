@@ -48,6 +48,24 @@ pub mod rating_control;
 pub mod repeater;
 pub mod retained;
 pub mod scroll_view;
+
+/// fp4b 手感量尺（验收专用）：`KANESUMI_SCROLL_METER=1` 时滚动路径向 stderr 打
+/// `client-scroll …` 行（轴事件 / 松手 / 每帧 offset），供 `tools/perf/fp4b_scroll.sh`
+/// 画「旧自绘 vs 合成模式」对照曲线。缺省零成本（OnceLock 读一次）。
+pub fn scroll_meter_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("KANESUMI_SCROLL_METER").is_ok_and(|v| v == "1"))
+}
+
+pub(crate) fn scroll_meter_line(kind: &str, off: f32, extra: &str) {
+    if scroll_meter_on() {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        eprintln!("client-scroll {kind} t={t} off={off:.2}{extra}");
+    }
+}
 pub mod selector_flyout;
 pub mod slider;
 pub mod split_button;
