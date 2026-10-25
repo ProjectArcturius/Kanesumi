@@ -36,7 +36,7 @@ use smithay_client_toolkit::{
             Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
             LayerSurfaceConfigure,
         },
-        xdg::XdgShell,
+        xdg::{XdgShell, XdgSurface as _},
         xdg::window::{Window, WindowConfigure, WindowDecorations, WindowHandler},
     },
 };
@@ -1261,6 +1261,16 @@ impl Shell {
                     cfg.min_width.round().max(1.0) as u32,
                     cfg.min_height.round().max(1.0) as u32,
                 )));
+                // xdg 窗口几何必须显式给主表面尺寸：不设时合成器拿「表面树 bbox」当几何，
+                // 而滚动器内容子表面比窗口大（realized 窗口前后各备一屏），bbox 会被撑到
+                // 内容全长 —— SSD 边框 / 命中 / 裁剪跟着长高（2026-10-25「关于本机」窗口
+                // 被撑高 70 pt）。参 xdg-shell：未设 window geometry 时取 surface tree bbox。
+                win.set_window_geometry(
+                    0,
+                    0,
+                    cfg.width.round().max(1.0) as u32,
+                    cfg.height.round().max(1.0) as u32,
+                );
                 win.commit();
                 window = Some(win);
                 xdg_shell = Some(shell);
@@ -3465,6 +3475,15 @@ impl LayerShellHandler for Shell {
             self.height = ph;
         } else if h > 0 {
             self.height = h as f32;
+        }
+        // 合成器给了新尺寸 → 窗口几何跟着主表面走（同创建时的理由）。
+        if let Some(win) = self.window.as_ref() {
+            win.set_window_geometry(
+                0,
+                0,
+                self.width.round().max(1.0) as u32,
+                self.height.round().max(1.0) as u32,
+            );
         }
         // 首 configure：延迟创建渲染器（surface 已配置、尺寸已知）。
         if self.renderer.is_none() && self.cpu.is_none() {
