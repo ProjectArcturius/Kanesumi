@@ -1327,7 +1327,14 @@ impl Shell {
                         ls.set_size(0, 0);
                     }
                 }
-                ls.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+                // 键盘交互按角色定档（role.rs `keyboard_interactivity`）：既有角色全是
+                // OnDemand（行为逐字不变），只有截图选区覆盖层是 Exclusive —— 它一映射
+                // 就要收 Esc / 右键，不能等一次点击才取焦。参 docs/SCREENSHOT_DESIGN.md §Ⅱ。
+                ls.set_keyboard_interactivity(match role.keyboard_interactivity() {
+                    crate::role::LayerKeyboardInteractivity::None => KeyboardInteractivity::None,
+                    crate::role::LayerKeyboardInteractivity::OnDemand => KeyboardInteractivity::OnDemand,
+                    crate::role::LayerKeyboardInteractivity::Exclusive => KeyboardInteractivity::Exclusive,
+                });
                 ls.commit();
                 layer_surface = Some(ls);
                 layer_shell = Some(shell);

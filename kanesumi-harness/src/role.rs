@@ -19,6 +19,23 @@ pub enum EtherRole {
     /// 锁屏客户端（ext-session-lock-v1）。参 docs/LOCKSCREEN_DESIGN.md §Ⅱ/§Ⅵ L2。
     /// 不走 xdg/layer 主表面：经 `session_lock` 外壳为**每个输出**建锁屏表面。
     Lock,
+    /// 截图选区覆盖层（layer-shell OVERLAY，四边锚定铺满，**独占键盘**）。
+    /// 参 docs/SCREENSHOT_DESIGN.md §Ⅱ：冻结帧铺满 + 拖选 / 单击整窗，Esc 取消。
+    ShotSelect,
+}
+
+/// layer-shell 键盘交互模式（与 `zwlr_layer_surface_v1.set_keyboard_interactivity` 同义）。
+///
+/// 为什么在本文件另立一个枚举而不直接用 sctk 的 `KeyboardInteractivity`：本文件是**跨平台**
+/// 的角色解析层（Windows 下也编译、也跑单测），sctk 只在 Linux 外壳里可用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerKeyboardInteractivity {
+    /// 永不取键盘。
+    None,
+    /// 点击后取键盘（现状：所有既有 layer 主表面）。
+    OnDemand,
+    /// 表面映射即独占键盘（截图选区覆盖层：Esc 必须在图形出现后立刻可用）。
+    Exclusive,
 }
 
 /// 角色解析失败。
@@ -37,6 +54,7 @@ impl FromStr for EtherRole {
             "launcher" => Ok(EtherRole::Launcher),
             "candidate" => Ok(EtherRole::Candidate),
             "lock" => Ok(EtherRole::Lock),
+            "shot-select" => Ok(EtherRole::ShotSelect),
             _ => Err(RoleParseError),
         }
     }
@@ -80,7 +98,29 @@ impl EtherRole {
             EtherRole::Dock => SurfaceKind::LayerBottom,
             EtherRole::Launcher => SurfaceKind::LayerOverlay,
             EtherRole::Candidate => SurfaceKind::LayerOverlay,
+            EtherRole::ShotSelect => SurfaceKind::LayerOverlay,
             EtherRole::Lock => SurfaceKind::SessionLock,
+        }
+    }
+
+    /// 角色的 layer-shell 键盘交互模式。
+    ///
+    /// **只有截图选区覆盖层要独占键盘**：它一出现用户就在拖选，Esc / 右键必须立刻生效，
+    /// 不能等一次点击才取焦（`OnDemand` 语义）。其余角色保持原值（桌面 `OnDemand` 是
+    /// 2026-10-01 桌面审计补的：点中桌面后 Delete / F2 / 方向键要能落到桌面）。
+    ///
+    /// 屏幕几何：选区的键鼠路由不依赖本值（合成器按协议缓存状态判独占 Overlay），
+    /// 本值只决定合成器是否把键盘交给它。参 docs/SCREENSHOT_DESIGN.md §Ⅱ。
+    pub fn keyboard_interactivity(self) -> LayerKeyboardInteractivity {
+        match self {
+            EtherRole::ShotSelect => LayerKeyboardInteractivity::Exclusive,
+            EtherRole::Desktop
+            | EtherRole::Browser
+            | EtherRole::TopBar
+            | EtherRole::Dock
+            | EtherRole::Launcher
+            | EtherRole::Candidate
+            | EtherRole::Lock => LayerKeyboardInteractivity::OnDemand,
         }
     }
 }
@@ -98,6 +138,7 @@ mod tests {
         assert_eq!("launcher".parse(), Ok(EtherRole::Launcher));
         assert_eq!("candidate".parse(), Ok(EtherRole::Candidate));
         assert_eq!("lock".parse(), Ok(EtherRole::Lock));
+        assert_eq!("shot-select".parse(), Ok(EtherRole::ShotSelect));
     }
 
     #[test]
@@ -143,5 +184,31 @@ mod tests {
         );
         // 锁屏：ext-session-lock-v1（非 xdg/layer）。
         assert_eq!(EtherRole::Lock.surface_kind(), SurfaceKind::SessionLock);
+        // 截图选区：铺满的 Overlay 层表面。
+        assert_eq!(
+            EtherRole::ShotSelect.surface_kind(),
+            SurfaceKind::LayerOverlay
+        );
+    }
+
+    /// 每个角色的键盘交互模式逐个钉死：新增角色若忘了定档，这条测试先红。
+    /// 参 docs/SCREENSHOT_DESIGN.md §Ⅱ（只有选区覆盖层独占键盘）。
+    #[test]
+    fn keyboard_interactivity_per_role_is_locked() {
+        use LayerKeyboardInteractivity::{Exclusive, OnDemand};
+        let table = [
+            (EtherRole::Desktop, OnDemand),
+            (EtherRole::Browser, OnDemand),
+            (EtherRole::TopBar, OnDemand),
+            (EtherRole::Dock, OnDemand),
+            (EtherRole::Launcher, OnDemand),
+            (EtherRole::Candidate, OnDemand),
+            (EtherRole::Lock, OnDemand),
+            (EtherRole::ShotSelect, Exclusive),
+        ];
+        assert_eq!(table.len(), 8, "角色数变了：新角色必须在上表定档");
+        for (role, want) in table {
+            assert_eq!(role.keyboard_interactivity(), want, "{role:?} 的键盘交互模式");
+        }
     }
 }
