@@ -2175,6 +2175,14 @@ impl Tree {
         }
     }
 
+    /// 某节点自身的焦点组规格（无则 `None`）。
+    ///
+    /// 与 `set_focus_group` 成对：列数会随布局重算（网格列数 = 可用宽的函数），
+    /// 调用方需要能读回当前值以判断是否要改（并让回归测试钉住同步）。
+    pub fn focus_group(&self, id: WidgetId) -> Option<FocusGroupSpec> {
+        self.node(id).and_then(|n| n.focus_group)
+    }
+
     /// 某节点所在（或自身即）的最近焦点组。
     fn enclosing_focus_group(&self, id: WidgetId) -> Option<WidgetId> {
         let mut cur = Some(id);
