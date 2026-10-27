@@ -275,6 +275,49 @@ impl UniformGrid {
     }
 }
 
+/// 自适应等宽网格的求解结果：列数 + 等宽单元宽。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AdaptiveColumns {
+    /// 列数（≥ 1，≤ 调用方给的上限）。
+    pub columns: usize,
+    /// 单元宽（等宽；可用宽不足一格时 = 可用宽）。
+    pub cell_width: f32,
+}
+
+/// 按**实际可用宽**求解等宽网格的列数与单元宽（最小单元宽 + 最大列数 → 列数）。
+///
+/// 起因（2026-10-27 settings-adaptive-layout §2-2b）：主页大类格栅原本写死 4 列、格宽按
+/// **窗口常数** 1200 反推（`(1200 − 2·56)/4`），窗口一变就与真实可用宽脱节 —— 窄窗格宽越界、
+/// 宽窗留下右侧空档。列数 / 格宽必须是可用宽的函数，而不是窗口常数的函数。
+///
+/// 规则（与 WinUI `ItemsWrapGrid` 的 `MaximumRowsOrColumns` + 最小项宽同语义）：
+/// `列数 = clamp(floor((可用宽 + 列间隔) / (最小单元宽 + 列间隔)), 1, 最大列数)`，
+/// `单元宽 = (可用宽 − 列间隔 ×(列数 − 1)) / 列数`。
+/// 退化输入（可用宽 ≤ 0、最小宽 / 上限非正）不 panic：返回 1 列 + 夹到 0 的宽。
+pub fn adaptive_columns(available: f32, min_cell: f32, max_columns: usize, gap: f32) -> AdaptiveColumns {
+    let max_columns = max_columns.max(1);
+    let gap = gap.max(0.0);
+    let min_cell = min_cell.max(0.0);
+    if available.is_nan() || available <= 0.0 {
+        return AdaptiveColumns {
+            columns: 1,
+            cell_width: 0.0,
+        };
+    }
+    // 列间隔也占宽：能塞 k 列的条件是 k·min + (k−1)·gap ≤ 可用宽。
+    let fit = if min_cell > 0.0 {
+        ((available + gap) / (min_cell + gap)).floor()
+    } else {
+        max_columns as f32
+    };
+    let columns = (fit.max(1.0) as usize).clamp(1, max_columns);
+    let cell_width = ((available - gap * (columns as f32 - 1.0)) / columns as f32).max(0.0);
+    AdaptiveColumns {
+        columns,
+        cell_width,
+    }
+}
+
 /// 磁贴墙（TILES_DESIGN §2）—— 固定高 2 单元、左贴边、无限向右、整页分页。
 ///
 /// 行数固定 2（纵向延长被硬约束，TILES_DESIGN §2「上下固定」）；页宽由
@@ -535,6 +578,35 @@ mod tests {
         let child = g.child_rect(rect, &rows, &cols, GridChild::at(0, 0));
         assert_eq!(child.size.width, 0.0);
         assert_eq!(child.size.height, 0.0);
+    }
+
+    /// 自适应等宽网格：阈值两侧 / 恰在阈值 / 上限钳制 / 退化输入。
+    #[test]
+    fn adaptive_columns_solves_from_available_width() {
+        // 4 列恰好放得下（4×272 = 1088）—— 恰在阈值。
+        let a = adaptive_columns(1088.0, 272.0, 4, 0.0);
+        assert_eq!((a.columns, a.cell_width), (4, 272.0));
+        // 差 0.1 就只放 3 列，格宽吃满可用宽（不是留空档）。
+        let b = adaptive_columns(1087.9, 272.0, 4, 0.0);
+        assert_eq!(b.columns, 3);
+        assert!((b.cell_width - 1087.9 / 3.0).abs() < 0.01);
+        // 更宽：仍 4 列（上限），格宽变大。
+        let c = adaptive_columns(1424.0, 272.0, 4, 0.0);
+        assert_eq!((c.columns, c.cell_width), (4, 356.0));
+        // 窄窗：1 列，格宽 = 可用宽（低于最小格宽也不再分列）。
+        let d = adaptive_columns(528.0, 272.0, 4, 0.0);
+        assert_eq!((d.columns, d.cell_width), (1, 528.0));
+        // 带宽间隔：能塞 3 列的条件是 3×270 + 2×10 = 830 ≤ 830。
+        let e = adaptive_columns(830.0, 270.0, 4, 10.0);
+        assert_eq!(e.columns, 3);
+        assert!((e.cell_width - (830.0 - 20.0) / 3.0).abs() < 0.01);
+        let f = adaptive_columns(829.0, 270.0, 4, 10.0);
+        assert_eq!(f.columns, 2);
+        // 退化输入不 panic。
+        for (avail, min, max, gap) in [(0.0, 272.0, 4, 0.0), (-5.0, 272.0, 0, 0.0), (100.0, 0.0, 3, 8.0)] {
+            let g = adaptive_columns(avail, min, max, gap);
+            assert!(g.columns >= 1 && g.cell_width >= 0.0, "{avail}/{min}/{max}/{gap}");
+        }
     }
 
     /// P0-3 回归：`GridChild` 索引越界时夹紧，不得 panic（rows/cols 是 pub 字段）。
