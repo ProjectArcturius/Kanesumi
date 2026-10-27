@@ -1245,6 +1245,7 @@ dependencies = [
  "kanesumi-anim",
  "kanesumi-canvas",
  "kanesumi-core",
+ "kanesumi-structure",
  "log",
 ]
 

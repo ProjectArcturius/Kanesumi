@@ -5,12 +5,14 @@
 // 由 `Tree` 的提示计时自动挂载，应用经 `Tree::set_tooltip` 使用，不自行插入）。
 // Kanesumi 风格的控件在 kanesumi-controls 里实现。
 
+mod adaptive;
 mod border;
 mod image;
 mod label;
 mod stack;
 mod tooltip;
 
+pub use adaptive::{AdaptiveGrid, AdaptiveStack, fits_in_row, min_width};
 pub use border::Border;
 pub use image::{Image, ImageSource, Stretch, fitted_rect};
 pub use label::Label;

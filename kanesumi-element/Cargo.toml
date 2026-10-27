@@ -10,4 +10,7 @@ authors = ["Project Arcturius"]
 kanesumi-core = { path = "../kanesumi-core" }
 kanesumi-canvas = { path = "../kanesumi-canvas" }
 kanesumi-anim = { path = "../kanesumi-anim" }
+# 等宽网格的列数 / 单元宽求解器（`grid::adaptive_columns`）—— 自适应格栅控件复用结构层
+# 已有的求解器，不在元素层再写一套（参 widgets/adaptive.rs 头注）。
+kanesumi-structure = { path = "../kanesumi-structure" }
 log = "0.4"
