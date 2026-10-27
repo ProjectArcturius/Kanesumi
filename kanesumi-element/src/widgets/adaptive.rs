@@ -60,16 +60,14 @@ fn visible_children(ctx: &impl KidCtx) -> Vec<(WidgetId, LayoutProps)> {
 
 /// 子项的「最小宽」：它不能被压到比这更窄。
 ///
-/// 取值顺序（与 `Tree::arrange_node` 的解析一致）：固定 `width` → `min.width` →
-/// `min_main`（主轴最小尺寸，行里即宽度）→ 0（可换行 / 可压缩到底）。
+/// 固定 `width` 或主轴最小值先受 `min` / `max` 约束，再计入左右外边距；
+/// 与 `Tree::measure_node` 的槽位口径一致。未声明下限的可压缩项为 0。
 pub fn min_width(props: &LayoutProps) -> f32 {
-    if let Some(w) = props.width {
-        return w.max(0.0);
-    }
-    if props.min.width > 0.0 {
-        return props.min.width;
-    }
-    props.min_main.max(0.0)
+    // 与 Tree::measure_node 复用同一套固定尺寸 / min / max 解析，再加外边距。
+    // 否则会误判“放得下”，并排后把固定宽子项压窄。
+    props.margin
+        .grow(props.clamp_size(Size::new(props.min_main.max(0.0), 0.0)))
+        .width
 }
 
 /// 行高取值：子项声明了固定高（`props.height`）就用它，否则用其期望高。
@@ -78,7 +76,9 @@ pub fn min_width(props: &LayoutProps) -> f32 {
 /// 期望高能到 250 —— 用期望高会让行高翻倍、格与格之间出现大空档（AFTER 首轮实测：主页
 /// 3 行占 770 而非 328）。
 fn row_height(props: &LayoutProps, desired: f32) -> f32 {
-    props.height.unwrap_or(desired).max(props.min.height).min(props.max.height)
+    // desired 已含外边距；先还原内容高度再复用 Tree 的约束，最后补回外边距。
+    let content = props.margin.shrink(Size::new(0.0, desired));
+    props.margin.grow(props.clamp_size(content)).height
 }
 
 /// 一组子项能否并排放下：最小宽之和 + 间隔 ≤ 可用宽。
@@ -577,4 +577,62 @@ mod tests {
         assert_eq!(min_width(&flexible), 96.0);
         assert_eq!(min_width(&LayoutProps::default()), 0.0);
     }
+
+    /// 外边距属于槽位宽，放不下时必须换列，不能把固定宽子项压窄。
+    #[test]
+    fn adaptive_stack_breakpoint_includes_child_margins() {
+        let mut h = TestHarness::new(640.0, 300.0);
+        let id = stack_of(&mut h, 10.0, &[300.0, 300.0]);
+        let kids = h.tree.children(id).to_vec();
+        for child in &kids {
+            h.tree.update_props(*child, |p| *p = LayoutProps {
+                width: Some(300.0), height: Some(40.0),
+                margin: Insets::new(10.0, 0.0, 10.0, 0.0),
+                ..LayoutProps::default()
+            });
+        }
+        h.frame();
+        assert!(h.tree.get::<AdaptiveStack>(id).unwrap().is_stacked());
+        assert_eq!(h.rect(kids[0]).size.width, 300.0);
+        assert!(h.rect(kids[1]).origin.y > h.rect(kids[0]).origin.y);
+        h.resize(650.0, 300.0);
+        h.frame();
+        assert!(!h.tree.get::<AdaptiveStack>(id).unwrap().is_stacked());
+    }
+
+    /// 固定宽仍受 min / max 约束，断点须与 Tree 的尺寸解析一致。
+    #[test]
+    fn adaptive_min_width_respects_bounds_and_margins() {
+        let props = LayoutProps {
+            width: Some(100.0), min: Size::new(180.0, 0.0),
+            margin: Insets::new(8.0, 0.0, 12.0, 0.0),
+            ..LayoutProps::default()
+        };
+        assert_eq!(min_width(&props), 200.0);
+        let capped = LayoutProps {
+            width: Some(500.0), max: Size::new(200.0, f32::INFINITY),
+            ..LayoutProps::default()
+        };
+        assert_eq!(min_width(&capped), 200.0);
+    }
+
+
+    /// 固定高度仍需为上下外边距预留槽位，不得挤掉内容高度。
+    #[test]
+    fn adaptive_grid_fixed_height_includes_vertical_margins() {
+        let mut h = TestHarness::new(320.0, 300.0);
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let id = h.tree.insert_with(h.root(), AdaptiveGrid::new(200.0, 1), LayoutProps::default());
+        let mut kids = Vec::new();
+        for _ in 0..2 {
+            kids.push(h.tree.insert_with(id, Probe::fixed(&log, 100.0, 40.0), LayoutProps {
+                height: Some(40.0), margin: Insets::new(0.0, 10.0, 0.0, 10.0),
+                ..LayoutProps::default()
+            }));
+        }
+        h.frame();
+        assert_eq!(h.rect(kids[0]).size.height, 40.0);
+        assert_eq!(h.rect(kids[1]).origin.y - h.rect(kids[0]).origin.y, 60.0);
+    }
+
 }
