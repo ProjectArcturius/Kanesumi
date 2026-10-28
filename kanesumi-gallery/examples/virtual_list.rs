@@ -8,6 +8,9 @@
 //
 // 计时（release）：加 `--bench` 打印首帧与滚轮 100 次 `Tree::frame` 的 p50 / p95。
 
+// 快照工具按外壳契约（`App`，K4 起弃用）驱动应用，本示例显式豁免告警。
+#![allow(deprecated)]
+
 use std::cell::RefCell;
 use std::rc::Rc;
 

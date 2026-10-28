@@ -6,6 +6,9 @@
 //
 // 无 `--snapshot` 则按普通 GUI 应用运行（Linux Wayland）。
 
+// 快照工具按外壳契约（`App`，K4 起弃用）驱动应用，本示例显式豁免告警。
+#![allow(deprecated)]
+
 use kanesumi_controls::MetroButton;
 use kanesumi_core::{Accent, ColorScheme, MetroTheme, Size, ThemeColor};
 use kanesumi_harness::element::widgets::{Border, Label, Stack};

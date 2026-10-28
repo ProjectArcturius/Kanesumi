@@ -17,6 +17,12 @@ pub mod renderer_policy;
 pub mod role;
 pub mod system_theme;
 pub mod timeline;
+// ── K4 旧应用模型（`App`）的豁免（参 docs/PIPELINE_PLAN.md §Ⅳ-K4）─────────────
+//
+// `App` 自 K4 起标记弃用；本 crate 是它的唯一持有者：外壳（`platform` / `session_lock`）、
+// 快照工具与 `TreeHost` 都必须按它驱动应用。故在此按模块豁免弃用告警 —— 这些模块是
+// 旧模型的边界实现，新应用一律用 `TreeApp`。
+#[allow(deprecated)]
 pub mod tree_host;
 pub mod wake;
 
@@ -39,18 +45,24 @@ pub mod dmabuf;
 pub use dmabuf::dmabuf_probe_entry;
 
 #[cfg(target_os = "linux")]
+#[allow(deprecated)]
 pub mod platform;
 
 #[cfg(target_os = "linux")]
+#[allow(deprecated)]
 pub mod session_lock;
 
 #[cfg(target_os = "linux")]
 pub mod render;
 
+// 快照工具按外壳契约（`App`）驱动应用，K4 起显式豁免弃用告警。
+#[allow(deprecated)]
 pub mod snapshot;
 
 pub use cpu_raster::CpuRenderer;
 
+// 旧 `App` 的再导出保留（外壳与测试宿主需要它在本作用域内），弃用标注随定义生效。
+#[allow(deprecated)]
 pub use app::{
     AnchorKind, App, AppConfig, FloatingLayer, ImeAction, ImeContentHint, ImeContext, InputEvent,
     Key, LayerKind, LockEvent, Modifiers, PendingImeBatch, PointerButton, PopupRequest,

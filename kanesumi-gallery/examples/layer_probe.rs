@@ -13,6 +13,8 @@ use kanesumi_core::{Color, Rect, Size};
 use kanesumi_harness::layers::{
     LayerAnim, LayerCommand, LayerEvent, LayerId, LayerParent, LayerQueue, CURVE_UWP_CLOSE, CURVE_UWP_OPEN,
 };
+// Gallery 暂留旧模型（`App`）；K4 起该 trait 已弃用，此处显式豁免告警。
+#[allow(deprecated)]
 use kanesumi_harness::{App, AppConfig, EtherRole, Scene};
 
 const COLORS: [Color; 3] = [
@@ -51,6 +53,8 @@ impl Probe {
     }
 }
 
+// Gallery 暂留旧模型，迁移另立任务。
+#[allow(deprecated)]
 impl App for Probe {
     fn config(&self) -> &AppConfig {
         &self.config
