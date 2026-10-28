@@ -22,7 +22,7 @@ use kanesumi_canvas::text::TextEngine;
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
 use kanesumi_element::{Action, Key, Modifiers, Tree, WidgetId};
 
-use crate::app::{App, AppConfig, FloatingLayer, ImeContext, InputEvent, PopupRequest};
+use crate::app::{App, AppConfig, FloatingLayer, ImeContext, InputEvent, LockEvent, PopupRequest};
 use crate::appmenu::{AppMenuHandle, MenuTree};
 
 /// 元素树应用。
@@ -123,6 +123,100 @@ pub trait TreeApp {
 
     /// 浮层树的每帧 tick（与 `tick` 对应）。
     fn tick_floating(&mut self, _index: usize, _tree: &mut Tree, _dt: f64) {}
+
+    // ── 输入预拦截（阶段机）。参 K4「应用模型统一」（archive/k-app-model.md）──────
+
+    /// 树之前的输入总入口：返回 `true` = 事件不再投给树（App 已消费）。
+    ///
+    /// 供「阶段机」应用在前端拦事件（如锁屏第一层：任意键 / 点击 / 滚轮 → 进入第二层，
+    /// 事件不再进树）。默认 `false` —— 事件照常投给树；未处理的按键再走 [`TreeApp::on_key`]。
+    fn on_input(&mut self, _tree: &mut Tree, _event: &InputEvent) -> bool {
+        false
+    }
+
+    // ── IME 引擎宿主（zwp_input_method_v2）。参 CEYBOARD_SPEC §Ⅴ ─────────────
+
+    /// 是否作为 IME 引擎宿主。`true` 时外壳绑定 `input-method-v2` / 虚拟键盘，
+    /// 并把按键经 [`TreeApp::ime_engine_key`] 投给本应用。
+    ///
+    /// 宿主应用的界面画在**候选窗 popup 表面**（[`TreeApp::ime_engine_popup_size`] 定尺寸，
+    /// 内容 = 本应用的树整幅出帧）；主表面恒透明（`TreeHost` 不为它出帧）。
+    fn ime_engine_host(&self) -> bool {
+        false
+    }
+
+    /// 引擎按键（按下）。返回 `true` = 引擎消费（不重放给焦点应用）。
+    fn ime_engine_key(&mut self, _tree: &mut Tree, _key: Key, _modifiers: Modifiers) -> bool {
+        false
+    }
+
+    /// 引擎按键（松开）。默认空实现。
+    fn ime_engine_key_release(&mut self, _tree: &mut Tree, _key: Key, _modifiers: Modifiers) -> bool {
+        false
+    }
+
+    /// 当前组合态（preedit, 光标字节偏移）。空串 = 无组合态。
+    fn ime_engine_preedit(&self) -> (String, Option<usize>) {
+        (String::new(), None)
+    }
+
+    /// 取走待上屏文本（选词 / 空格 / 回车后引擎产出的 commit）。
+    fn ime_engine_take_commit(&mut self) -> Option<String> {
+        None
+    }
+
+    /// 取走待删除的周边字节数 `(before, after)`。
+    fn ime_engine_take_delete(&mut self) -> (u32, u32) {
+        (0, 0)
+    }
+
+    /// 候选窗 popup 表面逻辑尺寸（0×0 = 不显示）。
+    fn ime_engine_popup_size(&self) -> (f32, f32) {
+        (0.0, 0.0)
+    }
+
+    /// 下一次需要唤醒的时刻（秒，自现在起）—— 主循环据此安排事件循环超时。
+    ///
+    /// 与旧 [`App::next_wake_hint`] 同义，供「无控件定时器但要按墙钟推进状态」的应用
+    /// （如 Ceyboard 的中英切换提示到点隐藏）。`TreeHost` 取它与树中最近定时器的较小者。
+    fn next_wake_hint(&self) -> Option<f64> {
+        None
+    }
+
+    // ── 锁屏（session_lock 外壳）。参 docs/LOCKSCREEN_DESIGN.md §Ⅳ ──────────
+
+    /// 锁屏表面出帧前的输出分派：`primary=false` 的副输出只画背板，App 应隐藏
+    /// 只属于主输出的界面节点（多输出各一个锁屏表面的分派逻辑保留）。
+    fn lock_output(&mut self, _tree: &mut Tree, _size: Size, _primary: bool) {}
+
+    /// 锁屏表面树帧后的装配钩子（图层宿主用）。
+    ///
+    /// `scene` = 本输出的树整幅帧；`full` / `damage` = 该帧的损伤语义。默认原样返回。
+    /// 需要「主表面与图层内容分离装配」的锁屏应用（`ether-lock`：幕布 / 时钟 / 认证
+    /// 内容走合成器图层，主表面只留背板）在此改写 `scene` 并填充自己的图层队列 ——
+    /// 单一树帧表达不了「主表面 ≠ 树全幅」的装配，这是 K4 迁移保留 10-17 图层时序的
+    /// 最小接口（参 tools/dispatch/tasks/n1028/README.md §三-1）。
+    fn lock_compose(
+        &mut self,
+        _tree: &mut Tree,
+        _size: Size,
+        _primary: bool,
+        _full: bool,
+        _damage: Option<Rect>,
+        _scene: &mut Scene,
+    ) {
+    }
+
+    /// 锁屏外壳事件（锁确认 / 拒绝 / 输出增删）。
+    fn on_lock_event(&mut self, _tree: &mut Tree, _event: crate::app::LockEvent) {}
+
+    /// 应用请求解锁（认证成功）。**安全不变量：认证成功前恒 `false`**。
+    fn lock_unlock_requested(&self) -> bool {
+        false
+    }
+
+    /// 大写锁定状态变化（锁屏状态行提示用）。
+    fn lock_caps_lock_changed(&mut self, _tree: &mut Tree, _caps: bool) {}
 }
 
 /// 一个浮层表面的树与输入状态。
@@ -705,6 +799,11 @@ impl<A: TreeApp> App for TreeHost<A> {
     }
 
     fn needs_redraw(&self) -> bool {
+        // 引擎宿主的主表面恒透明（界面在候选窗 popup 表面，由按键驱动 `im_popup_dirty`）：
+        // 不为它请求帧 —— 否则外壳每迭代都会光栅 + 提交整幅全屏透明表面（60 fps 白烧）。
+        if self.app.ime_engine_host() {
+            return false;
+        }
         self.tree.needs_frame()
     }
 
@@ -764,12 +863,16 @@ impl<A: TreeApp> App for TreeHost<A> {
     }
 
     /// 主表面与各浮层树中最近的定时器（元素树 `next_timer`）—— 空闲唤醒用。
+    /// 与 `TreeApp::next_wake_hint`（无控件定时器的墙钟状态，如 Ceyboard 提示方块）取较小者。
     fn next_wake_hint(&self) -> Option<f64> {
         let mut next = self.tree.next_timer();
         for f in &self.floating {
             if let Some(t) = f.tree.next_timer() {
                 next = Some(next.map_or(t, |c| c.min(t)));
             }
+        }
+        if let Some(t) = self.app.next_wake_hint() {
+            next = Some(next.map_or(t, |c| c.min(t)));
         }
         next
     }
@@ -790,6 +893,11 @@ impl<A: TreeApp> App for TreeHost<A> {
     }
 
     fn damage_hint(&mut self) -> Option<Rect> {
+        // 引擎宿主：主表面无内容 → 报零面积损伤，外壳据此跳过光栅与提交（省一整幅
+        // 全屏透明光栅 + 一次无用提交）。参 `render_into` 同名分支。
+        if self.app.ime_engine_host() {
+            return Some(Rect::new(0.0, 0.0, 0.0, 0.0));
+        }
         self.damage.take()
     }
 
@@ -816,10 +924,96 @@ impl<A: TreeApp> App for TreeHost<A> {
         if !matches!(event, InputEvent::PointerMoved { .. }) {
             log::debug!("input {event:?} focus_before={:?}", self.tree.focused());
         }
+        // 阶段机预拦截：消费的事件不再进树（锁屏第一层任意输入 → 进第二层）。
+        if self.app.on_input(&mut self.tree, &event) {
+            self.drain_actions();
+            return;
+        }
         if let Some((key, modifiers)) = feed(&mut self.tree, &mut self.pointer, event) {
             self.app.on_key(&mut self.tree, key, modifiers);
         }
         self.drain_actions();
+    }
+
+    // ── IME 引擎宿主（zwp_input_method_v2）：转发给 TreeApp。参 CEYBOARD_SPEC §Ⅴ ──
+
+    fn ime_engine_host(&self) -> bool {
+        self.app.ime_engine_host()
+    }
+
+    fn ime_engine_key(&mut self, key: Key, modifiers: Modifiers) -> bool {
+        let consumed = self.app.ime_engine_key(&mut self.tree, key, modifiers);
+        self.drain_actions();
+        consumed
+    }
+
+    fn ime_engine_key_release(&mut self, key: Key, modifiers: Modifiers) -> bool {
+        let consumed = self.app.ime_engine_key_release(&mut self.tree, key, modifiers);
+        self.drain_actions();
+        consumed
+    }
+
+    fn ime_engine_preedit(&self) -> (String, Option<usize>) {
+        self.app.ime_engine_preedit()
+    }
+
+    fn ime_engine_take_commit(&mut self) -> Option<String> {
+        self.app.ime_engine_take_commit()
+    }
+
+    fn ime_engine_take_delete(&mut self) -> (u32, u32) {
+        self.app.ime_engine_take_delete()
+    }
+
+    fn ime_engine_popup_size(&self) -> (f32, f32) {
+        self.app.ime_engine_popup_size()
+    }
+
+    /// 候选窗内容 = 本应用的树按 popup 逻辑尺寸整幅出帧。
+    /// 整幅（`request_full_repaint`）：popup 表面每次都是新缓冲 / 无损伤历史，
+    /// 局部帧会丢掉未变化节点（参 ELEMENT_TREE「compose 剔除」）。
+    fn ime_engine_popup_scene(&mut self, engine: &TextEngine) -> Scene {
+        let (w, h) = self.app.ime_engine_popup_size();
+        if w <= 0.0 || h <= 0.0 {
+            return Scene::default();
+        }
+        self.tree.request_full_repaint();
+        let dt = std::mem::take(&mut self.pending_dt);
+        let frame = self.tree.frame(engine, Size::new(w, h), dt);
+        self.tree.report_content_committed(&frame.painted);
+        frame.scene
+    }
+
+    // ── 锁屏（session_lock 外壳）：转发给 TreeApp。参 LOCKSCREEN_DESIGN §Ⅳ ──────
+
+    /// 锁屏表面：先让 App 按输出分派（副输出隐藏主输出界面节点），树整幅出帧后再交
+    /// [`TreeApp::lock_compose`] 装配（图层宿主在此改写主表面并填图层队列）。
+    fn render_lock(&mut self, engine: &TextEngine, size: Size, primary: bool) -> Scene {
+        self.app.lock_output(&mut self.tree, size, primary);
+        // 每个输出各出一帧整幅：同一次渲染里 primary / 副输出交替，局部帧会互相剔除。
+        self.tree.request_full_repaint();
+        let dt = std::mem::take(&mut self.pending_dt);
+        let frame = self.tree.frame(engine, size, dt);
+        self.tree.report_content_committed(&frame.painted);
+        // 锁屏外壳不消费局部损伤（每输出整幅提交），损伤只随帧交给装配钩子记日志。
+        self.damage = None;
+        let mut scene = frame.scene;
+        self.app
+            .lock_compose(&mut self.tree, size, primary, frame.full, frame.damage, &mut scene);
+        scene
+    }
+
+    fn on_lock_event(&mut self, event: LockEvent) {
+        self.app.on_lock_event(&mut self.tree, event);
+        self.drain_actions();
+    }
+
+    fn lock_unlock_requested(&self) -> bool {
+        self.app.lock_unlock_requested()
+    }
+
+    fn lock_caps_lock_changed(&mut self, caps: bool) {
+        self.app.lock_caps_lock_changed(&mut self.tree, caps);
     }
 
     fn ime_focus(&self) -> Option<ImeContext> {
@@ -853,6 +1047,11 @@ impl<A: TreeApp> App for TreeHost<A> {
     }
 
     fn render_into(&mut self, engine: &TextEngine, size: Size, out: &mut Scene) {
+        // 引擎宿主：界面在候选窗 popup 表面（`ime_engine_popup_scene`），主表面恒透明。
+        if self.app.ime_engine_host() {
+            out.commands.clear();
+            return;
+        }
         crate::timeline::note_once("render_into_start");
         // 弹层表面动画的帧节拍：动画由合成器按 vsync 推进，客户端**不提交弹层帧**，
         // 所以只能按「主表面真实出帧」记（外壳每渲染一帧调一次本函数，渲染又受帧节流
