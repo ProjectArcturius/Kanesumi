@@ -139,22 +139,22 @@ impl MetroMenuBar {
 
     /// 可见 header 矩形。只保留完整落在宿主内的项，渲染、命中与弹层锚点共用。
     ///
-    /// 边缘吸附到物理像素网格：header 宽度来自文字量测（小数），相邻两块的高亮底若落在
-    /// 半个像素上，2× 下会互相之间露出一条 1 px 缝（真机已知问题 #18 的横向版本）。
+    /// 累加使用槽位内的相对逻辑宽度，与measure同口径；物理吸附仅在背景绘制时执行。
+    /// 否则逐项取整会让最后一项超出自己量出的自然宽。参 CONTROL_SPEC「MenuBar标题宽度」。
     pub fn header_rects(&self, engine: &TextEngine, rect: Rect) -> Vec<Rect> {
         let rect = rect.normalized();
         let mut out = Vec::with_capacity(self.items.len());
-        let mut cursor = snap_edge(rect.origin.x);
+        let mut cursor = 0.0;
         for i in 0..self.items.len() {
             let w = self.header_width(engine, i);
-            let right = snap_edge(cursor + w);
-            if right > rect.right() + f32::EPSILON {
+            let right = cursor + w;
+            if right > rect.size.width + f32::EPSILON {
                 break;
             }
             out.push(Rect::new(
-                cursor,
+                rect.origin.x + cursor,
                 rect.origin.y,
-                (right - cursor).max(0.0),
+                ((rect.origin.x + right) - (rect.origin.x + cursor)).max(0.0),
                 self.header_height.min(rect.size.height),
             ));
             cursor = right;
@@ -401,7 +401,11 @@ impl MetroMenuBar {
                 None
             };
             if let Some(bg) = bg {
-                scene.fill_rect(bg, hrect);
+                // 相邻高亮共享吸附后的边缘，避免亚像素抗锯齿留下底色缝；不改变命中几何。
+                let left = snap_edge(hrect.origin.x);
+                let right = snap_edge(hrect.right());
+                scene.fill_rect(bg, Rect::new(left, hrect.origin.y,
+                    (right - left).max(0.0), hrect.size.height));
             }
 
             // Label —— 竖直居中，靠左（padding 10）。可用宽取自 header 矩形（非量测宽），
@@ -784,6 +788,30 @@ mod tests {
 
     fn screen() -> Rect {
         Rect::new(0.0, 0.0, 800.0, 600.0)
+    }
+
+    #[test]
+    fn natural_width_keeps_all_four_headers_at_fractional_origins() {
+        let engine = find_engine().expect("菜单回归需要测试字体");
+        for labels in [
+            ["文件", "编辑", "查看", "转到"],
+            ["File", "Edit", "View", "Go"],
+            ["ファイル", "編集", "表示", "移動"],
+        ] {
+            let bar = MetroMenuBar::new(labels.into_iter()
+                .map(|label| MenuBarItem::new(label, vec![MenuItem::new("Action")]))
+                .collect());
+            let width = bar.total_width(&engine);
+            for origin in [0.0, 17.25, 17.75, 100.125, 100.375, 1024.75] {
+                let host = Rect::new(origin, 0.0, width, 40.0);
+                let rects = bar.header_rects(&engine, host);
+                assert_eq!(rects.len(), 4, "自然宽丢菜单：{labels:?}，x={origin}，w={width}");
+                assert_eq!(bar.header_at(&engine, host, rects[3].center()), Some(3));
+                assert!(rects.windows(2).all(|r| (r[0].right() - r[1].origin.x).abs() < 0.001));
+                let narrow = Rect::new(origin, 0.0, width - 1.0, 40.0);
+                assert_eq!(bar.header_rects(&engine, narrow).len(), 3, "真溢出的第四项必须裁掉");
+            }
+        }
     }
 
     #[test]
