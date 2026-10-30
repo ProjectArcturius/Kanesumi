@@ -261,6 +261,7 @@ use kanesumi_canvas::set_surface_scale;
 /// 另外在 `$XDG_RUNTIME_DIR` 留一份便于会话内即时查看（无持久性要求）。
 pub(crate) mod layers;
 mod popups;
+pub(crate) mod font_mmap;
 
 fn write_diag(name: &str, content: &str) {
     if let Ok(home) = std::env::var("HOME") {
@@ -458,8 +459,11 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
     // 字体栈整文件读入 + 解码：放后台线程，与下方 GPU 上下文初始化并行 —— 两者都是
     // 启动期大头，串行执行会把两段相加（参 DECISIONS_2026-10-05 §104 拉起时间线）。
     let font_extra = extra_sources(&font_source.path);
-    let font_thread =
-        std::thread::spawn(move || TextEngine::load_stack(&font_source, &font_extra));
+    // runtime A1（rt-font-mmap）：字体字节经 font_mmap 读取器——系统 root 只读字体
+    // 可选 mmap（KANESUMI_FONT_MMAP=1），其余回退 fs::read；字形位图与旧路径逐字节一致。
+    let font_thread = std::thread::spawn(move || {
+        TextEngine::load_stack_with(&font_source, &font_extra, &font_mmap::read_font_bytes)
+    });
 
     // xdg-shell 窗口恒走 wgpu 直出（`Renderer`）→ 在等字体的同时预建共享 GPU 上下文
     // （instance / adapter / device）并挂在 Shell 上，首个 configure 免再等。
