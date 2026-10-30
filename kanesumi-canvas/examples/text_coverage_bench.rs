@@ -9,6 +9,7 @@
 //! `KANESUMI_TEXT_DIAG=1` 时退出前向 kanesumi-text.log 补一行诊断。
 //! 语料只含 CJK 表意字符、ASCII 词与空格，无组合符 / ZWJ，字素数 = 字符数。
 
+use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
 use kanesumi_canvas::text::{FontSource, TextEngine, text_diag_flush, text_diag_snapshot};
@@ -57,7 +58,9 @@ fn build_paragraph() -> (String, usize, usize) {
         }
     }
     // 词插入按 len 跳变，收尾可能越过 4096：按字符截到恰好 TARGET_CHARS。
-    let out = out.chars().take(TARGET_CHARS).collect::<String>();
+    // 最后一字用已知缺字，保证两侧确实经过回退选择分支。
+    let mut out = out.chars().take(TARGET_CHARS - 1).collect::<String>();
+    out.push('\u{10FFFF}');
     (out, common_taken, supplemental)
 }
 
@@ -69,9 +72,12 @@ fn median_of(mut xs: Vec<f64>) -> f64 {
 fn main() {
     let (para, common_used, supplemental_used) = build_paragraph();
     let graphemes = para.chars().count(); // 语料无组合符，字素数 = 字符数
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    para.hash(&mut hash);
     println!(
-        "CORPUS total_chars={graphemes} common_table={} common_used={common_used} supplemental_used={supplemental_used}",
+        "CORPUS total_chars={graphemes} common_table={} common_used={common_used} supplemental_used={supplemental_used} hash={:016x}",
         include_str!("text_corpus.txt").chars().filter(|c| !c.is_whitespace()).count(),
+        hash.finish(),
     );
     let primary = FontSource {
         path: PRIMARY.into(),
@@ -84,10 +90,12 @@ fn main() {
     let mut round_ms: Vec<f64> = Vec::new();
     let (mut parse_total, mut ffg_total) = (0u64, 0u64);
     for round in 0..3 {
-        let (p0, f0) = text_diag_snapshot();
         let t = Instant::now();
         let engine = TextEngine::load_stack(&primary, &[extra.clone()]).expect("字体栈加载失败");
         let load_ms = t.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(engine.font_count(), 2, "Regular与Bold的SC字面必须都加载");
+        // 只量塑形段的逐字解析，加载期的轴探测不属于每字素重建。
+        let (p0, f0) = text_diag_snapshot();
         let t = Instant::now();
         let glyphs = engine.shape_line(&para, 24.0, 0.0);
         let shape_ms = t.elapsed().as_secs_f64() * 1000.0;
@@ -96,13 +104,14 @@ fn main() {
         ffg_total += f1 - f0;
         round_ms.push(shape_ms);
         println!(
-            "BENCH_ROUND round={round} shape_ms={shape_ms:.1} glyphs={} load_ms={load_ms:.1} parse_delta={} ffg_delta={}",
+            "BENCH_ROUND round={round} shape_ms={shape_ms:.6} glyphs={} load_ms={load_ms:.6} parse_delta={} ffg_delta={} font_count={}",
             glyphs.len(),
             p1 - p0,
             f1 - f0,
+            engine.font_count(),
         );
     }
-    println!("BENCH_MEDIAN shape_ms={:.1}", median_of(round_ms.clone()));
+    println!("BENCH_MEDIAN shape_ms={:.6}", median_of(round_ms.clone()));
     println!("BENCH_ROUNDS_MDetail {}", format_list(&round_ms));
     println!(
         "DIAG_TOTAL face_parse_rebuilds={parse_total} font_for_grapheme_calls={ffg_total}"

@@ -1809,7 +1809,7 @@ fn is_default_ignorable(c: char) -> bool {
 
 // ---- 文本诊断计数（w1029 text-coverage-cache §2-1）----
 //
-// 缺省关闭：计数本身只是 Relaxed 自增，落盘仅在 `KANESUMI_TEXT_DIAG=1` 时发生——
+// 缺省关闭：只有 `KANESUMI_TEXT_DIAG=1` 才计数、启动线程与落盘——
 // 每 10 s 一行追加到 `~/.local/state/ether/kanesumi-text.log`（XDG_STATE_HOME 可重定向），
 // 进程退出路径可调 [`text_diag_flush`] 立即补一行。零交互排障口径，参 AGENTS.md 铁律 3。
 
@@ -1817,17 +1817,24 @@ static FACE_PARSE_REBUILDS: AtomicU64 = AtomicU64::new(0);
 static FONT_FOR_GRAPHEME_CALLS: AtomicU64 = AtomicU64::new(0);
 
 fn count_parse_rebuild() {
+    if !diag_enabled() {
+        return;
+    }
     FACE_PARSE_REBUILDS.fetch_add(1, Ordering::Relaxed);
     diag_spawn_writer();
 }
 
 fn count_font_for_grapheme() {
+    if !diag_enabled() {
+        return;
+    }
     FONT_FOR_GRAPHEME_CALLS.fetch_add(1, Ordering::Relaxed);
     diag_spawn_writer();
 }
 
 fn diag_enabled() -> bool {
-    std::env::var_os("KANESUMI_TEXT_DIAG").is_some_and(|v| v == "1")
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("KANESUMI_TEXT_DIAG").is_some_and(|v| v == "1"))
 }
 
 /// (解析面重建次数，`font_for_grapheme` 调用次数) 累计快照，供基准取轮内增量。
