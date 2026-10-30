@@ -9,6 +9,7 @@
 //! `mmap|read`、字节数（零交互排障口径，参 AGENTS.md 铁律 3）。
 
 use std::io;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -35,26 +36,23 @@ fn read_fallback(path: &Path) -> io::Result<FontBytes> {
 
 /// 读取并标注来源：`(句柄, 是否映射)`。`enabled` 注入便于单测（真进程读环境变量）。
 fn read_font_bytes_traced(path: &Path, enabled: bool) -> io::Result<(FontBytes, bool)> {
-    if enabled {
-        let canon: PathBuf = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        if let Ok(meta) = std::fs::metadata(&canon) {
-            use std::os::unix::fs::MetadataExt;
-            if mmap_eligible(&canon, meta.is_file(), meta.uid(), meta.mode()) {
-                // 打不开（权限竞态等）→ 落到末尾的 read 回退。
-                if let Ok(file) = std::fs::File::open(&canon) {
-                    // SAFETY：只读映射一个符合 mmap_eligible 的系统字体文件。
-                    // 不变式：映射对象是 root 拥有、组/其他无写位的
-                    // /usr/share/fonts 下普通文件，普通进程无法原地改写；
-                    // Debian 字体包升级走「写临时文件 + rename() 原子替换」，
-                    // rename 只换目录项，旧 inode 与既有只读映射不受影响。
-                    // 故映射生命周期内文件内容不会被改写，只读映射安全。
-                    match unsafe { memmap2::Mmap::map(&file) } {
-                        Ok(mmap) => return Ok((Arc::new(mmap), true)),
-                        Err(e) => {
-                            log::warn!("字体映射失败，回退 fs::read：{}（{e}）", canon.display());
-                        }
-                    }
-                }
+    if enabled
+        && let Ok(canon) = path.canonicalize()
+        && let Ok(file) = std::fs::File::open(&canon)
+        && let Ok(meta) = file.metadata()
+        && mmap_eligible(&canon, meta.is_file(), meta.uid(), meta.mode())
+    {
+        // 用已打开句柄的属性证明资格，避免路径检查与打开对应不同文件。
+        // SAFETY：只读映射一个符合 mmap_eligible 的系统字体文件。
+        // 不变式：映射对象是 root 拥有、组/其他无写位的
+        // /usr/share/fonts 下普通文件，普通进程无法原地改写；
+        // Debian 字体包升级走「写临时文件 + rename() 原子替换」，
+        // rename 只换目录项，旧 inode 与既有只读映射不受影响。
+        // 故映射生命周期内文件内容不会被改写，只读映射安全。
+        match unsafe { memmap2::Mmap::map(&file) } {
+            Ok(mmap) => return Ok((Arc::new(mmap), true)),
+            Err(e) => {
+                log::warn!("字体映射失败，回退 fs::read：{}（{e}）", canon.display());
             }
         }
     }
@@ -75,8 +73,7 @@ pub fn read_font_bytes(path: &Path) -> io::Result<FontBytes> {
 fn write_self_report(path: &Path, mapped: bool, len: usize) {
     let dir = match std::env::var_os("XDG_STATE_HOME") {
         Some(d) if !d.is_empty() => PathBuf::from(d).join("ether"),
-        _ => PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
-            .join(".local/state/ether"),
+        _ => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state/ether"),
     };
     if std::fs::create_dir_all(&dir).is_err() {
         return;
@@ -100,6 +97,41 @@ fn write_self_report(path: &Path, mapped: bool, len: usize) {
 mod tests {
     use super::*;
 
+    /// 真实映射与堆字节分别进入排版器，锁定载体变化不会改变塑形或光栅输出。
+    #[test]
+    fn mapped_and_heap_font_produce_identical_glyphs() {
+        use kanesumi_canvas::text::{FontSource, TextEngine};
+        let source = FontSource {
+            path: PathBuf::from("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+            collection_tag: Some("SC"),
+        };
+        let heap = TextEngine::load_stack_with(&source, &[], &|path| {
+            let (bytes, mapped) = read_font_bytes_traced(path, false)?;
+            assert!(!mapped);
+            Ok(bytes)
+        })
+        .unwrap();
+        let mapped = TextEngine::load_stack_with(&source, &[], &|path| {
+            let (bytes, mapped) = read_font_bytes_traced(path, true)?;
+            assert!(mapped, "本测试必须实际使用系统字体映射");
+            Ok(bytes)
+        })
+        .unwrap();
+        assert_eq!(heap.identity(), mapped.identity());
+        for size in [12.0, 18.0, 24.0] {
+            let left = heap.shape_line("Ether 字体映射 123，。", size, 0.0);
+            let right = mapped.shape_line("Ether 字体映射 123，。", size, 0.0);
+            assert!(!left.is_empty());
+            assert_eq!(left, right);
+            for glyph in left {
+                assert_eq!(
+                    heap.rasterize_glyph(glyph.font_id, glyph.glyph_id, size),
+                    mapped.rasterize_glyph(glyph.font_id, glyph.glyph_id, size),
+                );
+            }
+        }
+    }
+
     fn fs_read_reader(path: &Path) -> io::Result<FontBytes> {
         read_fallback(path)
     }
@@ -108,17 +140,47 @@ mod tests {
     #[test]
     fn mmap_eligibility_rules() {
         // /home 之下 → 不映射。
-        assert!(!mmap_eligible(Path::new("/home/u/font.ttf"), true, 0, 0o444));
+        assert!(!mmap_eligible(
+            Path::new("/home/u/font.ttf"),
+            true,
+            0,
+            0o444
+        ));
         // 非属主 uid 0 → 不映射。
-        assert!(!mmap_eligible(Path::new("/usr/share/fonts/a.ttf"), true, 1000, 0o444));
+        assert!(!mmap_eligible(
+            Path::new("/usr/share/fonts/a.ttf"),
+            true,
+            1000,
+            0o444
+        ));
         // 组可写 → 不映射。
-        assert!(!mmap_eligible(Path::new("/usr/share/fonts/a.ttf"), true, 0, 0o664));
+        assert!(!mmap_eligible(
+            Path::new("/usr/share/fonts/a.ttf"),
+            true,
+            0,
+            0o664
+        ));
         // 其他用户可写 → 不映射。
-        assert!(!mmap_eligible(Path::new("/usr/share/fonts/a.ttf"), true, 0, 0o642));
+        assert!(!mmap_eligible(
+            Path::new("/usr/share/fonts/a.ttf"),
+            true,
+            0,
+            0o642
+        ));
         // 目录（非普通文件）→ 不映射。
-        assert!(!mmap_eligible(Path::new("/usr/share/fonts/noto"), false, 0, 0o755));
+        assert!(!mmap_eligible(
+            Path::new("/usr/share/fonts/noto"),
+            false,
+            0,
+            0o755
+        ));
         // 符合条件（root、只读、系统目录普通文件）→ 映射。
-        assert!(mmap_eligible(Path::new("/usr/share/fonts/noto/a.ttc"), true, 0, 0o644));
+        assert!(mmap_eligible(
+            Path::new("/usr/share/fonts/noto/a.ttc"),
+            true,
+            0,
+            0o644
+        ));
     }
 
     /// 临时字体文件的回退路径：来源 read、字节与 `fs::read` 一致。
@@ -190,7 +252,11 @@ mod tests {
         let expected = std::fs::read(&path).unwrap();
         let (handle, mapped) = read_font_bytes_traced(&path, true).unwrap();
         assert!(mapped, "符合资格的系统字体应 mmap：{}", path.display());
-        assert_eq!(handle.as_ref().as_ref(), expected.as_slice(), "映射字节须与读文件一致");
+        assert_eq!(
+            handle.as_ref().as_ref(),
+            expected.as_slice(),
+            "映射字节须与读文件一致"
+        );
         // 关闭开关：同一路径回退 read（缺省行为未变）。
         let (_, mapped_off) = read_font_bytes_traced(&path, false).unwrap();
         assert!(!mapped_off, "KANESUMI_FONT_MMAP 关闭时必须回退 fs::read");
