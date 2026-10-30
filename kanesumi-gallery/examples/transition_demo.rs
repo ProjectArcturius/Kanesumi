@@ -107,6 +107,8 @@ impl TreeApp for Demo {
                 }
             }
             LayerEvent::Unsupported => tree.on_layer_unsupported(),
+            // 本示例只有主题转场，没有滚动跟踪器可消费这些回执。
+            LayerEvent::ScrollerOffset { .. } | LayerEvent::ScrollerState { .. } => {}
         }
     }
 }
