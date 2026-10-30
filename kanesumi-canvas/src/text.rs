@@ -427,6 +427,15 @@ impl CoverageTable {
     fn memory_bytes(&self) -> usize {
         self.ranges.len() * std::mem::size_of::<(u32, u32)>()
     }
+
+    /// 表实际覆盖的码点数（区间长度之和）。报告要写「真实覆盖码点数」，
+    /// 光有区间条数看不出覆盖面——2032 个区间可能只覆盖 2 千点，也可能覆盖 4 万点。
+    fn codepoints(&self) -> usize {
+        self.ranges
+            .iter()
+            .map(|&(start, end)| (end - start) as usize + 1)
+            .sum()
+    }
 }
 
 /// 覆盖表统计（诊断口径，w1029 text-coverage-cache §3 报告用）。
@@ -434,6 +443,8 @@ impl CoverageTable {
 pub struct CoverageStat {
     /// 区间条数。
     pub ranges: usize,
+    /// 实际覆盖码点数（各闭区间长度之和）。
+    pub codepoints: usize,
     /// 表内存（区间表本体字节数）。
     pub memory_bytes: usize,
     /// 建表耗时（µs）。
@@ -1253,13 +1264,14 @@ impl TextEngine {
             .any(|f| f.wght.is_some() && f.weight == target)
     }
 
-    /// 各字面覆盖表统计（诊断口径，w1029 §3 报告用）：区间数、内存（字节）与建表耗时。
+    /// 各字面覆盖表统计（诊断口径，w1029 §3 报告用）：区间数、覆盖码点数、内存（字节）与建表耗时。
     /// 覆盖表是加载期一次性成本，查表 O(log n)；同源字重实例共享同一份表。
     pub fn diag_coverage_stats(&self) -> Vec<CoverageStat> {
         self.fonts
             .iter()
             .map(|f| CoverageStat {
                 ranges: f.coverage.ranges.len(),
+                codepoints: f.coverage.codepoints(),
                 memory_bytes: f.coverage.memory_bytes(),
                 build_us: f.coverage.build_us,
             })

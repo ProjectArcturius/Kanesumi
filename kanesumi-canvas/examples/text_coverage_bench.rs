@@ -112,8 +112,8 @@ fn main() {
         );
         if round == 2 {
             for (face, stat) in engine.diag_coverage_stats().iter().enumerate() {
-                println!("COVERAGE face={face} ranges={} memory_bytes={} build_us={}",
-                         stat.ranges, stat.memory_bytes, stat.build_us);
+                println!("COVERAGE face={face} ranges={} codepoints={} memory_bytes={} build_us={}",
+                         stat.ranges, stat.codepoints, stat.memory_bytes, stat.build_us);
             }
         }
     }
