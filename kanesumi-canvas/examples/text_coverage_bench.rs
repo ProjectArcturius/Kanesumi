@@ -37,8 +37,9 @@ fn build_paragraph() -> (String, usize, usize) {
     let mut supplemental = 0usize;
     let mut len = 0usize;
     while len < TARGET_CHARS {
-        // 每 8 字素落一个拉丁词 + 空格，其余用 CJK；表尽则 U+4E00 起按码点补足。
-        if len % 8 == 7 {
+        // 每 32 字素落一个拉丁词 + 空格（CJK 为主的混排），其余用 CJK；
+        // 表尽则 U+4E00 起按码点补足。
+        if len % 32 == 31 {
             out.push_str(LATIN_WORDS[latin_taken % LATIN_WORDS.len()]);
             out.push(' ');
             latin_taken += 1;
@@ -55,6 +56,8 @@ fn build_paragraph() -> (String, usize, usize) {
             len += 1;
         }
     }
+    // 词插入按 len 跳变，收尾可能越过 4096：按字符截到恰好 TARGET_CHARS。
+    let out = out.chars().take(TARGET_CHARS).collect::<String>();
     (out, common_taken, supplemental)
 }
 
