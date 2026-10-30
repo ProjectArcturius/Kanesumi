@@ -357,9 +357,13 @@ fn collection_index_matching(bytes: &[u8], tag: &str) -> Option<u32> {
     })
 }
 
+/// 字体字节句柄：堆内（`fs::read`）或外部注入的只读映射（harness 侧 mmap，
+/// 参 harness `font_mmap`）。解析器按 `[u8]` 借用、无自引用，全程纯安全代码。
+pub type FontBytes = Arc<dyn AsRef<[u8]> + Send + Sync>;
+
 #[derive(Clone)]
 struct FontFace {
-    bytes: Arc<[u8]>,
+    bytes: FontBytes,
     collection_index: u32,
     units_per_em: f32,
     /// 该条目的 OS/2 `usWeightClass`（表缺失时 ttf_parser 回落 Regular=400）。
@@ -383,12 +387,12 @@ pub struct GlyphMetrics {
 
 impl FontFace {
     /// 加载一个来源为若干字重条目（§112）：可变字体（带 `wght` 轴）按 [`WEIGHT_INSTANCES`]
-    /// 实例化成多条，静态字面仍为一条。多条共享同一份 `Arc<[u8]>`，内存即字体文件本身。
-    fn faces_from_source(bytes: &[u8], src: &FontSource) -> Result<Vec<Self>, TextLoadError> {
-        let bytes: Arc<[u8]> = Arc::from(bytes.to_vec());
+    /// 实例化成多条，静态字面仍为一条。多条共享同一份字节句柄，常驻内存即字体文件本身
+    ///（堆内或只读映射，不再复制）。
+    fn faces_from_source(bytes: FontBytes, src: &FontSource) -> Result<Vec<Self>, TextLoadError> {
         let index = src
             .collection_tag
-            .and_then(|tag| collection_index_matching(&bytes, tag))
+            .and_then(|tag| collection_index_matching(bytes.as_ref().as_ref(), tag))
             .unwrap_or(0);
         let base = Self::from_bytes(bytes, index)?;
         let Some((min, max)) = base.wght_axis_range() else {
@@ -422,12 +426,13 @@ impl FontFace {
     /// CJK 字体（16~19 MiB 文件）每进程常驻约 330 MiB、加载约 365 ms（Arch 实测 release）。
     /// 现改为按需：塑形用 rustybuzz、光栅化用 ttf-parser 轮廓 + ab_glyph_rasterizer，
     /// 字形只在第一次被画时解码（外壳另有位图缓存），常驻内存 ≈ 字体文件本身。
-    fn from_bytes(bytes: Arc<[u8]>, collection_index: u32) -> Result<Self, TextLoadError> {
-        let face = ttf_parser::Face::parse(&bytes, collection_index)
+    fn from_bytes(bytes: FontBytes, collection_index: u32) -> Result<Self, TextLoadError> {
+        let data: &[u8] = bytes.as_ref().as_ref();
+        let face = ttf_parser::Face::parse(data, collection_index)
             .map_err(|_| TextLoadError::Parse("字体无法解析"))?;
         let units_per_em = f32::from(face.units_per_em().max(1));
         let weight = face.weight().to_number();
-        Face::from_slice(&bytes, collection_index).ok_or(TextLoadError::Parse("字体面无法塑形"))?;
+        Face::from_slice(data, collection_index).ok_or(TextLoadError::Parse("字体面无法塑形"))?;
         Ok(Self {
             bytes,
             collection_index,
@@ -437,9 +442,14 @@ impl FontFace {
         })
     }
 
+    /// 字体字节视图。句柄统一走这里借 `[u8]`（堆内 / 映射两种来源同一用法）。
+    fn data(&self) -> &[u8] {
+        self.bytes.as_ref().as_ref()
+    }
+
     /// 塑形面：可变字体实例条目先设 `wght` 轴，再交给 rustybuzz。
     fn shaper(&self) -> Face<'_> {
-        let mut face = Face::from_slice(&self.bytes, self.collection_index)
+        let mut face = Face::from_slice(self.data(), self.collection_index)
             .expect("字体已在加载时验证");
         if let Some(value) = self.wght {
             face.set_variations(&[rustybuzz::Variation {
@@ -453,7 +463,7 @@ impl FontFace {
     /// 解析面（度量 / 轮廓）：与 [`Self::shaper`] 施加同一 `wght` 轴坐标。
     /// 每次调用重建，免去自引用结构。
     fn parser(&self) -> ttf_parser::Face<'_> {
-        let mut face = ttf_parser::Face::parse(&self.bytes, self.collection_index)
+        let mut face = ttf_parser::Face::parse(self.data(), self.collection_index)
             .expect("字体已在加载时验证");
         if let Some(value) = self.wght {
             face.set_variation(ttf_parser::Tag::from_bytes(b"wght"), value);
@@ -990,8 +1000,8 @@ impl TextEngine {
             let Ok(bytes) = std::fs::read(path) else {
                 continue;
             };
-            let bytes: Arc<[u8]> = Arc::from(bytes);
-            if let Ok(face) = FontFace::from_bytes(bytes, 0) {
+            let handle: FontBytes = Arc::new(bytes);
+            if let Ok(face) = FontFace::from_bytes(handle, 0) {
                 Arc::make_mut(&mut engine.fonts).push(face);
             }
         }
@@ -1005,7 +1015,20 @@ impl TextEngine {
         primary: &FontSource,
         extra: &[FontSource],
     ) -> Result<Self, TextLoadError> {
-        let mut engine = Self::load_tagged(primary)?;
+        Self::load_stack_with(primary, extra, &|path| {
+            std::fs::read(path).map(|bytes| -> FontBytes { Arc::new(bytes) })
+        })
+    }
+
+    /// 带读取器的字体栈加载（runtime A1）：`read` 决定每个字体文件的字节来源
+    /// （堆内 `fs::read` / 只读映射），字形与位图输出与 [`Self::load_stack`] 完全
+    /// 一致（等价性由单测锁定）。主字面读取失败仍报错，附加字面失败照旧跳过。
+    pub fn load_stack_with(
+        primary: &FontSource,
+        extra: &[FontSource],
+        read: &dyn Fn(&Path) -> std::io::Result<FontBytes>,
+    ) -> Result<Self, TextLoadError> {
+        let mut engine = Self::load_tagged_with(primary, read)?;
         let mut seen = std::collections::HashSet::new();
         seen.insert(
             primary
@@ -1018,10 +1041,10 @@ impl TextEngine {
             if !seen.insert(canonical) || !src.path.exists() {
                 continue;
             }
-            let Ok(bytes) = std::fs::read(&src.path) else {
+            let Ok(handle) = read(&src.path) else {
                 continue;
             };
-            if let Ok(faces) = FontFace::faces_from_source(&bytes, src) {
+            if let Ok(faces) = FontFace::faces_from_source(handle, src) {
                 Arc::make_mut(&mut engine.fonts).extend(faces);
             }
         }
@@ -1029,9 +1052,12 @@ impl TextEngine {
         Ok(engine)
     }
 
-    fn load_tagged(src: &FontSource) -> Result<Self, TextLoadError> {
-        let bytes = std::fs::read(&src.path).map_err(TextLoadError::Io)?;
-        let faces = FontFace::faces_from_source(&bytes, src)?;
+    fn load_tagged_with(
+        src: &FontSource,
+        read: &dyn Fn(&Path) -> std::io::Result<FontBytes>,
+    ) -> Result<Self, TextLoadError> {
+        let handle = read(&src.path).map_err(TextLoadError::Io)?;
+        let faces = FontFace::faces_from_source(handle, src)?;
         Ok(Self {
             fonts: Arc::new(faces),
             identity: 0,
@@ -1041,7 +1067,7 @@ impl TextEngine {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, TextLoadError> {
-        let face = FontFace::from_bytes(Arc::from(bytes.to_vec()), 0)?;
+        let face = FontFace::from_bytes(Arc::new(bytes.to_vec()), 0)?;
         let mut engine = Self {
             fonts: Arc::new(vec![face]),
             identity: 0,
@@ -1064,7 +1090,7 @@ impl TextEngine {
     fn refresh_identity(&mut self) {
         let mut hash = 0xcbf29ce484222325_u64;
         for font in self.fonts.iter() {
-            for byte in font.bytes.iter() {
+            for byte in font.data().iter() {
                 hash ^= u64::from(*byte);
                 hash = hash.wrapping_mul(0x100000001b3);
             }
@@ -1801,6 +1827,34 @@ mod tests {
 
     fn engine() -> Option<TextEngine> {
         TextEngine::load(find_font()?).ok()
+    }
+
+    /// 新旧入口等价（runtime A1）：`load_stack_with` 与 `load_stack` 对同一字体
+    /// 排出完全相同的字形与光栅位图——字节句柄只换来源，不换解析结果。
+    #[test]
+    fn load_stack_with_matches_load_stack() {
+        let Some(path) = find_font() else {
+            return; // 既有约定：无系统字体时跳过（同 engine() 系测试）
+        };
+        let primary = FontSource { path: path.clone(), collection_tag: None };
+        let old = TextEngine::load_stack(&primary, &[]).expect("旧入口应加载成功");
+        let new = TextEngine::load_stack_with(&primary, &[], &|p| {
+            std::fs::read(p).map(|bytes| -> FontBytes { Arc::new(bytes) })
+        })
+        .expect("新入口应加载成功");
+        assert_eq!(old.font_count(), new.font_count());
+        assert_eq!(old.identity(), new.identity(), "同一字节的字体栈身份必须一致");
+
+        let text = "Ether 悬停 Ether 123abg";
+        let a = old.shape_line(text, 24.0, 0.0);
+        let b = new.shape_line(text, 24.0, 0.0);
+        assert_eq!(a, b, "塑形输出必须逐字段一致");
+        if let Some(g) = a.first() {
+            let (ma, ba) = old.rasterize_glyph(g.font_id, g.glyph_id, 24.0);
+            let (mb, bb) = new.rasterize_glyph(g.font_id, g.glyph_id, 24.0);
+            assert_eq!(ma, mb, "字形度量必须一致");
+            assert_eq!(ba, bb, "同字形位图必须逐字节一致");
+        }
     }
 
     #[test]
