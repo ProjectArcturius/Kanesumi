@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ab_glyph_rasterizer::{Rasterizer, point};
@@ -461,8 +462,10 @@ impl FontFace {
     }
 
     /// 解析面（度量 / 轮廓）：与 [`Self::shaper`] 施加同一 `wght` 轴坐标。
-    /// 每次调用重建，免去自引用结构。
+    /// 每次调用重建，免去自引用结构。重建次数进诊断计数（w1029 text-coverage-cache
+    /// §2-1）：塑形覆盖查询每字素走一次本函数，是该计数的主体。
     fn parser(&self) -> ttf_parser::Face<'_> {
+        count_parse_rebuild();
         let mut face = ttf_parser::Face::parse(self.data(), self.collection_index)
             .expect("字体已在加载时验证");
         if let Some(value) = self.wght {
@@ -1101,6 +1104,7 @@ impl TextEngine {
     }
 
     fn font_for_grapheme(&self, grapheme: &str) -> usize {
+        count_font_for_grapheme();
         self.fonts
             .iter()
             .position(|font| font.grapheme_covered(grapheme))
@@ -1801,6 +1805,85 @@ impl TextEngine {
 
 fn is_default_ignorable(c: char) -> bool {
     matches!(c, '\u{200C}' | '\u{200D}' | '\u{FE0E}' | '\u{FE0F}')
+}
+
+// ---- 文本诊断计数（w1029 text-coverage-cache §2-1）----
+//
+// 缺省关闭：计数本身只是 Relaxed 自增，落盘仅在 `KANESUMI_TEXT_DIAG=1` 时发生——
+// 每 10 s 一行追加到 `~/.local/state/ether/kanesumi-text.log`（XDG_STATE_HOME 可重定向），
+// 进程退出路径可调 [`text_diag_flush`] 立即补一行。零交互排障口径，参 AGENTS.md 铁律 3。
+
+static FACE_PARSE_REBUILDS: AtomicU64 = AtomicU64::new(0);
+static FONT_FOR_GRAPHEME_CALLS: AtomicU64 = AtomicU64::new(0);
+
+fn count_parse_rebuild() {
+    FACE_PARSE_REBUILDS.fetch_add(1, Ordering::Relaxed);
+    diag_spawn_writer();
+}
+
+fn count_font_for_grapheme() {
+    FONT_FOR_GRAPHEME_CALLS.fetch_add(1, Ordering::Relaxed);
+    diag_spawn_writer();
+}
+
+fn diag_enabled() -> bool {
+    std::env::var_os("KANESUMI_TEXT_DIAG").is_some_and(|v| v == "1")
+}
+
+/// (解析面重建次数，`font_for_grapheme` 调用次数) 累计快照，供基准取轮内增量。
+pub fn text_diag_snapshot() -> (u64, u64) {
+    (
+        FACE_PARSE_REBUILDS.load(Ordering::Relaxed),
+        FONT_FOR_GRAPHEME_CALLS.load(Ordering::Relaxed),
+    )
+}
+
+fn diag_log_path() -> Option<PathBuf> {
+    let dir = match std::env::var_os("XDG_STATE_HOME") {
+        Some(d) if !d.is_empty() => PathBuf::from(d).join("ether"),
+        _ => PathBuf::from(std::env::var_os("HOME")?).join(".local/state/ether"),
+    };
+    Some(dir.join("kanesumi-text.log"))
+}
+
+fn diag_write_line() {
+    let Some(path) = diag_log_path() else { return };
+    let (parses, ffg) = text_diag_snapshot();
+    let line = format!(
+        "kanesumi-text-diag face_parse_rebuilds={parses} font_for_grapheme_calls={ffg}\n"
+    );
+    let Some(dir) = path.parent() else { return };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+}
+
+/// 立即落一行诊断（进程退出路径；基准 example 收尾时调用）。未开开关时空操作。
+pub fn text_diag_flush() {
+    if diag_enabled() {
+        diag_write_line();
+    }
+}
+
+fn diag_spawn_writer() {
+    use std::sync::Once;
+    static SPAWN: Once = Once::new();
+    SPAWN.call_once(|| {
+        if diag_enabled() {
+            // 周期写线程起不来就放弃：诊断是辅助，不影响主流程。
+            let _ = std::thread::Builder::new().name("text-diag".into()).spawn(|| {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(10));
+                    diag_write_line();
+                }
+            });
+        }
+    });
 }
 
 #[cfg(test)]
