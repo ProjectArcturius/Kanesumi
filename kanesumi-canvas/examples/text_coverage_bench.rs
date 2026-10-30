@@ -110,6 +110,12 @@ fn main() {
             f1 - f0,
             engine.font_count(),
         );
+        if round == 2 {
+            for (face, stat) in engine.diag_coverage_stats().iter().enumerate() {
+                println!("COVERAGE face={face} ranges={} memory_bytes={} build_us={}",
+                         stat.ranges, stat.memory_bytes, stat.build_us);
+            }
+        }
     }
     println!("BENCH_MEDIAN shape_ms={:.6}", median_of(round_ms.clone()));
     println!("BENCH_ROUNDS_MDetail {}", format_list(&round_ms));

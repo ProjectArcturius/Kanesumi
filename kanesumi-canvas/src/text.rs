@@ -362,6 +362,84 @@ fn collection_index_matching(bytes: &[u8], tag: &str) -> Option<u32> {
 /// 参 harness `font_mmap`）。解析器按 `[u8]` 借用、无自引用，全程纯安全代码。
 pub type FontBytes = Arc<dyn AsRef<[u8]> + Send + Sync>;
 
+/// 码点覆盖表（w1029 text-coverage-cache §2-2）：cmap 全集的压缩闭区间表。
+/// `has_glyph` 查表替代逐字 `Face::parse`——塑形覆盖查询曾对每字素整体走一遍
+/// 「解析表目录 → 查 cmap」，代价按字数线性增长（A2 设计稿范围外发现 1 / §4.1 A3.3）。
+/// 查表与 `glyph_index` 的覆盖判定同源，以旧路径的实际返回值过滤候选，
+/// 由真机字体的3000码点回归测试逐点锁定（`coverage_matches_glyph_index_on_real_stack`）。
+#[derive(Clone)]
+struct CoverageTable {
+    /// 升序闭区间 `(start, end)`，两两不相邻不相交。
+    ranges: Arc<[(u32, u32)]>,
+    /// 建表耗时（µs，cmap 遍历 + 区间合并），诊断口径。
+    build_us: u128,
+}
+
+impl CoverageTable {
+    /// 从已解析面构建。只在加载时一次；字重实例条目经 `faces_from_source`
+    /// 克隆共享同一 `Arc`（`wght` 轴不影响 cmap）。
+    ///
+    /// 语义必须与 `Face::glyph_index`（旧 `has_glyph` 路径）严格同源：该函数按
+    /// 「首个 Unicode 子表映射成功」判定，且格式层有段枚举之外的有效性过滤
+    ///（如 `idRangeOffset=0xFFFF` 哨兵、gid 溢出 `u16` 时返 `None`）。故先按
+    /// 子表 `codepoints()` 枚举候选，再逐点用 `Face::glyph_index` 复检——真机
+    /// Noto CJK 上枚举 ~2.5 万候选、复检剔除个别无效码点（实测 U+0000），
+    /// 覆盖面与旧路径逐点一致（回归测试锁定）。
+    fn from_face(face: &ttf_parser::Face<'_>) -> Self {
+        let t = std::time::Instant::now();
+        let mut cps: Vec<u32> = Vec::new();
+        if let Some(cmap) = face.tables().cmap {
+            for sub in cmap.subtables {
+                // ttf-parser 0.24 的 codepoints 是回调式枚举（位图 / 段表展开）。
+                sub.codepoints(|cp| cps.push(cp));
+            }
+        }
+        cps.sort_unstable();
+        cps.dedup();
+        // 复检按旧路径确切语义；超出 Unicode 标量区的候选（cmap 可含非 Unicode
+        // 码点）进不了 char，一律不覆盖。
+        cps.retain(|&cp| {
+            char::from_u32(cp).is_some_and(|c| face.glyph_index(c).is_some())
+        });
+        let mut ranges: Vec<(u32, u32)> = Vec::with_capacity(cps.len() / 4 + 1);
+        for &cp in &cps {
+            match ranges.last_mut() {
+                // cp=0 时 cp-1 会下溢，先判 cp>0。
+                Some((_, end)) if cp > 0 && *end == cp - 1 => *end = cp,
+                _ => ranges.push((cp, cp)),
+            }
+        }
+        Self {
+            ranges: ranges.into(),
+            build_us: t.elapsed().as_micros(),
+        }
+    }
+
+    /// 查表：码点落在任一区间内即覆盖。无 cmap 的字面 ranges 为空 → 全码点不覆盖，
+    /// 与 `glyph_index` 对无 cmap 字面恒 `None` 一致。
+    fn has(&self, c: char) -> bool {
+        let cp = u32::from(c);
+        let i = self.ranges.partition_point(|&(start, _)| start <= cp);
+        i > 0 && self.ranges[i - 1].1 >= cp
+    }
+
+    /// 表内存成本（区间表本体字节数，不含 Arc 头）。
+    fn memory_bytes(&self) -> usize {
+        self.ranges.len() * std::mem::size_of::<(u32, u32)>()
+    }
+}
+
+/// 覆盖表统计（诊断口径，w1029 text-coverage-cache §3 报告用）。
+#[derive(Debug, Clone, Copy)]
+pub struct CoverageStat {
+    /// 区间条数。
+    pub ranges: usize,
+    /// 表内存（区间表本体字节数）。
+    pub memory_bytes: usize,
+    /// 建表耗时（µs）。
+    pub build_us: u128,
+}
+
 #[derive(Clone)]
 struct FontFace {
     bytes: FontBytes,
@@ -373,6 +451,8 @@ struct FontFace {
     /// 可变字体的 `wght` 轴坐标；`None` = 静态字面 / 不设轴（T7 原路径）。
     /// 塑形与光栅都据此把同一实例化面喂给 rustybuzz / ttf-parser，二者必须同值。
     wght: Option<f32>,
+    /// 加载时建好的码点覆盖表（cmap 压缩区间）；同源多字重实例共享同一份。
+    coverage: Arc<CoverageTable>,
 }
 
 /// 字形度量（像素）。语义与原 fontdue `Metrics` 一致，外壳按它摆放位图：
@@ -434,12 +514,15 @@ impl FontFace {
         let units_per_em = f32::from(face.units_per_em().max(1));
         let weight = face.weight().to_number();
         Face::from_slice(data, collection_index).ok_or(TextLoadError::Parse("字体面无法塑形"))?;
+        // 覆盖表只在加载时建一次（w1029 §2-2），换 `has_glyph` 查表不逐字重建解析面。
+        let coverage = Arc::new(CoverageTable::from_face(&face));
         Ok(Self {
             bytes,
             collection_index,
             units_per_em,
             weight,
             wght: None,
+            coverage,
         })
     }
 
@@ -474,8 +557,10 @@ impl FontFace {
         face
     }
 
+    /// 是否含该码点字形：查加载时建好的覆盖表（w1029 §2-2），不再逐字重建解析面。
+    /// 可变字体实例与基条共享同一表（`wght` 轴不影响 cmap）。
     fn has_glyph(&self, c: char) -> bool {
-        self.parser().glyph_index(c).is_some()
+        self.coverage.has(c)
     }
 
     /// 字素（所有字符）是否都在本字面内。空白与缺省可忽略字符视为覆盖。
@@ -1166,6 +1251,19 @@ impl TextEngine {
         self.fonts
             .iter()
             .any(|f| f.wght.is_some() && f.weight == target)
+    }
+
+    /// 各字面覆盖表统计（诊断口径，w1029 §3 报告用）：区间数、内存（字节）与建表耗时。
+    /// 覆盖表是加载期一次性成本，查表 O(log n)；同源字重实例共享同一份表。
+    pub fn diag_coverage_stats(&self) -> Vec<CoverageStat> {
+        self.fonts
+            .iter()
+            .map(|f| CoverageStat {
+                ranges: f.coverage.ranges.len(),
+                memory_bytes: f.coverage.memory_bytes(),
+                build_us: f.coverage.build_us,
+            })
+            .collect()
     }
 
     /// 塑形一行，输出视觉顺序 glyph。BiDi run 由 UAX #9 决定，run 内由 rustybuzz 处理
@@ -1945,6 +2043,98 @@ mod tests {
             assert_eq!(ma, mb, "字形度量必须一致");
             assert_eq!(ba, bb, "同字形位图必须逐字节一致");
         }
+    }
+
+    /// 覆盖表与旧 `glyph_index` 路径逐点相等（w1029 text-coverage-cache §2-3）：
+    /// 真机 Noto CJK 栈抽3000个不同码点（CJK / 拉丁 / 符号 / 缺字 PUA / emoji / 上界），
+    /// 每字面逐一比对；另对混排段落 `font_for_grapheme` 新旧选择逐字素相等。
+    /// 缺字体则跳过并打印原因——判门机（Debian）必有，跳过不算通过。
+    #[test]
+    fn coverage_matches_glyph_index_on_real_stack() {
+        let noto = [
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        ];
+        let present: Vec<PathBuf> = noto
+            .iter()
+            .filter(|p| Path::new(p).exists())
+            .map(PathBuf::from)
+            .collect();
+        if present.len() != noto.len() {
+            eprintln!("跳过原因：真机 Noto CJK Regular/Bold字体栈不完整（{noto:?}）；不计验收通过");
+            return;
+        }
+        let primary = FontSource { path: present[0].clone(), collection_tag: Some("SC") };
+        let extra: Vec<FontSource> = present[1..]
+            .iter()
+            .map(|p| FontSource { path: p.clone(), collection_tag: Some("SC") })
+            .collect();
+        let engine = TextEngine::load_stack(&primary, &extra).expect("字体栈加载失败");
+        assert!(engine.font_count() >= 1, "SC 字面应至少加载一条");
+        assert_eq!(engine.font_count(), 2, "Regular/Bold的SC字面必须均参与比较");
+
+        // 保留原有边界点，去重后从互不重叠的扩展A区补足3000个不同码点。
+        let mut cps: Vec<u32> = Vec::new();
+        cps.extend((0x4E00u32..0x9FFF).step_by(2).take(2000));
+        cps.extend(0x20u32..0x7F);
+        cps.extend(0x2000u32..0x206F);
+        cps.extend(0x3000u32..0x303F);
+        cps.extend((0xFF00u32..0xFFEF).step_by(2));
+        cps.extend((0x2E80u32..0x2FDF).step_by(7));
+        cps.extend((0xE000u32..0xF8FF).step_by(13));
+        cps.extend([0x1F600, 0x10FFFF, 0x0, 0x10_FFFF]);
+        cps.sort_unstable();
+        cps.dedup();
+        assert!(cps.len() <= 3000);
+        cps.extend(0x3400..0x3400 + (3000 - cps.len()) as u32);
+        cps.sort_unstable();
+        cps.dedup();
+        assert_eq!(cps.len(), 3000, "缺样本或重复样本不能计作3000码点");
+        let mut mismatches: Vec<(u32, u32, char, bool, bool)> = Vec::new();
+        for font in engine.fonts.iter() {
+            for &cp in &cps {
+                let Some(c) = char::from_u32(cp) else { continue };
+                // 旧路径参照：has_glyph 原实现 = 解析面 glyph_index 命中。
+                let old = ttf_parser::Face::parse(font.data(), font.collection_index)
+                    .expect("加载时已验证")
+                    .glyph_index(c)
+                    .is_some();
+                let new = font.coverage.has(c);
+                if old != new {
+                    mismatches.push((font.collection_index, cp, c, old, new));
+                }
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "覆盖表与 glyph_index 不一致 {} 例，样例 {:?}",
+            mismatches.len(),
+            &mismatches[..mismatches.len().min(8)]
+        );
+
+        // font_for_grapheme 段落逐字素相等：旧选择 = 逐字面「全字符 glyph_index 命中」。
+        let para = "Ether 悬停渲染，中英混排 123 abg——字形覆盖缓存。passim…e\u{301}👩\u{200D}💻\u{E000}\u{10FFFF}";
+        let old_covered = |f: &FontFace, grapheme: &str| {
+            grapheme.chars().all(|c| {
+                is_default_ignorable(c)
+                    || c.is_whitespace()
+                    || ttf_parser::Face::parse(f.data(), f.collection_index)
+                        .expect("加载时已验证")
+                        .glyph_index(c)
+                        .is_some()
+            })
+        };
+        for grapheme in para.graphemes(true) {
+            let old_pick = engine
+                .fonts
+                .iter()
+                .position(|f| old_covered(f, grapheme))
+                .unwrap_or(0);
+            let new_pick = engine.font_for_grapheme(grapheme);
+            assert_eq!(old_pick, new_pick, "字素 {grapheme:?} 选面必须一致");
+        }
+        println!("COVERAGE_CHECK faces=2 codepoints=3000 glyph_checks=6000 graphemes={}",
+                 para.graphemes(true).count());
     }
 
     #[test]
