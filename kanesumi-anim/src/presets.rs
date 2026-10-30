@@ -1,4 +1,4 @@
-use sokuou::{EasingMode, MetroAnim, SpringAnim, UwpEasing};
+use sokuou::{EasingMode, MetroAnim, SpringAnim, UwpEasing, apply_uwp};
 
 /// Kanesumi 标准动画时长：0.25s。轻盈短促、60Hz 友好。参 PLAN.md §2。
 pub const METRO_STANDARD_DURATION: f64 = 0.25;
@@ -48,6 +48,106 @@ pub const DURATION_EXPANDER_COLLAPSE: f64 = 0.167;
 /// Expander chevron 旋转时长。UWP 0.1s（Checked DoubleAnimation）。参 CONTROL_SPEC §13。
 pub const DURATION_EXPANDER_CHEVRON: f64 = 0.1;
 
+// ── 弹层轨道：单一状态机 + 可换向曲线（RM-1028-5 缺陷 1/2 的修法载体） ──────────
+
+/// 弹层轨道曲线。正典 Bézier（sheet_*，§200 / SDK 26100 generic.xaml CommandBarFlyout
+/// 模板）由本仓 `easings::bezier_y` 求值；Sokuou UWP 缓动变体（overlay_*）直接走
+/// `apply_uwp`，与旧 `MetroAnim` 路径逐位一致。`UwpEasing` 本期没有 Bézier 变体
+/// （sokuou 不在本件白名单内），故曲线两态由本仓承载。
+#[derive(Debug, Clone, PartialEq)]
+pub enum TrackCurve {
+    /// cubic-bezier(x1,y1,x2,y2)。
+    Bezier([f32; 4]),
+    /// UWP 缓动变体 + 方向。
+    Uwp(UwpEasing, EasingMode),
+}
+
+/// 弹层开合轨道：持有**一条**状态机，换向只 `retune_to`（时长 + 曲线）+ `set_target`，
+/// 从当前呈现值接续、可中断（参 compositor/docs/AnimationRules.md）。
+///
+/// 字段与推进语义对齐 Sokuou `MetroAnim`（参 sokuou/src/uwp.rs `MetroAnim::update`），
+/// 仅曲线求值扩展为正典 Bézier / UWP 变体两态 —— 不是新动画原语，是预设层的换曲线入口。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FlyoutTrack {
+    value: f64,
+    target: f64,
+    from: f64,
+    elapsed: f64,
+    duration: f64,
+    curve: TrackCurve,
+}
+
+impl FlyoutTrack {
+    pub fn new(duration: f64, curve: TrackCurve) -> Self {
+        Self {
+            value: 0.0,
+            target: 0.0,
+            from: 0.0,
+            elapsed: duration, // 初始为稳态（同 MetroAnim::new）
+            duration,
+            curve,
+        }
+    }
+
+    /// 按预设原型换时长与曲线，不动进度状态。**换向前调用，随后应 `set_target`**：
+    /// `elapsed` 归零即重新计段，呈现值由 `set_target` 从当前值接续（不重建对象，
+    /// 修复「每次 open/close 重建轨道 → 从 0 重跑」，参 RM-1028-5 缺陷 1）。
+    pub fn retune_to(&mut self, preset: &FlyoutTrack) {
+        self.duration = preset.duration;
+        self.curve = preset.curve.clone();
+        self.elapsed = 0.0;
+    }
+
+    /// 设定新目标，从当前 value 开始过渡（可中断）。语义同 Sokuou `MetroAnim::set_target`。
+    pub fn set_target(&mut self, target: f64) {
+        if self.is_steady() && (target - self.target).abs() < f64::EPSILON {
+            return;
+        }
+        self.from = self.value;
+        self.target = target;
+        self.elapsed = 0.0;
+    }
+
+    /// 立即跳到指定值，无过渡。
+    pub fn jump_to(&mut self, value: f64) {
+        self.value = value;
+        self.target = value;
+        self.from = value;
+        self.elapsed = self.duration;
+    }
+
+    /// 每帧推进。`dt` 单位为秒。
+    pub fn update(&mut self, dt: f64) {
+        if self.is_steady() {
+            return;
+        }
+        self.elapsed = (self.elapsed + dt).min(self.duration);
+        let t = if self.duration > 0.0 {
+            (self.elapsed / self.duration).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let eased = match &self.curve {
+            TrackCurve::Bezier(c) => crate::easings::bezier_y(*c, t as f32) as f64,
+            TrackCurve::Uwp(v, m) => apply_uwp(t, v, *m),
+        };
+        self.value = self.from + (self.target - self.from) * eased;
+    }
+
+    pub fn value(&self) -> f64 {
+        self.value
+    }
+
+    pub fn target(&self) -> f64 {
+        self.target
+    }
+
+    /// 已到达目标时为 true。
+    pub fn is_steady(&self) -> bool {
+        self.elapsed >= self.duration
+    }
+}
+
 /// Kanesumi 动画预设。参 PLAN.md §4-1/§4-2 动画三层：
 ///
 /// - **主运动**（位移 / 缩放 / 面板滑入）→ `SpringAnim` 解析解弹簧，帧率无关、可中断。
@@ -87,17 +187,22 @@ impl MetroPresets {
 
     // ── 时长驱动：次要属性 ───────────────────────────────────────
 
-    /// 面板入场：慢起快收，300ms Cubic/EaseOut（对齐 Metro 面板出场典型曲线）。
-    pub fn sheet_appear() -> MetroAnim {
-        MetroAnim::new(DURATION_SHEET_APPEAR, UwpEasing::Cubic, EasingMode::EaseOut)
+    /// 面板入场：300ms 正典开曲线 cubic-bezier(0.1,0.9,0.2,1)（§200；SDK 26100
+    /// `generic.xaml` CommandBarFlyout 模板 OpeningStoryboard）。旧值 Cubic/EaseOut
+    /// 与声明不符（RM-1028-5 缺陷 2），已改 Bézier；时长不改。
+    pub fn sheet_appear() -> FlyoutTrack {
+        FlyoutTrack::new(
+            DURATION_SHEET_APPEAR,
+            TrackCurve::Bezier(crate::easings::CURVE_UWP_OPEN),
+        )
     }
 
-    /// 面板收起：260ms Quadratic/EaseOut，短促收敛。
-    pub fn sheet_dismiss() -> MetroAnim {
-        MetroAnim::new(
+    /// 面板收起：150ms 正典关曲线 cubic-bezier(0.7,0,1,0.5)（§200；同模板
+    /// ClosingStoryboard）。旧值 Quadratic/EaseOut 与声明不符，已改 Bézier；时长不改。
+    pub fn sheet_dismiss() -> FlyoutTrack {
+        FlyoutTrack::new(
             DURATION_SHEET_DISMISS,
-            UwpEasing::Quadratic,
-            EasingMode::EaseOut,
+            TrackCurve::Bezier(crate::easings::CURVE_UWP_CLOSE),
         )
     }
 
@@ -139,16 +244,19 @@ impl MetroPresets {
     }
 
     /// 下拉面板遮罩淡入：383ms Cubic/EaseOut（对齐 UWP OverlayOpeningAnimation，§8）。
-    pub fn overlay_open() -> MetroAnim {
-        MetroAnim::new(DURATION_OVERLAY_OPEN, UwpEasing::Cubic, EasingMode::EaseOut)
+    /// 返回 [`FlyoutTrack`] 使 PopupAnim 两条轨道都能不重建换向；曲线逐位同旧 MetroAnim。
+    pub fn overlay_open() -> FlyoutTrack {
+        FlyoutTrack::new(
+            DURATION_OVERLAY_OPEN,
+            TrackCurve::Uwp(UwpEasing::Cubic, EasingMode::EaseOut),
+        )
     }
 
     /// 下拉面板遮罩淡出：216ms Quadratic/EaseOut（对齐 UWP OverlayClosingAnimation，§8）。
-    pub fn overlay_close() -> MetroAnim {
-        MetroAnim::new(
+    pub fn overlay_close() -> FlyoutTrack {
+        FlyoutTrack::new(
             DURATION_OVERLAY_CLOSE,
-            UwpEasing::Quadratic,
-            EasingMode::EaseOut,
+            TrackCurve::Uwp(UwpEasing::Quadratic, EasingMode::EaseOut),
         )
     }
 

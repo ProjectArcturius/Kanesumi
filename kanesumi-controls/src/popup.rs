@@ -1,4 +1,4 @@
-use kanesumi_anim::{EasingMode, MetroAnim, MetroPresets, UwpEasing};
+use kanesumi_anim::{FlyoutTrack, MetroPresets};
 use kanesumi_canvas::Scene;
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
@@ -135,7 +135,7 @@ pub fn place_submenu(parent: Rect, panel_size: Size, screen: Rect, gap: f32) -> 
 
 /// 弹层状态机。参 CONTROL_SPEC §8/§9：
 /// - 遮罩淡入 0.383s / 淡出 0.216s（OverlayOpening/ClosingAnimation）；
-/// - 面板展开/收起 = `sheet_appear`(0.30s) / `sheet_dismiss`(0.26s)。
+/// - 面板展开/收起 = `sheet_appear`(0.30s) / `sheet_dismiss`(0.15s)，正典 Bézier（§200）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PopupState {
     Closed,
@@ -145,23 +145,29 @@ pub enum PopupState {
 }
 
 /// 弹层动画 —— 遮罩 + 面板两条并行动画轨道。
+///
+/// 两条轨道持有**整个生命周期**（`FlyoutTrack`），open / close 只换向（`retune_to`
+/// 加 `set_target`），从当前呈现值接续，不再每次重建轨道。旧实现每次重建
+/// `MetroPresets::*` 新对象（初值 0），稳态后 close 直接从 0 起（瞬间消失）、
+/// 收起中再 open 从 0 重跑（RM-1028-5 缺陷 1）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PopupAnim {
     state: PopupState,
-    overlay: MetroAnim,
-    panel: MetroAnim,
+    overlay: FlyoutTrack,
+    panel: FlyoutTrack,
 }
 
 impl Default for PopupAnim {
-    /// 关闭态。`open()`/`close()` 会用 `MetroPresets::*` 立即覆盖 anim，
-    /// 所以此处用零时长占位（V20：原实现调 `default_metro()` 再 `jump_to(0.0)`
-    /// 两次构造纯浪费）。
+    /// 关闭态：两条轨道用真实预设构造并 `jump_to(0)`，此后 open/close 只换向。
     fn default() -> Self {
-        let zero = MetroAnim::new(0.0, UwpEasing::Quadratic, EasingMode::EaseOut);
+        let mut overlay = MetroPresets::overlay_open();
+        let mut panel = MetroPresets::sheet_appear();
+        overlay.jump_to(0.0);
+        panel.jump_to(0.0);
         Self {
             state: PopupState::Closed,
-            overlay: zero.clone(),
-            panel: zero,
+            overlay,
+            panel,
         }
     }
 }
@@ -171,27 +177,27 @@ impl PopupAnim {
         Self::default()
     }
 
-    /// 打开：遮罩 0.383s 淡入 + 面板 0.30s 展开（可中断）。
+    /// 打开：遮罩 0.383s 淡入 + 面板 0.30s 正典开曲线展开（可中断，从当前值接续）。
     pub fn open(&mut self) {
         if matches!(self.state, PopupState::Opening | PopupState::Open) {
             return;
         }
         self.state = PopupState::Opening;
-        self.overlay = MetroPresets::overlay_open();
+        self.overlay.retune_to(&MetroPresets::overlay_open());
+        self.panel.retune_to(&MetroPresets::sheet_appear());
         self.overlay.set_target(1.0);
-        self.panel = MetroPresets::sheet_appear();
         self.panel.set_target(1.0);
     }
 
-    /// 关闭：遮罩 0.216s 淡出 + 面板 0.26s 收起。
+    /// 关闭：遮罩 0.216s 淡出 + 面板 0.15s 正典关曲线收起（可中断，从当前值接续）。
     pub fn close(&mut self) {
         if matches!(self.state, PopupState::Closing | PopupState::Closed) {
             return;
         }
         self.state = PopupState::Closing;
-        self.overlay = MetroPresets::overlay_close();
+        self.overlay.retune_to(&MetroPresets::overlay_close());
+        self.panel.retune_to(&MetroPresets::sheet_dismiss());
         self.overlay.set_target(0.0);
-        self.panel = MetroPresets::sheet_dismiss();
         self.panel.set_target(0.0);
     }
 
@@ -611,7 +617,9 @@ mod tests {
             step_log(&mut anim, &mut rows, &mut frame, &mut t_ms);
         }
         assert!(frame < 480, "剧本未在 480 帧内走完");
-        std::fs::create_dir_all("target").expect("创建 target 目录");
-        std::fs::write("target/popup_progress_series.csv", &rows).expect("写出 CSV");
+        // 写到工作区根 target/（gitignored），夜班流程复制为 Ether 仓 docs 下的修前 / 修后 CSV。
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target");
+        std::fs::create_dir_all(&out).expect("创建 target 目录");
+        std::fs::write(out.join("popup_progress_series.csv"), &rows).expect("写出 CSV");
     }
 }
