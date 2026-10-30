@@ -246,4 +246,41 @@ mod tests {
         assert_eq!(DURATION_TOGGLE_FLIP, 0.15);
         assert_eq!(DURATION_INDETERMINATE, 2.0);
     }
+
+    /// RM-1028-5 缺陷 2 回归：`sheet_appear` 进度必须等于正典
+    /// cubic-bezier(0.1,0.9,0.2,1)（§200；SDK 26100 generic.xaml CommandBarFlyout 模板），
+    /// 不再是 1−(1−t)^3。容差 1e-3（参任务书 k-framework-fix1 §2-1）。
+    #[test]
+    fn sheet_appear_matches_canon_bezier() {
+        let mut a = MetroPresets::sheet_appear();
+        for &t in &[0.25_f32, 0.5, 0.75] {
+            a.jump_to(0.0);
+            a.set_target(1.0);
+            a.update(t as f64 * DURATION_SHEET_APPEAR);
+            let expect = crate::easings::bezier_y(crate::easings::CURVE_UWP_OPEN, t) as f64;
+            assert!(
+                (a.value() - expect).abs() <= 1e-3,
+                "sheet_appear t={t}: 实际 {}，正典 Bézier {expect}",
+                a.value()
+            );
+        }
+    }
+
+    /// RM-1028-5 缺陷 2 回归：`sheet_dismiss` 进度必须等于正典
+    /// cubic-bezier(0.7,0,1,0.5)，不再是 1−(1−t)^2。
+    #[test]
+    fn sheet_dismiss_matches_canon_bezier() {
+        let mut a = MetroPresets::sheet_dismiss();
+        for &t in &[0.25_f32, 0.5, 0.75] {
+            a.jump_to(0.0);
+            a.set_target(1.0);
+            a.update(t as f64 * DURATION_SHEET_DISMISS);
+            let expect = crate::easings::bezier_y(crate::easings::CURVE_UWP_CLOSE, t) as f64;
+            assert!(
+                (a.value() - expect).abs() <= 1e-3,
+                "sheet_dismiss t={t}: 实际 {}，正典 Bézier {expect}",
+                a.value()
+            );
+        }
+    }
 }

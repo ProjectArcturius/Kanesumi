@@ -705,4 +705,23 @@ mod tests {
         assert_eq!(texts, 1, "只有选中文本，箭头改自绘");
         assert_eq!(triangles, 1, "chevron 是 Triangle");
     }
+
+    /// RM-1028-5 回归（k-framework-fix1 消费方 3/3）：走真实控件对象，稳态开后关闭，
+    /// 第一帧面板进度 ≥ 0.9。
+    #[test]
+    fn close_from_steady_open_keeps_first_frame() {
+        let mut sel = MetroSelectorFlyout::new(vec!["甲".into(), "乙".into()]);
+        sel.open(Rect::new(0.0, 0.0, 120.0, 32.0));
+        for _ in 0..60 {
+            sel.update(1.0 / 60.0);
+        }
+        assert!(sel.anim.is_open());
+        sel.close();
+        sel.update(1.0 / 60.0);
+        assert!(
+            sel.anim.panel_progress() >= 0.9,
+            "稳态关闭第一帧面板进度 {}，不得跳 0",
+            sel.anim.panel_progress()
+        );
+    }
 }

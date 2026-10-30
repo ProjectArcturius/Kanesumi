@@ -1125,4 +1125,23 @@ mod tests {
         }
         kanesumi_canvas::set_surface_scale(1.0);
     }
+
+    /// RM-1028-5 回归（k-framework-fix1 消费方 1/3）：走真实控件对象，稳态开后关闭，
+    /// 第一帧面板进度 ≥ 0.9 —— open/close 重建轨道致跳 0 的缺陷在此必须红。
+    #[test]
+    fn close_from_steady_open_keeps_first_frame() {
+        let mut menu = MetroDropdownMenu::new(vec![MenuItem::new("一"), MenuItem::new("二")]);
+        menu.open(Rect::new(0.0, 0.0, 120.0, 32.0));
+        for _ in 0..60 {
+            menu.update(1.0 / 60.0);
+        }
+        assert!(menu.anim.is_open());
+        menu.close();
+        menu.update(1.0 / 60.0);
+        assert!(
+            menu.anim.panel_progress() >= 0.9,
+            "稳态关闭第一帧面板进度 {}，不得跳 0",
+            menu.anim.panel_progress()
+        );
+    }
 }

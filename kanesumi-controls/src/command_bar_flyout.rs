@@ -732,4 +732,30 @@ mod tests {
             .count();
         assert_eq!(texts, 4, "4 个命令图标");
     }
+
+    /// RM-1028-5 回归（k-framework-fix1 消费方 2/3）：走真实控件对象，稳态开后关闭，
+    /// 第一帧面板进度 ≥ 0.9。
+    #[test]
+    fn close_from_steady_open_keeps_first_frame() {
+        let mut bar = MetroCommandBarFlyout::new(vec![CommandButton::new(
+            "\u{E8C8}",
+            "复制",
+            CommandBarAction::Copy,
+        )]);
+        bar.open(
+            Rect::new(0.0, 0.0, 100.0, 30.0),
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+        );
+        for _ in 0..60 {
+            bar.update(1.0 / 60.0);
+        }
+        assert!(bar.anim.is_open());
+        bar.close();
+        bar.update(1.0 / 60.0);
+        assert!(
+            bar.anim.panel_progress() >= 0.9,
+            "稳态关闭第一帧面板进度 {}，不得跳 0",
+            bar.anim.panel_progress()
+        );
+    }
 }

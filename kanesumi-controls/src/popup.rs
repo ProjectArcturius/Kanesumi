@@ -480,4 +480,138 @@ mod tests {
         assert!(p.rect.origin.x >= screen.origin.x - 0.01);
         assert!(p.rect.right() <= screen.right() + 0.01);
     }
+
+    // ── RM-1028-5 缺陷 1 回归（k-framework-fix1）：open/close 不得重建动画轨道 ──
+
+    /// 正典收起曲线整段按 60fps 采样的单帧最大进度差（全摆幅）。
+    /// 推导：曲线两端点固定，逐帧取样取最大相邻差；半程中断时实际摆幅减半，
+    /// 阈值再放宽 2 倍，故这是宽松上界（任务书 §2-1「一帧应有步长的 2 倍」）。
+    fn max_frame_step_of_close(fps: f64) -> f64 {
+        let duration = kanesumi_anim::DURATION_SHEET_DISMISS;
+        let n = (duration * fps).ceil() as usize;
+        let mut prev = 0.0_f64;
+        let mut max = 0.0_f64;
+        for i in 1..=n {
+            let t = ((i as f64 / fps) / duration).min(1.0);
+            let y = kanesumi_anim::bezier_y(kanesumi_anim::CURVE_UWP_CLOSE, t as f32) as f64;
+            max = max.max(y - prev);
+            prev = y;
+        }
+        max
+    }
+
+    fn steady_open() -> PopupAnim {
+        let mut anim = PopupAnim::new();
+        anim.open();
+        for _ in 0..120 {
+            anim.update(1.0 / 60.0);
+        }
+        assert_eq!(anim.state(), PopupState::Open);
+        anim
+    }
+
+    fn tick_until(anim: &mut PopupAnim, pred: impl Fn(f64) -> bool, max_frames: usize) -> f64 {
+        for _ in 0..max_frames {
+            anim.update(1.0 / 60.0);
+            let v = anim.panel_progress();
+            if pred(v) {
+                return v;
+            }
+        }
+        panic!("未在 {max_frames} 帧内到达目标进度，当前 {}", anim.panel_progress());
+    }
+
+    /// 场景 i（任务书 §2-1）：Open 稳态后 close，第一帧采样值 ≥ 0.9（不得跳到 0 附近）。
+    #[test]
+    fn close_from_steady_open_first_frame_stays_visible() {
+        let mut anim = steady_open();
+        anim.close();
+        anim.update(1.0 / 60.0);
+        assert!(
+            anim.panel_progress() >= 0.9,
+            "稳态关闭第一帧面板进度 {}，不得跳 0",
+            anim.panel_progress()
+        );
+    }
+
+    /// 场景 ii：开到约一半时 close，下一帧与上一帧差 ≤ 一帧应有步长的 2 倍。
+    #[test]
+    fn close_from_half_open_next_frame_within_step() {
+        let mut anim = PopupAnim::new();
+        anim.open();
+        let v0 = tick_until(&mut anim, |v| v >= 0.5, 120);
+        anim.close();
+        anim.update(1.0 / 60.0);
+        let v1 = anim.panel_progress();
+        let bound = 2.0 * max_frame_step_of_close(60.0);
+        assert!(
+            (v1 - v0).abs() <= bound,
+            "半开收起首帧差 {v1}-{v0} 超过 2×一帧步长 {bound}"
+        );
+        assert!(v1 >= 0.4, "半开收起首帧 {v1} 不得塌回 0 附近");
+    }
+
+    /// 场景 iii：收起一半时重新 open，呈现值不得回跳到中断之前之下
+    /// （参 compositor/docs/AnimationRules.md：可打断、从当前呈现值接续）。
+    #[test]
+    fn reopen_from_half_close_continues_from_current() {
+        let mut anim = PopupAnim::new();
+        anim.open();
+        let v_pre = tick_until(&mut anim, |v| v >= 0.5, 120);
+        anim.close();
+        let _v_mid = tick_until(&mut anim, |v| v <= 0.5, 120);
+        anim.open();
+        anim.update(1.0 / 60.0);
+        assert!(
+            anim.panel_progress() >= v_pre,
+            "半收重开首帧 {} 低于中断前呈现值 {v_pre}",
+            anim.panel_progress()
+        );
+    }
+
+    // ── 逐帧曲线证据导出（任务书 §5：修前 / 修后同一剧本 CSV） ──
+
+    fn step_log(anim: &mut PopupAnim, rows: &mut String, frame: &mut usize, t_ms: &mut f64) {
+        anim.update(1.0 / 60.0);
+        *t_ms += 1000.0 / 60.0;
+        rows.push_str(&format!(
+            "{},{:.1},{:?},{:.6},{:.6}\n",
+            *frame,
+            t_ms,
+            anim.state(),
+            anim.panel_progress(),
+            anim.overlay_alpha()
+        ));
+        *frame += 1;
+    }
+
+    /// 剧本与 tools/perf/popup_continuity.sh 相同：开→半开收起→半收重开→稳态→收。
+    /// 数据来自动画模型逐帧推进（`PopupAnim::update`），**不是屏幕读回**；夜班流程把它
+    /// 复制为 docs/research/k_framework_fix1/progress_{before,after}.csv（Ether 仓）。
+    #[test]
+    fn export_progress_series_csv() {
+        let mut anim = PopupAnim::new();
+        let mut rows = String::from("frame,elapsed_ms,state,panel_progress,overlay_alpha\n");
+        let mut frame = 0_usize;
+        let mut t_ms = 0.0_f64;
+        anim.open();
+        while anim.panel_progress() < 0.5 && frame < 120 {
+            step_log(&mut anim, &mut rows, &mut frame, &mut t_ms);
+        }
+        anim.close();
+        while anim.panel_progress() > 0.5 && frame < 240 {
+            step_log(&mut anim, &mut rows, &mut frame, &mut t_ms);
+        }
+        anim.open();
+        while anim.state() != PopupState::Open && frame < 360 {
+            step_log(&mut anim, &mut rows, &mut frame, &mut t_ms);
+        }
+        anim.close();
+        while anim.state() != PopupState::Closed && frame < 480 {
+            step_log(&mut anim, &mut rows, &mut frame, &mut t_ms);
+        }
+        assert!(frame < 480, "剧本未在 480 帧内走完");
+        std::fs::create_dir_all("target").expect("创建 target 目录");
+        std::fs::write("target/popup_progress_series.csv", &rows).expect("写出 CSV");
+    }
 }
