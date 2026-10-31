@@ -2907,4 +2907,88 @@ fn find_ligature_font() -> Option<std::path::PathBuf> {
     .map(std::path::PathBuf::from)
     .find(|p| p.exists())
 }
+
+    // ---- A3.3：索引覆盖查询（KANESUMI_FONT_INDEX=1；夹具经 A3.0 写侧构造）----
+
+    /// 判门机 / 本云同款 Noto CJK TTC（真机栈）；无则按既有约定跳过。
+    fn cjk_font() -> Option<std::path::PathBuf> {
+        [
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        ]
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .find(|p| p.exists())
+    }
+
+    /// 夹具：A3.0 写侧 `write_index` 构造引擎真实栈的索引 → 临时文件 →
+    /// `OwnedIndex::open`（走真实读路径）。`perturb` 翻转首字面首字节，
+    /// 使 `stack_identity` 必然与栈失配（有效性闸的判别样本）。
+    fn fixture_index(engine: &TextEngine, perturb: bool) -> Option<crate::font_index::OwnedIndex> {
+        let mut specs = Vec::new();
+        let mut covs = Vec::new();
+        let mut bytes: Vec<Vec<u8>> = Vec::new();
+        for font in engine.fonts.iter() {
+            let face = ttf_parser::Face::parse(font.data(), font.collection_index).ok()?;
+            covs.push(CoverageTable::from_face(&face));
+            let mut data = font.data().to_vec();
+            if perturb {
+                data[0] ^= 0xA5;
+            }
+            bytes.push(data);
+        }
+        for (font, cov) in engine.fonts.iter().zip(covs.iter()) {
+            specs.push(crate::font_index::IndexEntrySpec {
+                path: "fixture.ttf",
+                family: "Fixture",
+                collection_index: u16::try_from(font.collection_index).ok()?,
+                weight: font.weight,
+                slant: 0,
+                flags: 0b100,
+                ttc_faces: 1,
+                coverage: cov.ranges(),
+                wght_min: 0.0,
+                wght_max: 0.0,
+                mtime_ns: 0,
+            });
+        }
+        let refs: Vec<&[u8]> = bytes.iter().map(|b| b.as_slice()).collect();
+        let file = crate::font_index::write_index(&specs, &refs, &[], 1, 0, 0b0011);
+        let dir = std::env::temp_dir().join(format!("a33-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok()?;
+        let path = dir.join("fonts-v1.idx");
+        std::fs::write(&path, &file).ok()?;
+        let idx = crate::font_index::OwnedIndex::open(&path).ok();
+        std::fs::remove_file(&path).ok();
+        idx
+    }
+
+    const PARAGRAPH: &str = "字体索引覆盖查询：Ether 123abc，常用汉字集。";
+
+    /// A3.3 门：索引开且有效 → 同一 CJK 段落逐字素选择与旧路径一致，
+    /// 且覆盖查询全程 `Face::parse` 计数增量 = 0。
+    #[test]
+    fn indexed_cjk_paragraph_zero_face_parse_and_matches_legacy() {
+        let Some(path) = cjk_font() else { return };
+        let engine = TextEngine::load(path).expect("Noto CJK 必须可加载");
+        let Some(idx) = fixture_index(&engine, false) else {
+            panic!("夹具索引必须可构造");
+        };
+        assert_eq!(
+            idx.header().stack_identity,
+            engine.identity(),
+            "前置：夹具身份必须与栈一致"
+        );
+        let before = face_parse_calls();
+        for g in PARAGRAPH.graphemes(true) {
+            assert_eq!(
+                engine.font_for_grapheme_with(Some(&idx), g),
+                engine.font_for_grapheme_with(None, g),
+                "字素 {g:?} 索引选择必须与旧路径一致"
+            );
+        }
+        assert_eq!(face_parse_calls() - before, 0, "索引覆盖查询不得触发 Face::parse");
+    }
+
+    }
 }
