@@ -31,8 +31,8 @@ const ENTRY_LEN: usize = 64;
 const DIRFP_LEN: usize = 24;
 /// 条目数上限（规格 §2）。
 pub(crate) const MAX_FONT_COUNT: u32 = 4096;
-/// 目录指纹条数上限（规格 §4）。
-pub(crate) const MAX_DIRFP_COUNT: usize = 64;
+/// 目录指纹条数上限（规格 §4；构建器 `ether-font-index` 也按此拒绝超限目录集合）。
+pub const MAX_DIRFP_COUNT: usize = 64;
 /// 覆盖记录宽度（B）：`(start: u32, end: u32)` 紧排小端。
 const COV_REC: usize = 8;
 
