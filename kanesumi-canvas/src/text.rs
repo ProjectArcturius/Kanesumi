@@ -344,7 +344,7 @@ pub struct FontSource {
 
 /// 在 TTC 集合里找族名（name ID 1 / 16）含 `tag` 的字面下标；非集合或未命中返回 None。
 /// 只匹配族名记录 —— 任意记录宽松匹配会在 JP 字面上误中（如版本串含 SC，2026-10-03 实测）。
-fn collection_index_matching(bytes: &[u8], tag: &str) -> Option<u32> {
+pub(crate) fn collection_index_matching(bytes: &[u8], tag: &str) -> Option<u32> {
     let count = ttf_parser::fonts_in_collection(bytes).unwrap_or(1);
     (0..count).find(|&i| {
         ttf_parser::Face::parse(bytes, i).is_ok_and(|face| {
@@ -368,7 +368,7 @@ pub type FontBytes = Arc<dyn AsRef<[u8]> + Send + Sync>;
 /// 查表与 `glyph_index` 的覆盖判定同源，以旧路径的实际返回值过滤候选，
 /// 由真机字体的3000码点回归测试逐点锁定（`coverage_matches_glyph_index_on_real_stack`）。
 #[derive(Clone)]
-struct CoverageTable {
+pub(crate) struct CoverageTable {
     /// 升序闭区间 `(start, end)`，两两不相邻不相交。
     ranges: Arc<[(u32, u32)]>,
     /// 建表耗时（µs，cmap 遍历 + 区间合并），诊断口径。
@@ -385,7 +385,7 @@ impl CoverageTable {
     /// 子表 `codepoints()` 枚举候选，再逐点用 `Face::glyph_index` 复检——真机
     /// Noto CJK 上枚举 ~2.5 万候选、复检剔除个别无效码点（实测 U+0000），
     /// 覆盖面与旧路径逐点一致（回归测试锁定）。
-    fn from_face(face: &ttf_parser::Face<'_>) -> Self {
+    pub(crate) fn from_face(face: &ttf_parser::Face<'_>) -> Self {
         let t = std::time::Instant::now();
         let mut cps: Vec<u32> = Vec::new();
         if let Some(cmap) = face.tables().cmap {
@@ -417,10 +417,15 @@ impl CoverageTable {
 
     /// 查表：码点落在任一区间内即覆盖。无 cmap 的字面 ranges 为空 → 全码点不覆盖，
     /// 与 `glyph_index` 对无 cmap 字面恒 `None` 一致。
-    fn has(&self, c: char) -> bool {
+    pub(crate) fn has(&self, c: char) -> bool {
         let cp = u32::from(c);
         let i = self.ranges.partition_point(|&(start, _)| start <= cp);
         i > 0 && self.ranges[i - 1].1 >= cp
+    }
+
+    /// 只读借用区间表（A3.0 `font_index` 写侧序列化用；不改建表与查询行为）。
+    pub(crate) fn ranges(&self) -> &[(u32, u32)] {
+        &self.ranges
     }
 
     /// 表内存成本（区间表本体字节数，不含 Arc 头）。
