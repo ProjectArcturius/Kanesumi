@@ -2990,5 +2990,47 @@ fn find_ligature_font() -> Option<std::path::PathBuf> {
         assert_eq!(face_parse_calls() - before, 0, "索引覆盖查询不得触发 Face::parse");
     }
 
+    /// A3.3 门：身份失配的索引必须整体作废 → 完全走旧路径（逐字素一致）。
+    #[test]
+    fn identity_mismatched_index_falls_back_to_legacy_per_grapheme() {
+        let Some(path) = cjk_font() else { return };
+        let engine = TextEngine::load(path).expect("Noto CJK 必须可加载");
+        let Some(bad) = fixture_index(&engine, true) else {
+            panic!("扰动夹具必须可构造");
+        };
+        assert_ne!(
+            bad.header().stack_identity,
+            engine.identity(),
+            "前置：扰动后身份必须失配"
+        );
+        for g in PARAGRAPH.graphemes(true) {
+            assert_eq!(
+                engine.font_for_grapheme_with(Some(&bad), g),
+                engine.font_for_grapheme_with(None, g),
+                "失配索引必须回落旧路径"
+            );
+        }
+    }
+
+    /// has_glyph 索引区段与内存覆盖表同值（CJK 覆盖 / 拉丁 / PUA 缺字 / 空白）。
+    #[test]
+    fn has_glyph_via_index_matches_legacy_table() {
+        let Some(path) = cjk_font() else { return };
+        let engine = TextEngine::load(path).expect("Noto CJK 必须可加载");
+        let Some(idx) = fixture_index(&engine, false) else {
+            panic!("夹具索引必须可构造");
+        };
+        for font in engine.fonts.iter() {
+            let r = index_entry_coverage_in(&idx, font.data(), font.collection_index)
+                .expect("字面必须命中索引条目");
+            for &cp in &[0x4E00_u32, 0x9FA5, 0x0041, 0x00E9, 0xE000, 0x1F600, 0x0020] {
+                let Some(c) = char::from_u32(cp) else { continue };
+                assert_eq!(
+                    r.has(c),
+                    font.has_glyph(c),
+                    "U+{cp:04X} 索引与内存覆盖表必须同值"
+                );
+            }
+        }
     }
 }
