@@ -424,6 +424,8 @@ impl CoverageTable {
     }
 
     /// 只读借用区间表（A3.0 `font_index` 写侧序列化用；不改建表与查询行为）。
+    /// A3.0 阶段消费者只有 `font_index` 测试与（未来的）A3.1 构建器，故标 dead_code 豁免。
+    #[allow(dead_code)]
     pub(crate) fn ranges(&self) -> &[(u32, u32)] {
         &self.ranges
     }

@@ -52,8 +52,8 @@
 
 | 偏移 | 字段 | 宽 | 语义 |
 |---:|---|---:|---|
-| 0 | `path_off` / `path_len` | 4+4 | u32 LE ×2，绝对路径（已 canonicalize），池内 UTF-8 |
-| 8 | `family_off` / `family_len` | 4+4 | u32 LE ×2，族名（name ID 1/16），诊断用 |
+| 0 | `path_off` / `path_len` | 4+4 | u32 LE ×2，**绝对文件偏移**；绝对路径（已 canonicalize），池内 UTF-8 |
+| 8 | `family_off` / `family_len` | 4+4 | u32 LE ×2，绝对文件偏移；族名（name ID 1/16），诊断用 |
 | 16 | `collection_index` | 2 | u16 LE，TTC 字面下标（非 TTC = 0） |
 | 18 | `weight` | 2 | u16 LE，OS/2 usWeightClass；VF 条目存**请求目标值** |
 | 20 | `slant` | 1 | 0=upright、1=italic、2=oblique；未知按 0，不拒 |
@@ -73,10 +73,15 @@
 
 ## 4. 目录指纹（24 B × `dirfp_count`，B4/F6）
 
+> **勘误（2026-10-31，实现时发现并修正）**：契约 §2.1 原记录 `(path_off: u32, pad0: u32, …)`
+> 读取端无法恢复路径长度（映射回路径的目的落空），属起草缺陷。修正为下表：`pad0: u32`
+> 拆为 `path_len: u16 + pad0: u16`，总宽 24 B 与 mtime/ino 偏移不变。
+
 | 偏移 | 字段 | 宽 | 语义 |
 |---:|---|---:|---|
-| 0 | `path_off` | 4 | u32 LE，目录路径入字符串池（原 `dir_id:u8` 方案废弃） |
-| 4 | `pad0` | 4 | u32 LE = 0 |
+| 0 | `path_off` | 4 | u32 LE，**绝对文件偏移**，目录路径入字符串池（原 `dir_id:u8` 方案废弃） |
+| 4 | `path_len` | 2 | u16 LE，路径字节数 |
+| 6 | `pad0` | 2 | u16 LE = 0，非 0 作废 |
 | 8 | `mtime_ns` | 8 | i64 LE；**缺席哨兵 = 0** |
 | 16 | `ino` | 8 | u64 LE；**缺席哨兵 = 0**（与 mtime_ns 同时为 0 才算缺席） |
 
@@ -100,7 +105,8 @@
 ## 6. 字符串池
 
 - `str_off` 起 `str_len` 字节，UTF-8（不要求 NUL 终止）；条目/指纹的 `(off, len)`
-  切片必须完整落在池内且 `off + len ≤ str_len`（`checked_add`），越界 → 整份作废。
+  是**绝对文件偏移**（I-2 同一条规则，无第二基准），切片必须完整落在
+  `[str_off, str_off + str_len)` 内（`checked_add`），越界 → 整份作废。
 - 池内字节读侧不做编码校验（`std::str::from_utf8` 失败 → 条目按诊断值处理不拒；
   路径字节参与 §4 stat 时才可能被 OS 拒绝——本件不触 stat）。
 

@@ -5,9 +5,9 @@
 //! `text.rs` / harness 调用（不接线，A3.1~A3.3 另件）。
 //!
 //! 不变量：任何输入字节 [`parse`](Index::parse) 都返回 `Err`、不 panic（切片前一律
-//! `checked_add` + 上界比较）；0 unsafe；整数一律小端；所有 `*_off` 为相对文件
-//! 第 0 字节的绝对偏移；条目区固定紧跟头部；正文校验和最后验证（结构检查在前，
-//! 保证每个损坏变体命中各自的 [`IndexError`]）。
+//! `checked_add` + 上界比较）；全程安全代码、零不安全块；整数一律小端；所有 `*_off`
+//! 为相对文件第 0 字节的绝对偏移；条目区固定紧跟头部；正文校验和最后验证
+//!（结构检查在前，保证每个损坏变体命中各自的 [`IndexError`]）。
 //!
 //! 写侧约定：覆盖区段入参必须来自 `CoverageTable::from_face(..).ranges()`
 //! （A1b 同一建表函数，禁止另写 cmap 枚举）；`file_size` / `content_hash`
@@ -290,9 +290,10 @@ impl<'a> Index<'a> {
         &self.file[o..o + self.header.cov_len as usize]
     }
 
-    /// 目录指纹校验：`pad0` 为 0、路径切片在池内、按路径字节**严格升序**
-    ///（规格 §4；写侧排序去重，读侧不放过乱序）。
+    /// 目录指纹校验：`pad0` 为 0、路径切片（**绝对偏移**，I-2 同规则）落在池内、
+    /// 按路径字节**严格升序**（规格 §4；写侧排序去重，读侧不放过乱序）。
     fn check_dirfps(&self) -> Result<(), IndexError> {
+        let (so, sl_) = (u64::from(self.header.str_off), u64::from(self.header.str_len));
         let pool = self.pool();
         let mut prev: Option<&[u8]> = None;
         for i in 0..usize::from(self.header.dirfp_count) {
@@ -304,15 +305,14 @@ impl<'a> Index<'a> {
             if rd2(f, 6) != Some(0) {
                 return Err(IndexError::Dirfp);
             }
-            let (po, pl) = (
-                rd4(f, 0).ok_or(IndexError::Dirfp)?,
-                u64::from(rd2(f, 4).ok_or(IndexError::Dirfp)?),
-            );
-            let (o, l) = (u64::from(po), pl);
-            if o.checked_add(l).is_none_or(|e| e > pool.len() as u64) {
+            let po = u64::from(rd4(f, 0).ok_or(IndexError::Dirfp)?);
+            let pl = u64::from(rd2(f, 4).ok_or(IndexError::Dirfp)?);
+            let end = po.checked_add(pl).ok_or(IndexError::Dirfp)?;
+            if po < so || end > so + sl_ {
                 return Err(IndexError::Dirfp);
             }
-            let path = &pool[o as usize..o as usize + l as usize];
+            let rel = (po - so) as usize;
+            let path = &pool[rel..rel + pl as usize];
             if prev.is_some_and(|p| p >= path) {
                 return Err(IndexError::Dirfp);
             }
@@ -324,7 +324,6 @@ impl<'a> Index<'a> {
     /// 条目校验：`pad0` 为 0、路径/族名切片在池内、覆盖切片在覆盖区内且
     /// 区段升序 + 互不重叠 + **互不相邻**（规格 §5）。
     fn check_entries(&self) -> Result<(), IndexError> {
-        let pool = self.pool();
         let cov = self.cov_region();
         for i in 0..usize::try_from(self.header.font_count).unwrap_or(0) {
             let base = HEADER_LEN + i * ENTRY_LEN;
@@ -340,7 +339,11 @@ impl<'a> Index<'a> {
                     u64::from(rd4(e, o).ok_or(IndexError::OffsetOutOfBounds)?),
                     u64::from(rd4(e, o + 4).ok_or(IndexError::OffsetOutOfBounds)?),
                 );
-                if off.checked_add(len).is_none_or(|e| e > pool.len() as u64) {
+                // 字符串 (off, len) 为绝对文件偏移（I-2 同规则），必须落在池内。
+                let end = off.checked_add(len).ok_or(IndexError::OffsetOutOfBounds)?;
+                if off < u64::from(self.header.str_off)
+                    || end > u64::from(self.header.str_off) + u64::from(self.header.str_len)
+                {
                     return Err(IndexError::OffsetOutOfBounds);
                 }
             }
@@ -377,12 +380,13 @@ fn entry_at<'f>(file: &'f [u8], header: &IndexHeader, i: usize) -> Option<FontEn
     }
     let base = HEADER_LEN + i * ENTRY_LEN;
     let e = file.get(base..base + ENTRY_LEN)?;
-    let (so, sl_) = (header.str_off as usize, header.str_len as usize);
-    let pool = &file[so..so + sl_];
+    let so = header.str_off as usize;
+    let pool = &file[so..so + header.str_len as usize];
+    // 字符串 (off, len) 为绝对文件偏移（I-2 同规则）；校验已由 parse 保证落在池内。
     let sl = |o: usize| -> (&'f [u8], u32, u32) {
         let off = rd4(e, o).unwrap_or(0) as usize;
         let len = rd4(e, o + 4).unwrap_or(0) as usize;
-        (&pool[off..off + len], off as u32, len as u32)
+        (&pool[off - so..off - so + len], off as u32, len as u32)
     };
     let (path, _, _) = sl(0);
     let (family, _, _) = sl(8);
@@ -404,16 +408,16 @@ fn entry_at<'f>(file: &'f [u8], header: &IndexHeader, i: usize) -> Option<FontEn
     })
 }
 
-/// 目录指纹解码核心（共用）。
+/// 目录指纹解码核心（共用；路径 (off, len) 为绝对文件偏移）。
 fn dirfp_at<'f>(file: &'f [u8], header: &IndexHeader, i: usize) -> Option<DirFingerprint<'f>> {
     let base = header.dirfp_off as usize + i * DIRFP_LEN;
     let f = file.get(base..base + DIRFP_LEN)?;
-    let (so, sl_) = (header.str_off as usize, header.str_len as usize);
-    let pool = &file[so..so + sl_];
+    let so = header.str_off as usize;
+    let pool = &file[so..so + header.str_len as usize];
     let off = rd4(f, 0)? as usize;
     let len = usize::from(rd2(f, 4)?);
     Some(DirFingerprint {
-        path: &pool[off..off + len],
+        path: &pool[off - so..off - so + len],
         mtime_ns: rd8(f, 8)? as i64,
         ino: rd8(f, 16)?,
     })
@@ -740,6 +744,456 @@ pub fn write_index(
     out
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustybuzz::ttf_parser;
+
+    /// 手算 §7 身份（与 `refresh_identity` 同式），用于对拍写侧结果。
+    fn manual_identity(entries: &[(&[u8], u16)]) -> u64 {
+        let mut h = FNV_OFFSET;
+        for (bytes, ci) in entries {
+            for &b in *bytes {
+                h ^= u64::from(b);
+                h = h.wrapping_mul(FNV_PRIME);
+            }
+            h ^= u64::from(*ci);
+            h = h.wrapping_mul(FNV_PRIME);
+        }
+        h
+    }
+
+    /// 三条目小栈（e3 与 e1 共享同一覆盖切片 → 写侧必须去重）。
+    fn small_stack() -> (Vec<IndexEntrySpec<'static>>, Vec<&'static [u8]>, Vec<u8>) {
+        static COV_A: [(u32, u32); 2] = [(65, 90), (0x4E00, 0x9FA5)];
+        static COV_B: [(u32, u32); 1] = [(32, 126)];
+        let entries = vec![
+            IndexEntrySpec {
+                path: "/f/A.ttf",
+                family: "AA",
+                collection_index: 0,
+                weight: 400,
+                slant: 0,
+                flags: 0,
+                ttc_faces: 1,
+                coverage: &COV_A,
+                wght_min: 0.0,
+                wght_max: 0.0,
+                mtime_ns: 111,
+            },
+            IndexEntrySpec {
+                path: "/f/B.otf",
+                family: "BB",
+                collection_index: 2,
+                weight: 700,
+                slant: 1,
+                flags: 0b110,
+                ttc_faces: 3,
+                coverage: &COV_B,
+                wght_min: 0.0,
+                wght_max: 0.0,
+                mtime_ns: 222,
+            },
+            IndexEntrySpec {
+                path: "/f/C-VF.ttf",
+                family: "CC",
+                collection_index: 0,
+                weight: 800,
+                slant: 0,
+                flags: 0b001,
+                ttc_faces: 1,
+                coverage: &COV_A,
+                wght_min: 300.0,
+                wght_max: 800.0,
+                mtime_ns: 333,
+            },
+        ];
+        let bytes: Vec<&'static [u8]> =
+            vec![b"FONTBYTES-AAAA-01".as_slice(), b"FONTBYTES-BBB-02", b"FONTBYTES-CCC-03"];
+        let dirfps = vec![
+            DirFpSpec { path: "/d2", mtime_ns: 0, ino: 0 },
+            DirFpSpec { path: "/d1", mtime_ns: 5, ino: 6 },
+        ];
+        let file = write_index(&entries, &bytes, &dirfps, 42, 7, 0b11);
+        (entries, bytes, file)
+    }
+
+    #[test]
+    fn roundtrip_synthetic_stack() {
+        let (entries, bytes, file) = small_stack();
+        let idx = Index::parse(&file).expect("合法索引必须可解析");
+        let h = idx.header();
+        assert_eq!(h.font_count, 3);
+        assert_eq!(h.policy_ver, POLICY_VERSION);
+        assert_eq!(h.generation, 42);
+        assert_eq!(h.built_unix_ns, 7);
+        assert_eq!(h.source_mask, 0b11);
+        // 条目字段全量往返
+        let e0 = idx.entry(0).unwrap();
+        assert_eq!(e0.path, entries[0].path.as_bytes());
+        assert_eq!(e0.path_str().as_deref(), Some("/f/A.ttf"));
+        assert_eq!(e0.family_str().as_deref(), Some("AA"));
+        assert_eq!(e0.collection_index, 0);
+        assert_eq!(e0.weight, 400);
+        assert_eq!(e0.slant, 0);
+        assert_eq!(e0.flags, 0);
+        assert_eq!(e0.file_size, 17);
+        assert_eq!(e0.mtime_ns, 111);
+        assert_eq!(e0.content_hash, fnv1a64(bytes[0]));
+        let e2 = idx.entry(2).unwrap();
+        assert_eq!(e2.wght_min, 300.0);
+        assert_eq!(e2.wght_max, 800.0);
+        assert_eq!(e2.flags & 1, 1);
+        // e3 与 e1 覆盖同字节 → 同 cov_off（规格 §5 共享）；覆盖段只存一份
+        assert_eq!(e2.cov_off, e0.cov_off);
+        assert_eq!(h.cov_len as usize, 3 * COV_REC);
+        // 覆盖查询点检
+        let cov = idx.coverage(0).unwrap();
+        assert!(cov.has('A') && cov.has('Z'));
+        assert!(!cov.has('['));
+        assert!(cov.has('\u{4E00}') && cov.has('\u{9FA5}'));
+        assert!(!cov.has('\u{9FA6}'));
+        // 指纹：写侧排序（输入 /d2 在前），哨兵语义往返
+        let fps: Vec<_> = idx.dirfps().collect();
+        assert_eq!(fps.len(), 2);
+        assert_eq!(fps[0].path, b"/d1");
+        assert_eq!((fps[0].mtime_ns, fps[0].ino), (5, 6));
+        assert!(fps[1].is_absent_sentinel());
+        // 身份：写侧 = 手算 §7
+        let refs: Vec<(&[u8], u16)> = entries.iter().zip(&bytes).map(|(e, b)| (*b, e.collection_index)).collect();
+        assert_eq!(h.stack_identity, manual_identity(&refs));
+        assert_eq!(h.checksum, fnv1a64(&file[HEADER_LEN..]));
+    }
+
+    // ---- 损坏拒绝（验收 4）：每个变体只改一处；除纯内容破坏外不改校验和，
+    // 让 parse 按固定次序命中各自的错误变体（结构检查在前、checksum 最后）。
+
+    fn patch16(f: &mut Vec<u8>, off: usize, v: u16) {
+        f[off..off + 2].copy_from_slice(&v.to_le_bytes());
+    }
+
+    fn patch32(f: &mut Vec<u8>, off: usize, v: u32) {
+        f[off..off + 4].copy_from_slice(&v.to_le_bytes());
+    }
+
+    fn patch64(f: &mut Vec<u8>, off: usize, v: u64) {
+        f[off..off + 8].copy_from_slice(&v.to_le_bytes());
+    }
+
+    /// 把校验和重算成当前正文（测「结构字段合法但内容违规」类变体用）。
+    fn recheck(f: &mut Vec<u8>) {
+        patch64(f, 72, fnv1a64(&f[HEADER_LEN..]));
+    }
+
+    #[test]
+    fn corrupted_inputs_rejected_without_panic() {
+        let (_, _, file) = small_stack();
+        let cov_rec0 = |f: &[u8]| {
+            // 覆盖段基址（紧跟池）；从头部读，别在测试里复算布局。
+            let cov_off = u32::from_le_bytes(f[28..32].try_into().unwrap()) as usize;
+            (cov_off, u32::from_le_bytes(f[cov_off..cov_off + 4].try_into().unwrap()))
+        };
+        let cases: Vec<(&str, Box<dyn Fn(&mut Vec<u8>)>, IndexError)> = vec![
+            ("magic", Box::new(|f| f[0] = b'X'), IndexError::Magic),
+            ("abi", Box::new(|f| patch16(f, 4, 2)), IndexError::Abi(2)),
+            ("policy_ver", Box::new(|f| patch32(f, 80, 9)), IndexError::PolicyVer(9)),
+            ("header_len", Box::new(|f| patch32(f, 8, 100)), IndexError::HeaderLen(100)),
+            ("flags", Box::new(|f| patch16(f, 6, 3)), IndexError::Flags(3)),
+            ("reserved", Box::new(|f| f[84] = 1), IndexError::Reserved),
+            ("font_count", Box::new(|f| patch32(f, 16, 5000)), IndexError::FontCount(5000)),
+            ("body_len", Box::new(|f| patch32(f, 12, 7)), IndexError::BodyLen(7)),
+            ("str_oob", Box::new(|f| patch32(f, 20, 0xFFFF_F000)), IndexError::OffsetOutOfBounds),
+            ("cov_oob", Box::new(|f| patch32(f, 28, 0xFFFF_F000)), IndexError::OffsetOutOfBounds),
+            ("dirfp_oob", Box::new(|f| patch32(f, 64, 0xFFFF_F000)), IndexError::Dirfp),
+            (
+                "dirfp_count",
+                Box::new(|f| {
+                    patch16(f, 68, 65);
+                    recheck(f);
+                }),
+                IndexError::Dirfp,
+            ),
+            (
+                "dirfp_pad0",
+                Box::new(|f| {
+                    let off = u32::from_le_bytes(f[64..68].try_into().unwrap()) as usize;
+                    patch16(f, off + 6, 1);
+                    recheck(f);
+                }),
+                IndexError::Dirfp,
+            ),
+            (
+                "entry_cov_oob",
+                Box::new(|f| patch32(f, HEADER_LEN + 24, 0xFFFF_F000)),
+                IndexError::CovRanges(0),
+            ),
+            (
+                "cov_unsorted",
+                Box::new(move |f| {
+                    let (off, s0) = cov_rec0(f);
+                    // (65,90),(0x4E00,..) → 倒序写第一对
+                    patch32(f, off, 0x4E00);
+                    patch32(f, off + 8, s0);
+                    recheck(f);
+                }),
+                IndexError::CovRanges(0),
+            ),
+            ("checksum", Box::new(|f| patch64(f, 72, !f[72] as u64)), IndexError::Checksum(0, 0)),
+        ];
+        let mut table = String::from("变体 → 错误变体\n");
+        for (name, mutate, want) in &cases {
+            let mut f = file.clone();
+            mutate(&mut f);
+            let got = match Index::parse(&f) {
+                Ok(_) => panic!("变体 {name} 必须被拒绝"),
+                Err(e) => e,
+            };
+            // checksum 变体比对错误类别（存储值不同不算差异）
+            let class_match = matches!(
+                (&got, want),
+                (IndexError::Checksum(..), IndexError::Checksum(..))
+            ) || got == *want;
+            assert!(class_match, "变体 {name}: 期望 {want:?} 实得 {got:?}");
+            table.push_str(&format!("{name} → {got:?}\n"));
+        }
+        // 截断两档
+        for len in [8usize, 95] {
+            let got = Index::parse(&file[..len]).unwrap_err();
+            assert_eq!(got, IndexError::Truncated, "截断到 {len} B");
+            table.push_str(&format!("truncated_{len} → {got:?}\n"));
+        }
+        eprintln!("{table}");
+        assert!(cases.len() + 2 >= 10, "损坏变体必须 ≥ 10");
+    }
+
+    // ---- 真机栈（验收 2/3）：Debian 判门机与本机同有 NotoSansCJK TTC。
+    // 缺字体 = 失败并打印原因，跳过不算通过（任务书原文）。
+
+    const NOTO_REG: &str = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc";
+    const NOTO_BOLD: &str = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc";
+    /// 与 harness `platform.rs::SC_TAG` 同值（canvas 不依赖 harness，测试内自持）。
+    const SC_TAG: &str = "SC";
+
+    fn deterministic_3000() -> Vec<char> {
+        let mut cps: Vec<char> = [0x20u32, 0x7E, 0xA0, 0x2022, 0x3000, 0x4E00, 0x9FA5, 0xE000,
+            0xE01EF, 0x1F600, 0xFFFD, 0x10FFFF]
+            .iter()
+            .filter_map(|&cp| char::from_u32(cp))
+            .collect();
+        let mut x: u64 = 0x20261031;
+        while cps.len() < 3000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let cp = 0x20u32 + (x % (0x10FFFF - 0x20)) as u32;
+            if let Some(c) = char::from_u32(cp) {
+                if !cps.contains(&c) {
+                    cps.push(c);
+                }
+            }
+        }
+        cps
+    }
+
+    fn real_face(path: &'static str) -> (u32, ttf_parser::Face<'static>) {
+        let bytes = std::fs::read(path)
+            .unwrap_or_else(|e| panic!("缺真机字体 {path}: {e}（验收门要求真机栈，不跳过）"));
+        let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+        let ci = crate::text::collection_index_matching(bytes, SC_TAG)
+            .unwrap_or_else(|| panic!("{path} 未找到含 {SC_TAG} 的字面"));
+        let face =
+            ttf_parser::Face::parse(bytes, ci).unwrap_or_else(|e| panic!("{path} 解析失败: {e:?}"));
+        (ci, face)
+    }
+
+    /// 真机两字面栈：Regular → Bold（栈序 = 回退链序）。
+    fn real_stack_entries() -> (Vec<IndexEntrySpec<'static>>, Vec<&'static [u8]>) {
+        let (reg_ci, reg_face) = real_face(NOTO_REG);
+        let (bold_ci, bold_face) = real_face(NOTO_BOLD);
+        let cov_of = |face: &ttf_parser::Face<'_>| {
+            crate::text::CoverageTable::from_face(face).ranges().to_vec()
+        };
+        let cov_reg: &'static [(u32, u32)] = Box::leak(cov_of(&reg_face).into_boxed_slice());
+        let cov_bold: &'static [(u32, u32)] = Box::leak(cov_of(&bold_face).into_boxed_slice());
+        let e0 = IndexEntrySpec {
+            path: NOTO_REG,
+            family: "",
+            collection_index: reg_ci as u16,
+            weight: reg_face.weight().to_number(),
+            slant: u8::from(reg_face.is_italic()),
+            flags: 0b010 | 0b100, // TTC + 已校验
+            ttc_faces: 1,
+            coverage: cov_reg,
+            wght_min: 0.0,
+            wght_max: 0.0,
+            mtime_ns: 0,
+        };
+        let e1 = IndexEntrySpec {
+            path: NOTO_BOLD,
+            family: "",
+            collection_index: bold_ci as u16,
+            weight: bold_face.weight().to_number(),
+            slant: u8::from(bold_face.is_italic()),
+            flags: 0b010 | 0b100,
+            ttc_faces: 1,
+            coverage: cov_bold,
+            wght_min: 0.0,
+            wght_max: 0.0,
+            mtime_ns: 0,
+        };
+        let leak = |p: &str| {
+            let b = std::fs::read(p).unwrap_or_else(|e| panic!("缺真机字体 {p}: {e}"));
+            Box::leak(b.into_boxed_slice()) as &'static [u8]
+        };
+        (vec![e0, e1], vec![leak(NOTO_REG), leak(NOTO_BOLD)])
+    }
+
+    #[test]
+    fn real_stack_coverage_3000_bidirectional() {
+        let (entries, bytes) = real_stack_entries();
+        let file = write_index(&entries, &bytes, &[], 1, 0, 0b0011);
+        let idx = Index::parse(&file).expect("真机栈索引必须可解析");
+        let cps = deterministic_3000();
+        for (i, entry) in entries.iter().enumerate() {
+            let face = ttf_parser::Face::parse(bytes[i], u32::from(entry.collection_index))
+                .expect("真机字面必可解析");
+            let local = crate::text::CoverageTable::from_face(&face);
+            let disk = idx.coverage(i).unwrap();
+            let mut bad: Vec<(char, bool, bool)> = Vec::new();
+            for &c in &cps {
+                let a = disk.has(c);
+                let b = face.glyph_index(c).is_some();
+                if a != b {
+                    bad.push((c, a, b));
+                }
+                assert_eq!(a, local.has(c), "磁盘覆盖与 A1b 本地表分歧 @ {c:?}");
+            }
+            assert!(
+                bad.is_empty(),
+                "字面 {i} 双向不等 {} 点（前 20）：{:?}",
+                bad.len(),
+                bad.iter().take(20).collect::<Vec<_>>()
+            );
+        }
+        eprintln!("3000 码点 × {} 字面：index.has ↔ glyph_index 双向相等", entries.len());
+    }
+
+    #[test]
+    fn real_stack_identity_matches_text_engine() {
+        let (entries, bytes) = real_stack_entries();
+        let file = write_index(&entries, &bytes, &[], 1, 0, 0b0011);
+        let header = *Index::parse(&file).expect("真机栈索引必须可解析").header();
+        let primary = crate::text::FontSource {
+            path: std::path::PathBuf::from(NOTO_REG),
+            collection_tag: Some(SC_TAG),
+        };
+        let extra = [crate::text::FontSource {
+            path: std::path::PathBuf::from(NOTO_BOLD),
+            collection_tag: Some(SC_TAG),
+        }];
+        let engine = crate::text::TextEngine::load_stack(&primary, &extra)
+            .expect("真机栈必须可加载");
+        eprintln!(
+            "identity: index={:#018x} engine={:#018x} font_count={}",
+            header.stack_identity,
+            engine.identity(),
+            header.font_count
+        );
+        assert_eq!(header.stack_identity, engine.identity(), "索引身份必须与 TextEngine 相等");
+        assert_eq!(header.font_count, u32::try_from(engine.font_count()).unwrap());
+    }
+
+    // ---- F7/I-6：可变字体 7 实例条目共享同一份文件字节与同一 cmap。
+
+    #[test]
+    fn vf_seven_instances_share_coverage_and_identity_repeats_bytes() {
+        static COV: [(u32, u32); 2] = [(65, 90), (0x4E00, 0x9FA5)];
+        const VFB: &[u8] = b"VF-FILE-BYTES";
+        let weights = [300u16, 400, 350, 500, 600, 700, 800];
+        let entries: Vec<IndexEntrySpec<'_>> = weights
+            .iter()
+            .map(|&w| IndexEntrySpec {
+                path: "/v/VF.ttf",
+                family: "VF",
+                collection_index: 0,
+                weight: w,
+                slant: 0,
+                flags: 0b001,
+                ttc_faces: 1,
+                coverage: &COV,
+                wght_min: 300.0,
+                wght_max: 800.0,
+                mtime_ns: 9,
+            })
+            .collect();
+        let bytes: Vec<&[u8]> = vec![VFB; 7];
+        let file = write_index(&entries, &bytes, &[], 1, 0, 0b1);
+        let idx = Index::parse(&file).expect("VF 栈索引必须可解析");
+        assert_eq!(idx.header().font_count, 7);
+        let offs: Vec<u32> = idx.entries().map(|e| e.cov_off).collect();
+        assert!(offs.iter().all(|&o| o == offs[0]), "7 实例必须同 cov_off");
+        assert_eq!(idx.header().cov_len as usize, COV.len() * COV_REC, "覆盖段只存一份");
+        let refs: Vec<(&[u8], u16)> = vec![(VFB, 0); 7];
+        assert_eq!(idx.header().stack_identity, manual_identity(&refs), "同一份字节按条目重复喂 7 次");
+    }
+
+    #[test]
+    fn writer_sorts_and_dedupes_dirfps() {
+        static COV: [(u32, u32); 1] = [(32, 126)];
+        let entries = [IndexEntrySpec {
+            path: "/f/A.ttf",
+            family: "A",
+            collection_index: 0,
+            weight: 400,
+            slant: 0,
+            flags: 0,
+            ttc_faces: 1,
+            coverage: &COV,
+            wght_min: 0.0,
+            wght_max: 0.0,
+            mtime_ns: 1,
+        }];
+        let bytes = [b"A".as_slice()];
+        // 输入乱序 + 重复路径：写侧必须排序 + 去重（严格升序是读侧硬校验）。
+        let dirfps = [
+            DirFpSpec { path: "/z", mtime_ns: 1, ino: 1 },
+            DirFpSpec { path: "/a", mtime_ns: 2, ino: 2 },
+            DirFpSpec { path: "/z", mtime_ns: 1, ino: 1 },
+        ];
+        let file = write_index(&entries, &bytes, &dirfps, 0, 0, 0);
+        let idx = Index::parse(&file).expect("排序去重后必须可解析");
+        let paths: Vec<&[u8]> = idx.dirfps().map(|d| d.path).collect();
+        assert_eq!(paths, vec![b"/a".as_slice(), b"/z".as_slice()]);
+    }
+
+    /// 任意字节不 panic（验收 4 的反面）：随机长度随机内容 + 合法索引逐字节翻转。
+    #[test]
+    fn parse_never_panics_on_arbitrary_bytes() {
+        // 1) 纯随机字节
+        let mut x: u64 = 0xDEADBEEF;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for len in 0..600usize {
+            let buf: Vec<u8> = (0..len).map(|_| rnd() as u8).collect();
+            let _ = Index::parse(&buf); // Ok/Err 皆可，绝不 panic
+        }
+        // 2) 合法索引逐字节翻转：结构变体命中各自 Err，内容变体命中 Checksum
+        let (_, _, file) = small_stack();
+        for i in 0..file.len() {
+            let mut f = file.clone();
+            f[i] ^= 0xA5;
+            let _ = Index::parse(&f);
+        }
+        // 3) 尾部截断全程
+        for len in 0..file.len() {
+            let _ = Index::parse(&file[..len]);
+        }
+    }
+
 impl<'a> CoverageRanges<'a> {
     pub fn len(&self) -> usize {
         self.recs.len() / COV_REC
@@ -770,3 +1224,4 @@ impl<'a> CoverageRanges<'a> {
     }
 }
 
+}
