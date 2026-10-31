@@ -799,6 +799,17 @@ pub fn wght_axis(bytes: &[u8], collection_index: u32) -> Option<(f32, f32)> {
     })
 }
 
+/// 链模型单字面装配（集成裁决 2026-10-31）：按 `FontSource.collection_tag` 解析字面
+/// 下标——与 `text::faces_from_source` 同语义（`collection_tag.and_then(matching).unwrap_or(0)`，
+/// 标签未命中静默回落 0），并产出 A1b 同源构建信息。解析失败 → `None`。
+pub fn face_build_tagged(bytes: &[u8], collection_tag: Option<&str>) -> Option<(u32, FaceBuild)> {
+    let ci = match collection_tag {
+        None => 0,
+        Some(tag) => crate::text::collection_index_matching(bytes, tag).unwrap_or(0),
+    };
+    Some((ci, face_build(bytes, ci)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
