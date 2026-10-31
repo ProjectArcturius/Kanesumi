@@ -15,6 +15,8 @@
 
 use std::fmt;
 
+use rustybuzz::ttf_parser;
+
 /// magic：`"KFSX"`。
 const MAGIC: [u8; 4] = *b"KFSX";
 /// abi v1：结构布局变化才升（F1 端序 / 偏移基准等落在 abi 内）。
@@ -744,10 +746,62 @@ pub fn write_index(
     out
 }
 
+// ---- 构建器助手（A3.1）：供 `ether-font-index` 扫描装配。只加公开函数，
+// 不动格式（A3.0 已签）与 `text.rs` / harness（A/C 边界）。覆盖区段一律经
+// A1b 同一 `CoverageTable::from_face` 产出，外部拿不到第二套 cmap 枚举入口。
+
+/// 可变字体实例化档（与 `text::WEIGHT_INSTANCES` × `weight_target` 同表同序）。
+/// 任何调整必须 bump [`POLICY_VERSION`]——F8/B3 组装策略纪律。
+pub const WEIGHT_INSTANCES_TARGETS: [u16; 7] = [300, 400, 350, 500, 600, 700, 800];
+
+/// 单字面构建信息（字段语义同 [`IndexEntrySpec`]）。
+pub struct FaceBuild {
+    /// A1b 同源覆盖区段。
+    pub coverage: Vec<(u32, u32)>,
+    /// OS/2 usWeightClass。
+    pub weight: u16,
+    /// 0=upright、1=italic、2=oblique。
+    pub slant: u8,
+    /// 族名（name ID 16 优先、1 次之；都没有 = 空串）。
+    pub family: String,
+}
+
+/// 解析一个字面并产出写侧装配信息。任何解析失败 → `None`（不 panic）。
+pub fn face_build(bytes: &[u8], collection_index: u32) -> Option<FaceBuild> {
+    let face = ttf_parser::Face::parse(bytes, collection_index).ok()?;
+    let mut fam1 = None;
+    let mut fam16 = None;
+    for n in face.names() {
+        match n.name_id {
+            ttf_parser::name_id::FAMILY if fam1.is_none() => fam1 = n.to_string(),
+            ttf_parser::name_id::TYPOGRAPHIC_FAMILY if fam16.is_none() => fam16 = n.to_string(),
+            _ => {}
+        }
+    }
+    Some(FaceBuild {
+        coverage: crate::text::CoverageTable::from_face(&face).ranges().to_vec(),
+        weight: face.weight().to_number(),
+        slant: u8::from(face.is_italic()),
+        family: fam16.or(fam1).unwrap_or_default(),
+    })
+}
+
+/// 字体文件内的字面总数（非集合 = 1；垃圾字节同样按 1，交由 [`face_build`] 拒绝）。
+pub fn faces_in_file(bytes: &[u8]) -> u32 {
+    ttf_parser::fonts_in_collection(bytes).unwrap_or(1)
+}
+
+/// 可变字体 `wght` 轴范围（无轴 / 解析失败 = `None`）。
+pub fn wght_axis(bytes: &[u8], collection_index: u32) -> Option<(f32, f32)> {
+    let face = ttf_parser::Face::parse(bytes, collection_index).ok()?;
+    face.variation_axes().into_iter().find_map(|a| {
+        (a.tag == ttf_parser::Tag::from_bytes(b"wght")).then_some((a.min_value, a.max_value))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustybuzz::ttf_parser;
 
     /// 手算 §7 身份（与 `refresh_identity` 同式），用于对拍写侧结果。
     fn manual_identity(entries: &[(&[u8], u16)]) -> u64 {
@@ -1194,6 +1248,29 @@ mod tests {
         }
     }
 
+    /// A3.1 构建器助手：真机字面可构建、越界字面与垃圾字节被拒；
+    /// 覆盖查询方法在 lib 构建（非 test）下存在——A3.0 曾把 impl 误嵌 tests 内，此处校正。
+    #[test]
+    fn face_build_on_real_font_rejects_garbage() {
+        let b = std::fs::read("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc")
+            .expect("缺真机字体（构建器门要求真机栈）");
+        let faces = faces_in_file(&b);
+        assert!(faces > 1, "TTC 字面数必须 > 1");
+        let fb = face_build(&b, 0).expect("字面 0 必可构建");
+        assert!(!fb.coverage.is_empty());
+        assert!((100..=900).contains(&fb.weight));
+        assert_eq!(fb.slant, 0);
+        assert!(!fb.family.is_empty(), "Noto 必有族名");
+        assert!(face_build(&b, faces + 5).is_none(), "越界字面必须 None");
+        assert!(face_build(b"garbage-bytes", 0).is_none());
+        assert_eq!(faces_in_file(b"garbage-bytes"), 1);
+        assert!(wght_axis(&b, 0).is_none(), "静态 TTC 无 wght 轴");
+        assert_eq!(WEIGHT_INSTANCES_TARGETS.len(), 7);
+        assert_eq!(WEIGHT_INSTANCES_TARGETS[0], 300);
+        assert_eq!(WEIGHT_INSTANCES_TARGETS[6], 800);
+    }
+}
+
 impl<'a> CoverageRanges<'a> {
     pub fn len(&self) -> usize {
         self.recs.len() / COV_REC
@@ -1224,4 +1301,3 @@ impl<'a> CoverageRanges<'a> {
     }
 }
 
-}
