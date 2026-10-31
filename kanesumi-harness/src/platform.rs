@@ -630,7 +630,36 @@ fn weight_candidates(weight: &str) -> Vec<kanesumi_canvas::text::FontSource> {
     .collect()
 }
 
-/// 查找字体来源：KANESUMI_TEST_FONT → Ether 正体（思源黑体 / Noto CJK SC）→ CJK → 常见拉丁。
+/// A3.1 会话字体索引前置查（fonts-v1.idx）。仅 `KANESUMI_FONT_INDEX=1` 启用；
+/// 索引缺失 / 损坏（含 abi、policy_ver、checksum、越界——读侧拒绝表全量）/ 目录指纹
+/// 不符（任一指纹目录不在场——mtime/ino 重算属失效流程，A3.1 不接线，只做保守在场判定）
+/// → 返回 None，调用方完全走现有回退链。绝不 panic（错误全捕获）、绝不阻塞（只 stat+读文件）。
+/// 索引条目序 = 回退链序（FONT_INDEX_FORMAT §7），取第一个字体文件在场的条目；
+/// TTC 条目（collection_index>0）沿用现有回退链语义配 SC_TAG（链内 TTC 全为 CJK SC 用法）。
+fn find_font_source_via_index() -> Option<kanesumi_canvas::text::FontSource> {
+    if std::env::var("KANESUMI_FONT_INDEX").ok().as_deref() != Some("1") {
+        return None;
+    }
+    let path = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(|d| std::path::PathBuf::from(d).join("kanesumi").join("fonts-v1.idx"))?;
+    let idx = kanesumi_canvas::font_index::OwnedIndex::open(&path).ok()?;
+    for fp in idx.dirfps() {
+        let dir = std::str::from_utf8(fp.path).ok()?;
+        if !std::path::Path::new(dir).is_dir() {
+            return None;
+        }
+    }
+    for e in idx.entries() {
+        let p = std::path::PathBuf::from(std::str::from_utf8(e.path).ok()?);
+        if p.exists() {
+            let collection_tag = if e.collection_index > 0 { SC_TAG } else { None };
+            return Some(kanesumi_canvas::text::FontSource { path: p, collection_tag });
+        }
+    }
+    None
+}
+
+/// 查找字体来源：KANESUMI_TEST_FONT → [A3.1 会话索引（仅 env 开）] → Ether 正体（思源黑体 / Noto CJK SC）→ CJK → 常见拉丁。
 /// 中文/日文/韩文须 CJK 字体（DejaVu/Liberation 无 CJK 字形，会渲染为方框）。
 pub fn find_font_source() -> Option<kanesumi_canvas::text::FontSource> {
     use kanesumi_canvas::text::FontSource;
@@ -639,6 +668,9 @@ pub fn find_font_source() -> Option<kanesumi_canvas::text::FontSource> {
         if p.exists() {
             return Some(FontSource { path: p, collection_tag: None });
         }
+    }
+    if let Some(s) = find_font_source_via_index() {
+        return Some(s);
     }
     regular_candidates().into_iter().find(|s| s.path.exists())
 }
@@ -5600,4 +5632,96 @@ mod tests {
         assert_eq!(repeat_trace_len("private"), None);
         assert_eq!(repeat_trace_len("a中文"), None);
     }
+
+/// A3.1 四场景单函数顺序执行（cargo test 并行下避免 env 竞争；结束恢复现场）。
+/// 覆盖：env 关=旧行为（索引被无视）、索引缺失回退、损坏回退（含 abi/policy/checksum
+/// 全由读侧拒绝表覆盖）、目录指纹不符回退、env 开且索引有效走索引。
+/// 夹具：find_font_source 只查 exists，字体文件可为任意字节；A3.0 写侧纯函数构造索引。
+#[test]
+fn font_index_env_gate_and_fallbacks() {
+    use kanesumi_canvas::font_index::{write_index, DirFpSpec, IndexEntrySpec};
+
+    let tmp = std::env::temp_dir().join(format!(
+        "kmi-fontidx-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(tmp.join("kanesumi")).unwrap();
+    std::fs::create_dir_all(tmp.join("fonts")).unwrap();
+    let font_path = tmp.join("fonts/TestFont.ttf");
+    std::fs::write(&font_path, b"fake font bytes for exists() only").unwrap();
+    let idx_path = tmp.join("kanesumi/fonts-v1.idx");
+    let font_str = font_path.to_string_lossy().into_owned();
+    let dir_str = tmp.join("fonts").to_string_lossy().into_owned();
+
+    let write_idx = |dir_ok: bool| {
+        let gone_dir = tmp.join("gone-dir").to_string_lossy().into_owned();
+        let fp_dir = if dir_ok { dir_str.as_str() } else { gone_dir.as_str() };
+        let entry = IndexEntrySpec {
+            path: font_str.as_str(),
+            family: "Test",
+            collection_index: 0,
+            weight: 400,
+            slant: 0,
+            flags: 0,
+            ttc_faces: 0,
+            coverage: &[(0x41, 0x5A)],
+            wght_min: 400.0,
+            wght_max: 400.0,
+            mtime_ns: 0,
+        };
+        let bytes = [b"fake font bytes for exists() only".as_slice()];
+        let dirfps = [DirFpSpec { path: fp_dir, mtime_ns: 0, ino: 0 }];
+        write_index(&[entry], &bytes, &dirfps, 0, 0, 0)
+    };
+    let candidates_result = || regular_candidates().into_iter().find(|s| s.path.exists());
+
+    let saved = (
+        std::env::var("KANESUMI_FONT_INDEX").ok(),
+        std::env::var("XDG_RUNTIME_DIR").ok(),
+        std::env::var("KANESUMI_TEST_FONT").ok(),
+    );
+    unsafe { std::env::remove_var("KANESUMI_TEST_FONT"); }
+    unsafe { std::env::set_var("XDG_RUNTIME_DIR", &tmp); }
+    let baseline = candidates_result().expect("本机须有回退链字体（DejaVu 等）");
+
+    // 场景 1：env 关 + 索引在场 → 索引被无视，结果 = 现有回退链（旧行为）。
+    std::fs::write(&idx_path, write_idx(true)).unwrap();
+    unsafe { std::env::remove_var("KANESUMI_FONT_INDEX"); }
+    assert_eq!(find_font_source().map(|s| s.path), Some(baseline.path.clone()),
+        "env 关必须走旧行为（现有回退链）");
+
+    // 场景 2：env 开 + 索引缺失 → 回退。
+    std::fs::remove_file(&idx_path).unwrap();
+    unsafe { std::env::set_var("KANESUMI_FONT_INDEX", "1"); }
+    assert_eq!(find_font_source().map(|s| s.path), Some(baseline.path.clone()),
+        "索引缺失必须回退现有路径");
+
+    // 场景 3：env 开 + 索引损坏（垃圾字节，读侧拒绝表整份作废）→ 回退。
+    std::fs::write(&idx_path, b"\x00garbage-not-an-index\xff").unwrap();
+    assert_eq!(find_font_source().map(|s| s.path), Some(baseline.path.clone()),
+        "索引损坏必须回退现有路径");
+
+    // 场景 4：env 开 + 目录指纹不符（指纹目录不在场）→ 回退。
+    std::fs::write(&idx_path, write_idx(false)).unwrap();
+    assert_eq!(find_font_source().map(|s| s.path), Some(baseline.path.clone()),
+        "目录指纹不符必须回退现有路径");
+
+    // 场景 5：env 开 + 索引有效 → 走索引（返回条目路径，非 TTC 条目 tag=None）。
+    std::fs::write(&idx_path, write_idx(true)).unwrap();
+    let hit = find_font_source().expect("索引有效时必须命中");
+    assert_eq!(hit.path, font_path, "有效索引必须返回条目路径");
+    assert_eq!(hit.collection_tag, None, "非 TTC 条目不带 collection_tag");
+
+    unsafe {
+        std::env::remove_var("KANESUMI_FONT_INDEX");
+        match saved.0 { Some(v) => std::env::set_var("KANESUMI_FONT_INDEX", v), None => {} }
+        match saved.1 { Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v), None => std::env::remove_var("XDG_RUNTIME_DIR") }
+        match saved.2 { Some(v) => std::env::set_var("KANESUMI_TEST_FONT", v), None => {} }
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
 }
