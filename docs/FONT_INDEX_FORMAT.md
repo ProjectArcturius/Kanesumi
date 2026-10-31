@@ -115,7 +115,7 @@
 ```text
 h = 0xcbf29ce484222325
 for e in entries:                      # 栈序 = 条目序 = 回退链序
-    for b in bytes(e.path):            # VF 文件字节按条目重复喂 7 次
+    for b in read_bytes(e.path):       # e.path 指向的字体文件全部字节（非路径字符串字节）；VF 同文件按条目重复喂 7 次
         h ^= b; h = h.wrapping_mul(0x100000001b3)
     h ^= e.collection_index as u64; h = h.wrapping_mul(0x100000001b3)
 ```
