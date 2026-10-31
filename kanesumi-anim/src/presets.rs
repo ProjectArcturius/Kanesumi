@@ -1,4 +1,4 @@
-use sokuou::{EasingMode, MetroAnim, SpringAnim, UwpEasing, apply_uwp};
+use sokuou::{Easing, EasingMode, MetroAnim, Progress, SpringAnim, UwpEasing};
 
 /// Kanesumi 标准动画时长：0.25s。轻盈短促、60Hz 友好。参 PLAN.md §2。
 pub const METRO_STANDARD_DURATION: f64 = 0.25;
@@ -48,12 +48,12 @@ pub const DURATION_EXPANDER_COLLAPSE: f64 = 0.167;
 /// Expander chevron 旋转时长。UWP 0.1s（Checked DoubleAnimation）。参 CONTROL_SPEC §13。
 pub const DURATION_EXPANDER_CHEVRON: f64 = 0.1;
 
-// ── 弹层轨道：单一状态机 + 可换向曲线（RM-1028-5 缺陷 1/2 的修法载体） ──────────
+// ── 弹层轨道：换向入口 + 可换向曲线（RM-1028-5 缺陷 1/2 的修法载体） ──────────
 
 /// 弹层轨道曲线。正典 Bézier（sheet_*，§200 / SDK 26100 generic.xaml CommandBarFlyout
-/// 模板）由本仓 `easings::bezier_y` 求值；Sokuou UWP 缓动变体（overlay_*）直接走
-/// `apply_uwp`，与旧 `MetroAnim` 路径逐位一致。`UwpEasing` 本期没有 Bézier 变体
-/// （sokuou 不在本件白名单内），故曲线两态由本仓承载。
+/// 模板）与 Sokuou UWP 缓动变体（overlay_*）两态；经 `Easing::Bezier` / `Easing::Uwp`
+/// 交给 `Progress` 求值（求值器已回流 `sokuou::bezier_y`，Uwp 转发 `apply_uwp`
+/// 与旧 `MetroAnim` 路径逐位一致）。本枚举只描述曲线，不持有推进状态。
 #[derive(Debug, Clone, PartialEq)]
 pub enum TrackCurve {
     /// cubic-bezier(x1,y1,x2,y2)。
@@ -62,89 +62,68 @@ pub enum TrackCurve {
     Uwp(UwpEasing, EasingMode),
 }
 
-/// 弹层开合轨道：持有**一条**状态机，换向只 `retune_to`（时长 + 曲线）+ `set_target`，
+impl From<TrackCurve> for Easing {
+    fn from(curve: TrackCurve) -> Self {
+        match curve {
+            TrackCurve::Bezier(c) => Easing::Bezier(c),
+            TrackCurve::Uwp(v, m) => Easing::Uwp(v, m),
+        }
+    }
+}
+
+/// 弹层开合轨道：换向只 `retune_to`（时长 + 曲线）+ `set_target`，
 /// 从当前呈现值接续、可中断（参 compositor/docs/AnimationRules.md）。
 ///
-/// 字段与推进语义对齐 Sokuou `MetroAnim`（参 sokuou/src/uwp.rs `MetroAnim::update`），
-/// 仅曲线求值扩展为正典 Bézier / UWP 变体两态 —— 不是新动画原语，是预设层的换曲线入口。
+/// 时间推进**唯一**由 Sokuou `Progress` 承担（SOKUOU §Ⅲ：progress 唯一真源）；
+/// 本结构不再复制 value/target/from/elapsed/duration 等推进状态，
+/// 只是预设层的换向入口：曲线两态（正典 Bézier / UWP 变体）经
+/// [`TrackCurve`] → `sokuou::Easing`（`Easing::Bezier` / `Easing::Uwp`）交给 Progress。
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlyoutTrack {
-    value: f64,
-    target: f64,
-    from: f64,
-    elapsed: f64,
-    duration: f64,
-    curve: TrackCurve,
+    progress: Progress,
 }
 
 impl FlyoutTrack {
     pub fn new(duration: f64, curve: TrackCurve) -> Self {
         Self {
-            value: 0.0,
-            target: 0.0,
-            from: 0.0,
-            elapsed: duration, // 初始为稳态（同 MetroAnim::new）
-            duration,
-            curve,
+            progress: Progress::with_easing(duration, curve.into()),
         }
     }
 
     /// 按预设原型换时长与曲线，不动进度状态。**换向前调用，随后应 `set_target`**：
-    /// `elapsed` 归零即重新计段，呈现值由 `set_target` 从当前值接续（不重建对象，
+    /// 重新计段的 `elapsed` 归零由 `set_target` 承担，呈现值从当前值接续（不重建对象，
     /// 修复「每次 open/close 重建轨道 → 从 0 重跑」，参 RM-1028-5 缺陷 1）。
     pub fn retune_to(&mut self, preset: &FlyoutTrack) {
-        self.duration = preset.duration;
-        self.curve = preset.curve.clone();
-        self.elapsed = 0.0;
+        self.progress.set_duration(preset.progress.duration());
+        self.progress.set_easing(preset.progress.easing());
     }
 
-    /// 设定新目标，从当前 value 开始过渡（可中断）。语义同 Sokuou `MetroAnim::set_target`。
+    /// 设定新目标，从当前 value 开始过渡（可中断）。语义同 Sokuou `Progress::set_target`。
     pub fn set_target(&mut self, target: f64) {
-        if self.is_steady() && (target - self.target).abs() < f64::EPSILON {
-            return;
-        }
-        self.from = self.value;
-        self.target = target;
-        self.elapsed = 0.0;
+        self.progress.set_target(target);
     }
 
     /// 立即跳到指定值，无过渡。
     pub fn jump_to(&mut self, value: f64) {
-        self.value = value;
-        self.target = value;
-        self.from = value;
-        self.elapsed = self.duration;
+        self.progress.jump_to(value);
     }
 
-    /// 每帧推进。`dt` 单位为秒。
+    /// 每帧推进。`dt` 单位为秒。推进唯一走 Sokuou `Progress::update`，不另立状态机。
     pub fn update(&mut self, dt: f64) {
-        if self.is_steady() {
-            return;
-        }
-        self.elapsed = (self.elapsed + dt).min(self.duration);
-        let t = if self.duration > 0.0 {
-            (self.elapsed / self.duration).clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
-        let eased = match &self.curve {
-            TrackCurve::Bezier(c) => crate::easings::bezier_y(*c, t as f32) as f64,
-            TrackCurve::Uwp(v, m) => apply_uwp(t, v, *m),
-        };
-        self.value = self.from + (self.target - self.from) * eased;
+        self.progress.update(dt);
     }
 
     pub fn value(&self) -> f64 {
-        self.value
+        self.progress.value()
     }
 
     pub fn target(&self) -> f64 {
-        self.target
+        self.progress.target()
     }
 
     /// 已到达目标时为 true。
     pub fn is_steady(&self) -> bool {
-        self.elapsed >= self.duration
+        self.progress.is_steady()
     }
 }
 
