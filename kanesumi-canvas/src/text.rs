@@ -347,6 +347,7 @@ pub struct FontSource {
 pub(crate) fn collection_index_matching(bytes: &[u8], tag: &str) -> Option<u32> {
     let count = ttf_parser::fonts_in_collection(bytes).unwrap_or(1);
     (0..count).find(|&i| {
+        count_face_parse();
         ttf_parser::Face::parse(bytes, i).is_ok_and(|face| {
             face.names().into_iter().any(|name| {
                 (name.name_id == 1 || name.name_id == 16)
@@ -471,6 +472,8 @@ struct FontFace {
     wght: Option<f32>,
     /// 加载时建好的码点覆盖表（cmap 压缩区间）；同源多字重实例共享同一份。
     coverage: Arc<CoverageTable>,
+    /// A3.3：开关开时惰性解析的索引覆盖区段；None = 无索引 / 无效 / 未命中 → 回落内存表。
+    index_cov: std::sync::OnceLock<Option<crate::font_index::CoverageRanges<'static>>>,
 }
 
 /// 字形度量（像素）。语义与原 fontdue `Metrics` 一致，外壳按它摆放位图：
@@ -527,6 +530,7 @@ impl FontFace {
     /// 字形只在第一次被画时解码（外壳另有位图缓存），常驻内存 ≈ 字体文件本身。
     fn from_bytes(bytes: FontBytes, collection_index: u32) -> Result<Self, TextLoadError> {
         let data: &[u8] = bytes.as_ref().as_ref();
+        count_face_parse();
         let face = ttf_parser::Face::parse(data, collection_index)
             .map_err(|_| TextLoadError::Parse("字体无法解析"))?;
         let units_per_em = f32::from(face.units_per_em().max(1));
@@ -541,6 +545,7 @@ impl FontFace {
             weight,
             wght: None,
             coverage,
+            index_cov: std::sync::OnceLock::new(),
         })
     }
 
@@ -567,6 +572,7 @@ impl FontFace {
     /// §2-1）：塑形覆盖查询每字素走一次本函数，是该计数的主体。
     fn parser(&self) -> ttf_parser::Face<'_> {
         count_parse_rebuild();
+        count_face_parse();
         let mut face = ttf_parser::Face::parse(self.data(), self.collection_index)
             .expect("字体已在加载时验证");
         if let Some(value) = self.wght {
@@ -575,10 +581,26 @@ impl FontFace {
         face
     }
 
-    /// 是否含该码点字形：查加载时建好的覆盖表（w1029 §2-2），不再逐字重建解析面。
-    /// 可变字体实例与基条共享同一表（`wght` 轴不影响 cmap）。
+    /// 是否含该码点字形：开关开且本字面对上索引条目 → 查索引覆盖区段
+    /// （`CoverageRanges::has`）；否则查加载时建好的内存覆盖表（w1029 §2-2）。
+    /// 可变字体实例与基条共享同一表 / 同一条目（`wght` 轴不影响 cmap）。
     fn has_glyph(&self, c: char) -> bool {
+        let idx = if font_index_switch() { shared_index() } else { None };
+        if let Some(r) = self.index_entry_coverage(idx) {
+            return r.has(c);
+        }
         self.coverage.has(c)
+    }
+
+    /// 本字面在索引中的覆盖区段（`content_hash` + `collection_index` 匹配，OnceLock 缓存；
+    /// 首次对整份字体字节做一次 FNV，与 E04 全栈身份哈希同量级）。
+    fn index_entry_coverage(
+        &self,
+        idx: Option<&'static crate::font_index::OwnedIndex>,
+    ) -> Option<crate::font_index::CoverageRanges<'static>> {
+        *self.index_cov.get_or_init(|| {
+            index_entry_coverage_in(idx?, self.data(), self.collection_index)
+        })
     }
 
     /// 字素（所有字符）是否都在本字面内。空白与缺省可忽略字符视为覆盖。
@@ -1208,10 +1230,44 @@ impl TextEngine {
 
     fn font_for_grapheme(&self, grapheme: &str) -> usize {
         count_font_for_grapheme();
+        let idx = if font_index_switch() { shared_index() } else { None };
+        self.font_for_grapheme_with(idx, grapheme)
+    }
+
+    /// 纯核：`idx` 为 Some 且对本栈有效（栈身份相等 + 条目数与字面数一致）→ 覆盖查询
+    /// 走索引区段（`CoverageRanges::has`，与内存表同语义、A3.0 3000 码点对拍锁定）；
+    /// 否则完全走旧路径（加载时内存覆盖表）。两路对无覆盖字素都回落 0。
+    /// 测试经此注入 A3.0 写侧夹具（进程级 OnceLock 开关不可按用例隔离，环境只在外壳读）。
+    fn font_for_grapheme_with(
+        &self,
+        idx: Option<&crate::font_index::OwnedIndex>,
+        grapheme: &str,
+    ) -> usize {
+        if self.index_valid(idx) {
+            return (0..self.fonts.len())
+                .find(|&i| {
+                    index_ranges_in(idx, i).is_some_and(|r| {
+                        grapheme.chars()
+                            .all(|c| is_default_ignorable(c) || c.is_whitespace() || r.has(c))
+                    })
+                })
+                .unwrap_or(0);
+        }
         self.fonts
             .iter()
             .position(|font| font.grapheme_covered(grapheme))
             .unwrap_or(0)
+    }
+
+    /// 索引对本栈有效：栈身份相等（A3.0 锁定同算法）且条目数与字面数一致。
+    fn index_valid(&self, idx: Option<&crate::font_index::OwnedIndex>) -> bool {
+        match idx {
+            Some(idx) => {
+                idx.header().stack_identity == self.identity()
+                    && usize::try_from(idx.header().font_count).ok() == Some(self.fonts.len())
+            }
+            None => false,
+        }
     }
 
     /// 按请求字重选字面下标（T7 + §112）：可变字体精确实例 → 任何精确 →
@@ -1924,14 +1980,67 @@ fn is_default_ignorable(c: char) -> bool {
     matches!(c, '\u{200C}' | '\u{200D}' | '\u{FE0E}' | '\u{FE0F}')
 }
 
+// ---- A3.3 开关：`KANESUMI_FONT_INDEX=1`（与 KANESUMI_TEXT_DIAG 同口径读取一次）----
+
+/// A3.3 开关：`KANESUMI_FONT_INDEX=1`（进程内一次性读取，与 KANESUMI_TEXT_DIAG 同口径）。
+fn font_index_switch() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("KANESUMI_FONT_INDEX").is_some_and(|v| v == "1"))
+}
+
+/// 进程内唯一索引句柄：开关关 → None；开但文件缺失 / 损坏 → None（完全走旧路径）。
+/// 路径沿用设计稿 A3.1 口径：`$XDG_RUNTIME_DIR/kanesumi/fonts-v1.idx`（未设即无索引）。
+/// 缺失 / 损坏静默回退（kanesumi-canvas 无日志依赖，不新增）；细节归 A3.2 失效件。
+fn shared_index() -> Option<&'static crate::font_index::OwnedIndex> {
+    static IDX: std::sync::OnceLock<Option<crate::font_index::OwnedIndex>> =
+        std::sync::OnceLock::new();
+    IDX.get_or_init(|| {
+        if !font_index_switch() {
+            return None;
+        }
+        let dir = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty())?;
+        let path = std::path::PathBuf::from(dir).join("kanesumi").join("fonts-v1.idx");
+        crate::font_index::OwnedIndex::open(&path).ok()
+    })
+    .as_ref()
+}
+
+/// 条目 `i` 的覆盖区段（借用传入索引）。
+fn index_ranges_in<'i>(
+    idx: Option<&'i crate::font_index::OwnedIndex>,
+    i: usize,
+) -> Option<crate::font_index::CoverageRanges<'i>> {
+    let idx = idx?;
+    idx.coverage(i)
+}
+
+/// 自由函数（测试可注入非 `'static` 夹具）：按 `content_hash`（纯文件字节 FNV-1a）+
+/// `collection_index` 匹配索引条目，取其覆盖区段。
+fn index_entry_coverage_in<'i>(
+    idx: &'i crate::font_index::OwnedIndex,
+    data: &[u8],
+    collection_index: u32,
+) -> Option<crate::font_index::CoverageRanges<'i>> {
+    let hash = crate::font_index::fnv1a64(data);
+    (0..usize::try_from(idx.header().font_count).unwrap_or(0))
+        .filter_map(|i| idx.entry(i).map(|e| (i, e)))
+        .find(|(_, e)| {
+            e.content_hash == hash && u32::from(e.collection_index) == collection_index
+        })
+        .and_then(|(i, _)| idx.coverage(i))
+}
+
 // ---- 文本诊断计数（w1029 text-coverage-cache §2-1）----
 //
-// 缺省关闭：只有 `KANESUMI_TEXT_DIAG=1` 才计数、启动线程与落盘——
-// 每 10 s 一行追加到 `~/.local/state/ether/kanesumi-text.log`（XDG_STATE_HOME 可重定向），
-// 进程退出路径可调 [`text_diag_flush`] 立即补一行。零交互排障口径，参 AGENTS.md 铁律 3。
+// 缺省关闭：`KANESUMI_TEXT_DIAG=1` 或 A3.3 的 `KANESUMI_FONT_INDEX=1` 才计数、
+// 启动线程与落盘——每 10 s 一行追加到 `~/.local/state/ether/kanesumi-text.log`
+// （XDG_STATE_HOME 可重定向），进程退出路径可调 [`text_diag_flush`] 立即补一行。
+// 零交互排障口径，参 AGENTS.md 铁律 3。
 
 static FACE_PARSE_REBUILDS: AtomicU64 = AtomicU64::new(0);
 static FONT_FOR_GRAPHEME_CALLS: AtomicU64 = AtomicU64::new(0);
+/// 每进程 `Face::parse` 调用总数（A3.3 诊断：族名探测 / 加载校验 / 解析面重建三处）。
+static FACE_PARSE_CALLS: AtomicU64 = AtomicU64::new(0);
 
 fn count_parse_rebuild() {
     if !diag_enabled() {
@@ -1949,9 +2058,21 @@ fn count_font_for_grapheme() {
     diag_spawn_writer();
 }
 
+/// `Face::parse` 计数无条件（原子加远小于解析本身），打印由 [`diag_enabled`] 门控。
+fn count_face_parse() {
+    FACE_PARSE_CALLS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// `Face::parse` 调用总数快照（A3.3；测试与基准取轮内增量）。
+pub fn face_parse_calls() -> u64 {
+    FACE_PARSE_CALLS.load(Ordering::Relaxed)
+}
+
 fn diag_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("KANESUMI_TEXT_DIAG").is_some_and(|v| v == "1"))
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("KANESUMI_TEXT_DIAG").is_some_and(|v| v == "1") || font_index_switch()
+    })
 }
 
 /// (解析面重建次数，`font_for_grapheme` 调用次数) 累计快照，供基准取轮内增量。
@@ -1973,8 +2094,9 @@ fn diag_log_path() -> Option<PathBuf> {
 fn diag_write_line() {
     let Some(path) = diag_log_path() else { return };
     let (parses, ffg) = text_diag_snapshot();
+    let calls = face_parse_calls();
     let line = format!(
-        "kanesumi-text-diag face_parse_rebuilds={parses} font_for_grapheme_calls={ffg}\n"
+        "kanesumi-text-diag face_parse_rebuilds={parses} font_for_grapheme_calls={ffg} face_parse_calls={calls}\n"
     );
     let Some(dir) = path.parent() else { return };
     if std::fs::create_dir_all(dir).is_err() {
@@ -2908,4 +3030,129 @@ fn system_font_chain_matches_candidates() {
         }
     }
 }
+    // ---- A3.3：索引覆盖查询（KANESUMI_FONT_INDEX=1；夹具经 A3.0 写侧构造）----
+
+    /// 判门机 / 本云同款 Noto CJK TTC（真机栈）；无则按既有约定跳过。
+    fn cjk_font() -> Option<std::path::PathBuf> {
+        [
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        ]
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .find(|p| p.exists())
+    }
+
+    /// 夹具：A3.0 写侧 `write_index` 构造引擎真实栈的索引 → 临时文件 →
+    /// `OwnedIndex::open`（走真实读路径）。`perturb` 翻转首字面首字节，
+    /// 使 `stack_identity` 必然与栈失配（有效性闸的判别样本）。
+    fn fixture_index(engine: &TextEngine, perturb: bool) -> Option<crate::font_index::OwnedIndex> {
+        let mut specs = Vec::new();
+        let mut covs = Vec::new();
+        let mut bytes: Vec<Vec<u8>> = Vec::new();
+        for font in engine.fonts.iter() {
+            let face = ttf_parser::Face::parse(font.data(), font.collection_index).ok()?;
+            covs.push(CoverageTable::from_face(&face));
+            let mut data = font.data().to_vec();
+            if perturb {
+                data[0] ^= 0xA5;
+            }
+            bytes.push(data);
+        }
+        for (font, cov) in engine.fonts.iter().zip(covs.iter()) {
+            specs.push(crate::font_index::IndexEntrySpec {
+                path: "fixture.ttf",
+                family: "Fixture",
+                collection_index: u16::try_from(font.collection_index).ok()?,
+                weight: font.weight,
+                slant: 0,
+                flags: 0b100,
+                ttc_faces: 1,
+                coverage: cov.ranges(),
+                wght_min: 0.0,
+                wght_max: 0.0,
+                mtime_ns: 0,
+            });
+        }
+        let refs: Vec<&[u8]> = bytes.iter().map(|b| b.as_slice()).collect();
+        let file = crate::font_index::write_index(&specs, &refs, &[], 1, 0, 0b0011);
+        let dir = std::env::temp_dir().join(format!("a33-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok()?;
+        let path = dir.join("fonts-v1.idx");
+        std::fs::write(&path, &file).ok()?;
+        let idx = crate::font_index::OwnedIndex::open(&path).ok();
+        std::fs::remove_file(&path).ok();
+        idx
+    }
+
+    const PARAGRAPH: &str = "字体索引覆盖查询：Ether 123abc，常用汉字集。";
+
+    /// A3.3 门：索引开且有效 → 同一 CJK 段落逐字素选择与旧路径一致，
+    /// 且覆盖查询全程 `Face::parse` 计数增量 = 0。
+    #[test]
+    fn indexed_cjk_paragraph_zero_face_parse_and_matches_legacy() {
+        let Some(path) = cjk_font() else { return };
+        let engine = TextEngine::load(path).expect("Noto CJK 必须可加载");
+        let Some(idx) = fixture_index(&engine, false) else {
+            panic!("夹具索引必须可构造");
+        };
+        assert_eq!(
+            idx.header().stack_identity,
+            engine.identity(),
+            "前置：夹具身份必须与栈一致"
+        );
+        let before = face_parse_calls();
+        for g in PARAGRAPH.graphemes(true) {
+            assert_eq!(
+                engine.font_for_grapheme_with(Some(&idx), g),
+                engine.font_for_grapheme_with(None, g),
+                "字素 {g:?} 索引选择必须与旧路径一致"
+            );
+        }
+        assert_eq!(face_parse_calls() - before, 0, "索引覆盖查询不得触发 Face::parse");
+    }
+
+    /// A3.3 门：身份失配的索引必须整体作废 → 完全走旧路径（逐字素一致）。
+    #[test]
+    fn identity_mismatched_index_falls_back_to_legacy_per_grapheme() {
+        let Some(path) = cjk_font() else { return };
+        let engine = TextEngine::load(path).expect("Noto CJK 必须可加载");
+        let Some(bad) = fixture_index(&engine, true) else {
+            panic!("扰动夹具必须可构造");
+        };
+        assert_ne!(
+            bad.header().stack_identity,
+            engine.identity(),
+            "前置：扰动后身份必须失配"
+        );
+        for g in PARAGRAPH.graphemes(true) {
+            assert_eq!(
+                engine.font_for_grapheme_with(Some(&bad), g),
+                engine.font_for_grapheme_with(None, g),
+                "失配索引必须回落旧路径"
+            );
+        }
+    }
+
+    /// has_glyph 索引区段与内存覆盖表同值（CJK 覆盖 / 拉丁 / PUA 缺字 / 空白）。
+    #[test]
+    fn has_glyph_via_index_matches_legacy_table() {
+        let Some(path) = cjk_font() else { return };
+        let engine = TextEngine::load(path).expect("Noto CJK 必须可加载");
+        let Some(idx) = fixture_index(&engine, false) else {
+            panic!("夹具索引必须可构造");
+        };
+        for font in engine.fonts.iter() {
+            let r = index_entry_coverage_in(&idx, font.data(), font.collection_index)
+                .expect("字面必须命中索引条目");
+            for &cp in &[0x4E00_u32, 0x9FA5, 0x0041, 0x00E9, 0xE000, 0x1F600, 0x0020] {
+                let Some(c) = char::from_u32(cp) else { continue };
+                assert_eq!(
+                    r.has(c),
+                    font.has_glyph(c),
+                    "U+{cp:04X} 索引与内存覆盖表必须同值"
+                );
+            }
+        }
+    }
 }
