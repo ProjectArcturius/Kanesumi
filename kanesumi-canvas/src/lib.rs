@@ -7,6 +7,7 @@
 
 pub mod acrylic;
 pub mod decode;
+pub mod font_index;
 pub mod geometry;
 pub mod glyph;
 pub mod icon;
