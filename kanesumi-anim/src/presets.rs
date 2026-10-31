@@ -8,11 +8,10 @@ pub const METRO_STANDARD_DURATION: f64 = 0.25;
 /// 这是 UWP 快照里唯一一组显式 flyout 开合时长（`FlyoutPresenter`/`MenuFlyoutPresenter`
 /// 模板零 Storyboard，开关全靠系统预置）。
 pub const DURATION_SHEET_APPEAR: f64 = 0.30;
-/// 面板 / 弹窗收起时长。同源 = **150ms**、`KeySpline="0.7,0 1,0.5"`（同文件 L22110-22118）。
-///
-/// ⚠ 旧值 0.26 无依据（既不对应开合比，也不对应任何一手值），已按 150ms 更正 ——
-/// UWP 的收起比展开快一倍，是「短促收敛」的量级来源。
-pub const DURATION_SHEET_DISMISS: f64 = 0.15;
+/// 面板 / 弹窗收起时长。依据裁定 §247（用户 2026-10-29 决定保留 0.26，明确不跟
+/// SDK 26100 CommandBarFlyout ClosingStoryboard 的 150ms）；SDK 一手值保留作对照
+///（150ms、`KeySpline="0.7,0 1,0.5"`，同文件 L22110-22118）。
+pub const DURATION_SHEET_DISMISS: f64 = 0.26;
 /// 快速切换（列表高亮、播放/暂停图标）。对齐 **WinUI**（非 UWP）`ControlFastAnimationDuration`
 /// = 167ms。
 ///
@@ -176,7 +175,7 @@ impl MetroPresets {
         )
     }
 
-    /// 面板收起：150ms 正典关曲线 cubic-bezier(0.7,0,1,0.5)（§200；同模板
+    /// 面板收起：260ms（裁定 §247）正典关曲线 cubic-bezier(0.7,0,1,0.5)（§200；同模板
     /// ClosingStoryboard）。旧值 Quadratic/EaseOut 与声明不符，已改 Bézier；时长不改。
     pub fn sheet_dismiss() -> FlyoutTrack {
         FlyoutTrack::new(
@@ -316,14 +315,14 @@ mod tests {
         assert!(DURATION_QUICK_SWITCH < DURATION_COVER_FADE);
     }
 
-    /// 弹窗开合时长与一手源逐字对齐：开 300ms / 关 150ms。
+    /// 弹窗开合时长与裁定对齐：开 300ms（SDK 一手源）+ 关 260ms（裁定 §247）。
     #[test]
-    fn sheet_open_close_match_commandbarflyout_storyboards() {
+    fn sheet_open_close_match_adjudicated_durations() {
         assert_eq!(DURATION_SHEET_APPEAR, 0.30);
-        assert_eq!(DURATION_SHEET_DISMISS, 0.15);
+        assert_eq!(DURATION_SHEET_DISMISS, 0.26);
         assert!(
-            (DURATION_SHEET_APPEAR / DURATION_SHEET_DISMISS - 2.0).abs() < 1e-9,
-            "UWP 收起恰为展开的一半时长"
+            (DURATION_SHEET_APPEAR / DURATION_SHEET_DISMISS - 300.0 / 260.0).abs() < 1e-9,
+            "开合比锁定裁定值 300/260（≈1.154:1，不再跟 SDK 150ms 的 2:1）"
         );
     }
 
