@@ -2010,6 +2010,90 @@ fn diag_spawn_writer() {
     });
 }
 
+// ---- 会话字体链唯一真源（A3 集成裁决 2026-10-31）----
+
+/// CJK 候选的 TTC 字面标签（与 harness `platform.rs::SC_TAG` 同值；A 线随后改为
+/// 调用本函数，标签表随之单源化）。
+const CHAIN_SC_TAG: Option<&str> = Some("SC");
+
+/// 主字面候选链（有序；与 harness `regular_candidates` 逐条一致——唯一真源落地期间
+/// 两表并存，改动必须双侧同步并 bump `font_index::POLICY_VERSION`）。
+const REGULAR_CANDIDATES: [(&str, Option<&str>); 12] = [
+    ("/usr/local/share/fonts/s/NotoSansSC-VF.ttf", None),
+    ("/usr/local/share/fonts/s/NotoSansCJK-VF.otf.ttc", CHAIN_SC_TAG),
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-VF.otf.ttc", CHAIN_SC_TAG),
+    ("/usr/share/fonts/noto-cjk/NotoSansCJK-VF.otf.ttc", CHAIN_SC_TAG),
+    ("/usr/local/share/fonts/s/SourceHanSansSC-Regular.otf", None),
+    ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", CHAIN_SC_TAG),
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", CHAIN_SC_TAG),
+    ("/usr/local/share/fonts/s/SourceHanSansTC_Regular.otf", None),
+    ("/usr/local/share/fonts/s/SourceHanSansSC_Bold.otf", None),
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", None),
+    ("/usr/share/fonts/TTF/DejaVuSans.ttf", None),
+    ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", None),
+];
+
+/// 字重字面候选（Light / Medium / Bold 各自依序找首个存在；与 harness `weight_candidates` 一致）。
+fn chain_weight_candidates(weight: &str) -> Vec<FontSource> {
+    [
+        (format!("/usr/local/share/fonts/s/SourceHanSansSC-{weight}.otf"), None),
+        (format!("/usr/share/fonts/noto-cjk/NotoSansCJK-{weight}.ttc"), CHAIN_SC_TAG),
+        (format!("/usr/share/fonts/opentype/noto/NotoSansCJK-{weight}.ttc"), CHAIN_SC_TAG),
+    ]
+    .into_iter()
+    .map(|(path, tag)| FontSource { path: PathBuf::from(path), collection_tag: tag })
+    .collect()
+}
+
+/// 主字面之外的脚本回退（有序；与 harness `extra_sources` 的固定表一致）。
+const CHAIN_EXTRA_PATHS: [&str; 5] = [
+    "/usr/share/fonts/noto/NotoSansArabic-Regular.ttf",
+    "/usr/share/fonts/noto/NotoSansHebrew-Regular.ttf",
+    "/usr/share/fonts/noto/NotoSansSymbols2-Regular.ttf",
+    "/usr/share/fonts/TTF/NotoSansSymbols2-Regular.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+];
+
+/// 会话字体链：主字面 →（主字面非 VF 时的）Light/Medium/Bold → 脚本回退。
+/// 与 harness `find_font_source`（去掉 `KANESUMI_TEST_FONT` 旁路）+ `extra_sources(primary)`
+/// 语义完全一致：只含存在的路径、canonical 去重、**条目序 = 回退链序**。
+/// 索引构建器（`ether-font-index`）按本链枚举条目；harness 为第二消费方（A 线接线）。
+pub fn system_font_chain() -> Vec<FontSource> {
+    let Some(primary) = REGULAR_CANDIDATES
+        .iter()
+        .map(|(path, tag)| FontSource { path: PathBuf::from(path), collection_tag: *tag })
+        .find(|s| s.path.exists())
+    else {
+        return Vec::new();
+    };
+    let mut out = vec![primary.clone()];
+    let primary_is_vf = primary
+        .path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.contains("-VF"));
+    if !primary_is_vf {
+        for weight in ["Light", "Medium", "Bold"] {
+            if let Some(src) = chain_weight_candidates(weight).into_iter().find(|s| s.path.exists())
+            {
+                out.push(src);
+            }
+        }
+    }
+    for path in CHAIN_EXTRA_PATHS {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            out.push(FontSource { path, collection_tag: None });
+        }
+    }
+    // canonical 去重（与 `load_stack_with` 的 seen 语义一致；主字面排首位保序）。
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|s| {
+        seen.insert(s.path.canonicalize().unwrap_or_else(|_| s.path.clone()))
+    });
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2784,5 +2868,44 @@ fn find_ligature_font() -> Option<std::path::PathBuf> {
     .into_iter()
     .map(std::path::PathBuf::from)
     .find(|p| p.exists())
+}
+
+/// 会话字体链唯一真源（集成裁决 2026-10-31）：链非空、每条都存在、
+/// 主字面 == 主候选链首个存在项、canonical 无重复。
+#[test]
+fn system_font_chain_matches_candidates() {
+    let chain = system_font_chain();
+    assert!(!chain.is_empty(), "真机必有字体（链不得为空）");
+    let first = REGULAR_CANDIDATES
+        .iter()
+        .map(|(path, tag)| FontSource { path: PathBuf::from(path), collection_tag: *tag })
+        .find(|s| s.path.exists())
+        .expect("同上");
+    assert_eq!(chain[0].path, first.path, "主字面必须是首个存在候选");
+    assert_eq!(chain[0].collection_tag, first.collection_tag);
+    let mut seen = std::collections::HashSet::new();
+    for s in &chain {
+        assert!(s.path.exists(), "链只含存在路径: {}", s.path.display());
+        assert!(
+            seen.insert(s.path.canonicalize().unwrap_or_else(|_| s.path.clone())),
+            "canonical 重复: {}",
+            s.path.display()
+        );
+    }
+    // 主字面为 VF 时不得出现静态字重字面（语义与 extra_sources 一致）。
+    let primary_is_vf = chain[0]
+        .path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.contains("-VF"));
+    if primary_is_vf {
+        for s in &chain[1..] {
+            let n = s.path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            assert!(
+                !["Light", "Medium", "Bold"].iter().any(|w| n.contains(&format!("-{w}"))),
+                "VF 主字面时不得有静态字重字面: {n}"
+            );
+        }
+    }
 }
 }
