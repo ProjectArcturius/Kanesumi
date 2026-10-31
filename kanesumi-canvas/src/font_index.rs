@@ -574,6 +574,36 @@ pub struct CoverageRanges<'a> {
     recs: &'a [u8],
 }
 
+impl<'a> CoverageRanges<'a> {
+    pub fn len(&self) -> usize {
+        self.recs.len() / COV_REC
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.recs.is_empty()
+    }
+
+    /// 码点 `c` 是否落在任一区间（O(log n) 二分；与 `text::CoverageTable::has` 同语义）。
+    pub fn has(&self, c: char) -> bool {
+        let cp = u32::from(c);
+        let n = self.len();
+        let mut lo = 0usize;
+        let mut hi = n;
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if rd4(self.recs, mid * COV_REC).unwrap_or(u32::MAX) <= cp {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        if lo == 0 {
+            return false;
+        }
+        rd4(self.recs, (lo - 1) * COV_REC + 4).is_some_and(|end| end >= cp)
+    }
+}
+
 /// 写侧条目描述。`coverage` **必须**来自 `CoverageTable::from_face(..).ranges()`
 ///（A1b 同一建表函数；本模块不写第二套 cmap 枚举）。
 pub struct IndexEntrySpec<'a> {
@@ -1193,35 +1223,5 @@ mod tests {
             let _ = Index::parse(&file[..len]);
         }
     }
-
-impl<'a> CoverageRanges<'a> {
-    pub fn len(&self) -> usize {
-        self.recs.len() / COV_REC
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.recs.is_empty()
-    }
-
-    /// 码点 `c` 是否落在任一区间（O(log n) 二分；与 `text::CoverageTable::has` 同语义）。
-    pub fn has(&self, c: char) -> bool {
-        let cp = u32::from(c);
-        let n = self.len();
-        let mut lo = 0usize;
-        let mut hi = n;
-        while lo < hi {
-            let mid = (lo + hi) / 2;
-            if rd4(self.recs, mid * COV_REC).unwrap_or(u32::MAX) <= cp {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        }
-        if lo == 0 {
-            return false;
-        }
-        rd4(self.recs, (lo - 1) * COV_REC + 4).is_some_and(|end| end >= cp)
-    }
-}
 
 }
