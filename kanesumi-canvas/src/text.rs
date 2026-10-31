@@ -472,6 +472,8 @@ struct FontFace {
     wght: Option<f32>,
     /// 加载时建好的码点覆盖表（cmap 压缩区间）；同源多字重实例共享同一份。
     coverage: Arc<CoverageTable>,
+    /// A3.3：开关开时惰性解析的索引覆盖区段；None = 无索引 / 无效 / 未命中 → 回落内存表。
+    index_cov: std::sync::OnceLock<Option<crate::font_index::CoverageRanges<'static>>>,
 }
 
 /// 字形度量（像素）。语义与原 fontdue `Metrics` 一致，外壳按它摆放位图：
@@ -543,6 +545,7 @@ impl FontFace {
             weight,
             wght: None,
             coverage,
+            index_cov: std::sync::OnceLock::new(),
         })
     }
 
@@ -578,10 +581,26 @@ impl FontFace {
         face
     }
 
-    /// 是否含该码点字形：查加载时建好的覆盖表（w1029 §2-2），不再逐字重建解析面。
-    /// 可变字体实例与基条共享同一表（`wght` 轴不影响 cmap）。
+    /// 是否含该码点字形：开关开且本字面对上索引条目 → 查索引覆盖区段
+    /// （`CoverageRanges::has`）；否则查加载时建好的内存覆盖表（w1029 §2-2）。
+    /// 可变字体实例与基条共享同一表 / 同一条目（`wght` 轴不影响 cmap）。
     fn has_glyph(&self, c: char) -> bool {
+        let idx = if font_index_switch() { shared_index() } else { None };
+        if let Some(r) = self.index_entry_coverage(idx) {
+            return r.has(c);
+        }
         self.coverage.has(c)
+    }
+
+    /// 本字面在索引中的覆盖区段（`content_hash` + `collection_index` 匹配，OnceLock 缓存；
+    /// 首次对整份字体字节做一次 FNV，与 E04 全栈身份哈希同量级）。
+    fn index_entry_coverage(
+        &self,
+        idx: Option<&'static crate::font_index::OwnedIndex>,
+    ) -> Option<crate::font_index::CoverageRanges<'static>> {
+        *self.index_cov.get_or_init(|| {
+            index_entry_coverage_in(idx?, self.data(), self.collection_index)
+        })
     }
 
     /// 字素（所有字符）是否都在本字面内。空白与缺省可忽略字符视为覆盖。
@@ -1211,10 +1230,44 @@ impl TextEngine {
 
     fn font_for_grapheme(&self, grapheme: &str) -> usize {
         count_font_for_grapheme();
+        let idx = if font_index_switch() { shared_index() } else { None };
+        self.font_for_grapheme_with(idx, grapheme)
+    }
+
+    /// 纯核：`idx` 为 Some 且对本栈有效（栈身份相等 + 条目数与字面数一致）→ 覆盖查询
+    /// 走索引区段（`CoverageRanges::has`，与内存表同语义、A3.0 3000 码点对拍锁定）；
+    /// 否则完全走旧路径（加载时内存覆盖表）。两路对无覆盖字素都回落 0。
+    /// 测试经此注入 A3.0 写侧夹具（进程级 OnceLock 开关不可按用例隔离，环境只在外壳读）。
+    fn font_for_grapheme_with(
+        &self,
+        idx: Option<&crate::font_index::OwnedIndex>,
+        grapheme: &str,
+    ) -> usize {
+        if self.index_valid(idx) {
+            return (0..self.fonts.len())
+                .find(|&i| {
+                    index_ranges_in(idx, i).is_some_and(|r| {
+                        grapheme.chars()
+                            .all(|c| is_default_ignorable(c) || c.is_whitespace() || r.has(c))
+                    })
+                })
+                .unwrap_or(0);
+        }
         self.fonts
             .iter()
             .position(|font| font.grapheme_covered(grapheme))
             .unwrap_or(0)
+    }
+
+    /// 索引对本栈有效：栈身份相等（A3.0 锁定同算法）且条目数与字面数一致。
+    fn index_valid(&self, idx: Option<&crate::font_index::OwnedIndex>) -> bool {
+        match idx {
+            Some(idx) => {
+                idx.header().stack_identity == self.identity()
+                    && usize::try_from(idx.header().font_count).ok() == Some(self.fonts.len())
+            }
+            None => false,
+        }
     }
 
     /// 按请求字重选字面下标（T7 + §112）：可变字体精确实例 → 任何精确 →
@@ -1933,6 +1986,48 @@ fn is_default_ignorable(c: char) -> bool {
 fn font_index_switch() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var_os("KANESUMI_FONT_INDEX").is_some_and(|v| v == "1"))
+}
+
+/// 进程内唯一索引句柄：开关关 → None；开但文件缺失 / 损坏 → None（完全走旧路径）。
+/// 路径沿用设计稿 A3.1 口径：`$XDG_RUNTIME_DIR/kanesumi/fonts-v1.idx`（未设即无索引）。
+/// 缺失 / 损坏静默回退（kanesumi-canvas 无日志依赖，不新增）；细节归 A3.2 失效件。
+fn shared_index() -> Option<&'static crate::font_index::OwnedIndex> {
+    static IDX: std::sync::OnceLock<Option<crate::font_index::OwnedIndex>> =
+        std::sync::OnceLock::new();
+    IDX.get_or_init(|| {
+        if !font_index_switch() {
+            return None;
+        }
+        let dir = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty())?;
+        let path = std::path::PathBuf::from(dir).join("kanesumi").join("fonts-v1.idx");
+        crate::font_index::OwnedIndex::open(&path).ok()
+    })
+    .as_ref()
+}
+
+/// 条目 `i` 的覆盖区段（借用传入索引）。
+fn index_ranges_in<'i>(
+    idx: Option<&'i crate::font_index::OwnedIndex>,
+    i: usize,
+) -> Option<crate::font_index::CoverageRanges<'i>> {
+    let idx = idx?;
+    idx.coverage(i)
+}
+
+/// 自由函数（测试可注入非 `'static` 夹具）：按 `content_hash`（纯文件字节 FNV-1a）+
+/// `collection_index` 匹配索引条目，取其覆盖区段。
+fn index_entry_coverage_in<'i>(
+    idx: &'i crate::font_index::OwnedIndex,
+    data: &[u8],
+    collection_index: u32,
+) -> Option<crate::font_index::CoverageRanges<'i>> {
+    let hash = crate::font_index::fnv1a64(data);
+    (0..usize::try_from(idx.header().font_count).unwrap_or(0))
+        .filter_map(|i| idx.entry(i).map(|e| (i, e)))
+        .find(|(_, e)| {
+            e.content_hash == hash && u32::from(e.collection_index) == collection_index
+        })
+        .and_then(|(i, _)| idx.coverage(i))
 }
 
 // ---- 文本诊断计数（w1029 text-coverage-cache §2-1）----
