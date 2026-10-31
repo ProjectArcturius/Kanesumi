@@ -347,6 +347,7 @@ pub struct FontSource {
 pub(crate) fn collection_index_matching(bytes: &[u8], tag: &str) -> Option<u32> {
     let count = ttf_parser::fonts_in_collection(bytes).unwrap_or(1);
     (0..count).find(|&i| {
+        count_face_parse();
         ttf_parser::Face::parse(bytes, i).is_ok_and(|face| {
             face.names().into_iter().any(|name| {
                 (name.name_id == 1 || name.name_id == 16)
@@ -527,6 +528,7 @@ impl FontFace {
     /// 字形只在第一次被画时解码（外壳另有位图缓存），常驻内存 ≈ 字体文件本身。
     fn from_bytes(bytes: FontBytes, collection_index: u32) -> Result<Self, TextLoadError> {
         let data: &[u8] = bytes.as_ref().as_ref();
+        count_face_parse();
         let face = ttf_parser::Face::parse(data, collection_index)
             .map_err(|_| TextLoadError::Parse("字体无法解析"))?;
         let units_per_em = f32::from(face.units_per_em().max(1));
@@ -567,6 +569,7 @@ impl FontFace {
     /// §2-1）：塑形覆盖查询每字素走一次本函数，是该计数的主体。
     fn parser(&self) -> ttf_parser::Face<'_> {
         count_parse_rebuild();
+        count_face_parse();
         let mut face = ttf_parser::Face::parse(self.data(), self.collection_index)
             .expect("字体已在加载时验证");
         if let Some(value) = self.wght {
@@ -1924,14 +1927,25 @@ fn is_default_ignorable(c: char) -> bool {
     matches!(c, '\u{200C}' | '\u{200D}' | '\u{FE0E}' | '\u{FE0F}')
 }
 
+// ---- A3.3 开关：`KANESUMI_FONT_INDEX=1`（与 KANESUMI_TEXT_DIAG 同口径读取一次）----
+
+/// A3.3 开关：`KANESUMI_FONT_INDEX=1`（进程内一次性读取，与 KANESUMI_TEXT_DIAG 同口径）。
+fn font_index_switch() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("KANESUMI_FONT_INDEX").is_some_and(|v| v == "1"))
+}
+
 // ---- 文本诊断计数（w1029 text-coverage-cache §2-1）----
 //
-// 缺省关闭：只有 `KANESUMI_TEXT_DIAG=1` 才计数、启动线程与落盘——
-// 每 10 s 一行追加到 `~/.local/state/ether/kanesumi-text.log`（XDG_STATE_HOME 可重定向），
-// 进程退出路径可调 [`text_diag_flush`] 立即补一行。零交互排障口径，参 AGENTS.md 铁律 3。
+// 缺省关闭：`KANESUMI_TEXT_DIAG=1` 或 A3.3 的 `KANESUMI_FONT_INDEX=1` 才计数、
+// 启动线程与落盘——每 10 s 一行追加到 `~/.local/state/ether/kanesumi-text.log`
+// （XDG_STATE_HOME 可重定向），进程退出路径可调 [`text_diag_flush`] 立即补一行。
+// 零交互排障口径，参 AGENTS.md 铁律 3。
 
 static FACE_PARSE_REBUILDS: AtomicU64 = AtomicU64::new(0);
 static FONT_FOR_GRAPHEME_CALLS: AtomicU64 = AtomicU64::new(0);
+/// 每进程 `Face::parse` 调用总数（A3.3 诊断：族名探测 / 加载校验 / 解析面重建三处）。
+static FACE_PARSE_CALLS: AtomicU64 = AtomicU64::new(0);
 
 fn count_parse_rebuild() {
     if !diag_enabled() {
@@ -1949,9 +1963,21 @@ fn count_font_for_grapheme() {
     diag_spawn_writer();
 }
 
+/// `Face::parse` 计数无条件（原子加远小于解析本身），打印由 [`diag_enabled`] 门控。
+fn count_face_parse() {
+    FACE_PARSE_CALLS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// `Face::parse` 调用总数快照（A3.3；测试与基准取轮内增量）。
+pub fn face_parse_calls() -> u64 {
+    FACE_PARSE_CALLS.load(Ordering::Relaxed)
+}
+
 fn diag_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("KANESUMI_TEXT_DIAG").is_some_and(|v| v == "1"))
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("KANESUMI_TEXT_DIAG").is_some_and(|v| v == "1") || font_index_switch()
+    })
 }
 
 /// (解析面重建次数，`font_for_grapheme` 调用次数) 累计快照，供基准取轮内增量。
@@ -1973,8 +1999,9 @@ fn diag_log_path() -> Option<PathBuf> {
 fn diag_write_line() {
     let Some(path) = diag_log_path() else { return };
     let (parses, ffg) = text_diag_snapshot();
+    let calls = face_parse_calls();
     let line = format!(
-        "kanesumi-text-diag face_parse_rebuilds={parses} font_for_grapheme_calls={ffg}\n"
+        "kanesumi-text-diag face_parse_rebuilds={parses} font_for_grapheme_calls={ffg} face_parse_calls={calls}\n"
     );
     let Some(dir) = path.parent() else { return };
     if std::fs::create_dir_all(dir).is_err() {
