@@ -135,7 +135,7 @@ pub fn place_submenu(parent: Rect, panel_size: Size, screen: Rect, gap: f32) -> 
 
 /// 弹层状态机。参 CONTROL_SPEC §8/§9：
 /// - 遮罩淡入 0.383s / 淡出 0.216s（OverlayOpening/ClosingAnimation）；
-/// - 面板展开/收起 = `sheet_appear`(0.30s) / `sheet_dismiss`(0.15s)，正典 Bézier（§200）。
+/// - 面板展开/收起 = `sheet_appear`(0.30s) / `sheet_dismiss`(0.26s，裁定 §247)，正典 Bézier（§200）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PopupState {
     Closed,
@@ -189,7 +189,7 @@ impl PopupAnim {
         self.panel.set_target(1.0);
     }
 
-    /// 关闭：遮罩 0.216s 淡出 + 面板 0.15s 正典关曲线收起（可中断，从当前值接续）。
+    /// 关闭：遮罩 0.216s 淡出 + 面板 0.26s（裁定 §247）正典关曲线收起（可中断，从当前值接续）。
     pub fn close(&mut self) {
         if matches!(self.state, PopupState::Closing | PopupState::Closed) {
             return;
