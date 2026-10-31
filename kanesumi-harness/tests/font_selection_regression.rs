@@ -67,14 +67,15 @@ const TTC_CANDIDATES: &[&str] = &[
     "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc",
 ];
 
-/// TTC 集合面数（仅读 12 B 头：magic `ttcf` + 版本 + count，小端）。
+/// TTC 集合面数（仅读 12 B 头：magic `ttcf` + 版本 + count）。
+/// OpenType 规范整数一律**大端**（本文件首版误用小端，把 10 面读成 167772160）。
 /// 非集合或读不出 → None。count < 2 的「集合」无法构造选面回归。
 fn ttc_face_count(path: &Path) -> Option<u32> {
     let head = std::fs::read(path).ok()?;
     if head.len() < 12 || head[0..4] != *b"ttcf" {
         return None;
     }
-    Some(u32::from_le_bytes([head[8], head[9], head[10], head[11]]))
+    Some(u32::from_be_bytes([head[8], head[9], head[10], head[11]]))
 }
 
 /// 找第一个满足「存在 + 可加载 + 与主字面身份不同」的候选（真实身份判据）。
