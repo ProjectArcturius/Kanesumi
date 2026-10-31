@@ -5718,9 +5718,13 @@ fn font_index_env_gate_and_fallbacks() {
 
     unsafe {
         std::env::remove_var("KANESUMI_FONT_INDEX");
-        match saved.0 { Some(v) => std::env::set_var("KANESUMI_FONT_INDEX", v), None => {} }
-        match saved.1 { Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v), None => std::env::remove_var("XDG_RUNTIME_DIR") }
-        match saved.2 { Some(v) => std::env::set_var("KANESUMI_TEST_FONT", v), None => {} }
+        if let Some(v) = saved.0 { std::env::set_var("KANESUMI_FONT_INDEX", v); }
+        if let Some(v) = saved.1 {
+            std::env::set_var("XDG_RUNTIME_DIR", v);
+        } else {
+            std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+        if let Some(v) = saved.2 { std::env::set_var("KANESUMI_TEST_FONT", v); }
     }
     let _ = std::fs::remove_dir_all(&tmp);
 }
