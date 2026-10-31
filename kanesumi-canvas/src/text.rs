@@ -377,8 +377,10 @@ pub(crate) struct CoverageTable {
 }
 
 impl CoverageTable {
-    /// 从已解析面构建。只在加载时一次；字重实例条目经 `faces_from_source`
-    /// 克隆共享同一 `Arc`（`wght` 轴不影响 cmap）。
+    /// 从已解析面构建。A3.1 起**不再**在载入期无条件调用：索引条目按
+    /// `content_hash + collection_index` 命中时载入不建表，只有首次非索引用途
+    ///（索引未命中 / 诊断统计）才经 [`FontFace::coverage_table`] 建一次；
+    /// 字重实例条目经 `faces_from_source` 克隆共享同一份 `OnceLock`（`wght` 轴不影响 cmap）。
     ///
     /// 语义必须与 `Face::glyph_index`（旧 `has_glyph` 路径）严格同源：该函数按
     /// 「首个 Unicode 子表映射成功」判定，且格式层有段枚举之外的有效性过滤
@@ -410,6 +412,7 @@ impl CoverageTable {
                 _ => ranges.push((cp, cp)),
             }
         }
+        count_coverage_build();
         Self {
             ranges: ranges.into(),
             build_us: t.elapsed().as_micros(),
@@ -470,10 +473,17 @@ struct FontFace {
     /// 可变字体的 `wght` 轴坐标；`None` = 静态字面 / 不设轴（T7 原路径）。
     /// 塑形与光栅都据此把同一实例化面喂给 rustybuzz / ttf-parser，二者必须同值。
     wght: Option<f32>,
-    /// 加载时建好的码点覆盖表（cmap 压缩区间）；同源多字重实例共享同一份。
-    coverage: Arc<CoverageTable>,
-    /// A3.3：开关开时惰性解析的索引覆盖区段；None = 无索引 / 无效 / 未命中 → 回落内存表。
+    /// 码点覆盖表（cmap 压缩区间）。A3.1 惰性：索引命中时不建，首次非索引用途
+    ///（索引未命中 / 诊断统计）才建；同源多字重实例共享同一份 `Arc<OnceLock<..>>`。
+    coverage: Arc<std::sync::OnceLock<Arc<CoverageTable>>>,
+    /// A3.3/A3.1：开关开时解析的索引覆盖区段；`None` = 无索引 / 无效 / 未命中 → 回落内存表。
+    /// 载入期命中即由 [`TextEngine::refresh_identity`] 预置，运行期 `has_glyph` 不再复算
+    /// `content_hash`。
     index_cov: std::sync::OnceLock<Option<crate::font_index::CoverageRanges<'static>>>,
+    /// 本字面整份字节的 FNV-1a（与索引 `content_hash` 同算法）。A3.1 起在
+    /// [`TextEngine::refresh_identity`] 的身份遍历中顺带算出（同一趟内存访问），
+    /// 供载入期按 `content_hash + collection_index` 判命中；字重实例共享同一份（同字节）。
+    content_hash: Arc<std::sync::OnceLock<u64>>,
 }
 
 /// 字形度量（像素）。语义与原 fontdue `Metrics` 一致，外壳按它摆放位图：
@@ -529,6 +539,37 @@ impl FontFace {
     /// 现改为按需：塑形用 rustybuzz、光栅化用 ttf-parser 轮廓 + ab_glyph_rasterizer，
     /// 字形只在第一次被画时解码（外壳另有位图缓存），常驻内存 ≈ 字体文件本身。
     fn from_bytes(bytes: FontBytes, collection_index: u32) -> Result<Self, TextLoadError> {
+        // A3.1：索引存在时先不建覆盖表 —— 命中判定要 `content_hash`，而身份遍历
+        //（`refresh_identity`）本来就要读完整份字节；在那一趟里顺带算哈希后再决策，
+        // 避免为判命中再走一整趟。无索引 / 开关关 → `pending=false`，旧路径载入即建。
+        let pending = font_index_switch() && shared_index().is_some();
+        Self::load_validated(bytes, collection_index, pending)
+    }
+
+    /// 测试注入版：`idx` 可为非 `'static` 夹具（进程级开关不可按用例隔离）。
+    /// 命中谓词与载入期相同（`content_hash + collection_index`），但此处直接算完
+    ///（测试不经 [`TextEngine::refresh_identity`] 的身份遍历）；区段不缓存，
+    /// 由 [`Self::has_glyph_with`] 传入。
+    #[cfg(test)]
+    fn from_bytes_with_index(
+        bytes: FontBytes,
+        collection_index: u32,
+        idx: Option<&crate::font_index::OwnedIndex>,
+    ) -> Result<Self, TextLoadError> {
+        let hit = idx.is_some_and(|idx| {
+            index_entry_coverage_in(idx, bytes.as_ref().as_ref(), collection_index).is_some()
+        });
+        Self::load_validated(bytes, collection_index, hit)
+    }
+
+    /// 校验字面并装配。`skip_coverage = true` 时先不建覆盖表（A3.1 载入期命中待判），
+    /// 由 [`TextEngine::refresh_identity`] 在一趟身份遍历后决策；否则旧路径载入即建
+    ///（w1029 §2-2）。
+    fn load_validated(
+        bytes: FontBytes,
+        collection_index: u32,
+        skip_coverage: bool,
+    ) -> Result<Self, TextLoadError> {
         let data: &[u8] = bytes.as_ref().as_ref();
         count_face_parse();
         let face = ttf_parser::Face::parse(data, collection_index)
@@ -536,16 +577,53 @@ impl FontFace {
         let units_per_em = f32::from(face.units_per_em().max(1));
         let weight = face.weight().to_number();
         Face::from_slice(data, collection_index).ok_or(TextLoadError::Parse("字体面无法塑形"))?;
-        // 覆盖表只在加载时建一次（w1029 §2-2），换 `has_glyph` 查表不逐字重建解析面。
-        let coverage = Arc::new(CoverageTable::from_face(&face));
+        let coverage = std::sync::OnceLock::new();
+        if !skip_coverage {
+            let _ = coverage.set(Arc::new(CoverageTable::from_face(&face)));
+        }
         Ok(Self {
             bytes,
             collection_index,
             units_per_em,
             weight,
             wght: None,
-            coverage,
+            coverage: Arc::new(coverage),
             index_cov: std::sync::OnceLock::new(),
+            content_hash: Arc::new(std::sync::OnceLock::new()),
+        })
+    }
+
+    /// A3.1 载入期决策（`refresh_identity` 算完 `content_hash` 后调用）：命中的字面
+    /// 缓存索引区段、覆盖表保持未建；未命中则补建表，回到旧路径。
+    fn resolve_index_coverage(&self, idx: &'static crate::font_index::OwnedIndex) {
+        if self.coverage.get().is_some() || self.index_cov.get().is_some() {
+            return;
+        }
+        let Some(hash) = self.content_hash.get().copied() else {
+            return;
+        };
+        match index_entry_coverage_by_hash(idx, hash, self.collection_index) {
+            Some(ranges) => {
+                let _ = self.index_cov.set(Some(ranges));
+            }
+            None => {
+                // 未命中：补建内存表回旧路径，并把「无索引条目」一并缓存——
+                // 否则后续回落查询（`has_glyph` → `index_entry_coverage`）会对整份
+                // 字节再付一次 FNV，与载入期已判的事实重复。
+                let _ = self.coverage_table();
+                let _ = self.index_cov.set(None);
+            }
+        }
+    }
+
+    /// 覆盖表：首次非索引用途才建（A3.1）。解析面在载入时已校验，这里只补一次
+    /// `Face::parse`（进 `face_parse_calls` 诊断口径）。
+    fn coverage_table(&self) -> &Arc<CoverageTable> {
+        self.coverage.get_or_init(|| {
+            count_face_parse();
+            let face = ttf_parser::Face::parse(self.data(), self.collection_index)
+                .expect("字体已在加载时验证");
+            Arc::new(CoverageTable::from_face(&face))
         })
     }
 
@@ -582,18 +660,31 @@ impl FontFace {
     }
 
     /// 是否含该码点字形：开关开且本字面对上索引条目 → 查索引覆盖区段
-    /// （`CoverageRanges::has`）；否则查加载时建好的内存覆盖表（w1029 §2-2）。
-    /// 可变字体实例与基条共享同一表 / 同一条目（`wght` 轴不影响 cmap）。
+    /// （`CoverageRanges::has`）；否则查内存覆盖表（w1029 §2-2）。A3.1 起该表可能
+    /// 尚未建（索引命中路径），此处才惰性建表。可变字体实例与基条共享同一表 / 同一条目
+    ///（`wght` 轴不影响 cmap）。
     fn has_glyph(&self, c: char) -> bool {
         let idx = if font_index_switch() { shared_index() } else { None };
-        if let Some(r) = self.index_entry_coverage(idx) {
-            return r.has(c);
-        }
-        self.coverage.has(c)
+        self.has_glyph_with(self.index_entry_coverage(idx), c)
     }
 
-    /// 本字面在索引中的覆盖区段（`content_hash` + `collection_index` 匹配，OnceLock 缓存；
-    /// 首次对整份字体字节做一次 FNV，与 E04 全栈身份哈希同量级）。
+    /// 查询纯核：`Some(区段)` → 索引；`None` → 内存表（首次调用建表）。测试注入
+    /// 非 `'static` 夹具区段，避免改进程级开关。
+    fn has_glyph_with(
+        &self,
+        index_cov: Option<crate::font_index::CoverageRanges<'_>>,
+        c: char,
+    ) -> bool {
+        match index_cov {
+            Some(r) => r.has(c),
+            None => self.coverage_table().has(c),
+        }
+    }
+
+    /// 本字面在索引中的覆盖区段（`content_hash` + `collection_index` 匹配，OnceLock 缓存）。
+    /// A3.1 载入期已定：命中预置区段、未命中连「无条目」一并缓存（见
+    /// [`Self::resolve_index_coverage`]）；仅开关关 / 无索引的旧路径字面，首次查询
+    /// 才对整份字节做一次 FNV（与 E04 全栈身份哈希同量级）。
     fn index_entry_coverage(
         &self,
         idx: Option<&'static crate::font_index::OwnedIndex>,
@@ -1216,16 +1307,38 @@ impl TextEngine {
     }
 
     fn refresh_identity(&mut self) {
+        let idx = if font_index_switch() { shared_index() } else { None };
         let mut hash = 0xcbf29ce484222325_u64;
         for font in self.fonts.iter() {
-            for byte in font.data().iter() {
-                hash ^= u64::from(*byte);
-                hash = hash.wrapping_mul(0x100000001b3);
+            // A3.1：同源字重实例共享同一份 `content_hash`，只有首个实例在身份遍历里
+            // 顺带算（与索引 `content_hash` 同算法）；无索引时不付这份额外运算。
+            let fresh = idx.is_some() && font.content_hash.get().is_none();
+            if fresh {
+                let mut content = 0xcbf29ce484222325_u64;
+                for byte in font.data().iter() {
+                    hash ^= u64::from(*byte);
+                    hash = hash.wrapping_mul(0x100000001b3);
+                    content ^= u64::from(*byte);
+                    content = content.wrapping_mul(0x100000001b3);
+                }
+                let _ = font.content_hash.set(content);
+            } else {
+                for byte in font.data().iter() {
+                    hash ^= u64::from(*byte);
+                    hash = hash.wrapping_mul(0x100000001b3);
+                }
             }
             hash ^= u64::from(font.collection_index);
             hash = hash.wrapping_mul(0x100000001b3);
         }
         self.identity = hash;
+        // A3.1 载入期决策：`content_hash + collection_index` 命中 → 运行期查索引区段；
+        // 未命中 → 此刻补建覆盖表（仍属载入期，行为与旧路径一致）。
+        if let Some(idx) = idx {
+            for font in self.fonts.iter() {
+                font.resolve_index_coverage(idx);
+            }
+        }
     }
 
     fn font_for_grapheme(&self, grapheme: &str) -> usize {
@@ -1328,15 +1441,20 @@ impl TextEngine {
     }
 
     /// 各字面覆盖表统计（诊断口径，w1029 §3 报告用）：区间数、覆盖码点数、内存（字节）与建表耗时。
-    /// 覆盖表是加载期一次性成本，查表 O(log n)；同源字重实例共享同一份表。
+    /// A3.1 起覆盖表惰性：本调用是「非索引用途」，会补齐索引命中路径未建的表；
+    /// 数值口径与旧路径相同，`build_us` 是首次建表本身的耗时。
     pub fn diag_coverage_stats(&self) -> Vec<CoverageStat> {
         self.fonts
             .iter()
-            .map(|f| CoverageStat {
-                ranges: f.coverage.ranges.len(),
-                codepoints: f.coverage.codepoints(),
-                memory_bytes: f.coverage.memory_bytes(),
-                build_us: f.coverage.build_us,
+            .map(|f| {
+                // A3.1：诊断是「非索引用途」，首次调用才建表（索引命中时载入期为 0）。
+                let coverage = f.coverage_table();
+                CoverageStat {
+                    ranges: coverage.ranges.len(),
+                    codepoints: coverage.codepoints(),
+                    memory_bytes: coverage.memory_bytes(),
+                    build_us: coverage.build_us,
+                }
             })
             .collect()
     }
@@ -2021,7 +2139,16 @@ fn index_entry_coverage_in<'i>(
     data: &[u8],
     collection_index: u32,
 ) -> Option<crate::font_index::CoverageRanges<'i>> {
-    let hash = crate::font_index::fnv1a64(data);
+    index_entry_coverage_by_hash(idx, crate::font_index::fnv1a64(data), collection_index)
+}
+
+/// 同上，但 `content_hash` 由调用方给（A3.1 载入期在 `refresh_identity` 的身份遍历里
+/// 顺带算出，避免为判命中再读一整趟字体字节）。
+fn index_entry_coverage_by_hash<'i>(
+    idx: &'i crate::font_index::OwnedIndex,
+    hash: u64,
+    collection_index: u32,
+) -> Option<crate::font_index::CoverageRanges<'i>> {
     (0..usize::try_from(idx.header().font_count).unwrap_or(0))
         .filter_map(|i| idx.entry(i).map(|e| (i, e)))
         .find(|(_, e)| {
@@ -2041,6 +2168,30 @@ static FACE_PARSE_REBUILDS: AtomicU64 = AtomicU64::new(0);
 static FONT_FOR_GRAPHEME_CALLS: AtomicU64 = AtomicU64::new(0);
 /// 每进程 `Face::parse` 调用总数（A3.3 诊断：族名探测 / 加载校验 / 解析面重建三处）。
 static FACE_PARSE_CALLS: AtomicU64 = AtomicU64::new(0);
+/// 覆盖表建表次数（A3.1 惰性化门诊断：索引命中时载入后应为 0）。
+static COVERAGE_BUILDS: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    /// 当前线程建表次数。进程级计数在并行用例下无法判「增量为 0」，
+    /// 门用线程内计数（同一用例的载入与快照必在同一线程）。
+    static COVERAGE_BUILDS_TLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn count_coverage_build() {
+    COVERAGE_BUILDS.fetch_add(1, Ordering::Relaxed);
+    COVERAGE_BUILDS_TLS.with(|c| c.set(c.get() + 1));
+}
+
+/// 进程累计覆盖表建表次数（A3.1 诊断口径）。
+pub fn coverage_builds() -> u64 {
+    COVERAGE_BUILDS.load(Ordering::Relaxed)
+}
+
+/// 当前线程累计建表次数快照（测试判「载入后建表计数 = 0」用）。
+#[cfg(test)]
+fn coverage_builds_on_thread() -> u64 {
+    COVERAGE_BUILDS_TLS.with(std::cell::Cell::get)
+}
 
 fn count_parse_rebuild() {
     if !diag_enabled() {
@@ -2324,7 +2475,7 @@ mod tests {
                     .expect("加载时已验证")
                     .glyph_index(c)
                     .is_some();
-                let new = font.coverage.has(c);
+                let new = font.coverage_table().has(c);
                 if old != new {
                     mismatches.push((font.collection_index, cp, c, old, new));
                 }
@@ -3154,5 +3305,238 @@ fn system_font_chain_matches_candidates() {
                 );
             }
         }
+    }
+
+    /// A3.1 门：索引开关开且条目按 `content_hash + collection_index` 命中时，
+    /// 载入**不建**覆盖表（线程内建表计数增量 = 0），且运行期查询走索引区段、
+    /// 与旧 `glyph_index` 同值——不建表不等于查不到。
+    #[test]
+    fn index_hit_skips_coverage_table_build_at_load() {
+        let Some(path) = cjk_font() else { return };
+        let engine = TextEngine::load(path).expect("Noto CJK 必须可加载");
+        let Some(idx) = fixture_index(&engine, false) else {
+            panic!("夹具索引必须可构造");
+        };
+        let font = &engine.fonts[0];
+        let before = coverage_builds_on_thread();
+        let loaded =
+            FontFace::from_bytes_with_index(font.bytes.clone(), font.collection_index, Some(&idx))
+                .expect("命中索引的字面必须可加载");
+        assert_eq!(
+            coverage_builds_on_thread() - before,
+            0,
+            "索引命中时载入期不得建覆盖表"
+        );
+        assert!(
+            loaded.coverage.get().is_none(),
+            "载入后覆盖表必须保持未初始化"
+        );
+
+        let ranges = index_entry_coverage_in(&idx, loaded.data(), loaded.collection_index)
+            .expect("字面必须命中索引条目");
+        for c in ['A', '中', '一', '\u{E000}', '\u{10FFFF}'] {
+            let via_index = loaded.has_glyph_with(Some(ranges), c);
+            assert_eq!(via_index, ranges.has(c), "索引查询必须走区段");
+            assert_eq!(
+                via_index,
+                ttf_parser::Face::parse(loaded.data(), loaded.collection_index)
+                    .expect("加载时已验证")
+                    .glyph_index(c)
+                    .is_some(),
+                "U+{:04X} 索引查询必须与旧 glyph_index 同值",
+                c as u32
+            );
+        }
+        assert!(
+            loaded.coverage.get().is_none(),
+            "索引查询不得顺带建表（否则惰性化失效）"
+        );
+    }
+
+    /// A3.1 门：诊断（`coverage_stats`）首次调用才建表，且数值与旧路径建表逐项相同；
+    /// 二次调用复用已建表，不再计建表。
+    #[test]
+    fn diagnostics_build_lazily_with_legacy_numbers() {
+        let Some(path) = cjk_font() else { return };
+        let engine = TextEngine::load(path).expect("Noto CJK 必须可加载");
+        let Some(idx) = fixture_index(&engine, false) else {
+            panic!("夹具索引必须可构造");
+        };
+        let font = &engine.fonts[0];
+        let loaded =
+            FontFace::from_bytes_with_index(font.bytes.clone(), font.collection_index, Some(&idx))
+                .expect("命中索引的字面必须可加载");
+        assert!(loaded.coverage.get().is_none());
+        // 旧路径参照：同一 `from_face` 独立建一份表。
+        let face = ttf_parser::Face::parse(font.data(), font.collection_index)
+            .expect("加载时已验证");
+        let legacy = CoverageTable::from_face(&face);
+        let engine = TextEngine {
+            fonts: Arc::new(vec![loaded]),
+            identity: 0,
+            shape_cache: Arc::new(Mutex::new(HashMap::new())),
+            layout_cache: Arc::new(Mutex::new(HashMap::new())),
+        };
+        let before = coverage_builds_on_thread();
+        let stats = engine.diag_coverage_stats();
+        assert_eq!(
+            coverage_builds_on_thread() - before,
+            1,
+            "诊断首次调用必须恰好建表一次"
+        );
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].ranges, legacy.ranges().len(), "区间数必须同值");
+        assert_eq!(
+            stats[0].codepoints,
+            legacy.codepoints(),
+            "覆盖码点数必须同值"
+        );
+        assert_eq!(
+            stats[0].memory_bytes,
+            legacy.memory_bytes(),
+            "表内存必须同值"
+        );
+        let before = coverage_builds_on_thread();
+        let _ = engine.diag_coverage_stats();
+        assert_eq!(
+            coverage_builds_on_thread() - before,
+            0,
+            "二次诊断不得重复建表"
+        );
+    }
+
+    /// A3.1 真机路径：显式设 `KANESUMI_FONT_INDEX=1` 且
+    /// `$XDG_RUNTIME_DIR/kanesumi/fonts-v1.idx` 存在时，整栈载入不建覆盖表，
+    /// 诊断首次调用为每个未建表的覆盖句柄恰补建一次。常规 `cargo test`（未设开关）
+    /// 直接跳过；手动验法：`KANESUMI_FONT_INDEX=1 XDG_RUNTIME_DIR=<含索引的目录>
+    /// cargo test -p kanesumi-canvas real_env_index -- --exact`。
+    #[test]
+    fn real_env_index_hit_skips_coverage_build() {
+        if !font_index_switch() || shared_index().is_none() {
+            eprintln!("跳过：未开 KANESUMI_FONT_INDEX=1 或无索引文件（注入路径已覆盖）");
+            return;
+        }
+        let chain = system_font_chain();
+        let (primary, extra) = chain.split_first().expect("真机字体链不得为空");
+        let before = coverage_builds_on_thread();
+        let engine = TextEngine::load_stack(primary, extra).expect("真机字体栈必须可加载");
+        assert_eq!(
+            coverage_builds_on_thread() - before,
+            0,
+            "索引命中时整栈载入不得建覆盖表"
+        );
+        assert_eq!(
+            shared_index().expect("前置已判有索引").header().stack_identity,
+            engine.identity(),
+            "前置：索引身份必须与栈一致（否则本用例没走到命中路径）"
+        );
+        // 诊断是首次「非索引用途」：每个未建表的覆盖句柄恰好补建一次。同源字重
+        // 实例共享同一 `Arc<OnceLock<..>>` 句柄（`base.clone()`），共享组只建一次——
+        // 真机 VF 主栈（7 实例同文件）建表数 = 去重句柄数，不等于 font_count。
+        let mut handles: Vec<usize> = engine
+            .fonts
+            .iter()
+            .filter(|f| f.coverage.get().is_none())
+            .map(|f| Arc::as_ptr(&f.coverage) as usize)
+            .collect();
+        handles.sort_unstable();
+        handles.dedup();
+        assert!(!handles.is_empty(), "真机字体栈不得为空");
+        let before = coverage_builds_on_thread();
+        let stats = engine.diag_coverage_stats();
+        assert_eq!(
+            coverage_builds_on_thread() - before,
+            handles.len() as u64,
+            "诊断必须为每个未建表的覆盖句柄恰建一次（共享实例不重复计）"
+        );
+        assert!(
+            stats.iter().all(|s| s.codepoints > 0),
+            "诊断数值不得为空（与旧路径同口径）"
+        );
+    }
+
+    /// A3.1 门：同一字面索引 `has_glyph` 与旧内存表**逐点**同值（~2600 码点，
+    /// 覆盖 CJK / 拉丁 / 标点 / PUA / emoji / 码点上界 / U+0000）。
+    #[test]
+    fn index_has_glyph_matches_legacy_table_pointwise() {
+        let Some(path) = cjk_font() else { return };
+        let engine = TextEngine::load(path).expect("Noto CJK 必须可加载");
+        let Some(idx) = fixture_index(&engine, false) else {
+            panic!("夹具索引必须可构造");
+        };
+        let mut cps: Vec<u32> = Vec::new();
+        cps.extend((0x4E00u32..0x9FFF).step_by(2).take(2000));
+        cps.extend(0x20u32..0x7F);
+        cps.extend(0x3000u32..0x303F);
+        cps.extend((0xE000u32..0xF8FF).step_by(13));
+        cps.extend([0x0, 0x1F600, 0x10FFFF]);
+        cps.sort_unstable();
+        cps.dedup();
+        for font in engine.fonts.iter() {
+            let ranges = index_entry_coverage_in(&idx, font.data(), font.collection_index)
+                .expect("字面必须命中索引条目");
+            let face = ttf_parser::Face::parse(font.data(), font.collection_index)
+                .expect("加载时已验证");
+            // 旧路径的载入期内存表：同一 `from_face`，独立建一份作参照。
+            let legacy = CoverageTable::from_face(&face);
+            for &cp in &cps {
+                let Some(c) = char::from_u32(cp) else { continue };
+                assert_eq!(
+                    font.has_glyph_with(Some(ranges), c),
+                    legacy.has(c),
+                    "U+{cp:04X} 索引查询与旧内存表必须同值"
+                );
+            }
+        }
+    }
+
+    /// A3.1 门：索引缺失 / 损坏 → 建表计数恢复（每字面载入期 1 次），查询回旧内存表。
+    #[test]
+    fn missing_or_corrupt_index_restores_load_time_coverage_build() {
+        let Some(path) = cjk_font() else { return };
+        let engine = TextEngine::load(path).expect("Noto CJK 必须可加载");
+        let font = &engine.fonts[0];
+
+        // 缺失：没有索引可注入 → 旧路径载入期建表。
+        let before = coverage_builds_on_thread();
+        let loaded = FontFace::from_bytes_with_index(font.bytes.clone(), font.collection_index, None)
+            .expect("无索引时必须可加载");
+        assert_eq!(
+            coverage_builds_on_thread() - before,
+            1,
+            "无索引时载入期必须建表一次"
+        );
+        assert!(loaded.coverage.get().is_some(), "旧路径载入后表必须已建");
+
+        // 损坏：真实读侧拒绝坏索引 → 调用方拿不到索引 → 同上回落。
+        let dir = std::env::temp_dir().join(format!("a31-corrupt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("临时目录");
+        let bad_path = dir.join("fonts-v1.idx");
+        std::fs::write(&bad_path, b"not an index").expect("写坏索引");
+        let bad_idx = crate::font_index::OwnedIndex::open(&bad_path);
+        assert!(bad_idx.is_err(), "损坏索引必须被读侧拒绝");
+        let before = coverage_builds_on_thread();
+        let loaded = FontFace::from_bytes_with_index(
+            font.bytes.clone(),
+            font.collection_index,
+            bad_idx.as_ref().ok(),
+        )
+        .expect("损坏索引必须回落旧路径");
+        assert_eq!(
+            coverage_builds_on_thread() - before,
+            1,
+            "损坏索引时载入期建表计数必须恢复"
+        );
+        let face = ttf_parser::Face::parse(font.data(), font.collection_index)
+            .expect("加载时已验证");
+        let legacy = CoverageTable::from_face(&face);
+        for c in ['A', '中', '\u{E000}', '\u{10FFFF}'] {
+            assert_eq!(
+                loaded.has_glyph_with(None, c),
+                legacy.has(c),
+                "损坏索引必须回旧路径"
+            );
+        }
+        std::fs::remove_file(&bad_path).ok();
     }
 }
