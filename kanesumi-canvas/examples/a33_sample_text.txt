@@ -1,0 +1,3 @@
+字体索引塑形门样例：Ether 桌面的 CJK 段落。常用汉字覆盖——弦改装桌灯时特地速查语典，为发烧友录下 Boomcase 的音效，器物齐鸣、昼夜不息；全角标点、符号与生僻字一并走覆盖查询路径：「清风明月本无价」，￥128.50（含税）；【赠品】《山川社稷》四册，序号 ＡＢＣ－４５６；罕见字例：甦 喆 犇 鱻 龘。Mixed English with digits 12345 and punctuation; arrows → ← and checkmarks ✓ ✗ must fall back or be absent, and the engine must answer the query for every grapheme regardless.
+第二段补充覆盖：桌面环境的字型渲染要看 hinted 轮廓与平滑灰阶，标点悬挂、避头尾与断行都按正典执行；表格列宽按内容与留白共同决定，滚动条惯量、双击阈值与悬停提示同样遵循交互正典。凡例：属前缀索引、状后缀判定；一一映射、二二得四；千字文与百家姓的并集再交集，去重之后仍剩八百四十一字。Symbols ① ② ③ ⑩ ㈠ ㈡ ㊣ ℃ ℉ ㎡ ￡ ￥ 圆角与直角并举，浅色深色两套并存。
+回退相样例（栈内必缺字素，驱动逐字素回退查询）：Emoji 🦀🎯👍🚀 不在任何栈字面；Arabic شكرا جزيلا 和 Hebrew שלום עליכם 同样不在；Devanagari नमस्ते 与 Thai สวัสดี 亦然——引擎必须对每一个字素给出确定的查询答案。
