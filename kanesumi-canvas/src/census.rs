@@ -72,6 +72,118 @@ pub fn record(event: Event, use_: &str, fmt: &str, w: u32, h: u32, bytes: usize)
     append(&path, &format_line(event, use_, fmt, w, h, bytes));
 }
 
+// ── 字形 census（A4 决策材料，夜 3 卡；缺省关）────────────────────────────
+//
+// `KANESUMI_GLYPH_CENSUS=1` 才启用（与图像 census 同一 `parse_enabled` 口径）；关闭时
+// `record_glyph` 一次 OnceLock 原子读即返，不格式化、不 IO。启用后追加写
+// `~/.local/state/ether/glyph-census.log`（同 1 MiB 轮转）。行：
+//   t= pid= path=cpu|gpu font=<栈身份> font_id= glyph= size=<物理px 0.25 粒度> scale= w= h= bytes= event=raster|cache-hit|upload
+// 只加旁路记录：不改字形缓存策略、不改光栅参数、不改任何渲染行为。
+
+/// 字形 census 开关判定（复用图像 census 的 `1`/`true` 口径）。
+pub fn glyph_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| parse_enabled(std::env::var("KANESUMI_GLYPH_CENSUS").ok().as_deref()))
+}
+
+/// 字形 census 日志路径：`$HOME/.local/state/ether/glyph-census.log`。
+fn glyph_log_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join(".local/state/ether").join("glyph-census.log"))
+}
+
+/// 字号取整到 0.25 物理 px（判读侧按同值聚合；浮点尾差不再拆分字形）。
+fn snap_size(size: f32) -> f32 {
+    (size * 4.0).round() / 4.0
+}
+
+/// 一条字形 census 行（字段顺序固定；`path` = cpu|gpu 标记产生侧）。
+/// 行字段是外部判读契约，保持扁平参数（allow too_many_arguments）。
+#[allow(clippy::too_many_arguments)]
+pub fn format_line_glyph(
+    path: &str,
+    font: u64,
+    font_id: u32,
+    glyph_id: u16,
+    size: f32,
+    scale: f32,
+    w: u32,
+    h: u32,
+    bytes: usize,
+    event: &str,
+) -> String {
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    format!(
+        "t={t} pid={pid} path={path} font={font} font_id={font_id} glyph={glyph_id} \
+         size={:.2} scale={scale:.2} w={w} h={h} bytes={bytes} event={event}\n",
+        snap_size(size)
+    )
+}
+
+/// 核心写出行：`enabled`/`path` 参数化便于单测钉住「关时不写文件」。
+#[allow(clippy::too_many_arguments)]
+fn write_glyph_row(
+    enabled: bool,
+    path: Option<PathBuf>,
+    path_label: &str,
+    font: u64,
+    font_id: u32,
+    glyph_id: u16,
+    size: f32,
+    scale: f32,
+    w: u32,
+    h: u32,
+    bytes: usize,
+    event: &str,
+) {
+    if !enabled {
+        return;
+    }
+    let Some(path) = path else { return };
+    append(
+        &path,
+        &format_line_glyph(path_label, font, font_id, glyph_id, size, scale, w, h, bytes, event),
+    );
+}
+
+/// 记录一条字形 census（统一入口；关闭时零开销直返）。
+/// `cache-hit` 行 bytes=0（字节只记 raster 行，避免同一位图重复计数）。
+#[allow(clippy::too_many_arguments)]
+pub fn record_glyph(
+    path_label: &str,
+    font: u64,
+    font_id: u32,
+    glyph_id: u16,
+    size: f32,
+    scale: f32,
+    w: u32,
+    h: u32,
+    bytes: usize,
+    event: &str,
+) {
+    if !glyph_enabled() {
+        return;
+    }
+    write_glyph_row(
+        true,
+        glyph_log_path(),
+        path_label,
+        font,
+        font_id,
+        glyph_id,
+        size,
+        scale,
+        w,
+        h,
+        bytes,
+        event,
+    );
+}
+
 /// 追加一行；超限先轮转（rename → `.1`）。IO 失败静默——归因日志不得反噬渲染路径。
 fn append(path: &std::path::Path, line: &str) {
     if let Some(parent) = path.parent() {
@@ -138,6 +250,69 @@ mod tests {
         assert!(dir.join("image-census.log.1").exists(), "超限轮转为 .1");
         let fresh = std::fs::read_to_string(&path).unwrap();
         assert_eq!(fresh, big, "轮转后新文件只含本轮内容");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 字形行字段齐全且顺序固定（size 已取整到 0.25 粒度）。
+    #[test]
+    fn format_line_glyph_has_all_fields() {
+        let line = format_line_glyph("cpu", 0xdeadbeef, 3, 72, 31.98, 2.0, 42, 46, 1932, "raster");
+        assert!(line.starts_with("t="), "{line}");
+        assert!(line.contains(" pid="), "{line}");
+        assert!(line.contains(" path=cpu"), "{line}");
+        assert!(line.contains(" font=3735928559"), "{line}");
+        assert!(line.contains(" font_id=3"), "{line}");
+        assert!(line.contains(" glyph=72"), "{line}");
+        assert!(line.contains(" size=32.00"), "{line}");
+        assert!(line.contains(" scale=2.00"), "{line}");
+        assert!(line.contains(" w=42"), "{line}");
+        assert!(line.contains(" h=46"), "{line}");
+        assert!(line.contains(" bytes=1932"), "{line}");
+        assert!(line.contains(" event=raster"), "{line}");
+        assert!(line.ends_with('\n'), "{line}");
+    }
+
+    /// 开关关时不写文件（夜 3 卡门：关时零格式化零 IO）。
+    #[test]
+    fn glyph_row_disabled_writes_nothing() {
+        let dir = std::env::temp_dir().join(format!("k-glyph-off-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("glyph-census.log");
+        write_glyph_row(
+            false,
+            Some(path.clone()),
+            "cpu",
+            1,
+            0,
+            1,
+            16.0,
+            1.0,
+            8,
+            8,
+            64,
+            "raster",
+        );
+        assert!(!path.exists(), "关闭时不得创建/写入日志文件");
+        // 开时写出行且格式正确。
+        write_glyph_row(
+            true,
+            Some(path.clone()),
+            "gpu",
+            0x1234,
+            2,
+            33,
+            24.11,
+            2.0,
+            30,
+            34,
+            1020,
+            "upload",
+        );
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains(" path=gpu"), "{body}");
+        assert!(body.contains(" event=upload"), "{body}");
+        assert!(body.contains(" size=24.00"), "{body}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

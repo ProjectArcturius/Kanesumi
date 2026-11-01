@@ -1169,6 +1169,20 @@ impl CanvasV2 {
                 );
                 self.upload_bytes = self.upload_bytes.saturating_add((w as u64) * (h as u64));
                 self.upload_glyphs = self.upload_glyphs.saturating_add(1);
+                // B0/A4 字形 census：GPU 图集上载行（倍率已含在物理字号里，记 0——
+                // 重复判定用「字体身份+glyph_id+物理字号」，与倍率等价）。
+                kanesumi_canvas::census::record_glyph(
+                    "gpu",
+                    key.engine_id,
+                    key.font_id,
+                    key.glyph_id,
+                    f32::from_bits(key.size_bits),
+                    0.0,
+                    w,
+                    h,
+                    bitmap.len(),
+                    "upload",
+                );
                 self.glyphs.slots.insert(key, at);
                 Some((at.0, at.1, w, h))
             }
