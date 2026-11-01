@@ -152,7 +152,10 @@ for e in entries:                      # 栈序 = 条目序 = 回退链序
 
 `magic` / `abi` / `policy_ver` / `header_len` / `body_len` / `font_count`（>4096 或条目区越界）/
 `flags`（≠1）/ `offset_out_of_bounds`（str/cov/dirfp 及条目 `cov`，含 overflow）/
-`checksum` / `dirfp_order_or_count`（乱序 / >64 / 区越界）/ `truncated`（< 96 B）。
+`checksum` / `dirfp_order_or_count`（乱序 / >64 / 区越界）/ `truncated`（< 96 B）/
+`cov_ranges`（覆盖区段乱序、重叠或相邻未合并，§5 语义；实现 `font_index.rs` `check_entries` → `CovRanges(i)`）。
+
+> 勘误（2026-11-01）：`cov_ranges` 一项实现自 A3.0 起即拒绝、与 §5 一致，本表原漏列（c1101 03 夜 2 复核）。
 
 ## 11. 写侧布局（`write_index` 纯函数；顺序 = 头部 96 B → 条目区 → 字符串池 → 覆盖区 → 指纹区）
 
