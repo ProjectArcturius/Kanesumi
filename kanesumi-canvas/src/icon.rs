@@ -319,20 +319,29 @@ fn downsample_rgba(rgba: &[u8], w: u32, h: u32, max_w: u32, max_h: u32) -> Optio
 mod tests {
     use super::*;
 
-    fn test_svg_path() -> Option<std::path::PathBuf> {
+    /// 每用例唯一的夹具目录（pid + 用例名限定）：共享 /tmp 下不再与其他 uid /
+    /// 并发运行碰撞固定名；用例结束即清理，断言失败的残留也因唯一而不影响后续运行。
+    fn test_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("kanesumi-icon-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn test_svg_path() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
         // 用临时目录写一个最小 SVG（仓库内不携带 SVG 测试资产）
-        let dir = std::env::temp_dir();
+        let dir = test_dir("test_svg_path");
         let path = dir.join("kanesumi_test_icon.svg");
         let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24">
                  <rect width="24" height="24" fill="#E57812"/>
                </svg>"##;
         std::fs::write(&path, svg).ok()?;
-        Some(path)
+        Some((dir, path))
     }
 
     #[test]
     fn rasterizes_svg_to_rgba() {
-        let Some(path) = test_svg_path() else { return };
+        let Some((dir, path)) = test_svg_path() else { return };
         let icon = rasterize_svg(&path, 24).expect("光栅化应成功");
         assert_eq!(icon.width, 24);
         assert_eq!(icon.height, 24);
@@ -341,6 +350,7 @@ mod tests {
         assert!(icon.rgba[0] > 200, "R 通道橙");
         assert!(icon.rgba[1] < 200, "G 通道低");
         assert!(icon.rgba[3] == 255, "完全不透明");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -394,7 +404,7 @@ mod tests {
     /// 扩展名分派（不区分大小写）：.PNG / .JpG / .Svg 各解一次。
     #[test]
     fn dispatches_by_extension_case_insensitive() {
-        let dir = std::env::temp_dir();
+        let dir = test_dir("dispatches_by_extension");
         let png_path = dir.join("kanesumi_wp1_case.PNG");
         write_test_png(&png_path);
         let icon = rasterize_image(&png_path, None).expect("大写 .PNG 应按 png 分派");
@@ -409,22 +419,24 @@ mod tests {
         std::fs::write(&svg_path, TEST_SVG_16_10).unwrap();
         let icon = rasterize_image(&svg_path, None).expect("大写 .SVG 应按 svg 分派");
         assert_eq!((icon.width, icon.height), (1600, 1000), "无 target 用 viewBox 原尺寸");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 未知扩展名 / 缺失文件返回 None，不 panic。
     #[test]
     fn unknown_extension_and_missing_file_return_none() {
-        let dir = std::env::temp_dir();
+        let dir = test_dir("unknown_extension");
         let bmp_path = dir.join("kanesumi_wp1_case.bmp");
         std::fs::write(&bmp_path, b"whatever").unwrap();
         assert!(rasterize_image(&bmp_path, None).is_none(), "未知扩展名 None");
         assert!(rasterize_image("/nonexistent/wallpaper.jpg", None).is_none(), "缺失文件 None");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// PNG 大图降采样：64×64 给 target (16,16) → 上限 32×32，内容纯色区不混色。
     #[test]
     fn png_downsamples_to_2x_target() {
-        let dir = std::env::temp_dir();
+        let dir = test_dir("png_downsamples");
         let path = dir.join("kanesumi_wp1_ds.png");
         write_test_png(&path);
         let icon = rasterize_image(&path, Some((16, 16))).expect("应解码");
@@ -435,12 +447,13 @@ mod tests {
         // 未超门槛（64 < 2×48 = 96）→ 原尺寸交出。
         let full = rasterize_image(&path, Some((48, 48))).expect("应解码");
         assert_eq!((full.width, full.height), (64, 64), "未超 2× target 不降采样");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// JPEG 大图降采样：testdata 480×480 壁纸样张给 target (100,100) → 解出 200×200。
     #[test]
     fn jpeg_downsamples_to_2x_target() {
-        let dir = std::env::temp_dir();
+        let dir = test_dir("jpeg_downsamples");
         let path = dir.join("kanesumi_wp1_ds.jpg");
         std::fs::write(&path, include_bytes!("../testdata/wallpaper_480.jpg")).unwrap();
         let full = rasterize_image(&path, None).expect("JPEG 应解码");
@@ -448,6 +461,7 @@ mod tests {
         let small = rasterize_image(&path, Some((100, 100))).expect("JPEG 应解码");
         assert_eq!((small.width, small.height), (200, 200), "降采样到 2× target");
         assert_eq!(small.rgba.len(), 200 * 200 * 4);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// SVG 统一入口：target 物理像素 Cover 光栅（16:10 → 16:10 等比铺满，无留白）。
@@ -472,11 +486,12 @@ mod tests {
     /// `rasterize_png` 兼容路径与统一入口 PNG 分支行为一致（同约定同像素）。
     #[test]
     fn rasterize_png_compat_uses_same_branch() {
-        let dir = std::env::temp_dir();
+        let dir = test_dir("png_compat");
         let path = dir.join("kanesumi_wp1_compat.png");
         write_test_png(&path);
         let a = rasterize_png(&path).expect("应解码");
         let b = rasterize_image(&path, None).expect("应解码");
         assert_eq!(a, b);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
