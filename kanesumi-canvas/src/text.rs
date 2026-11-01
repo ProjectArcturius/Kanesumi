@@ -3515,6 +3515,101 @@ fn system_font_chain_matches_candidates() {
         );
     }
 
+    /// A3.2 客户端件红测试（2026-11-01 slot03）：构建器原地重写 `fonts-v1.idx`
+    ///（写临时文件后 rename，`write_atomic` 同款语义）后，**同一进程**再次载入字体
+    /// 引擎必须换用新索引。⚠ 现状 `shared_index()` 用进程级 `OnceLock` 终身持有首次
+    /// 打开的句柄——本测试**当前为红**（第二次载入仍返回旧索引），修复后转绿。
+    /// 环境说明：`KANESUMI_FONT_INDEX` 是进程级 `OnceLock`（首次读取定型），可靠设值
+    /// 需要 `cargo test -p kanesumi-canvas shared_index_reloads_after_builder_rewrites_file`
+    /// 独跑；全量并行跑时若开关已被其它用例以关值锁定，本用例如实跳过（不假装绿）。
+    #[test]
+    fn shared_index_reloads_after_builder_rewrites_file() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // 开关与路径是进程级状态：保存 → 设值 → 结尾恢复（2024 edition 下 set_var 为 unsafe）。
+        let saved_switch = std::env::var("KANESUMI_FONT_INDEX").ok();
+        let saved_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        // SAFETY：本用例以 LOCK 串行化进程级环境改动，恢复在结尾完成。
+        unsafe { std::env::set_var("KANESUMI_FONT_INDEX", "1") };
+        static FIXTURE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "a32-reload-{}-{}",
+            std::process::id(),
+            FIXTURE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let run = dir.join("kanesumi");
+        std::fs::create_dir_all(&run).expect("夹具目录必须可创建");
+        // SAFETY：同上，LOCK 串行化。
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", &dir) };
+
+        static COV: [(u32, u32); 1] = [(0x20, 0x7E)];
+        let build = |generation: u64, tag: &str, body: &[u8]| {
+            crate::font_index::write_index(
+                &[crate::font_index::IndexEntrySpec {
+                    path: Box::leak(format!("/fixture/{tag}.ttf").into_boxed_str()),
+                    family: "夹具",
+                    collection_index: 0,
+                    weight: 400,
+                    slant: 0,
+                    flags: 0b100,
+                    ttc_faces: 1,
+                    coverage: &COV,
+                    wght_min: 0.0,
+                    wght_max: 0.0,
+                    mtime_ns: 0,
+                }],
+                &[body],
+                &[crate::font_index::DirFpSpec { path: "/fixture", mtime_ns: 0, ino: 0 }],
+                generation,
+                generation * 1000,
+                0,
+            )
+        };
+        // 构建器同款原子替换（`write_atomic`：写临时文件 → rename）。
+        let atomic_rewrite = |file: &[u8]| {
+            let tmp = run.join("fonts-v1.idx.tmp");
+            std::fs::write(&tmp, file).expect("写临时索引");
+            std::fs::rename(&tmp, run.join("fonts-v1.idx")).expect("rename 索引");
+        };
+
+        // ① 夹具索引 A：首次打开 → 句柄 = A。
+        atomic_rewrite(&build(1, "a", &[0xA5u8; 64]));
+        let first = shared_index().expect("索引 A 必须可打开");
+        assert_eq!(first.header().generation, 1, "首次载入用 A");
+        assert!(
+            first.entries().next().is_some_and(|e| e.path_str().unwrap_or("").ends_with("a.ttf")),
+            "首次载入命中 A 独有条目"
+        );
+
+        // ② 原地替换为索引 B（gen=2、b.ttf 条目、字节换掉——确是另一份索引）。
+        atomic_rewrite(&build(2, "b", &[0x5Au8; 64]));
+
+        // ③ 再次载入：必须换用 B（缺陷在此：现状 OnceLock 终身持 A → 红）。
+        let second = shared_index().expect("索引 B 必须可打开");
+        assert_eq!(
+            second.header().generation, 2,
+            "重建后必须重开句柄换用 B（现状终身持 A）"
+        );
+        assert!(
+            second.entries().next().is_some_and(|e| e.path_str().unwrap_or("").ends_with("b.ttf")),
+            "重建后命中 B 独有条目、不再命中 A 独有条目"
+        );
+
+        // 收尾：恢复环境、删夹具（句柄 ident 比对在下次 stat 失败 → 无索引，不污染其它用例）。
+        // SAFETY：同上，LOCK 串行化。
+        unsafe {
+            match saved_switch {
+                Some(v) => std::env::set_var("KANESUMI_FONT_INDEX", v),
+                None => std::env::remove_var("KANESUMI_FONT_INDEX"),
+            }
+            match saved_xdg {
+                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A3.1 门：同一字面索引 `has_glyph` 与旧内存表**逐点**同值（~2600 码点，
     /// 覆盖 CJK / 拉丁 / 标点 / PUA / emoji / 码点上界 / U+0000）。
     #[test]
