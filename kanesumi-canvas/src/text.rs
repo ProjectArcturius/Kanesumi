@@ -1308,10 +1308,22 @@ impl TextEngine {
 
     fn refresh_identity(&mut self) {
         let idx = if font_index_switch() { shared_index() } else { None };
+        // A3 身份采信（§7 客户端采信条款，裁定 (a)）：索引有效且全部字面按位 content
+        // 命中 ⇒ 采信 header.stack_identity，跳过整趟栈 FNV；任一不中（缺失/损坏/
+        // 数目不符/content 不中）回退下方自算，值逐位一致。缺省关档不走此径。
+        if let Some(idx) = idx
+            && self.adopt_identity_with(idx)
+        {
+            for font in self.fonts.iter() {
+                font.resolve_index_coverage(idx);
+            }
+            return;
+        }
         let mut hash = 0xcbf29ce484222325_u64;
         for (font_index, font) in self.fonts.iter().enumerate() {
             // A3.1：同源字重实例共享同一份 `content_hash`，只有首个实例在身份遍历里
             // 顺带算（与索引 `content_hash` 同算法）；无索引时不付这份额外运算。
+            // 采信未中时 content 可能已被预置（留用），此处自然落栈-only 分支。
             let fresh = idx.is_some() && font.content_hash.get().is_none();
             if fresh && font_index == 0 {
                 // 首字面的身份累加器仍是 FNV 初值，结果与纯文件哈希完全相同，
@@ -1348,6 +1360,37 @@ impl TextEngine {
                 font.resolve_index_coverage(idx);
             }
         }
+    }
+
+    /// 全命中采信尝试（§7 客户端采信条款，裁定 (a)）：全部字面按位 content_hash +
+    /// `collection_index` 命中 ⇒ 置身份为 `idx.header().stack_identity` 并返回 true，
+    /// 跳过整趟栈 FNV。content 按源算一次（同源实例共享句柄）；任一不中 / 索引缺失 /
+    /// 损坏 / 数目不符返回 false——身份保持未动，调用方回退逐字节自算；已预置的
+    /// content_hash 留用（栈哈希不依赖 content，回退值与不采信时逐位一致）。
+    /// 单独成函数以便测试注入夹具索引（进程级开关不可按用例隔离）。
+    fn adopt_identity_with(&mut self, idx: &crate::font_index::OwnedIndex) -> bool {
+        let n = usize::try_from(idx.header().font_count).unwrap_or(0);
+        if n == 0 || n != self.fonts.len() {
+            return false;
+        }
+        for font in self.fonts.iter() {
+            if font.content_hash.get().is_none() {
+                let _ = font.content_hash.set(crate::font_index::fnv1a64(font.data()));
+            }
+        }
+        for (i, font) in self.fonts.iter().enumerate() {
+            let Some(e) = idx.entry(i) else {
+                return false;
+            };
+            let Some(h) = font.content_hash.get().copied() else {
+                return false;
+            };
+            if e.content_hash != h || u32::from(e.collection_index) != font.collection_index {
+                return false;
+            }
+        }
+        self.identity = idx.header().stack_identity;
+        true
     }
 
     fn font_for_grapheme(&self, grapheme: &str) -> usize {
@@ -3547,6 +3590,81 @@ fn system_font_chain_matches_candidates() {
             );
         }
         std::fs::remove_file(&bad_path).ok();
+    }
+
+    // ---- A3 身份采信门（裁定 (a)，§7 客户端采信条款回归）----
+
+    /// 全命中采信：采信值 == 自算值 == 索引 stack_identity（三者逐位相等），
+    /// 且采信尝试把 content_hash 预置齐（同源实例共享句柄）。
+    #[test]
+    fn adopted_identity_equals_self_computed_on_full_hit() {
+        let Some(path) = cjk_font() else { return };
+        let mut engine = TextEngine::load(path).expect("Noto CJK 必须可加载");
+        let Some(idx) = fixture_index(&engine, false) else {
+            panic!("夹具索引必须可构造");
+        };
+        let self_computed = engine.identity();
+        assert_eq!(
+            self_computed,
+            idx.header().stack_identity,
+            "前置：夹具索引身份必须与自算一致"
+        );
+        assert!(engine.adopt_identity_with(&idx), "全命中必须采信");
+        assert_eq!(engine.identity(), self_computed, "采信值必须与自算值逐位相等");
+        assert_eq!(
+            engine.identity(),
+            idx.header().stack_identity,
+            "采信值必须等于索引 stack_identity"
+        );
+        assert!(
+            engine.fonts.iter().all(|f| f.content_hash.get().is_some()),
+            "采信尝试必须把各源 content_hash 预置齐"
+        );
+    }
+
+    /// 任一字面 content 不中（扰动夹具）→ 拒绝采信，身份保持自算值不变；
+    /// 已预置的 content_hash 留用，不改变回退值。
+    #[test]
+    fn content_mismatch_falls_back_to_self_computed_identity() {
+        let Some(path) = cjk_font() else { return };
+        let mut engine = TextEngine::load(path).expect("Noto CJK 必须可加载");
+        let Some(bad) = fixture_index(&engine, true) else {
+            panic!("扰动夹具必须可构造");
+        };
+        let self_computed = engine.identity();
+        assert_ne!(
+            self_computed,
+            bad.header().stack_identity,
+            "前置：扰动索引身份必须与自算不同"
+        );
+        assert!(!engine.adopt_identity_with(&bad), "content 不中必须拒绝采信");
+        assert_eq!(engine.identity(), self_computed, "拒绝采信后身份必须保持自算值");
+        assert!(
+            engine.fonts.iter().all(|f| f.content_hash.get().is_some()),
+            "采信尝试预置的 content_hash 留用"
+        );
+    }
+
+    /// 缺省关档（KANESUMI_FONT_INDEX 未设）：身份与旧逐字节实现逐位相等，
+    /// 且不付 content 趟（采信路径完全不触达）。
+    #[test]
+    fn off_identity_matches_legacy_bytewise_replica() {
+        let Some(path) = cjk_font() else { return };
+        let engine = TextEngine::load(path).expect("Noto CJK 必须可加载");
+        let mut hash = 0xcbf29ce484222325_u64;
+        for font in engine.fonts.iter() {
+            for byte in font.data().iter() {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+            hash ^= u64::from(font.collection_index);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        assert_eq!(engine.identity(), hash, "off 档身份必须与旧逐字节实现逐位相等");
+        assert!(
+            engine.fonts.iter().all(|f| f.content_hash.get().is_none()),
+            "off 档不付 content 趟"
+        );
     }
 
     // ---- A3 载入剩余成本分布探针（第 2 卡：只量不修，不在产品路径）----
