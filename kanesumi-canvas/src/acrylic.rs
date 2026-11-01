@@ -75,14 +75,39 @@ pub fn backdrop_at(
     //    但不超过目标（放大交给第 4 步的一次升采样）。
     let (bw, bh) = blur_domain(cw, ch, (ow_t, oh_t), spec);
     let mut px = area_resample(src, cx, cy, cw, ch, bw, bh);
+    // B0 归因：模糊域 f32×3 缓冲是短命峰值（函数返回即释放），release 记在真实 drop 点。
+    crate::census::record(
+        crate::census::Event::Alloc,
+        "acrylic-resample",
+        "f32x3",
+        bw,
+        bh,
+        px.len() * 4,
+    );
     // 3. 模糊：半径从目标像素换算到模糊域像素。
     if spec.blur > 0.0 {
         let r = ((spec.blur * (bw as f32 / tw)).round()).max(1.0) as usize;
         let mut tmp = vec![0f32; px.len()];
+        crate::census::record(
+            crate::census::Event::Alloc,
+            "acrylic-blur-tmp",
+            "f32x3",
+            bw,
+            bh,
+            tmp.len() * 4,
+        );
         for _ in 0..3 {
             box_blur_h(&px, &mut tmp, bw as usize, bh as usize, r);
             box_blur_v(&tmp, &mut px, bw as usize, bh as usize, r);
         }
+        crate::census::record(
+            crate::census::Event::Release,
+            "acrylic-blur-tmp",
+            "f32x3",
+            bw,
+            bh,
+            tmp.len() * 4,
+        );
     }
     // 4. 着色（在模糊域做，线性混合与升采样可交换）→ 一次升采样到目标像素 + 打包。
     let t = [spec.tint.r, spec.tint.g, spec.tint.b];
@@ -95,7 +120,25 @@ pub fn backdrop_at(
         }
     }
     let rgba = upsample_rgba(&px, bw, bh, ow_t, oh_t);
-    Icon { rgba: Arc::from(rgba), width: ow_t, height: oh_t }
+    crate::census::record(
+        crate::census::Event::Release,
+        "acrylic-resample",
+        "f32x3",
+        bw,
+        bh,
+        px.len() * 4,
+    );
+    let icon = Icon { rgba: Arc::from(rgba), width: ow_t, height: oh_t };
+    // B0 归因：最终背板位图一行（持有者由调用方 use 标签补记，见 apps/lock app.rs）。
+    crate::census::record(
+        crate::census::Event::Alloc,
+        "acrylic-backdrop",
+        "rgba",
+        icon.width,
+        icon.height,
+        icon.rgba.len(),
+    );
+    icon
 }
 
 /// 模糊域尺寸：模糊时目标 /4；不模糊时取裁切区原生分辨率（不超过目标，放大只做一次）。

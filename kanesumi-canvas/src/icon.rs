@@ -137,10 +137,31 @@ pub fn rasterize_image_bytes(data: &[u8], kind: ImageKind) -> Option<Icon> {
 
 /// 三格式分派核心（无 target 时 SVG 用原尺寸，栅格图不降采样）。
 fn rasterize_image_kind(data: &[u8], kind: ImageKind, target: Option<(u32, u32)>) -> Option<Icon> {
-    match kind {
+    let out = match kind {
         ImageKind::Png => decode_png(data, target),
         ImageKind::Jpeg => decode_jpeg(data, target),
         ImageKind::Svg => render_svg(data, target),
+    };
+    // B0 归因：统一入口的产物位图一行（壁纸 / 头像全经此；target 降采样后的真实字节）。
+    if let Some(icon) = &out {
+        crate::census::record(
+            crate::census::Event::Alloc,
+            "image-decode",
+            kind_str(kind),
+            icon.width,
+            icon.height,
+            icon.rgba.len(),
+        );
+    }
+    out
+}
+
+/// `ImageKind` 的 census 格式名（与文件扩展名同字面，判读侧不再映射）。
+fn kind_str(kind: ImageKind) -> &'static str {
+    match kind {
+        ImageKind::Png => "png",
+        ImageKind::Jpeg => "jpeg",
+        ImageKind::Svg => "svg",
     }
 }
 
@@ -190,7 +211,19 @@ pub fn rasterize_svg(path: impl AsRef<Path>, target_size: u32) -> Option<Icon> {
     let scale = target_size as f32 / svg_size.width().max(svg_size.height());
     let px_w = (svg_size.width() * scale).round() as u32;
     let px_h = (svg_size.height() * scale).round() as u32;
-    render_svg_scaled(&tree, px_w, px_h, scale)
+    let icon = render_svg_scaled(&tree, px_w, px_h, scale);
+    // B0 归因：最长边入口不经过 `rasterize_image_kind`（控件图标直解路径），单独记一行。
+    if let Some(icon) = &icon {
+        crate::census::record(
+            crate::census::Event::Alloc,
+            "svg-longest",
+            "svg",
+            icon.width,
+            icon.height,
+            icon.rgba.len(),
+        );
+    }
+    icon
 }
 
 /// 统一入口 SVG 分支：`target` 给定时按物理像素 **Cover** 光栅（等比放大铺满 + 居中裁剪），
