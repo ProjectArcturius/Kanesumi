@@ -3279,12 +3279,20 @@ fn system_font_chain_matches_candidates() {
         }
         let refs: Vec<&[u8]> = bytes.iter().map(|b| b.as_slice()).collect();
         let file = crate::font_index::write_index(&specs, &refs, &[], 1, 0, 0b0011);
-        let dir = std::env::temp_dir().join(format!("a33-{}", std::process::id()));
+        // 目录名带调用原子序号：旧实现只含 pid，同进程并行用例全部落在同一路径上
+        // 互相覆写与提前 remove_file（50 轮 × 16 线程实测 9 次失败，均为
+        // 「夹具不可构造」；01 交件报告的偶发 2 例即此竞态）。
+        static FIXTURE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "a33-{}-{}",
+            std::process::id(),
+            FIXTURE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&dir).ok()?;
         let path = dir.join("fonts-v1.idx");
         std::fs::write(&path, &file).ok()?;
         let idx = crate::font_index::OwnedIndex::open(&path).ok();
-        std::fs::remove_file(&path).ok();
+        let _ = std::fs::remove_dir_all(&dir);
         idx
     }
 
@@ -3561,7 +3569,13 @@ fn system_font_chain_matches_candidates() {
         assert!(loaded.coverage.get().is_some(), "旧路径载入后表必须已建");
 
         // 损坏：真实读侧拒绝坏索引 → 调用方拿不到索引 → 同上回落。
-        let dir = std::env::temp_dir().join(format!("a31-corrupt-{}", std::process::id()));
+        // 同一竞态面：目录名带调用原子序号，避免与其他并行用例共享路径；用毕清目录。
+        static CORRUPT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "a31-corrupt-{}-{}",
+            std::process::id(),
+            CORRUPT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&dir).expect("临时目录");
         let bad_path = dir.join("fonts-v1.idx");
         std::fs::write(&bad_path, b"not an index").expect("写坏索引");
@@ -3589,7 +3603,7 @@ fn system_font_chain_matches_candidates() {
                 "损坏索引必须回旧路径"
             );
         }
-        std::fs::remove_file(&bad_path).ok();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ---- A3 身份采信门（裁定 (a)，§7 客户端采信条款回归）----
