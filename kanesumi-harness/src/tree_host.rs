@@ -1667,7 +1667,11 @@ mod tests {
         }
         let c = h.tree().rect(h.app().id.unwrap()).unwrap().center();
         h.handle_input(InputEvent::PointerMoved { x: c.x, y: c.y });
-        let out = std::env::temp_dir().join("kanesumi_tooltip_raster.png");
+        // pid 限定唯一目录：快照产物不与共享 /tmp 下其他 uid 的固定名相撞；用毕清理。
+        let out_dir = std::env::temp_dir()
+            .join(format!("kanesumi-tooltip-snapshot-{}", std::process::id()));
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let out = out_dir.join("kanesumi_tooltip_raster.png");
         crate::snapshot::render_png(&mut h, &e, size, 1.0, 60, &out).expect("快照失败");
         let popup = h.tree().tooltip_popup().expect("延迟满应显示提示");
         let r = h.tree().rect(popup).unwrap();
@@ -1680,6 +1684,7 @@ mod tests {
             [0x1A, 0x1A, 0x1A],
             "提示气泡区不应还是背景色（说明未光栅化）"
         );
+        let _ = std::fs::remove_dir_all(&out_dir);
     }
 
     /// 动画期间 `needs_redraw()` 恒真（外壳据此不进入 50ms 空闲档），跑完转假。
