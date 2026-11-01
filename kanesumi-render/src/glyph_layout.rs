@@ -271,6 +271,19 @@ pub fn layout_text_glyphs_tuned(
         ) {
             let key = glyph_key(engine.identity(), glyph.font_id, glyph.glyph_id, size_phys);
             let metrics = if let Some((m, _)) = glyph_bitmaps.get(&key) {
+                // B0/A4 字形 census（KANESUMI_GLYPH_CENSUS=1，缺省关；cache-hit 行 bytes=0）。
+                kanesumi_canvas::census::record_glyph(
+                    "cpu",
+                    engine.identity(),
+                    glyph.font_id,
+                    glyph.glyph_id,
+                    size_phys,
+                    scale,
+                    m.width as u32,
+                    m.height as u32,
+                    0,
+                    "cache-hit",
+                );
                 *m
             } else {
                 // 轮廓外扩在光栅化之前施加（`embolden == 0` 时内部短路回原路径）；
@@ -283,6 +296,19 @@ pub fn layout_text_glyphs_tuned(
                     embolden,
                 );
                 let (m, b) = tune_glyph_bitmap(m, b, size_phys, tuning);
+                // 字形 census：raster 行带位图字节（cache-hit 行不计，避免同一位图重复计数）。
+                kanesumi_canvas::census::record_glyph(
+                    "cpu",
+                    engine.identity(),
+                    glyph.font_id,
+                    glyph.glyph_id,
+                    size_phys,
+                    scale,
+                    m.width as u32,
+                    m.height as u32,
+                    b.len(),
+                    "raster",
+                );
                 if m.width > 0 && m.height > 0 {
                     glyph_bitmaps.insert(key, (m, b));
                 }
