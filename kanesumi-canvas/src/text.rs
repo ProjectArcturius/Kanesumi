@@ -2161,12 +2161,22 @@ fn is_default_ignorable(c: char) -> bool {
     matches!(c, '\u{200C}' | '\u{200D}' | '\u{FE0E}' | '\u{FE0F}')
 }
 
-// ---- A3.3 开关：`KANESUMI_FONT_INDEX=1`（与 KANESUMI_TEXT_DIAG 同口径读取一次）----
+// ---- A3 开关：`KANESUMI_FONT_INDEX`（进程内一次性读取）----
 
-/// A3.3 开关：`KANESUMI_FONT_INDEX=1`（进程内一次性读取，与 KANESUMI_TEXT_DIAG 同口径）。
+/// 生产语义（裁定 §250，2026-11-01 真机 DRM 验证后翻为缺省开）：未设或非 `0` 即开，`=0` 关。
+pub(crate) fn font_index_switch_from(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_none_or(|v| v != "0")
+}
+
+/// A3 开关（进程内一次性读取）。单元测试构建只认显式 `=1`：进程级 OnceLock 不能按用例隔离，
+/// 且缺省开会让用例读到开发机 `$XDG_RUNTIME_DIR` 里的真实索引——测试结果不得取决于机器状态。
+/// 生产缺省由 [`font_index_switch_from`] 的单测钉住。
 fn font_index_switch() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("KANESUMI_FONT_INDEX").is_some_and(|v| v == "1"))
+    *ENABLED.get_or_init(|| {
+        let v = std::env::var_os("KANESUMI_FONT_INDEX");
+        if cfg!(test) { v.is_some_and(|v| v == "1") } else { font_index_switch_from(v.as_deref()) }
+    })
 }
 
 /// 索引句柄：路径 + 打开时的文件身份（dev / ino / len / mtime_ns）+ 共享计数索引。
@@ -2278,7 +2288,7 @@ fn index_entry_coverage_by_hash<'i>(
 
 // ---- 文本诊断计数（w1029 text-coverage-cache §2-1）----
 //
-// 缺省关闭：`KANESUMI_TEXT_DIAG=1` 或 A3.3 的 `KANESUMI_FONT_INDEX=1` 才计数、
+// 缺省关闭：显式 `KANESUMI_TEXT_DIAG=1` 或 `KANESUMI_FONT_INDEX=1` 才计数、
 // 启动线程与落盘——每 10 s 一行追加到 `~/.local/state/ether/kanesumi-text.log`
 // （XDG_STATE_HOME 可重定向），进程退出路径可调 [`text_diag_flush`] 立即补一行。
 // 零交互排障口径，参 AGENTS.md 铁律 3。
@@ -2340,8 +2350,11 @@ pub fn face_parse_calls() -> u64 {
 
 fn diag_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    // 只认显式 `=1`：A3 开关 §250 翻为缺省开后，若沿用 font_index_switch()，诊断线程与落盘会随之
+    // 缺省开启。门脚本都显式设 KANESUMI_FONT_INDEX=1，诊断口径不变。
     *ENABLED.get_or_init(|| {
-        std::env::var_os("KANESUMI_TEXT_DIAG").is_some_and(|v| v == "1") || font_index_switch()
+        let on = |k: &str| std::env::var_os(k).is_some_and(|v| v == "1");
+        on("KANESUMI_TEXT_DIAG") || on("KANESUMI_FONT_INDEX")
     })
 }
 
@@ -3804,8 +3817,18 @@ fn system_font_chain_matches_candidates() {
         );
     }
 
-    /// 缺省关档（KANESUMI_FONT_INDEX 未设）：身份与旧逐字节实现逐位相等，
-    /// 且不付 content 趟（采信路径完全不触达）。
+    /// 生产缺省（裁定 §250）：未设 / 任意非 `0` 值即开，只有 `0` 关。
+    #[test]
+    fn font_index_switch_default_on_semantics() {
+        use std::ffi::OsStr;
+        assert!(super::font_index_switch_from(None), "未设必须开");
+        assert!(super::font_index_switch_from(Some(OsStr::new("1"))));
+        assert!(super::font_index_switch_from(Some(OsStr::new(""))), "空值不是关");
+        assert!(!super::font_index_switch_from(Some(OsStr::new("0"))), "=0 必须关");
+    }
+
+    /// 关档（测试构建下 KANESUMI_FONT_INDEX 未设 = 关，见 font_index_switch 注释）：身份与旧逐字节
+    /// 实现逐位相等，且不付 content 趟（采信路径完全不触达）。
     #[test]
     fn off_identity_matches_legacy_bytewise_replica() {
         let Some(path) = cjk_font() else { return };

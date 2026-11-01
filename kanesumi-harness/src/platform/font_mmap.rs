@@ -4,7 +4,7 @@
 //! `canonicalize` 后路径位于 `/usr/share/fonts/` 之下、普通文件、属主 uid 0、
 //! 组与其他用户无写位时，用 `memmap2::Mmap` 只读映射；其余一律回退
 //! `std::fs::read`（用户目录字体、符号链接逃逸、权限不符、映射失败）。
-//! 缺省关闭，`KANESUMI_FONT_MMAP=1` 打开（§121-3）。每次读取向
+//! 缺省开启（裁定 §250；原 §121-3 缺省关），`KANESUMI_FONT_MMAP=0` 关闭。每次读取向
 //! `~/.local/state/ether/kanesumi-font.log` 追加一行自证：进程名、字体路径、
 //! `mmap|read`、字节数（零交互排障口径，参 AGENTS.md 铁律 3）。
 
@@ -24,9 +24,14 @@ fn mmap_eligible(canon: &Path, is_file: bool, uid: u32, mode: u32) -> bool {
     canon.starts_with(SYSTEM_FONT_DIR) && is_file && uid == 0 && (mode & 0o022) == 0
 }
 
-/// 缺省开关（§121-3）：`KANESUMI_FONT_MMAP=1` 才启用映射。
+/// 开关语义（裁定 §250，2026-11-01 真机 DRM 验证后翻为缺省开）：未设或非 `0` 即映射，
+/// `KANESUMI_FONT_MMAP=0` 回退 `fs::read`。纯函数供单测钉住。
+fn mmap_switch_from(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_none_or(|v| v != "0")
+}
+
 fn mmap_enabled() -> bool {
-    std::env::var_os("KANESUMI_FONT_MMAP").is_some_and(|v| v == "1")
+    mmap_switch_from(std::env::var_os("KANESUMI_FONT_MMAP").as_deref())
 }
 
 /// 回退读取：整文件进堆。与旧 `load_stack` 逐字节同源。
@@ -96,6 +101,15 @@ fn write_self_report(path: &Path, mapped: bool, len: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 生产缺省（裁定 §250）：未设 / 任意非 `0` 值即映射，只有 `0` 回退读取。
+    #[test]
+    fn mmap_switch_default_on_semantics() {
+        use std::ffi::OsStr;
+        assert!(mmap_switch_from(None), "未设必须开");
+        assert!(mmap_switch_from(Some(OsStr::new("1"))));
+        assert!(!mmap_switch_from(Some(OsStr::new("0"))), "=0 必须关");
+    }
 
     /// 真实映射与堆字节分别进入排版器，锁定载体变化不会改变塑形或光栅输出。
     #[test]
