@@ -2391,7 +2391,7 @@ fn diag_write_line() {
     let fallbacks = INDEX_COV_FALLBACKS.load(Ordering::Relaxed);
     let cov_builds = COVERAGE_BUILDS.load(Ordering::Relaxed);
     let line = format!(
-        "kanesumi-text-diag pid={} index_present={index_present} index_adopted_faces={hits} index_fallback_faces={fallbacks} coverage_builds={cov_builds} face_parse_rebuilds={parses} font_for_grapheme_calls={ffg} face_parse_calls={calls}\n",
+        "kanesumi-text-diag pid={pid} index_present={index_present} index_adopted_faces={hits} index_fallback_faces={fallbacks} coverage_builds={cov_builds} face_parse_rebuilds={parses} font_for_grapheme_calls={ffg} face_parse_calls={calls}\n",
         pid = std::process::id(),
     );
     let Some(dir) = path.parent() else { return };
