@@ -1,4 +1,4 @@
-use kanesumi_anim::{EasingMode, MetroAnim, MetroPresets, UwpEasing};
+use kanesumi_anim::{FlyoutTrack, MetroPresets};
 use kanesumi_canvas::Scene;
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
@@ -135,7 +135,7 @@ pub fn place_submenu(parent: Rect, panel_size: Size, screen: Rect, gap: f32) -> 
 
 /// 弹层状态机。参 CONTROL_SPEC §8/§9：
 /// - 遮罩淡入 0.383s / 淡出 0.216s（OverlayOpening/ClosingAnimation）；
-/// - 面板展开/收起 = `sheet_appear`(0.30s) / `sheet_dismiss`(0.26s)。
+/// - 面板展开/收起 = `sheet_appear`(0.30s) / `sheet_dismiss`(0.26s，裁定 §247)，正典 Bézier（§200）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PopupState {
     Closed,
@@ -145,23 +145,29 @@ pub enum PopupState {
 }
 
 /// 弹层动画 —— 遮罩 + 面板两条并行动画轨道。
+///
+/// 两条轨道持有**整个生命周期**（`FlyoutTrack`），open / close 只换向（`retune_to`
+/// 加 `set_target`），从当前呈现值接续，不再每次重建轨道。旧实现每次重建
+/// `MetroPresets::*` 新对象（初值 0），稳态后 close 直接从 0 起（瞬间消失）、
+/// 收起中再 open 从 0 重跑（RM-1028-5 缺陷 1）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PopupAnim {
     state: PopupState,
-    overlay: MetroAnim,
-    panel: MetroAnim,
+    overlay: FlyoutTrack,
+    panel: FlyoutTrack,
 }
 
 impl Default for PopupAnim {
-    /// 关闭态。`open()`/`close()` 会用 `MetroPresets::*` 立即覆盖 anim，
-    /// 所以此处用零时长占位（V20：原实现调 `default_metro()` 再 `jump_to(0.0)`
-    /// 两次构造纯浪费）。
+    /// 关闭态：两条轨道用真实预设构造并 `jump_to(0)`，此后 open/close 只换向。
     fn default() -> Self {
-        let zero = MetroAnim::new(0.0, UwpEasing::Quadratic, EasingMode::EaseOut);
+        let mut overlay = MetroPresets::overlay_open();
+        let mut panel = MetroPresets::sheet_appear();
+        overlay.jump_to(0.0);
+        panel.jump_to(0.0);
         Self {
             state: PopupState::Closed,
-            overlay: zero.clone(),
-            panel: zero,
+            overlay,
+            panel,
         }
     }
 }
@@ -171,27 +177,27 @@ impl PopupAnim {
         Self::default()
     }
 
-    /// 打开：遮罩 0.383s 淡入 + 面板 0.30s 展开（可中断）。
+    /// 打开：遮罩 0.383s 淡入 + 面板 0.30s 正典开曲线展开（可中断，从当前值接续）。
     pub fn open(&mut self) {
         if matches!(self.state, PopupState::Opening | PopupState::Open) {
             return;
         }
         self.state = PopupState::Opening;
-        self.overlay = MetroPresets::overlay_open();
+        self.overlay.retune_to(&MetroPresets::overlay_open());
+        self.panel.retune_to(&MetroPresets::sheet_appear());
         self.overlay.set_target(1.0);
-        self.panel = MetroPresets::sheet_appear();
         self.panel.set_target(1.0);
     }
 
-    /// 关闭：遮罩 0.216s 淡出 + 面板 0.26s 收起。
+    /// 关闭：遮罩 0.216s 淡出 + 面板 0.26s（裁定 §247）正典关曲线收起（可中断，从当前值接续）。
     pub fn close(&mut self) {
         if matches!(self.state, PopupState::Closing | PopupState::Closed) {
             return;
         }
         self.state = PopupState::Closing;
-        self.overlay = MetroPresets::overlay_close();
+        self.overlay.retune_to(&MetroPresets::overlay_close());
+        self.panel.retune_to(&MetroPresets::sheet_dismiss());
         self.overlay.set_target(0.0);
-        self.panel = MetroPresets::sheet_dismiss();
         self.panel.set_target(0.0);
     }
 
@@ -479,5 +485,141 @@ mod tests {
         let p = place_popup(trigger, size, screen, 4.0);
         assert!(p.rect.origin.x >= screen.origin.x - 0.01);
         assert!(p.rect.right() <= screen.right() + 0.01);
+    }
+
+    // ── RM-1028-5 缺陷 1 回归（k-framework-fix1）：open/close 不得重建动画轨道 ──
+
+    /// 正典收起曲线整段按 60fps 采样的单帧最大进度差（全摆幅）。
+    /// 推导：曲线两端点固定，逐帧取样取最大相邻差；半程中断时实际摆幅减半，
+    /// 阈值再放宽 2 倍，故这是宽松上界（任务书 §2-1「一帧应有步长的 2 倍」）。
+    fn max_frame_step_of_close(fps: f64) -> f64 {
+        let duration = kanesumi_anim::DURATION_SHEET_DISMISS;
+        let n = (duration * fps).ceil() as usize;
+        let mut prev = 0.0_f64;
+        let mut max = 0.0_f64;
+        for i in 1..=n {
+            let t = ((i as f64 / fps) / duration).min(1.0);
+            let y = kanesumi_anim::bezier_y(kanesumi_anim::CURVE_UWP_CLOSE, t as f32) as f64;
+            max = max.max(y - prev);
+            prev = y;
+        }
+        max
+    }
+
+    fn steady_open() -> PopupAnim {
+        let mut anim = PopupAnim::new();
+        anim.open();
+        for _ in 0..120 {
+            anim.update(1.0 / 60.0);
+        }
+        assert_eq!(anim.state(), PopupState::Open);
+        anim
+    }
+
+    fn tick_until(anim: &mut PopupAnim, pred: impl Fn(f64) -> bool, max_frames: usize) -> f64 {
+        for _ in 0..max_frames {
+            anim.update(1.0 / 60.0);
+            let v = anim.panel_progress();
+            if pred(v) {
+                return v;
+            }
+        }
+        panic!("未在 {max_frames} 帧内到达目标进度，当前 {}", anim.panel_progress());
+    }
+
+    /// 场景 i（任务书 §2-1）：Open 稳态后 close，第一帧采样值 ≥ 0.9（不得跳到 0 附近）。
+    #[test]
+    fn close_from_steady_open_first_frame_stays_visible() {
+        let mut anim = steady_open();
+        anim.close();
+        anim.update(1.0 / 60.0);
+        assert!(
+            anim.panel_progress() >= 0.9,
+            "稳态关闭第一帧面板进度 {}，不得跳 0",
+            anim.panel_progress()
+        );
+    }
+
+    /// 场景 ii：开到约一半时 close，下一帧与上一帧差 ≤ 一帧应有步长的 2 倍。
+    #[test]
+    fn close_from_half_open_next_frame_within_step() {
+        let mut anim = PopupAnim::new();
+        anim.open();
+        let v0 = tick_until(&mut anim, |v| v >= 0.5, 120);
+        anim.close();
+        anim.update(1.0 / 60.0);
+        let v1 = anim.panel_progress();
+        let bound = 2.0 * max_frame_step_of_close(60.0);
+        assert!(
+            (v1 - v0).abs() <= bound,
+            "半开收起首帧差 {v1}-{v0} 超过 2×一帧步长 {bound}"
+        );
+        assert!(v1 >= 0.4, "半开收起首帧 {v1} 不得塌回 0 附近");
+    }
+
+    /// 场景 iii：收起一半时重新 open，呈现值不得回跳到中断之前之下
+    /// （参 compositor/docs/AnimationRules.md：可打断、从当前呈现值接续）。
+    #[test]
+    fn reopen_from_half_close_continues_from_current() {
+        let mut anim = PopupAnim::new();
+        anim.open();
+        let v_pre = tick_until(&mut anim, |v| v >= 0.5, 120);
+        anim.close();
+        let _v_mid = tick_until(&mut anim, |v| v <= 0.5, 120);
+        anim.open();
+        anim.update(1.0 / 60.0);
+        assert!(
+            anim.panel_progress() >= v_pre,
+            "半收重开首帧 {} 低于中断前呈现值 {v_pre}",
+            anim.panel_progress()
+        );
+    }
+
+    // ── 逐帧曲线证据导出（任务书 §5：修前 / 修后同一剧本 CSV） ──
+
+    fn step_log(anim: &mut PopupAnim, rows: &mut String, frame: &mut usize, t_ms: &mut f64) {
+        anim.update(1.0 / 60.0);
+        *t_ms += 1000.0 / 60.0;
+        rows.push_str(&format!(
+            "{},{:.1},{:?},{:.6},{:.6}\n",
+            *frame,
+            t_ms,
+            anim.state(),
+            anim.panel_progress(),
+            anim.overlay_alpha()
+        ));
+        *frame += 1;
+    }
+
+    /// 剧本与 tools/perf/popup_continuity.sh 相同：开→半开收起→半收重开→稳态→收。
+    /// 数据来自动画模型逐帧推进（`PopupAnim::update`），**不是屏幕读回**；夜班流程把它
+    /// 复制为 docs/research/k_framework_fix1/progress_{before,after}.csv（Ether 仓）。
+    #[test]
+    fn export_progress_series_csv() {
+        let mut anim = PopupAnim::new();
+        let mut rows = String::from("frame,elapsed_ms,state,panel_progress,overlay_alpha\n");
+        let mut frame = 0_usize;
+        let mut t_ms = 0.0_f64;
+        anim.open();
+        while anim.panel_progress() < 0.5 && frame < 120 {
+            step_log(&mut anim, &mut rows, &mut frame, &mut t_ms);
+        }
+        anim.close();
+        while anim.panel_progress() > 0.5 && frame < 240 {
+            step_log(&mut anim, &mut rows, &mut frame, &mut t_ms);
+        }
+        anim.open();
+        while anim.state() != PopupState::Open && frame < 360 {
+            step_log(&mut anim, &mut rows, &mut frame, &mut t_ms);
+        }
+        anim.close();
+        while anim.state() != PopupState::Closed && frame < 480 {
+            step_log(&mut anim, &mut rows, &mut frame, &mut t_ms);
+        }
+        assert!(frame < 480, "剧本未在 480 帧内走完");
+        // 写到工作区根 target/（gitignored），夜班流程复制为 Ether 仓 docs 下的修前 / 修后 CSV。
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target");
+        std::fs::create_dir_all(&out).expect("创建 target 目录");
+        std::fs::write(out.join("popup_progress_series.csv"), &rows).expect("写出 CSV");
     }
 }

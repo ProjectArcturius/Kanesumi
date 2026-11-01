@@ -1,4 +1,4 @@
-use sokuou::{EasingMode, MetroAnim, SpringAnim, UwpEasing};
+use sokuou::{Easing, EasingMode, MetroAnim, Progress, SpringAnim, UwpEasing};
 
 /// Kanesumi 标准动画时长：0.25s。轻盈短促、60Hz 友好。参 PLAN.md §2。
 pub const METRO_STANDARD_DURATION: f64 = 0.25;
@@ -8,11 +8,10 @@ pub const METRO_STANDARD_DURATION: f64 = 0.25;
 /// 这是 UWP 快照里唯一一组显式 flyout 开合时长（`FlyoutPresenter`/`MenuFlyoutPresenter`
 /// 模板零 Storyboard，开关全靠系统预置）。
 pub const DURATION_SHEET_APPEAR: f64 = 0.30;
-/// 面板 / 弹窗收起时长。同源 = **150ms**、`KeySpline="0.7,0 1,0.5"`（同文件 L22110-22118）。
-///
-/// ⚠ 旧值 0.26 无依据（既不对应开合比，也不对应任何一手值），已按 150ms 更正 ——
-/// UWP 的收起比展开快一倍，是「短促收敛」的量级来源。
-pub const DURATION_SHEET_DISMISS: f64 = 0.15;
+/// 面板 / 弹窗收起时长。依据裁定 §247（用户 2026-10-29 决定保留 0.26，明确不跟
+/// SDK 26100 CommandBarFlyout ClosingStoryboard 的 150ms）；SDK 一手值保留作对照
+///（150ms、`KeySpline="0.7,0 1,0.5"`，同文件 L22110-22118）。
+pub const DURATION_SHEET_DISMISS: f64 = 0.26;
 /// 快速切换（列表高亮、播放/暂停图标）。对齐 **WinUI**（非 UWP）`ControlFastAnimationDuration`
 /// = 167ms。
 ///
@@ -47,6 +46,85 @@ pub const DURATION_EXPANDER_EXPAND: f64 = 0.333;
 pub const DURATION_EXPANDER_COLLAPSE: f64 = 0.167;
 /// Expander chevron 旋转时长。UWP 0.1s（Checked DoubleAnimation）。参 CONTROL_SPEC §13。
 pub const DURATION_EXPANDER_CHEVRON: f64 = 0.1;
+
+// ── 弹层轨道：换向入口 + 可换向曲线（RM-1028-5 缺陷 1/2 的修法载体） ──────────
+
+/// 弹层轨道曲线。正典 Bézier（sheet_*，§200 / SDK 26100 generic.xaml CommandBarFlyout
+/// 模板）与 Sokuou UWP 缓动变体（overlay_*）两态；经 `Easing::Bezier` / `Easing::Uwp`
+/// 交给 `Progress` 求值（求值器已回流 `sokuou::bezier_y`，Uwp 转发 `apply_uwp`
+/// 与旧 `MetroAnim` 路径逐位一致）。本枚举只描述曲线，不持有推进状态。
+#[derive(Debug, Clone, PartialEq)]
+pub enum TrackCurve {
+    /// cubic-bezier(x1,y1,x2,y2)。
+    Bezier([f32; 4]),
+    /// UWP 缓动变体 + 方向。
+    Uwp(UwpEasing, EasingMode),
+}
+
+impl From<TrackCurve> for Easing {
+    fn from(curve: TrackCurve) -> Self {
+        match curve {
+            TrackCurve::Bezier(c) => Easing::Bezier(c),
+            TrackCurve::Uwp(v, m) => Easing::Uwp(v, m),
+        }
+    }
+}
+
+/// 弹层开合轨道：换向只 `retune_to`（时长 + 曲线）+ `set_target`，
+/// 从当前呈现值接续、可中断（参 compositor/docs/AnimationRules.md）。
+///
+/// 时间推进**唯一**由 Sokuou `Progress` 承担（SOKUOU §Ⅲ：progress 唯一真源）；
+/// 本结构不再复制 value/target/from/elapsed/duration 等推进状态，
+/// 只是预设层的换向入口：曲线两态（正典 Bézier / UWP 变体）经
+/// [`TrackCurve`] → `sokuou::Easing`（`Easing::Bezier` / `Easing::Uwp`）交给 Progress。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FlyoutTrack {
+    progress: Progress,
+}
+
+impl FlyoutTrack {
+    pub fn new(duration: f64, curve: TrackCurve) -> Self {
+        Self {
+            progress: Progress::with_easing(duration, curve.into()),
+        }
+    }
+
+    /// 按预设原型换时长与曲线，不动进度状态。**换向前调用，随后应 `set_target`**：
+    /// 重新计段的 `elapsed` 归零由 `set_target` 承担，呈现值从当前值接续（不重建对象，
+    /// 修复「每次 open/close 重建轨道 → 从 0 重跑」，参 RM-1028-5 缺陷 1）。
+    pub fn retune_to(&mut self, preset: &FlyoutTrack) {
+        self.progress.set_duration(preset.progress.duration());
+        self.progress.set_easing(preset.progress.easing());
+    }
+
+    /// 设定新目标，从当前 value 开始过渡（可中断）。语义同 Sokuou `Progress::set_target`。
+    pub fn set_target(&mut self, target: f64) {
+        self.progress.set_target(target);
+    }
+
+    /// 立即跳到指定值，无过渡。
+    pub fn jump_to(&mut self, value: f64) {
+        self.progress.jump_to(value);
+    }
+
+    /// 每帧推进。`dt` 单位为秒。推进唯一走 Sokuou `Progress::update`，不另立状态机。
+    pub fn update(&mut self, dt: f64) {
+        self.progress.update(dt);
+    }
+
+    pub fn value(&self) -> f64 {
+        self.progress.value()
+    }
+
+    pub fn target(&self) -> f64 {
+        self.progress.target()
+    }
+
+    /// 已到达目标时为 true。
+    pub fn is_steady(&self) -> bool {
+        self.progress.is_steady()
+    }
+}
 
 /// Kanesumi 动画预设。参 PLAN.md §4-1/§4-2 动画三层：
 ///
@@ -87,17 +165,22 @@ impl MetroPresets {
 
     // ── 时长驱动：次要属性 ───────────────────────────────────────
 
-    /// 面板入场：慢起快收，300ms Cubic/EaseOut（对齐 Metro 面板出场典型曲线）。
-    pub fn sheet_appear() -> MetroAnim {
-        MetroAnim::new(DURATION_SHEET_APPEAR, UwpEasing::Cubic, EasingMode::EaseOut)
+    /// 面板入场：300ms 正典开曲线 cubic-bezier(0.1,0.9,0.2,1)（§200；SDK 26100
+    /// `generic.xaml` CommandBarFlyout 模板 OpeningStoryboard）。旧值 Cubic/EaseOut
+    /// 与声明不符（RM-1028-5 缺陷 2），已改 Bézier；时长不改。
+    pub fn sheet_appear() -> FlyoutTrack {
+        FlyoutTrack::new(
+            DURATION_SHEET_APPEAR,
+            TrackCurve::Bezier(crate::easings::CURVE_UWP_OPEN),
+        )
     }
 
-    /// 面板收起：260ms Quadratic/EaseOut，短促收敛。
-    pub fn sheet_dismiss() -> MetroAnim {
-        MetroAnim::new(
+    /// 面板收起：260ms（裁定 §247）正典关曲线 cubic-bezier(0.7,0,1,0.5)（§200；同模板
+    /// ClosingStoryboard）。旧值 Quadratic/EaseOut 与声明不符，已改 Bézier；时长不改。
+    pub fn sheet_dismiss() -> FlyoutTrack {
+        FlyoutTrack::new(
             DURATION_SHEET_DISMISS,
-            UwpEasing::Quadratic,
-            EasingMode::EaseOut,
+            TrackCurve::Bezier(crate::easings::CURVE_UWP_CLOSE),
         )
     }
 
@@ -139,16 +222,19 @@ impl MetroPresets {
     }
 
     /// 下拉面板遮罩淡入：383ms Cubic/EaseOut（对齐 UWP OverlayOpeningAnimation，§8）。
-    pub fn overlay_open() -> MetroAnim {
-        MetroAnim::new(DURATION_OVERLAY_OPEN, UwpEasing::Cubic, EasingMode::EaseOut)
+    /// 返回 [`FlyoutTrack`] 使 PopupAnim 两条轨道都能不重建换向；曲线逐位同旧 MetroAnim。
+    pub fn overlay_open() -> FlyoutTrack {
+        FlyoutTrack::new(
+            DURATION_OVERLAY_OPEN,
+            TrackCurve::Uwp(UwpEasing::Cubic, EasingMode::EaseOut),
+        )
     }
 
     /// 下拉面板遮罩淡出：216ms Quadratic/EaseOut（对齐 UWP OverlayClosingAnimation，§8）。
-    pub fn overlay_close() -> MetroAnim {
-        MetroAnim::new(
+    pub fn overlay_close() -> FlyoutTrack {
+        FlyoutTrack::new(
             DURATION_OVERLAY_CLOSE,
-            UwpEasing::Quadratic,
-            EasingMode::EaseOut,
+            TrackCurve::Uwp(UwpEasing::Quadratic, EasingMode::EaseOut),
         )
     }
 
@@ -229,14 +315,14 @@ mod tests {
         assert!(DURATION_QUICK_SWITCH < DURATION_COVER_FADE);
     }
 
-    /// 弹窗开合时长与一手源逐字对齐：开 300ms / 关 150ms。
+    /// 弹窗开合时长与裁定对齐：开 300ms（SDK 一手源）+ 关 260ms（裁定 §247）。
     #[test]
-    fn sheet_open_close_match_commandbarflyout_storyboards() {
+    fn sheet_open_close_match_adjudicated_durations() {
         assert_eq!(DURATION_SHEET_APPEAR, 0.30);
-        assert_eq!(DURATION_SHEET_DISMISS, 0.15);
+        assert_eq!(DURATION_SHEET_DISMISS, 0.26);
         assert!(
-            (DURATION_SHEET_APPEAR / DURATION_SHEET_DISMISS - 2.0).abs() < 1e-9,
-            "UWP 收起恰为展开的一半时长"
+            (DURATION_SHEET_APPEAR / DURATION_SHEET_DISMISS - 300.0 / 260.0).abs() < 1e-9,
+            "开合比锁定裁定值 300/260（≈1.154:1，不再跟 SDK 150ms 的 2:1）"
         );
     }
 
@@ -245,5 +331,42 @@ mod tests {
         // 参 CONTROL_SPEC §10：UWP RepositionThemeAnimation 0.15s；不确定进度循环 2.0s
         assert_eq!(DURATION_TOGGLE_FLIP, 0.15);
         assert_eq!(DURATION_INDETERMINATE, 2.0);
+    }
+
+    /// RM-1028-5 缺陷 2 回归：`sheet_appear` 进度必须等于正典
+    /// cubic-bezier(0.1,0.9,0.2,1)（§200；SDK 26100 generic.xaml CommandBarFlyout 模板），
+    /// 不再是 1−(1−t)^3。容差 1e-3（参任务书 k-framework-fix1 §2-1）。
+    #[test]
+    fn sheet_appear_matches_canon_bezier() {
+        let mut a = MetroPresets::sheet_appear();
+        for &t in &[0.25_f32, 0.5, 0.75] {
+            a.jump_to(0.0);
+            a.set_target(1.0);
+            a.update(t as f64 * DURATION_SHEET_APPEAR);
+            let expect = crate::easings::bezier_y(crate::easings::CURVE_UWP_OPEN, t) as f64;
+            assert!(
+                (a.value() - expect).abs() <= 1e-3,
+                "sheet_appear t={t}: 实际 {}，正典 Bézier {expect}",
+                a.value()
+            );
+        }
+    }
+
+    /// RM-1028-5 缺陷 2 回归：`sheet_dismiss` 进度必须等于正典
+    /// cubic-bezier(0.7,0,1,0.5)，不再是 1−(1−t)^2。
+    #[test]
+    fn sheet_dismiss_matches_canon_bezier() {
+        let mut a = MetroPresets::sheet_dismiss();
+        for &t in &[0.25_f32, 0.5, 0.75] {
+            a.jump_to(0.0);
+            a.set_target(1.0);
+            a.update(t as f64 * DURATION_SHEET_DISMISS);
+            let expect = crate::easings::bezier_y(crate::easings::CURVE_UWP_CLOSE, t) as f64;
+            assert!(
+                (a.value() - expect).abs() <= 1e-3,
+                "sheet_dismiss t={t}: 实际 {}，正典 Bézier {expect}",
+                a.value()
+            );
+        }
     }
 }

@@ -2022,7 +2022,7 @@ dependencies = [
 [[package]]
 name = "sokuou"
 version = "0.1.0"
-source = "git+https://github.com/GuitaristRin/Sokuou#e5ad06a44aef2f75b583fa0f6201ebd5e3714c80"
+source = "git+https://github.com/GuitaristRin/Sokuou#c3d19372dbc4aec37f7f7d73afc08579acd05c59"
 
 [[package]]
 name = "spirv"
