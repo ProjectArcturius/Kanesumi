@@ -3548,4 +3548,209 @@ fn system_font_chain_matches_candidates() {
         }
         std::fs::remove_file(&bad_path).ok();
     }
+
+    // ---- A3 载入剩余成本分布探针（第 2 卡：只量不修，不在产品路径）----
+    //
+    // 五段口径（段值除 coverage 外为同字节同原语复刻计时，读后热字节，误差二阶）：
+    //   io_ms       真实 fs::read（load_stack_with 计时读取闭包累计）
+    //   parse_ms    载入期解析：tag 扫描（collection_index_matching）+ 校验 parse +
+    //               rustybuzz from_slice + 轴探测 parse，与 face_parse_calls 增量对账
+    //   coverage_ms 覆盖表建表：off = Σ 覆盖句柄 build_us（产品内部实测）；on = diag_ms
+    //              （惰性建表窗口实测，含建表内的一次 Face::parse）
+    //   identity_ms 身份 FNV：栈哈希 + 索引开时的 content_hash（单趟双累加复刻，
+    //               与 engine.identity() 逐位对账）
+    //   index_ms    索引查找（仅 on）：index_valid 判定 + 按预置 content_hash 的条目匹配
+    //   other_ms    load_ms − io − parse − identity − index（装配 / 缓存 / 分配等余量）
+    // 窗口：off = load_ms；on = load_ms + diag_ms（惰性建表在首次诊断触发）。
+    // 无 KANESUMI_LOAD_COST_CSV 时直接跳过，不影响常规 cargo test；off/on 为进程级
+    // 开关，不可同进程隔离，由外层分档各跑 5 次（每次独立进程 = 真实冷载入）。
+    #[test]
+    fn load_cost_probe_once() {
+        let Some(csv) = std::env::var_os("KANESUMI_LOAD_COST_CSV") else { return };
+        let run = std::env::var("KANESUMI_LOAD_COST_RUN").unwrap_or_else(|_| "0".into());
+        let chain = system_font_chain();
+        if chain.is_empty() {
+            eprintln!("跳过：会话字体链为空");
+            return;
+        }
+        let tag_of: HashMap<PathBuf, Option<&'static str>> =
+            chain.iter().map(|s| (s.path.clone(), s.collection_tag)).collect();
+        // 真实载入：读取闭包只计时 IO 并留字节；tag 匹配按产品语义发生在 faces_from_source，
+        // 复刻段再计，避免双重计时。
+        let io = std::cell::Cell::new(std::time::Duration::ZERO);
+        let loaded: std::cell::RefCell<Vec<(PathBuf, FontBytes)>> = Default::default();
+        let read = |p: &Path| -> std::io::Result<FontBytes> {
+            let t = std::time::Instant::now();
+            let bytes: FontBytes = Arc::new(std::fs::read(p)?);
+            io.set(io.get() + t.elapsed());
+            loaded.borrow_mut().push((p.to_path_buf(), bytes.clone()));
+            Ok(bytes)
+        };
+        let (primary, extra) = chain.split_first().expect("链非空已判");
+        let parses_before = face_parse_calls();
+        let builds_before = coverage_builds();
+        let t0 = std::time::Instant::now();
+        let engine =
+            TextEngine::load_stack_with(primary, extra, &read).expect("探针字体栈必须可加载");
+        let load_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let idx = if font_index_switch() { shared_index() } else { None };
+        // diag 前先记未建句柄数（on 档对账：惰性建表应恰好每未建句柄一次；部分命中时
+        // resolve 已在载入内建掉一部分，不为零也不能误断）。
+        let mut unset_handles: Vec<usize> = Vec::new();
+        for font in engine.fonts.iter() {
+            if font.coverage.get().is_none() {
+                let h = Arc::as_ptr(&font.coverage) as usize;
+                if !unset_handles.contains(&h) {
+                    unset_handles.push(h);
+                }
+            }
+        }
+        // 诊断触发 on 档惰性建表（off 档零建表、diag 近零成本）。
+        let td = std::time::Instant::now();
+        let _ = engine.diag_coverage_stats();
+        let diag_ms = td.elapsed().as_secs_f64() * 1000.0;
+        let parse_delta = face_parse_calls() - parses_before;
+        let builds_delta = coverage_builds() - builds_before;
+        // coverage 段：off 按覆盖句柄去重取内部实测 build_us；on 取 diag 窗口实测。
+        let coverage_ms = if idx.is_some() {
+            diag_ms
+        } else {
+            let mut seen: Vec<usize> = Vec::new();
+            let mut sum = 0.0f64;
+            for font in engine.fonts.iter() {
+                let h = Arc::as_ptr(&font.coverage) as usize;
+                if seen.contains(&h) {
+                    continue;
+                }
+                seen.push(h);
+                sum += font.coverage_table().build_us as f64 / 1000.0;
+            }
+            sum
+        };
+        // identity 段：单趟双累加复刻（fresh 字面 = 栈哈希 + content 哈希同趟），逐位对账。
+        let t = std::time::Instant::now();
+        let mut hash = 0xcbf29ce484222325_u64;
+        let mut seen: Vec<usize> = Vec::new();
+        for font in engine.fonts.iter() {
+            let h = Arc::as_ptr(&font.content_hash) as usize;
+            let fresh = idx.is_some() && !seen.contains(&h);
+            if fresh {
+                seen.push(h);
+            }
+            let mut content = 0xcbf29ce484222325_u64;
+            for byte in font.data().iter() {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x100000001b3);
+                if fresh {
+                    content ^= u64::from(*byte);
+                    content = content.wrapping_mul(0x100000001b3);
+                }
+            }
+            if fresh {
+                assert_eq!(
+                    Some(content),
+                    font.content_hash.get().copied(),
+                    "复刻 content_hash 必须与产品值一致"
+                );
+            }
+            hash ^= u64::from(font.collection_index);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        assert_eq!(hash, engine.identity(), "复刻栈身份必须与产品一致");
+        let identity_ms = t.elapsed().as_secs_f64() * 1000.0;
+        // index 段（仅 on）：有效性判定 + 全字面条目匹配（与 resolve_index_coverage 同形）。
+        let mut index_ms = 0.0f64;
+        let mut index_valid = false;
+        if let Some(idx) = idx {
+            let t = std::time::Instant::now();
+            index_valid = idx.header().stack_identity == engine.identity()
+                && usize::try_from(idx.header().font_count).ok() == Some(engine.font_count());
+            for font in engine.fonts.iter() {
+                if let Some(h) = font.content_hash.get().copied() {
+                    let _ = index_entry_coverage_by_hash(idx, h, font.collection_index);
+                }
+            }
+            index_ms = t.elapsed().as_secs_f64() * 1000.0;
+        }
+        // parse 段：同字节同原语复刻（tag 扫描 + 校验 + rustybuzz + 轴探测；VF 实例克隆不
+        // parse）。复刻自身也走 count_face_parse，故段内计数取进程计数器差值——tag 扫描
+        // 的尝试次数不可手数，进程计数是最准的对账口径。
+        let parses_before_replica = face_parse_calls();
+        let t = std::time::Instant::now();
+        for (path, bytes) in loaded.borrow().iter() {
+            let data: &[u8] = bytes.as_ref().as_ref();
+            let ci = tag_of
+                .get(path)
+                .cloned()
+                .flatten()
+                .and_then(|tag| collection_index_matching(data, tag))
+                .unwrap_or(0);
+            let face = ttf_parser::Face::parse(data, ci).expect("复刻 parse 必须成功");
+            let _weight = face.weight();
+            let _ = rustybuzz::Face::from_slice(data, ci);
+            let probe = ttf_parser::Face::parse(data, ci).expect("复刻轴探测必须成功");
+            let _axes = probe.variation_axes().into_iter().count();
+        }
+        let parse_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let replica_parses = face_parse_calls() - parses_before_replica;
+        // 对账：产品载入（含 on 档惰性建表）的 parse 增量 == 复刻增量 + 2×源数（复刻的
+        // 校验/轴探测为直接调用、不经 count_face_parse，只有 tag 扫描进进程计数）
+        // + on 档建表 parse。不等只提示不中止——测量不因口径漂移而死，偏差写进 CSV。
+        let expected_parses = replica_parses
+            + 2 * loaded.borrow().len() as u64
+            + if idx.is_some() { builds_delta } else { 0 };
+        if parse_delta != expected_parses {
+            eprintln!(
+                "load_cost_probe 对账偏差: parse_delta={parse_delta} expected={expected_parses}"
+            );
+        }
+        let other_ms =
+            (load_ms - io.get().as_secs_f64() * 1000.0 - parse_ms - identity_ms - index_ms).max(0.0);
+        let window_ms = load_ms + if idx.is_some() { diag_ms } else { 0.0 };
+        if idx.is_some() {
+            // on 档 coverage 段已取 diag_ms，这里仅对账：建表次数 = diag 前未建句柄数。
+            assert_eq!(
+                builds_delta,
+                unset_handles.len() as u64,
+                "on 档诊断必须每个未建句柄恰建表一次"
+            );
+        }
+        // CSV 追加一行；首行写表头。持久路径由调用方经环境变量给到本槽 HOME。
+        let write_header = !std::path::Path::new(&csv).exists();
+        if let Some(dir) = std::path::Path::new(&csv).parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&csv) {
+            if write_header {
+                let _ = writeln!(f, "mode,run,sources,font_count,index_valid,window_ms,load_ms,diag_ms,io_ms,parse_ms,coverage_ms,identity_ms,index_ms,other_ms,parse_delta,replica_parses,builds_delta");
+            }
+            let _ = writeln!(
+                f,
+                "{},{},{},{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{},{},{}",
+                if idx.is_some() { "on" } else { "off" },
+                run,
+                chain.len(),
+                engine.font_count(),
+                index_valid,
+                window_ms,
+                load_ms,
+                diag_ms,
+                io.get().as_secs_f64() * 1000.0,
+                parse_ms,
+                coverage_ms,
+                identity_ms,
+                index_ms,
+                other_ms,
+                parse_delta,
+                replica_parses,
+                builds_delta
+            );
+        }
+        println!(
+            "load_cost_probe mode={} run={run} window_ms={window_ms:.3} io={:.3} parse={parse_ms:.3} coverage={coverage_ms:.3} identity={identity_ms:.3} index={index_ms:.3} other={other_ms:.3}",
+            if idx.is_some() { "on" } else { "off" },
+            io.get().as_secs_f64() * 1000.0
+        );
+    }
 }
