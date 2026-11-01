@@ -278,6 +278,7 @@ impl<'a> Index<'a> {
         Some(coverage_at(self.file, &self.header, e.cov_off, e.cov_ranges))
     }
 
+
     pub fn header(&self) -> &IndexHeader {
         &self.header
     }
@@ -474,6 +475,22 @@ impl OwnedIndex {
             .filter_map(|i| dirfp_at(&self.bytes, &self.header, i))
     }
 
+    /// 条目 `i` 覆盖区段的自持拷贝（A3.2 客户端件）：字面把它缓存为
+    /// [`OwnedCoverage`]，共享索引句柄被替换后仍可安全查询。
+    pub fn coverage_owned(&self, i: usize) -> Option<OwnedCoverage> {
+        self.coverage(i).map(|r| OwnedCoverage { recs: std::sync::Arc::from(r.recs) })
+    }
+
+    /// 按 `content_hash` + `collection_index` 找条目下标（`text.rs` 载入期判定与
+    /// [`Self::coverage_owned`] 配套；遍历一次，条目数 ≤ 4096）。
+    pub fn entry_index_by_hash(&self, hash: u64, collection_index: u32) -> Option<usize> {
+        (0..usize::try_from(self.header.font_count).unwrap_or(0))
+            .find(|&i| {
+                self.entry(i)
+                    .is_some_and(|e| e.content_hash == hash && u32::from(e.collection_index) == collection_index)
+            })
+    }
+
     pub fn coverage(&self, i: usize) -> Option<CoverageRanges<'_>> {
         let e = self.entry(i)?;
         Some(coverage_at(&self.bytes, &self.header, e.cov_off, e.cov_ranges))
@@ -587,22 +604,42 @@ impl<'a> CoverageRanges<'a> {
 
     /// 码点 `c` 是否落在任一区间（O(log n) 二分；与 `text::CoverageTable::has` 同语义）。
     pub fn has(&self, c: char) -> bool {
-        let cp = u32::from(c);
-        let n = self.len();
-        let mut lo = 0usize;
-        let mut hi = n;
-        while lo < hi {
-            let mid = (lo + hi) / 2;
-            if rd4(self.recs, mid * COV_REC).unwrap_or(u32::MAX) <= cp {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
+        ranges_has(self.recs, c)
+    }
+}
+
+/// 区段字节上的码点二分（[`CoverageRanges::has`] 与 [`OwnedCoverage::has`] 共用）。
+fn ranges_has(recs: &[u8], c: char) -> bool {
+    let cp = u32::from(c);
+    let n = recs.len() / COV_REC;
+    let mut lo = 0usize;
+    let mut hi = n;
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if rd4(recs, mid * COV_REC).unwrap_or(u32::MAX) <= cp {
+            lo = mid + 1;
+        } else {
+            hi = mid;
         }
-        if lo == 0 {
-            return false;
-        }
-        rd4(self.recs, (lo - 1) * COV_REC + 4).is_some_and(|end| end >= cp)
+    }
+    if lo == 0 {
+        return false;
+    }
+    rd4(recs, (lo - 1) * COV_REC + 4).is_some_and(|end| end >= cp)
+}
+
+/// 覆盖区段视图的自持版：把条目区段字节拷成 `Arc<[u8]>`（几 KB 量级，每字面一次），
+/// 供字面在共享索引句柄被替换（A3.2 客户端件：句柄按文件身份 stat 刷新）后仍可安全
+/// 查询——旧句柄由持有方计数保活，借用不再指向会被替换的 `'static` 数据。
+#[derive(Debug, Clone)]
+pub struct OwnedCoverage {
+    recs: std::sync::Arc<[u8]>,
+}
+
+impl OwnedCoverage {
+    /// 码点 `c` 是否落在任一区间（与 [`CoverageRanges::has`] 同一二分实现）。
+    pub fn has(&self, c: char) -> bool {
+        ranges_has(&self.recs, c)
     }
 }
 

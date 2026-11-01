@@ -476,10 +476,11 @@ struct FontFace {
     /// 码点覆盖表（cmap 压缩区间）。A3.1 惰性：索引命中时不建，首次非索引用途
     ///（索引未命中 / 诊断统计）才建；同源多字重实例共享同一份 `Arc<OnceLock<..>>`。
     coverage: Arc<std::sync::OnceLock<Arc<CoverageTable>>>,
-    /// A3.3/A3.1：开关开时解析的索引覆盖区段；`None` = 无索引 / 无效 / 未命中 → 回落内存表。
+    /// A3.3/A3.1：开关开时解析的索引覆盖区段（**自持拷贝**，A3.2 客户端件：共享句柄
+    /// 按文件身份刷新，旧句柄由字面计数保活）；`None` = 无索引 / 无效 / 未命中 → 回落内存表。
     /// 载入期命中即由 [`TextEngine::refresh_identity`] 预置，运行期 `has_glyph` 不再复算
     /// `content_hash`。
-    index_cov: std::sync::OnceLock<Option<crate::font_index::CoverageRanges<'static>>>,
+    index_cov: std::sync::OnceLock<Option<crate::font_index::OwnedCoverage>>,
     /// 本字面整份字节的 FNV-1a（与索引 `content_hash` 同算法）。A3.1 起在
     /// [`TextEngine::refresh_identity`] 的身份遍历中顺带算出（同一趟内存访问），
     /// 供载入期按 `content_hash + collection_index` 判命中；字重实例共享同一份（同字节）。
@@ -542,7 +543,7 @@ impl FontFace {
         // A3.1：索引存在时先不建覆盖表 —— 命中判定要 `content_hash`，而身份遍历
         //（`refresh_identity`）本来就要读完整份字节；在那一趟里顺带算哈希后再决策，
         // 避免为判命中再走一整趟。无索引 / 开关关 → `pending=false`，旧路径载入即建。
-        let pending = font_index_switch() && shared_index().is_some();
+        let pending = shared_index().is_some();
         Self::load_validated(bytes, collection_index, pending)
     }
 
@@ -594,22 +595,31 @@ impl FontFace {
     }
 
     /// A3.1 载入期决策（`refresh_identity` 算完 `content_hash` 后调用）：命中的字面
-    /// 缓存索引区段、覆盖表保持未建；未命中则补建表，回到旧路径。
-    fn resolve_index_coverage(&self, idx: &'static crate::font_index::OwnedIndex) {
+    /// 缓存索引区段**自持拷贝**（A3.2：不借 `'static`，句柄替换不悬垂）、覆盖表保持
+    /// 未建；未命中则补建表，回到旧路径。
+    fn resolve_index_coverage(
+        &self,
+        idx: Option<&std::sync::Arc<crate::font_index::OwnedIndex>>,
+    ) {
         if self.coverage.get().is_some() || self.index_cov.get().is_some() {
             return;
         }
         let Some(hash) = self.content_hash.get().copied() else {
             return;
         };
-        match index_entry_coverage_by_hash(idx, hash, self.collection_index) {
-            Some(ranges) => {
-                let _ = self.index_cov.set(Some(ranges));
+        let Some(idx) = idx else {
+            return;
+        };
+        match idx.entry_index_by_hash(hash, self.collection_index) {
+            Some(i) => {
+                if let Some(owned) = idx.coverage_owned(i) {
+                    let _ = self.index_cov.set(Some(owned));
+                }
             }
             None => {
                 // 未命中：补建内存表回旧路径，并把「无索引条目」一并缓存——
-                // 否则后续回落查询（`has_glyph` → `index_entry_coverage`）会对整份
-                // 字节再付一次 FNV，与载入期已判的事实重复。
+                // 否则后续回落查询（`has_glyph`）会对整份字节再付一次 FNV，
+                // 与载入期已判的事实重复。
                 let _ = self.coverage_table();
                 let _ = self.index_cov.set(None);
             }
@@ -664,12 +674,16 @@ impl FontFace {
     /// 尚未建（索引命中路径），此处才惰性建表。可变字体实例与基条共享同一表 / 同一条目
     ///（`wght` 轴不影响 cmap）。
     fn has_glyph(&self, c: char) -> bool {
-        let idx = if font_index_switch() { shared_index() } else { None };
-        self.has_glyph_with(self.index_entry_coverage(idx), c)
+        // A3.2：塑形期不再触碰全局句柄（不 stat）——字面只看载入期固化的自持区段。
+        match self.index_cov.get().and_then(|o| o.as_ref()) {
+            Some(owned) => owned.has(c),
+            None => self.coverage_table().has(c),
+        }
     }
 
     /// 查询纯核：`Some(区段)` → 索引；`None` → 内存表（首次调用建表）。测试注入
     /// 非 `'static` 夹具区段，避免改进程级开关。
+    #[cfg(test)]
     fn has_glyph_with(
         &self,
         index_cov: Option<crate::font_index::CoverageRanges<'_>>,
@@ -681,18 +695,6 @@ impl FontFace {
         }
     }
 
-    /// 本字面在索引中的覆盖区段（`content_hash` + `collection_index` 匹配，OnceLock 缓存）。
-    /// A3.1 载入期已定：命中预置区段、未命中连「无条目」一并缓存（见
-    /// [`Self::resolve_index_coverage`]）；仅开关关 / 无索引的旧路径字面，首次查询
-    /// 才对整份字节做一次 FNV（与 E04 全栈身份哈希同量级）。
-    fn index_entry_coverage(
-        &self,
-        idx: Option<&'static crate::font_index::OwnedIndex>,
-    ) -> Option<crate::font_index::CoverageRanges<'static>> {
-        *self.index_cov.get_or_init(|| {
-            index_entry_coverage_in(idx?, self.data(), self.collection_index)
-        })
-    }
 
     /// 字素（所有字符）是否都在本字面内。空白与缺省可忽略字符视为覆盖。
     fn grapheme_covered(&self, grapheme: &str) -> bool {
@@ -1184,6 +1186,9 @@ pub struct TextEngine {
     /// 消除每帧 `engine.clone()` 深拷贝整份字形表（fontdue `Font` 的 `Clone` 为
     /// `Vec<Glyph>` + `HashMap<char,..>` 深拷贝，CJK 字体数 MB）。参 egui 共享后端思路。
     fonts: Arc<Vec<FontFace>>,
+    /// A3.2：载入期的索引句柄快照（`shared_index()` 在引擎载入时做一次 stat 比对 /
+    /// 重开）。塑形路径读它而不触碰全局句柄；引擎重建（常驻进程重载字体）时刷新。
+    index: Option<std::sync::Arc<crate::font_index::OwnedIndex>>,
     identity: u64,
     /// 塑形结果缓存（`Arc<Mutex<..>>` 使 Clone 共享同一缓存）。静态文本每帧重复
     /// BiDi 分析 + grapheme 切分 + rustybuzz 塑形是仅次于光栅化的 CPU 大头。
@@ -1279,6 +1284,7 @@ impl TextEngine {
         let faces = FontFace::faces_from_source(handle, src)?;
         Ok(Self {
             fonts: Arc::new(faces),
+            index: None,
             identity: 0,
             shape_cache: Arc::new(Mutex::new(HashMap::new())),
             layout_cache: Arc::new(Mutex::new(HashMap::new())),
@@ -1289,6 +1295,7 @@ impl TextEngine {
         let face = FontFace::from_bytes(Arc::new(bytes.to_vec()), 0)?;
         let mut engine = Self {
             fonts: Arc::new(vec![face]),
+            index: None,
             identity: 0,
             shape_cache: Arc::new(Mutex::new(HashMap::new())),
             layout_cache: Arc::new(Mutex::new(HashMap::new())),
@@ -1307,15 +1314,18 @@ impl TextEngine {
     }
 
     fn refresh_identity(&mut self) {
-        let idx = if font_index_switch() { shared_index() } else { None };
+        // A3.2：载入期取一次句柄（此时做 stat 比对 / 重开），存为引擎级快照——
+        // 塑形路径（`font_for_grapheme` / `has_glyph`）读快照，不再触碰全局句柄。
+        let idx = shared_index();
+        self.index = idx.clone();
         // A3 身份采信（§7 客户端采信条款，裁定 (a)）：索引有效且全部字面按位 content
         // 命中 ⇒ 采信 header.stack_identity，跳过整趟栈 FNV；任一不中（缺失/损坏/
         // 数目不符/content 不中）回退下方自算，值逐位一致。缺省关档不走此径。
-        if let Some(idx) = idx
+        if let Some(idx) = idx.as_ref()
             && self.adopt_identity_with(idx)
         {
             for font in self.fonts.iter() {
-                font.resolve_index_coverage(idx);
+                font.resolve_index_coverage(Some(idx));
             }
             return;
         }
@@ -1355,9 +1365,9 @@ impl TextEngine {
         self.identity = hash;
         // A3.1 载入期决策：`content_hash + collection_index` 命中 → 运行期查索引区段；
         // 未命中 → 此刻补建覆盖表（仍属载入期，行为与旧路径一致）。
-        if let Some(idx) = idx {
+        if let Some(idx) = idx.as_ref() {
             for font in self.fonts.iter() {
-                font.resolve_index_coverage(idx);
+                font.resolve_index_coverage(Some(idx));
             }
         }
     }
@@ -1395,7 +1405,8 @@ impl TextEngine {
 
     fn font_for_grapheme(&self, grapheme: &str) -> usize {
         count_font_for_grapheme();
-        let idx = if font_index_switch() { shared_index() } else { None };
+        // A3.2：塑形期读载入期快照（不 stat）——常驻进程的句柄刷新发生在引擎重建。
+        let idx = self.index.as_deref();
         self.font_for_grapheme_with(idx, grapheme)
     }
 
@@ -2158,21 +2169,75 @@ fn font_index_switch() -> bool {
     *ENABLED.get_or_init(|| std::env::var_os("KANESUMI_FONT_INDEX").is_some_and(|v| v == "1"))
 }
 
-/// 进程内唯一索引句柄：开关关 → None；开但文件缺失 / 损坏 → None（完全走旧路径）。
+/// 索引句柄：路径 + 打开时的文件身份（dev / ino / len / mtime_ns）+ 共享计数索引。
+/// 旧句柄由字面 / 引擎快照（`Arc`）保活，替换只影响后续取用。
+struct SharedIndexHandle {
+    ident: (u64, u64, u64, i64),
+    index: std::sync::Arc<crate::font_index::OwnedIndex>,
+}
+
+/// 进程内共享索引句柄（A3.2 客户端件）：每次**字体引擎载入**入口调用时做一次
+/// `stat` 比对——文件身份（dev / ino / len / mtime_ns）与当前句柄一致 → 复用；
+/// 变了 → 重开（构建器原地重写 `fonts-v1.idx` 后常驻进程立即换新索引）；
+/// 打开失败 → 清句柄、返回 None（与缺失 / 损坏语义一致，不阻塞、不 panic）。
+/// 开关关 → None 且**不做 stat**（与改前逐路径相同）。塑形查询（`has_glyph` /
+/// `font_for_grapheme`）读引擎载入期快照，不走本函数。
 /// 路径沿用设计稿 A3.1 口径：`$XDG_RUNTIME_DIR/kanesumi/fonts-v1.idx`（未设即无索引）。
-/// 缺失 / 损坏静默回退（kanesumi-canvas 无日志依赖，不新增）；细节归 A3.2 失效件。
-fn shared_index() -> Option<&'static crate::font_index::OwnedIndex> {
-    static IDX: std::sync::OnceLock<Option<crate::font_index::OwnedIndex>> =
-        std::sync::OnceLock::new();
-    IDX.get_or_init(|| {
-        if !font_index_switch() {
-            return None;
+/// 缺失 / 损坏静默回退（kanesumi-canvas 无日志依赖，不新增）。
+fn shared_index() -> Option<std::sync::Arc<crate::font_index::OwnedIndex>> {
+    if !font_index_switch() {
+        return None;
+    }
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty())?;
+    let path = std::path::PathBuf::from(dir).join("kanesumi").join("fonts-v1.idx");
+    shared_index_at(&path)
+}
+
+/// 句柄刷新纯逻辑（路径由调用方给，不读环境——测试可直调，避开进程级开关竞态）。
+/// 每次调用一次 stat 比对；身份一致 → 复用现句柄；变了 → 重开；打开失败 → 清句柄。
+fn shared_index_at(
+    path: &std::path::Path,
+) -> Option<std::sync::Arc<crate::font_index::OwnedIndex>> {
+    static IDX: std::sync::Mutex<Option<SharedIndexHandle>> = std::sync::Mutex::new(None);
+    let ident = index_ident(path)?;
+    let mut guard = IDX.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(h) = guard.as_ref()
+        && h.ident == ident
+    {
+        return Some(std::sync::Arc::clone(&h.index));
+    }
+    match crate::font_index::OwnedIndex::open(path) {
+        Ok(index) => {
+            let shared = std::sync::Arc::new(index);
+            *guard = Some(SharedIndexHandle { ident, index: std::sync::Arc::clone(&shared) });
+            Some(shared)
         }
-        let dir = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty())?;
-        let path = std::path::PathBuf::from(dir).join("kanesumi").join("fonts-v1.idx");
-        crate::font_index::OwnedIndex::open(&path).ok()
-    })
-    .as_ref()
+        Err(_) => {
+            // 损坏（缺失已被上面 stat 拦住）：丢弃句柄走无索引，下次成功即重开。
+            *guard = None;
+            None
+        }
+    }
+}
+
+/// 文件身份四元组（dev / ino / len / mtime_ns；非 unix 平台 dev/ino 恒 0，只用
+/// len + mtime 判变化——索引由构建器整文件替换，rename 后 mtime 必变）。
+fn index_ident(path: &std::path::Path) -> Option<(u64, u64, u64, i64)> {
+    let m = std::fs::metadata(path).ok()?;
+    let ns = m
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos() as i64;
+    #[cfg(unix)]
+    let (dev, ino) = {
+        use std::os::unix::fs::MetadataExt as _;
+        (m.dev(), m.ino())
+    };
+    #[cfg(not(unix))]
+    let (dev, ino) = (0u64, 0u64);
+    Some((dev, ino, m.len(), ns))
 }
 
 /// 条目 `i` 的覆盖区段（借用传入索引）。
@@ -2186,6 +2251,7 @@ fn index_ranges_in<'i>(
 
 /// 自由函数（测试可注入非 `'static` 夹具）：按 `content_hash`（纯文件字节 FNV-1a）+
 /// `collection_index` 匹配索引条目，取其覆盖区段。
+#[cfg(test)]
 fn index_entry_coverage_in<'i>(
     idx: &'i crate::font_index::OwnedIndex,
     data: &[u8],
@@ -2196,6 +2262,7 @@ fn index_entry_coverage_in<'i>(
 
 /// 同上，但 `content_hash` 由调用方给（A3.1 载入期在 `refresh_identity` 的身份遍历里
 /// 顺带算出，避免为判命中再读一整趟字体字节）。
+#[cfg(test)]
 fn index_entry_coverage_by_hash<'i>(
     idx: &'i crate::font_index::OwnedIndex,
     hash: u64,
@@ -3433,6 +3500,7 @@ fn system_font_chain_matches_candidates() {
         let legacy = CoverageTable::from_face(&face);
         let engine = TextEngine {
             fonts: Arc::new(vec![loaded]),
+            index: None,
             identity: 0,
             shape_cache: Arc::new(Mutex::new(HashMap::new())),
             layout_cache: Arc::new(Mutex::new(HashMap::new())),
@@ -3513,6 +3581,83 @@ fn system_font_chain_matches_candidates() {
             stats.iter().all(|s| s.codepoints > 0),
             "诊断数值不得为空（与旧路径同口径）"
         );
+    }
+
+    /// A3.2 客户端件红测试（2026-11-01 slot03）：构建器原地重写 `fonts-v1.idx`
+    ///（写临时文件后 rename，`write_atomic` 同款语义）后，**同一进程**再次载入字体
+    /// 引擎必须换用新索引。⚠ 现状 `shared_index()` 用进程级 `OnceLock` 终身持有首次
+    /// 打开的句柄——本测试**当前为红**（第二次载入仍返回旧索引），修复后转绿。
+    /// 测试直调 `shared_index_at`（句柄刷新纯逻辑，路径由调用方给），不触碰进程级
+    /// 开关 `OnceLock` 与环境变量，全量并行无竞态面；生产入口 `shared_index()` 的
+    /// 开关 / 路径组合另有 real_env 用例覆盖。
+    #[test]
+    fn shared_index_reloads_after_builder_rewrites_file() {
+        static FIXTURE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "a32-reload-{}-{}",
+            std::process::id(),
+            FIXTURE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let run = dir.join("kanesumi");
+        let idx_path = run.join("fonts-v1.idx");
+        std::fs::create_dir_all(&run).expect("夹具目录必须可创建");
+
+        static COV: [(u32, u32); 1] = [(0x20, 0x7E)];
+        let build = |generation: u64, tag: &str, body: &[u8]| {
+            crate::font_index::write_index(
+                &[crate::font_index::IndexEntrySpec {
+                    path: Box::leak(format!("/fixture/{tag}.ttf").into_boxed_str()),
+                    family: "夹具",
+                    collection_index: 0,
+                    weight: 400,
+                    slant: 0,
+                    flags: 0b100,
+                    ttc_faces: 1,
+                    coverage: &COV,
+                    wght_min: 0.0,
+                    wght_max: 0.0,
+                    mtime_ns: 0,
+                }],
+                &[body],
+                &[crate::font_index::DirFpSpec { path: "/fixture", mtime_ns: 0, ino: 0 }],
+                generation,
+                generation * 1000,
+                0,
+            )
+        };
+        // 构建器同款原子替换（`write_atomic`：写临时文件 → rename）。
+        let atomic_rewrite = |file: &[u8]| {
+            let tmp = run.join("fonts-v1.idx.tmp");
+            std::fs::write(&tmp, file).expect("写临时索引");
+            std::fs::rename(&tmp, &idx_path).expect("rename 索引");
+        };
+
+        // ① 夹具索引 A：首次打开 → 句柄 = A。
+        atomic_rewrite(&build(1, "a", &[0xA5u8; 64]));
+        let first = shared_index_at(&idx_path).expect("索引 A 必须可打开");
+        assert_eq!(first.header().generation, 1, "首次载入用 A");
+        assert!(
+            first.entries().next().is_some_and(|e| e.path_str().unwrap_or("").ends_with("a.ttf")),
+            "首次载入命中 A 独有条目"
+        );
+
+        // ② 原地替换为索引 B（gen=2、b.ttf 条目、字节换掉——确是另一份索引）。
+        atomic_rewrite(&build(2, "b", &[0x5Au8; 64]));
+
+        // ③ 再次载入：必须换用 B（缺陷在此：现状 OnceLock 终身持 A → 红）。
+        let second = shared_index_at(&idx_path).expect("索引 B 必须可打开");
+        assert_eq!(
+            second.header().generation, 2,
+            "重建后必须重开句柄换用 B（现状终身持 A）"
+        );
+        assert!(
+            second.entries().next().is_some_and(|e| e.path_str().unwrap_or("").ends_with("b.ttf")),
+            "重建后命中 B 独有条目、不再命中 A 独有条目"
+        );
+
+        // 收尾：删夹具目录。共享句柄的临时指向由后续 stat 自然纠正（夹具已删 →
+        // ident 比对失败 → 无索引），无需显式清空，也不污染其它用例。
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A3.1 门：同一字面索引 `has_glyph` 与旧内存表**逐点**同值（~2600 码点，
@@ -3725,7 +3870,8 @@ fn system_font_chain_matches_candidates() {
         let engine =
             TextEngine::load_stack_with(primary, extra, &read).expect("探针字体栈必须可加载");
         let load_ms = t0.elapsed().as_secs_f64() * 1000.0;
-        let idx = if font_index_switch() { shared_index() } else { None };
+        let idx = shared_index();
+        let idx_ref = idx.as_deref();
         // diag 前先记未建句柄数（on 档对账：惰性建表应恰好每未建句柄一次；部分命中时
         // resolve 已在载入内建掉一部分，不为零也不能误断）。
         let mut unset_handles: Vec<usize> = Vec::new();
@@ -3793,7 +3939,7 @@ fn system_font_chain_matches_candidates() {
         // index 段（仅 on）：有效性判定 + 全字面条目匹配（与 resolve_index_coverage 同形）。
         let mut index_ms = 0.0f64;
         let mut index_valid = false;
-        if let Some(idx) = idx {
+        if let Some(idx) = idx_ref {
             let t = std::time::Instant::now();
             index_valid = idx.header().stack_identity == engine.identity()
                 && usize::try_from(idx.header().font_count).ok() == Some(engine.font_count());
@@ -3976,7 +4122,8 @@ fn system_font_chain_matches_candidates() {
         let (primary, extra) = chain.split_first().expect("链非空已判");
         let engine =
             TextEngine::load_stack_with(primary, extra, &read).expect("探针字体栈必须可加载");
-        let idx = if font_index_switch() { shared_index() } else { None };
+        let idx = shared_index();
+        let idx_ref = idx.as_deref();
         let bytes_total: usize = engine.fonts.iter().map(|f| f.data().len()).sum();
         // cur：现行身份遍历复刻（与 refresh_identity 逐分支同形，含首字面复用）。
         let t = std::time::Instant::now();
@@ -4025,7 +4172,7 @@ fn system_font_chain_matches_candidates() {
         // a 采信判定（on）：font_count 对位 + 逐位 content 比对（§3 位置即身份的一半）。
         let mut a_val: u64 = 0;
         let mut a_match = false;
-        if let Some(idx) = idx {
+        if let Some(idx) = idx_ref {
             let n = usize::try_from(idx.header().font_count).unwrap_or(0);
             a_match = n == engine.fonts.len()
                 && engine
