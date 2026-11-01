@@ -612,11 +612,13 @@ impl FontFace {
         };
         match idx.entry_index_by_hash(hash, self.collection_index) {
             Some(i) => {
+                INDEX_COV_HITS.fetch_add(1, Ordering::Relaxed);
                 if let Some(owned) = idx.coverage_owned(i) {
                     let _ = self.index_cov.set(Some(owned));
                 }
             }
             None => {
+                INDEX_COV_FALLBACKS.fetch_add(1, Ordering::Relaxed);
                 // 未命中：补建内存表回旧路径，并把「无索引条目」一并缓存——
                 // 否则后续回落查询（`has_glyph`）会对整份字节再付一次 FNV，
                 // 与载入期已判的事实重复。
@@ -2299,6 +2301,10 @@ static FONT_FOR_GRAPHEME_CALLS: AtomicU64 = AtomicU64::new(0);
 static FACE_PARSE_CALLS: AtomicU64 = AtomicU64::new(0);
 /// 覆盖表建表次数（A3.1 惰性化门诊断：索引命中时载入后应为 0）。
 static COVERAGE_BUILDS: AtomicU64 = AtomicU64::new(0);
+/// 载入期索引覆盖命中/回退的字面数（夜 5 卡：A3 门逐客户端核验命中用）。
+/// 仅在索引开关开时由 `resolve_index_coverage` 递增（每字面恰一次）；关时恒 0。
+static INDEX_COV_HITS: AtomicU64 = AtomicU64::new(0);
+static INDEX_COV_FALLBACKS: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
     /// 当前线程建表次数。进程级计数在并行用例下无法判「增量为 0」，
@@ -2378,8 +2384,15 @@ fn diag_write_line() {
     let Some(path) = diag_log_path() else { return };
     let (parses, ffg) = text_diag_snapshot();
     let calls = face_parse_calls();
+    // 夜 5 卡：按进程归属 + 索引命中字段（A3 门逐客户端核验）。读本模块私有状态，
+    // 不改任何行为；开关关时本函数不会被调用（diag_enabled 门控）。
+    let index_present = u8::from(font_index_switch() && shared_index().is_some());
+    let hits = INDEX_COV_HITS.load(Ordering::Relaxed);
+    let fallbacks = INDEX_COV_FALLBACKS.load(Ordering::Relaxed);
+    let cov_builds = COVERAGE_BUILDS.load(Ordering::Relaxed);
     let line = format!(
-        "kanesumi-text-diag face_parse_rebuilds={parses} font_for_grapheme_calls={ffg} face_parse_calls={calls}\n"
+        "kanesumi-text-diag pid={} index_present={index_present} index_adopted_faces={hits} index_fallback_faces={fallbacks} coverage_builds={cov_builds} face_parse_rebuilds={parses} font_for_grapheme_calls={ffg} face_parse_calls={calls}\n",
+        pid = std::process::id(),
     );
     let Some(dir) = path.parent() else { return };
     if std::fs::create_dir_all(dir).is_err() {
