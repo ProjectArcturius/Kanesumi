@@ -186,7 +186,9 @@ mod tests {
     /// 临时字体文件的回退路径：来源 read、字节与 `fs::read` 一致。
     #[test]
     fn fallback_reads_identical_bytes() {
-        let dir = std::env::temp_dir().join("kanesumi-font-mmap-test");
+        // pid 限定唯一目录：共享 /tmp 下固定名会被其他 uid 的运行残留挡住（EACCES 假红）。
+        let dir = std::env::temp_dir()
+            .join(format!("kanesumi-font-mmap-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("fallback.ttf");
         let payload: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
@@ -200,13 +202,16 @@ mod tests {
         assert!(!mapped2);
         assert_eq!(handle2.as_ref().as_ref(), payload.as_slice());
         let _ = fs_read_reader(&path);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 指向 /usr/share/fonts 之外的符号链接：canonicalize 解析到白名单外 → 回退。
     #[cfg(target_os = "linux")]
     #[test]
     fn symlink_escape_falls_back() {
-        let dir = std::env::temp_dir().join("kanesumi-font-mmap-symlink");
+        // pid 限定唯一目录：跨 uid 残留不再挡路；用例结束即清理。
+        let dir = std::env::temp_dir()
+            .join(format!("kanesumi-font-mmap-symlink-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("real.ttf");
         std::fs::write(&target, b"otf-bytes").unwrap();
@@ -216,6 +221,7 @@ mod tests {
         let (handle, mapped) = read_font_bytes_traced(&link, true).unwrap();
         assert!(!mapped, "指向系统目录之外的符号链接不得映射");
         assert_eq!(handle.as_ref().as_ref(), b"otf-bytes");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 符合资格的真实系统字体：mmap 生效、字节与 `fs::read` 一致。
