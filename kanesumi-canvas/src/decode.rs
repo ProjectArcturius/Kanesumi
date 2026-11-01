@@ -162,11 +162,11 @@ struct Entry {
 // 标签把缓存字节对回 smaps。只加旁路记录，不影响任何缓存语义。
 
 /// 缓存写入一行 alloc（工作线程完成解码后调用，线程名即分配线程归因）。
-fn census_insert(key: &DecodeKey, w: u32, h: u32, bytes: u64) {
+fn census_insert(op: &'static str, w: u32, h: u32, bytes: u64) {
     crate::census::record(
         crate::census::Event::Alloc,
         "decode-cache",
-        key.op,
+        op,
         w,
         h,
         bytes as usize,
@@ -174,7 +174,7 @@ fn census_insert(key: &DecodeKey, w: u32, h: u32, bytes: u64) {
 }
 
 /// 缓存释放一行 release（覆盖 / LRU 淘汰 / clear）。尺寸从被逐条目的位图取。
-fn census_evict(key: &DecodeKey, e: &Entry) {
+fn census_evict(op: &'static str, e: &Entry) {
     let (w, h) = e
         .out
         .as_ref()
@@ -183,7 +183,7 @@ fn census_evict(key: &DecodeKey, e: &Entry) {
     crate::census::record(
         crate::census::Event::Release,
         "decode-cache",
-        key.op,
+        op,
         w,
         h,
         e.bytes as usize,
@@ -210,13 +210,15 @@ impl Inner {
         self.seq += 1;
         let seq = self.seq;
         let dims = out.as_ref().map(|o| (o.icon.width, o.icon.height));
+        // key 下一行移进 map；census 只需 'static 的管线标签，先取出。
+        let op = key.op;
         if let Some(old) = self.map.insert(key, Entry { out, bytes, seq }) {
             self.bytes = self.bytes.saturating_sub(old.bytes);
-            census_evict(&key, &old);
+            census_evict(op, &old);
         }
         self.bytes += bytes;
         if let Some((w, h)) = dims.filter(|_| bytes > 0) {
-            census_insert(&key, w, h, bytes);
+            census_insert(op, w, h, bytes);
         }
         self.trim(cap);
     }
@@ -235,7 +237,7 @@ impl Inner {
             let Some(victim) = victim else { break };
             if let Some(e) = self.map.remove(&victim) {
                 self.bytes = self.bytes.saturating_sub(e.bytes);
-                census_evict(&victim, &e);
+                census_evict(victim.op, &e);
             }
         }
     }
@@ -338,7 +340,7 @@ impl DecodeService {
     pub fn clear(&self) {
         let mut inner = self.inner.lock().unwrap();
         for (key, entry) in inner.map.drain() {
-            census_evict(&key, &entry);
+            census_evict(key.op, &entry);
         }
         inner.ready.clear();
         inner.bytes = 0;

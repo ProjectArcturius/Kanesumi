@@ -58,7 +58,8 @@ pub fn format_line(event: Event, use_: &str, fmt: &str, w: u32, h: u32, bytes: u
         Event::Release => "release",
     };
     let pid = std::process::id();
-    let thread = std::thread::current().name().unwrap_or("<unnamed>");
+    let current = std::thread::current();
+    let thread = current.name().unwrap_or("<unnamed>");
     format!("t={t} pid={pid} thread={thread} event={ev} use={use_} fmt={fmt} w={w} h={h} bytes={bytes}\n")
 }
 
