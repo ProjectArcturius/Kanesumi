@@ -62,7 +62,10 @@ fn main() {
         eprintln!("A33-ERR 会话字体链为空（无系统字体）");
         std::process::exit(3);
     }
+    // 载入期单列（裁定 §251：载入收益以载入 CPU 与载入期 Face::parse 计，不与塑形相混）。
+    let load_cpu0 = process_cpu_ms();
     let engine = TextEngine::load_stack(&chain[0], &chain[1..]).expect("生产同款字体栈必须可加载");
+    let load_cpu_ms = process_cpu_ms() - load_cpu0;
 
     let sample: Vec<char> = include_str!("a33_sample_text.txt").chars().collect();
     assert!(
@@ -122,7 +125,7 @@ fn main() {
     let shape_p90 = percentile(shape_cpu.clone(), 0.9);
     let raster_med = percentile(raster_cpu.clone(), 0.5);
     println!(
-        "A33_RESULT {{\"font_for_grapheme_calls\":{},\"shape_parse_delta\":{},\"shape_rebuilds_delta\":{},\"raster_parse_delta\":{},\"shape_cpu_ms_median\":{},\"shape_cpu_ms_p90\":{},\"raster_cpu_ms_median\":{},\"shape_cpu_ms_samples\":{:?},\"raster_cpu_ms_samples\":{:?},\"rgba_hash\":\"{:016x}\",\"glyph_rasters\":{},\"fonts\":{}}}",
+        "A33_RESULT {{\"font_for_grapheme_calls\":{},\"shape_parse_delta\":{},\"shape_rebuilds_delta\":{},\"raster_parse_delta\":{},\"shape_cpu_ms_median\":{},\"shape_cpu_ms_p90\":{},\"raster_cpu_ms_median\":{},\"shape_cpu_ms_samples\":{:?},\"raster_cpu_ms_samples\":{:?},\"rgba_hash\":\"{:016x}\",\"glyph_rasters\":{},\"fonts\":{},\"load_cpu_ms\":{},\"load_parse_calls\":{},\"clock_granularity_ms\":10}}",
         ffg_delta,
         shape_parse_delta,
         shape_rebuilds_delta,
@@ -135,5 +138,7 @@ fn main() {
         rgba_hash,
         glyph_rasters,
         engine.font_count(),
+        load_cpu_ms,
+        parse_base,
     );
 }
