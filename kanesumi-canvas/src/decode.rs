@@ -157,6 +157,39 @@ struct Entry {
     seq: u64,
 }
 
+// ── B0 归因（rt-image-census §2-2）：缓存条目的存活即位图字节的持有周期 ─────────
+// 插入 = alloc、覆盖 / 淘汰 / clear = release；`use` 带管线标签（key.op），判读侧按
+// 标签把缓存字节对回 smaps。只加旁路记录，不影响任何缓存语义。
+
+/// 缓存写入一行 alloc（工作线程完成解码后调用，线程名即分配线程归因）。
+fn census_insert(key: &DecodeKey, w: u32, h: u32, bytes: u64) {
+    crate::census::record(
+        crate::census::Event::Alloc,
+        "decode-cache",
+        key.op,
+        w,
+        h,
+        bytes as usize,
+    );
+}
+
+/// 缓存释放一行 release（覆盖 / LRU 淘汰 / clear）。尺寸从被逐条目的位图取。
+fn census_evict(key: &DecodeKey, e: &Entry) {
+    let (w, h) = e
+        .out
+        .as_ref()
+        .map(|o| (o.icon.width, o.icon.height))
+        .unwrap_or((0, 0));
+    crate::census::record(
+        crate::census::Event::Release,
+        "decode-cache",
+        key.op,
+        w,
+        h,
+        e.bytes as usize,
+    );
+}
+
 #[derive(Default)]
 struct Inner {
     map: HashMap<DecodeKey, Entry>,
@@ -176,10 +209,15 @@ impl Inner {
             .unwrap_or(0);
         self.seq += 1;
         let seq = self.seq;
+        let dims = out.as_ref().map(|o| (o.icon.width, o.icon.height));
         if let Some(old) = self.map.insert(key, Entry { out, bytes, seq }) {
             self.bytes = self.bytes.saturating_sub(old.bytes);
+            census_evict(&key, &old);
         }
         self.bytes += bytes;
+        if let Some((w, h)) = dims.filter(|_| bytes > 0) {
+            census_insert(&key, w, h, bytes);
+        }
         self.trim(cap);
     }
 
@@ -197,6 +235,7 @@ impl Inner {
             let Some(victim) = victim else { break };
             if let Some(e) = self.map.remove(&victim) {
                 self.bytes = self.bytes.saturating_sub(e.bytes);
+                census_evict(&victim, &e);
             }
         }
     }
@@ -298,7 +337,9 @@ impl DecodeService {
     /// 清空缓存与在途登记（测试 / 主题切换后按需重解）。在途任务完成后会重新写入结果。
     pub fn clear(&self) {
         let mut inner = self.inner.lock().unwrap();
-        inner.map.clear();
+        for (key, entry) in inner.map.drain() {
+            census_evict(&key, &entry);
+        }
         inner.ready.clear();
         inner.bytes = 0;
     }

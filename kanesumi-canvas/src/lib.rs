@@ -6,6 +6,7 @@
 // 依赖方向：core ← canvas ← controls/harness/gallery。
 
 pub mod acrylic;
+pub mod census;
 pub mod decode;
 pub mod font_index;
 pub mod geometry;
