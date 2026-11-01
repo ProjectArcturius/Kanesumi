@@ -125,6 +125,13 @@ for e in entries:                      # 栈序 = 条目序 = 回退链序
 不哈希路径。`content_hash`（I-8）= 同参数 FNV-1a 64 over 单文件全部字节，
 **不混 `collection_index`**，同文件多条目共享同值。
 
+**客户端采信条款（2026-11-01 裁定 (a)）**：客户端在 `KANESUMI_FONT_INDEX=1`、索引已加载、
+`font_count` 与字面数一致，且**全部字面按位**（条目 i ↔ 字面 i）`content_hash` 与
+`collection_index` 命中时，可采信 `header.stack_identity` 作为本栈身份、跳过整趟栈 FNV。
+任一不中（索引缺失 / 损坏、数目不符、任一位 content 不中）即回退现行逐字节自算，回退值与
+不采信时逐位一致（栈哈希不依赖 content，采信尝试预置的 content_hash 留用）。本条款不改
+本节值定义与写侧算法，`POLICY_VERSION` 不因此 bump；按位比对同时校验条目序，序错即不中。
+
 ## 8. `checksum`（F3/CONTRACT I-3）
 
 = FNV-1a 64（同 §7 参数）over `[header_len, header_len + body_len)` = `[96, file_len)`：
@@ -162,7 +169,9 @@ out    = header ++ body                              # str/cov/dirfp_off 按此�
 2. 真机 TTC 栈 3000 码点 × 每字面 `index.has(c)` ↔ `Face::glyph_index(c).is_some()` **双向相等**；
    缺字体 → **失败并打印原因**（跳过不算通过）。
 3. 同一栈写索引，`header.stack_identity` == `TextEngine::load_stack(..).identity()`，
-   打印两端十六进制与条目数。
+   打印两端十六进制与条目数。§7 客户端采信条款生效时 `identity()` 为采信值；
+   采信前提（按位 content 全中）即采信与自算的等价判定，回归用例锁定
+   「采信值 == 自算值」与「任一不中回退自算」。
 4. ≥10 损坏变体 `Err` 不 panic，打印「变体 → 错误变体」表。
 5. canvas 全量测试不退化；6. `font_index.rs` 无 `unsafe`；7. 白名单干净。
    白名单外（已批）：`text.rs` 四处 `pub(crate)`（`CoverageTable` / `from_face` / `has` /

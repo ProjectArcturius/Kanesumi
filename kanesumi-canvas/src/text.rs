@@ -1308,10 +1308,22 @@ impl TextEngine {
 
     fn refresh_identity(&mut self) {
         let idx = if font_index_switch() { shared_index() } else { None };
+        // A3 身份采信（§7 客户端采信条款，裁定 (a)）：索引有效且全部字面按位 content
+        // 命中 ⇒ 采信 header.stack_identity，跳过整趟栈 FNV；任一不中（缺失/损坏/
+        // 数目不符/content 不中）回退下方自算，值逐位一致。缺省关档不走此径。
+        if let Some(idx) = idx
+            && self.adopt_identity_with(idx)
+        {
+            for font in self.fonts.iter() {
+                font.resolve_index_coverage(idx);
+            }
+            return;
+        }
         let mut hash = 0xcbf29ce484222325_u64;
         for (font_index, font) in self.fonts.iter().enumerate() {
             // A3.1：同源字重实例共享同一份 `content_hash`，只有首个实例在身份遍历里
             // 顺带算（与索引 `content_hash` 同算法）；无索引时不付这份额外运算。
+            // 采信未中时 content 可能已被预置（留用），此处自然落栈-only 分支。
             let fresh = idx.is_some() && font.content_hash.get().is_none();
             if fresh && font_index == 0 {
                 // 首字面的身份累加器仍是 FNV 初值，结果与纯文件哈希完全相同，
@@ -1348,6 +1360,37 @@ impl TextEngine {
                 font.resolve_index_coverage(idx);
             }
         }
+    }
+
+    /// 全命中采信尝试（§7 客户端采信条款，裁定 (a)）：全部字面按位 content_hash +
+    /// `collection_index` 命中 ⇒ 置身份为 `idx.header().stack_identity` 并返回 true，
+    /// 跳过整趟栈 FNV。content 按源算一次（同源实例共享句柄）；任一不中 / 索引缺失 /
+    /// 损坏 / 数目不符返回 false——身份保持未动，调用方回退逐字节自算；已预置的
+    /// content_hash 留用（栈哈希不依赖 content，回退值与不采信时逐位一致）。
+    /// 单独成函数以便测试注入夹具索引（进程级开关不可按用例隔离）。
+    fn adopt_identity_with(&mut self, idx: &crate::font_index::OwnedIndex) -> bool {
+        let n = usize::try_from(idx.header().font_count).unwrap_or(0);
+        if n == 0 || n != self.fonts.len() {
+            return false;
+        }
+        for font in self.fonts.iter() {
+            if font.content_hash.get().is_none() {
+                let _ = font.content_hash.set(crate::font_index::fnv1a64(font.data()));
+            }
+        }
+        for (i, font) in self.fonts.iter().enumerate() {
+            let Some(e) = idx.entry(i) else {
+                return false;
+            };
+            let Some(h) = font.content_hash.get().copied() else {
+                return false;
+            };
+            if e.content_hash != h || u32::from(e.collection_index) != font.collection_index {
+                return false;
+            }
+        }
+        self.identity = idx.header().stack_identity;
+        true
     }
 
     fn font_for_grapheme(&self, grapheme: &str) -> usize {
@@ -3549,6 +3592,81 @@ fn system_font_chain_matches_candidates() {
         std::fs::remove_file(&bad_path).ok();
     }
 
+    // ---- A3 身份采信门（裁定 (a)，§7 客户端采信条款回归）----
+
+    /// 全命中采信：采信值 == 自算值 == 索引 stack_identity（三者逐位相等），
+    /// 且采信尝试把 content_hash 预置齐（同源实例共享句柄）。
+    #[test]
+    fn adopted_identity_equals_self_computed_on_full_hit() {
+        let Some(path) = cjk_font() else { return };
+        let mut engine = TextEngine::load(path).expect("Noto CJK 必须可加载");
+        let Some(idx) = fixture_index(&engine, false) else {
+            panic!("夹具索引必须可构造");
+        };
+        let self_computed = engine.identity();
+        assert_eq!(
+            self_computed,
+            idx.header().stack_identity,
+            "前置：夹具索引身份必须与自算一致"
+        );
+        assert!(engine.adopt_identity_with(&idx), "全命中必须采信");
+        assert_eq!(engine.identity(), self_computed, "采信值必须与自算值逐位相等");
+        assert_eq!(
+            engine.identity(),
+            idx.header().stack_identity,
+            "采信值必须等于索引 stack_identity"
+        );
+        assert!(
+            engine.fonts.iter().all(|f| f.content_hash.get().is_some()),
+            "采信尝试必须把各源 content_hash 预置齐"
+        );
+    }
+
+    /// 任一字面 content 不中（扰动夹具）→ 拒绝采信，身份保持自算值不变；
+    /// 已预置的 content_hash 留用，不改变回退值。
+    #[test]
+    fn content_mismatch_falls_back_to_self_computed_identity() {
+        let Some(path) = cjk_font() else { return };
+        let mut engine = TextEngine::load(path).expect("Noto CJK 必须可加载");
+        let Some(bad) = fixture_index(&engine, true) else {
+            panic!("扰动夹具必须可构造");
+        };
+        let self_computed = engine.identity();
+        assert_ne!(
+            self_computed,
+            bad.header().stack_identity,
+            "前置：扰动索引身份必须与自算不同"
+        );
+        assert!(!engine.adopt_identity_with(&bad), "content 不中必须拒绝采信");
+        assert_eq!(engine.identity(), self_computed, "拒绝采信后身份必须保持自算值");
+        assert!(
+            engine.fonts.iter().all(|f| f.content_hash.get().is_some()),
+            "采信尝试预置的 content_hash 留用"
+        );
+    }
+
+    /// 缺省关档（KANESUMI_FONT_INDEX 未设）：身份与旧逐字节实现逐位相等，
+    /// 且不付 content 趟（采信路径完全不触达）。
+    #[test]
+    fn off_identity_matches_legacy_bytewise_replica() {
+        let Some(path) = cjk_font() else { return };
+        let engine = TextEngine::load(path).expect("Noto CJK 必须可加载");
+        let mut hash = 0xcbf29ce484222325_u64;
+        for font in engine.fonts.iter() {
+            for byte in font.data().iter() {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+            hash ^= u64::from(font.collection_index);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        assert_eq!(engine.identity(), hash, "off 档身份必须与旧逐字节实现逐位相等");
+        assert!(
+            engine.fonts.iter().all(|f| f.content_hash.get().is_none()),
+            "off 档不付 content 趟"
+        );
+    }
+
     // ---- A3 载入剩余成本分布探针（第 2 卡：只量不修，不在产品路径）----
     //
     // 五段口径（段值除 coverage 外为同字节同原语复刻计时，读后热字节，误差二阶）：
@@ -3750,6 +3868,212 @@ fn system_font_chain_matches_candidates() {
         println!(
             "load_cost_probe mode={} run={run} window_ms={window_ms:.3} io={:.3} parse={parse_ms:.3} coverage={coverage_ms:.3} identity={identity_ms:.3} index={index_ms:.3} other={other_ms:.3}",
             if idx.is_some() { "on" } else { "off" },
+            io.get().as_secs_f64() * 1000.0
+        );
+    }
+
+    // ---- A3 身份哈希候选探针辅助（第 3 卡，只量不修；仅测试区）----
+    //
+    // b1：u64 分块 FNV 变体——小端 8 字节一块，h = (h ^ w) * FNV_PRIME，尾块逐字节，
+    //     末尾一次雪崩（xorshift + 奇乘）把尾块差分扩散到全宽。吞吐收益来自每 8 字节
+    //     一次乘法（原 FNV-1a 每字节一次）。
+    fn fnv_chunked(data: &[u8]) -> u64 {
+        const PRIME: u64 = 0x100000001b3;
+        let mut h = 0xcbf29ce484222325_u64;
+        let mut chunks = data.chunks_exact(8);
+        for c in &mut chunks {
+            let mut w = [0u8; 8];
+            w.copy_from_slice(c);
+            h = (h ^ u64::from_le_bytes(w)).wrapping_mul(PRIME);
+        }
+        for &b in chunks.remainder() {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(PRIME);
+        }
+        h ^= h >> 33;
+        h = h.wrapping_mul(0xff51afd7ed558ccd);
+        h ^= h >> 33;
+        h
+    }
+
+    // b2：8 路并行乘法混合——64 字节一轮、每路独立素数（8 条互不依赖的乘法链，
+    //     摊平串行 FNV 的乘法延迟），尾块按路逐字节，末尾雪崩合并。
+    fn mix8(data: &[u8]) -> u64 {
+        const P: [u64; 8] = [
+            0x100000001b3,
+            0x9e3779b97f4a7c15,
+            0xff51afd7ed558ccd,
+            0xc4ceb9fe1a85ec53,
+            0x2545f4914f6cdd1d,
+            0x9e3779b185ebca87,
+            0xc2b2ae3d27d4eb4f,
+            0x165667b19e3779f9,
+        ];
+        let mut h = [0xcbf29ce484222325_u64; 8];
+        let mut chunks = data.chunks_exact(64);
+        for c in &mut chunks {
+            for (k, lane) in h.iter_mut().enumerate() {
+                let mut w = [0u8; 8];
+                w.copy_from_slice(&c[k * 8..k * 8 + 8]);
+                *lane = (*lane ^ u64::from_le_bytes(w)).wrapping_mul(P[k]);
+            }
+        }
+        for (i, &b) in chunks.remainder().iter().enumerate() {
+            let k = i % 8;
+            h[k] ^= u64::from(b) << (((i / 8) % 8) * 8);
+            h[k] = h[k].wrapping_mul(P[k]);
+        }
+        let mut acc = 0xcbf29ce484222325_u64;
+        for (k, lane) in h.iter().enumerate() {
+            acc = (acc ^ lane.rotate_left((k * 9) as u32)).wrapping_mul(P[k]);
+        }
+        acc ^= acc >> 33;
+        acc = acc.wrapping_mul(0xff51afd7ed558ccd);
+        acc ^= acc >> 29;
+        acc
+    }
+
+    // ---- A3 身份哈希候选探针（第 3 卡：只量不修，裁定材料；不在产品路径）----
+    //
+    // 候选（口径沿 report-2：release off/on 各 5 次独立进程）：
+    //   cur  现行 r3 身份遍历复刻（首字面单累加复用 + 其余双累加，栈序混 collection_index）
+    //   a    全命中采信：不累栈哈希，逐源 content FNV；on 档与索引条目「按位」比对
+    //        （§3 font_id==下标），全对上则身份取 idx.header().stack_identity；off 档
+    //        无索引，采信不适用，仅测 content 趟成本
+    //   b1   u64 分块 FNV 变体（fnv_chunked）替代字节主体
+    //   b2   8 路并行乘法混合（mix8）替代字节主体
+    // 各候选同字节计时；cur 与 engine.identity() / content_hash 逐位对账。
+    #[test]
+    fn identity_candidates_probe_once() {
+        let Some(csv) = std::env::var_os("KANESUMI_IDCAND_CSV") else { return };
+        let run = std::env::var("KANESUMI_IDCAND_RUN").unwrap_or_else(|_| "0".into());
+        let chain = system_font_chain();
+        if chain.is_empty() {
+            eprintln!("跳过：会话字体链为空");
+            return;
+        }
+        let io = std::cell::Cell::new(std::time::Duration::ZERO);
+        let read = |p: &Path| -> std::io::Result<FontBytes> {
+            let t = std::time::Instant::now();
+            let bytes: FontBytes = Arc::new(std::fs::read(p)?);
+            io.set(io.get() + t.elapsed());
+            Ok(bytes)
+        };
+        let (primary, extra) = chain.split_first().expect("链非空已判");
+        let engine =
+            TextEngine::load_stack_with(primary, extra, &read).expect("探针字体栈必须可加载");
+        let idx = if font_index_switch() { shared_index() } else { None };
+        let bytes_total: usize = engine.fonts.iter().map(|f| f.data().len()).sum();
+        // cur：现行身份遍历复刻（与 refresh_identity 逐分支同形，含首字面复用）。
+        let t = std::time::Instant::now();
+        let mut hash = 0xcbf29ce484222325_u64;
+        for (i, font) in engine.fonts.iter().enumerate() {
+            let fresh = idx.is_some() && font.content_hash.get().is_none();
+            if fresh && i == 0 {
+                for byte in font.data().iter() {
+                    hash ^= u64::from(*byte);
+                    hash = hash.wrapping_mul(0x100000001b3);
+                }
+            } else if fresh {
+                let mut content = 0xcbf29ce484222325_u64;
+                for byte in font.data().iter() {
+                    hash ^= u64::from(*byte);
+                    hash = hash.wrapping_mul(0x100000001b3);
+                    content ^= u64::from(*byte);
+                    content = content.wrapping_mul(0x100000001b3);
+                }
+                assert_eq!(Some(content), font.content_hash.get().copied(), "复刻 content 必须同值");
+            } else {
+                for byte in font.data().iter() {
+                    hash ^= u64::from(*byte);
+                    hash = hash.wrapping_mul(0x100000001b3);
+                }
+            }
+            hash ^= u64::from(font.collection_index);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        assert_eq!(hash, engine.identity(), "cur 复刻必须与产品身份逐位一致");
+        let cur_ms = t.elapsed().as_secs_f64() * 1000.0;
+        // a：逐源 content 趟（不累栈）；同源字面共享句柄只扫一趟（VF 栈收益主体）。
+        let t = std::time::Instant::now();
+        let mut content_by_handle: Vec<(usize, u64)> = Vec::new();
+        for font in engine.fonts.iter() {
+            let h = Arc::as_ptr(&font.content_hash) as usize;
+            if !content_by_handle.iter().any(|(k, _)| *k == h) {
+                content_by_handle.push((h, crate::font_index::fnv1a64(font.data())));
+            }
+        }
+        let a_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let content_of = |font: &FontFace| -> u64 {
+            let h = Arc::as_ptr(&font.content_hash) as usize;
+            content_by_handle.iter().find(|(k, _)| *k == h).map(|(_, v)| *v).unwrap_or(0)
+        };
+        // a 采信判定（on）：font_count 对位 + 逐位 content 比对（§3 位置即身份的一半）。
+        let mut a_val: u64 = 0;
+        let mut a_match = false;
+        if let Some(idx) = idx {
+            let n = usize::try_from(idx.header().font_count).unwrap_or(0);
+            a_match = n == engine.fonts.len()
+                && engine
+                    .fonts
+                    .iter()
+                    .enumerate()
+                    .all(|(i, font)| match idx.entry(i) {
+                        Some(e) => e.content_hash == content_of(font)
+                            && u32::from(e.collection_index) == font.collection_index,
+                        None => false,
+                    });
+            if a_match {
+                a_val = idx.header().stack_identity;
+            }
+        }
+        // b1/b2：栈序逐 entry 换宽哈希核（content 候选值 = 单文件哈希），混入 collection_index。
+        let t = std::time::Instant::now();
+        let mut s1 = 0xcbf29ce484222325_u64;
+        for font in engine.fonts.iter() {
+            s1 = (s1 ^ fnv_chunked(font.data())).wrapping_mul(0x100000001b3);
+            s1 = (s1 ^ u64::from(font.collection_index)).wrapping_mul(0x100000001b3);
+        }
+        let b1_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let t = std::time::Instant::now();
+        let mut s2 = 0xcbf29ce484222325_u64;
+        for font in engine.fonts.iter() {
+            s2 = (s2 ^ mix8(font.data())).wrapping_mul(0x100000001b3);
+            s2 = (s2 ^ u64::from(font.collection_index)).wrapping_mul(0x100000001b3);
+        }
+        let b2_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let mode = if idx.is_some() { "on" } else { "off" };
+        let write_header = !std::path::Path::new(&csv).exists();
+        if let Some(dir) = std::path::Path::new(&csv).parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&csv) {
+            if write_header {
+                let _ = writeln!(f, "mode,run,sources,font_count,bytes_total,io_ms,cur_ms,a_ms,b1_ms,b2_ms,cur_val,a_val,a_match,b1_val,b2_val");
+            }
+            let _ = writeln!(
+                f,
+                "{},{},{},{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{},{},{},{},{}",
+                mode,
+                run,
+                chain.len(),
+                engine.font_count(),
+                bytes_total,
+                io.get().as_secs_f64() * 1000.0,
+                cur_ms,
+                a_ms,
+                b1_ms,
+                b2_ms,
+                hash,
+                a_val,
+                a_match,
+                s1,
+                s2
+            );
+        }
+        println!(
+            "id_cand mode={mode} run={run} bytes={bytes_total} io={:.3} cur={cur_ms:.3} a={a_ms:.3} b1={b1_ms:.3} b2={b2_ms:.3} a_match={a_match}",
             io.get().as_secs_f64() * 1000.0
         );
     }
