@@ -173,7 +173,7 @@ pub struct CpuRenderer {
     /// 而不是又退回逐像素）。
     image_row_blits: u64,
     /// 仅本帧有效的不透明源身份；不持有图像，绘制结束即清除。
-    opaque_image_hint: Option<(usize, usize)>,
+    opaque_image_hint: Option<(usize, usize, u32, u32)>,
     /// 测试专用：置真 → 禁用逐行 memcpy 快路径（用来和「通用路径」逐像素对照）。
     #[cfg(test)]
     no_row_blit: bool,
@@ -1080,7 +1080,7 @@ impl CpuRenderer {
             if inside
                 && cols > 0
                 && rows > 0
-                && (self.opaque_image_hint == Some((src.as_ptr() as usize, src.len()))
+                && (self.opaque_image_hint == Some((src.as_ptr() as usize, src.len(), sw, sh))
                     || region_is_opaque(src, sw, u0 as usize, v0 as usize, cols, rows))
             {
                 for r in 0..rows {
@@ -1272,20 +1272,20 @@ fn texel(src: &[u8], sw: u32, x: u32, y: u32) -> [u8; 4] {
 }
 
 /// 只有无裁剪首图逐像素覆盖全表面且整幅不透明时，才可省去即将被覆盖的透明清零。
-fn opaque_scene_start(scene: &Scene, w: u32, h: u32, scale: f32) -> Option<(usize, usize)> {
+fn opaque_scene_start(scene: &Scene, w: u32, h: u32, scale: f32) -> Option<(usize, usize, u32, u32)> {
     let SceneCommand::Image { rgba, width, height, rect, tint, opacity } = scene.commands.first()? else { return None };
     let expected = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
     if *width != w || *height != h || tint.is_some() || *opacity != 1.0
         || rect.origin.x != 0.0 || rect.origin.y != 0.0
         || rect.size.width * scale != w as f32 || rect.size.height * scale != h as f32
-        // 帧内身份涵盖整个 Arc；多余尾部未扫描，不能让后续图像复用不透明提示。
-        || rgba.len() != expected
+        || rgba.len() < expected
         || !region_is_opaque(rgba, w, 0, 0, w as usize, h as usize)
     {
         return None;
     }
-    // Scene 在本次绘制期间持有不可变 Arc；身份只在该帧复用，不会钉住旧图像分配。
-    Some((rgba.as_ptr() as usize, rgba.len()))
+    // 仅验证该尺寸对应的像素；同一 Arc 的其他尺寸视图必须另行检查透明度。
+    // 身份只在当前帧复用，不持有图像，也不检查本视图不使用的尾部数据。
+    Some((rgba.as_ptr() as usize, rgba.len(), w, h))
 }
 
 /// 源图指定区域是否全部不透明；每批检查八像素，任何透明像素均回退逐像素混合。
