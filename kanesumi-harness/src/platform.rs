@@ -1024,6 +1024,9 @@ struct SurfaceOutput {
     dmabuf: crate::dmabuf::DmabufBuffers,
     /// 是否允许尝试 dmabuf（进程级门控：合成器 global + `ETHER_DMABUF!=0` + gbm 探测）。
     allow: bool,
+    /// 材质层的损伤涵盖整个前景；已确认清零的新槽可局部首写。
+    sparse_clear: bool,
+    last_upload_bytes: u64,
 }
 
 impl SurfaceOutput {
@@ -1038,6 +1041,8 @@ impl SurfaceOutput {
             shm: ShmBuffers::default(),
             dmabuf,
             allow,
+            sparse_clear: false,
+            last_upload_bytes: 0,
         }
     }
 
@@ -1062,12 +1067,16 @@ impl SurfaceOutput {
         damage: Option<kanesumi_core::Rect>,
     ) -> bool {
         use crate::dmabuf::CommitOutcome;
+        self.last_upload_bytes = 0;
         if self.allow {
             match self
                 .dmabuf
-                .commit(qh, surface, dmabuf_state, width, height, rgba, scale, damage)
+                .commit(qh, surface, dmabuf_state, width, height, rgba, scale, (damage, self.sparse_clear))
             {
-                CommitOutcome::Committed => return true,
+                CommitOutcome::Committed => {
+                    self.last_upload_bytes = self.dmabuf.last_upload_bytes;
+                    return true;
+                }
                 CommitOutcome::Skipped => return false,
                 CommitOutcome::Unavailable => {
                     // 单表面失败 → 该表面永久回退 SHM（其它表面不受影响）。
@@ -1078,7 +1087,9 @@ impl SurfaceOutput {
         }
         match shm {
             Some(shm) => {
-                commit_shm_buffers(shm, qh, surface, &mut self.shm, width, height, rgba, scale, damage)
+                let committed = commit_shm_buffers(shm, qh, surface, &mut self.shm, width, height, rgba, scale, (damage, self.sparse_clear));
+                self.last_upload_bytes = self.shm.last_upload_bytes;
+                committed
             }
             None => false,
         }
@@ -1111,6 +1122,9 @@ struct ShmBuffers {
     /// 槽位自上次写入后累积的局部损伤（物理像素）—— 该槽未写期间其它区域变化过，
     /// 下次写该槽须一并回补（buffer-age 语义，参 compositor render/damage.rs）。
     partial: [Option<Rect>; 2],
+    /// 仅新建且从未写过的槽可依赖内核的零填充，不把过期槽误认为透明。
+    untouched: [bool; 2],
+    last_upload_bytes: u64,
 }
 
 impl ShmBuffers {
@@ -1203,6 +1217,8 @@ impl Default for ShmBuffers {
             next: 0,
             needs_full: [true, true],
             partial: [None, None],
+            untouched: [false, false],
+            last_upload_bytes: 0,
         }
     }
 }
@@ -5116,6 +5132,12 @@ fn damage_cull_active_for(is_v2: bool, target_valid: bool, full_forced: bool) ->
     }
 }
 
+fn sparse_write_region(fresh: bool, full: bool, untouched: bool, sparse: bool, damage: Option<Rect>, partial: Option<Rect>) -> Option<Rect> {
+    // 只有从未写过的零槽才跳过全量初始化；损伤已涵盖本帧全部前景。
+    let clear = sparse && untouched && damage.is_some();
+    compute_write_region(fresh && !clear, full && !clear, damage, partial)
+}
+
 fn commit_shm_buffers(
     shm: &wl_shm::WlShm,
     qh: &QueueHandle<Shell>,
@@ -5125,9 +5147,11 @@ fn commit_shm_buffers(
     height: u32,
     bgra: &[u8],
     scale: f32,
-    damage: Option<Rect>,
+    damage: (Option<Rect>, bool),
 ) -> bool {
     use std::os::fd::AsFd;
+    let (damage, sparse) = damage;
+    state.last_upload_bytes = 0;
 
     let expected = (width as usize)
         .saturating_mul(height as usize)
@@ -5155,6 +5179,7 @@ fn commit_shm_buffers(
         state.in_flight = [false, false];
         state.next = 0;
         state.needs_full = [true, true];
+        state.untouched = [true, true];
         state.partial = [None, None];
         let mmap = unsafe { memmap2::MmapMut::map_mut(&fd) }.ok();
         let pool = shm.create_pool(fd.as_fd(), (expected * 2) as i32, qh, ());
@@ -5188,7 +5213,7 @@ fn commit_shm_buffers(
     // - 局部帧 → 本帧 damage ∪ 自上次写该槽后的累积损伤（buffer-age 回补：
     //   该槽可能两帧未写，其间其它区域变化过 —— 与合成器侧 damage 上传区间对齐）。
     // 参 compositor render/damage.rs 的 age 回补同款思路。
-    let write_region = compute_write_region(fresh_pool, state.needs_full[idx], damage, state.partial[idx]);
+    let write_region = sparse_write_region(fresh_pool, state.needs_full[idx], state.untouched[idx], sparse, damage, state.partial[idx]);
     // 物理拷贝区（与下方 damage_buffer 发送区间一致 —— 合成器只上传该区，
     // mmap 须恰好写完该区，槽位经 partial 累积回补保持与 CpuRenderer buf 同步）。
     let (cx0, cy0, cw, ch) = match write_region {
@@ -5224,6 +5249,7 @@ fn commit_shm_buffers(
     }
     // 槽位状态更新（buffer-age 回补登记）。
     state.needs_full[idx] = false;
+    state.untouched[idx] = false;
     state.partial[idx] = None;
     match damage {
         Some(d) => {
@@ -5263,6 +5289,7 @@ fn commit_shm_buffers(
         surface.commit();
         state.in_flight[idx] = true;
         state.next = 1 - idx;
+        state.last_upload_bytes = cw as u64 * ch as u64 * 4;
     }
     true
 }
@@ -5331,6 +5358,19 @@ impl Dispatch<wl_buffer::WlBuffer, ()> for Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sparse_initial_write_uses_zeroes_but_never_trusts_an_old_slot() {
+        let damage = Some(r(10.0, 20.0, 30.0, 40.0));
+        assert_eq!(sparse_write_region(true, true, true, true, damage, None), damage);
+        assert_eq!(sparse_write_region(false, true, false, true, damage, None), None,
+            "已写过且整体过期的槽仍必须全量回补");
+        assert_eq!(sparse_write_region(true, true, true, false, damage, None), None,
+            "普通表面不得跳过原有全量初始化");
+        let history = Some(r(80.0, 20.0, 10.0, 40.0));
+        assert_eq!(sparse_write_region(false, false, false, true, damage, history), Some(r(10.0, 20.0, 80.0, 40.0)),
+            "已写过的槽继续累计 buffer-age 损伤");
+    }
 
     fn r(x: f32, y: f32, w: f32, h: f32) -> Rect {
         Rect::new(x, y, w, h)

@@ -512,7 +512,13 @@ impl Shell {
         // 内容只在变化时提交，但提交缓冲默认整幅拷贝：Dock 悬停只改一个图标的颜色，
         // 也要把 1.87 MB 全写一遍（真机尖峰里 submit 占了大头）。用场景差异算出损伤区，
         // 只写变化的行；差异算不出（结构变化 / 首帧）就退回整幅，语义不变。
-        let damage = scene_damage(l.last_scene.as_ref(), scene, l.rect.size);
+        let sparse = comp.backdrops.available_for_surface(&l.surface);
+        let damage = if sparse {
+            backdrop_scene_damage(l.last_scene.as_ref(), scene, l.rect.size)
+        } else {
+            scene_damage(l.last_scene.as_ref(), scene, l.rect.size)
+        };
+        l.out.sparse_clear = sparse;
         l.last_scene = Some(scene.clone());
         let t = std::time::Instant::now();
         let committed = l.out.commit(
@@ -535,7 +541,7 @@ impl Shell {
             encode_ms,
             submit_ms,
             scene_cmds: scene.commands.len() as u32,
-            upload_bytes: (pw as u64) * (ph as u64) * 4,
+            upload_bytes: l.out.last_upload_bytes,
             new_surface: std::mem::take(&mut self.surface_created),
             ..Default::default()
         };
@@ -553,6 +559,19 @@ impl Shell {
 
 fn transparent_scene(scene: &Scene) -> bool {
     scene.commands.iter().all(|c| cmd_bounds(c).is_none())
+}
+
+/// 材质层只需上传前景；取旧 / 新全部绘制外框，裁剪栈变化也不会漏掉被遮挡前景的清除。
+fn backdrop_scene_damage(previous: Option<&Scene>, next: &Scene, size: kanesumi_core::Size) -> Option<Rect> {
+    let mut bounds: Option<Rect> = None;
+    for command in previous.into_iter().chain(std::iter::once(next)).flat_map(|s| &s.commands) {
+        if let Some(rect) = cmd_bounds(command) {
+            bounds = Some(bounds.map_or(rect, |a| super::union_rect(a, rect)));
+        }
+    }
+    let rect = bounds?;
+    Rect::new(rect.origin.x - 1.0, rect.origin.y - 1.0, rect.size.width + 2.0, rect.size.height + 2.0)
+        .intersect(Rect::new(0.0, 0.0, size.width, size.height))
 }
 
 /// 一帧场景里一条命令的绘制外框（逻辑坐标）。裁剪命令返回 None（不直接绘制）。
@@ -715,6 +734,13 @@ impl Dispatch<proto::ether_backdrop_v1::EtherBackdropV1, BackdropTarget> for She
     ) {
         let proto::ether_backdrop_v1::Event::Availability { state: available } = event;
         if let Some(e) = state.comp.backdrops.availability(proxy, *target, available) {
+            if matches!(e, LayerEvent::BackdropAvailability { available: true, .. })
+                && let BackdropTarget::Layer(id) = *target
+                && let Some(i) = state.layer_index(id)
+                && state.comp.layers[i].out.allow
+            {
+                state.comp.layers[i].out.dmabuf.prepare_transparent_slots();
+            }
             state.app.on_layer_event(e);
             state.dirty = true;
             // 浮层独立节拍；能力变化必须让对应表面交透明内容或恢复回退位图。
@@ -741,6 +767,19 @@ mod tests {
     use super::*;
     use kanesumi_canvas::{Scene, SceneCommand};
     use kanesumi_core::Color;
+
+    #[test]
+    fn backdrop_foreground_damage_covers_old_and_new_paint_through_clip_changes() {
+        let mut previous = Scene::default();
+        previous.commands.push(fill(10.0, 20.0, 30.0, 10.0, Color::new(1.0, 0.0, 0.0, 1.0)));
+        let mut next = Scene::default();
+        next.commands.push(SceneCommand::PushClip { rect: Rect::new(0.0, 0.0, 100.0, 60.0) });
+        next.commands.push(fill(50.0, 30.0, 10.0, 10.0, Color::new(1.0, 0.0, 0.0, 1.0)));
+        next.commands.push(SceneCommand::PopClip);
+        assert_eq!(backdrop_scene_damage(Some(&previous), &next, kanesumi_core::Size::new(100.0, 60.0)),
+            Some(Rect::new(9.0, 19.0, 52.0, 22.0)), "必须清掉旧前景并覆盖新前景及 AA 边缘");
+        assert_eq!(backdrop_scene_damage(None, &Scene::default(), kanesumi_core::Size::new(100.0, 60.0)), None);
+    }
 
     #[test]
     fn transparent_scene_accepts_only_empty_clip_stacks() {

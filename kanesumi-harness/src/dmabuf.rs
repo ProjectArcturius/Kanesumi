@@ -164,6 +164,8 @@ struct Slot {
     in_flight: bool,
     needs_full: bool,
     partial: Option<Rect>,
+    untouched: bool,
+    cleared: bool,
 }
 
 /// 客户端 dmabuf 双缓冲池（CPU 光栅化角色用：主表面 / 浮层 / IME 候选窗各一份）。
@@ -186,6 +188,7 @@ pub struct DmabufBuffers {
     /// （或无探测结果）→ 真实提交路径**一律 SHM**，绝不在未验证组合上分配。
     /// 参 `probe_gbm_crash_safe`：只有探测通过的 recipe 才写进这里。
     recipe: Option<ProbeRecipe>,
+    pub(crate) last_upload_bytes: u64,
 }
 
 #[allow(clippy::derivable_impls)] // 手写 Default 是为保留「绝不在 Default 里开 gbm」的说明
@@ -207,11 +210,23 @@ impl Default for DmabufBuffers {
             unavailable: false,
             chosen: None,
             recipe: None,
+            last_upload_bytes: 0,
         }
     }
 }
 
 impl DmabufBuffers {
+    /// 只预热已分配但从未写过的槽；不打开设备，不改在途 / 已有内容。
+    pub(crate) fn prepare_transparent_slots(&mut self) {
+        for slot in self.slots.iter_mut().flatten() {
+            if slot.untouched && !slot.cleared {
+                slot.cleared = slot.bo.map_mut(0, 0, self.width, self.height, |mem| {
+                    mem.buffer_mut().fill(0);
+                }).is_ok();
+            }
+        }
+    }
+
     /// 灌入进程共享 device 句柄（同进程所有表面共用一份 gbm device）。
     pub(crate) fn set_device(&mut self, device: DmabufDevice) {
         self.device = device;
@@ -355,6 +370,8 @@ impl DmabufBuffers {
                 in_flight: false,
                 needs_full: true,
                 partial: None,
+                untouched: true,
+                cleared: false,
             });
         }
         self.width = width;
@@ -405,8 +422,10 @@ impl DmabufBuffers {
         height: u32,
         rgba: &[u8],
         scale: f32,
-        damage: Option<Rect>,
+        damage: (Option<Rect>, bool),
     ) -> CommitOutcome {
+        let (damage, sparse) = damage;
+        self.last_upload_bytes = 0;
         if self.unavailable {
             return CommitOutcome::Unavailable;
         }
@@ -435,6 +454,7 @@ impl DmabufBuffers {
             self.unavailable = true;
             return CommitOutcome::Unavailable;
         }
+        if sparse { self.prepare_transparent_slots(); }
         // 找一个可写槽位（优先 next，其次另一；双缓冲都在飞则跳过本帧）。
         let idx = if !self.slots[self.next].as_ref().unwrap().in_flight {
             self.next
@@ -446,7 +466,8 @@ impl DmabufBuffers {
         let fresh = false;
         let write_region = compute_write_region(
             fresh,
-            self.slots[idx].as_ref().unwrap().needs_full,
+            sparse_slot_needs_full(self.slots[idx].as_ref().unwrap().needs_full,
+                self.slots[idx].as_ref().unwrap().untouched, self.slots[idx].as_ref().unwrap().cleared, sparse),
             damage,
             self.slots[idx].as_ref().unwrap().partial,
         );
@@ -494,6 +515,7 @@ impl DmabufBuffers {
         }
         // 槽位状态更新（buffer-age 回补登记，同 SHM 逻辑）。
         self.slots[idx].as_mut().unwrap().needs_full = false;
+        self.slots[idx].as_mut().unwrap().untouched = false;
         self.slots[idx].as_mut().unwrap().partial = None;
         let other = 1 - idx;
         match damage {
@@ -524,6 +546,7 @@ impl DmabufBuffers {
             self.slots[idx].as_mut().unwrap().buffer = Some(buffer);
             self.slots[idx].as_mut().unwrap().in_flight = true;
             self.next = other;
+            self.last_upload_bytes = cw as u64 * ch as u64 * 4;
             CommitOutcome::Committed
         } else {
             self.unavailable = true;
@@ -1138,6 +1161,10 @@ fn union_rect(a: Rect, b: Rect) -> Rect {
 
 /// 计算本槽位需写入区（物理像素）：全量帧 / 槽位内容不可用（新建）→ 全量（None）；
 /// 局部帧 → 本帧 damage ∪ 自上次写该槽后的累积损伤（buffer-age 回补）。
+fn sparse_slot_needs_full(full: bool, untouched: bool, cleared: bool, sparse: bool) -> bool {
+    full && !(untouched && cleared && sparse)
+}
+
 fn compute_write_region(
     fresh_pool: bool,
     needs_full: bool,
@@ -1158,6 +1185,14 @@ fn compute_write_region(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sparse_dmabuf_requires_explicit_clear_and_never_reuses_stale_pixels() {
+        assert!(!sparse_slot_needs_full(true, true, true, true));
+        assert!(sparse_slot_needs_full(true, true, false, true), "未清零的 gbm 槽必须全量写入");
+        assert!(sparse_slot_needs_full(true, false, true, true), "旧槽过期不能当成透明新槽");
+        assert!(sparse_slot_needs_full(true, true, true, false), "普通表面沿用原初始化契约");
+    }
 
     fn r(x: f32, y: f32, w: f32, h: f32) -> Rect {
         Rect::new(x, y, w, h)
