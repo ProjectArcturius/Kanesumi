@@ -1,8 +1,9 @@
 //! 系统字体只读映射（runtime 轨 A1，裁定 §246：unsafe 只放 harness）。
 //!
 //! 读取器供 [`kanesumi_canvas::text::TextEngine::load_stack_with`] 使用：仅当
-//! `canonicalize` 后路径位于 `/usr/share/fonts/` 之下、普通文件、属主 uid 0、
-//! 组与其他用户无写位时，用 `memmap2::Mmap` 只读映射；其余一律回退
+//! `canonicalize` 后路径位于系统字体目录（`/usr/share/fonts/` 或
+//! `/usr/local/share/fonts/`，fontconfig 缺省扫描的两处）之下、普通文件、
+//! 属主 uid 0、组与其他用户无写位时，用 `memmap2::Mmap` 只读映射；其余一律回退
 //! `std::fs::read`（用户目录字体、符号链接逃逸、权限不符、映射失败）。
 //! 缺省开启（裁定 §250；原 §121-3 缺省关），`KANESUMI_FONT_MMAP=0` 关闭。每次读取向
 //! `~/.local/state/ether/kanesumi-font.log` 追加一行自证：进程名、字体路径、
@@ -15,13 +16,24 @@ use std::sync::Arc;
 
 use kanesumi_canvas::text::FontBytes;
 
-/// 系统字体目录（映射白名单前缀）。
-const SYSTEM_FONT_DIR: &str = "/usr/share/fonts/";
+/// 系统字体目录（映射白名单前缀）。fontconfig 缺省同时扫描 `/usr/share/fonts`
+/// 与 `/usr/local/share/fonts`（fonts.conf 并列登记），管理员手动安装的字体落在
+/// 后者（云 Pod 即装在 `/usr/local/share/fonts/s`）——漏掉它，同属 root 只读的
+/// 系统字体整文件走堆副本（02 夜 7 heaptrack 的 39.6 MB 即此）。
+const SYSTEM_FONT_DIRS: [&str; 2] = ["/usr/share/fonts/", "/usr/local/share/fonts/"];
 
 /// 映射资格（纯函数，单测锁定）。`canon` 已 `canonicalize`——符号链接逃逸
 /// （链到系统字体目录之外）在这里天然落选，无需单独判链接。
+///
+/// 规则防的是「文件内容被无特权进程改写」：uid 0 属主 + 组/他无写位 → 普通进程
+/// 无法原地改写已验证的 inode（读取器以已打开句柄 fstat 定资格，替换目录项只换
+/// 名不换 inode，见 read_font_bytes_traced 内的不变式注释）。目录级白名单限定
+/// 管理员域；用户目录（~/.local/share/fonts 等）即使文件碰巧 root 属主也不开。
 fn mmap_eligible(canon: &Path, is_file: bool, uid: u32, mode: u32) -> bool {
-    canon.starts_with(SYSTEM_FONT_DIR) && is_file && uid == 0 && (mode & 0o022) == 0
+    SYSTEM_FONT_DIRS.iter().any(|d| canon.starts_with(*d))
+        && is_file
+        && uid == 0
+        && (mode & 0o022) == 0
 }
 
 /// 开关语义（裁定 §250，2026-11-01 真机 DRM 验证后翻为缺省开）：未设或非 `0` 即映射，
@@ -50,7 +62,7 @@ fn read_font_bytes_traced(path: &Path, enabled: bool) -> io::Result<(FontBytes, 
         // 用已打开句柄的属性证明资格，避免路径检查与打开对应不同文件。
         // SAFETY：只读映射一个符合 mmap_eligible 的系统字体文件。
         // 不变式：映射对象是 root 拥有、组/其他无写位的
-        // /usr/share/fonts 下普通文件，普通进程无法原地改写；
+        // 系统字体白名单目录下普通文件，普通进程无法原地改写；
         // Debian 字体包升级走「写临时文件 + rename() 原子替换」，
         // rename 只换目录项，旧 inode 与既有只读映射不受影响。
         // 故映射生命周期内文件内容不会被改写，只读映射安全。
@@ -280,5 +292,112 @@ mod tests {
         // 关闭开关：同一路径回退 read（缺省行为未变）。
         let (_, mapped_off) = read_font_bytes_traced(&path, false).unwrap();
         assert!(!mapped_off, "KANESUMI_FONT_MMAP 关闭时必须回退 fs::read");
+    }
+
+    /// /usr/local/share/fonts 前缀（02 夜 7 云 Pod 场景）：root 只读普通文件必须
+    /// 映射，属主 / 写位 / 目录语义照旧把关。600 与 644 同判：资格只看组/他写位，
+    /// root-only 读位不改变资格（打不开在 File::open 处已回退）。
+    #[test]
+    fn mmap_eligibility_local_fonts_prefix() {
+        // 云 Pod 部署形态：/usr/local/share/fonts/s 下思源黑体，root 644 → 映射。
+        assert!(mmap_eligible(
+            Path::new("/usr/local/share/fonts/s/SourceHanSansSC-Regular.otf"),
+            true,
+            0,
+            0o644
+        ));
+        // 600：仅 root 可读写，组/他无写位 → 资格不变。
+        assert!(mmap_eligible(
+            Path::new("/usr/local/share/fonts/s/SourceHanSansSC-Bold.otf"),
+            true,
+            0,
+            0o600
+        ));
+        // /usr/share/fonts 下 600 同判（既有用例只锁了 644）。
+        assert!(mmap_eligible(
+            Path::new("/usr/share/fonts/opentype/noto/a.ttc"),
+            true,
+            0,
+            0o600
+        ));
+        // 非 root 属主（属主可原地改写）→ 不映射。
+        assert!(!mmap_eligible(
+            Path::new("/usr/local/share/fonts/s/x.otf"),
+            true,
+            1000,
+            0o644
+        ));
+        // 组 / 他可写 → 不映射（权限判在文件上，与所在目录无关）。
+        assert!(!mmap_eligible(
+            Path::new("/usr/local/share/fonts/s/x.otf"),
+            true,
+            0,
+            0o664
+        ));
+        assert!(!mmap_eligible(
+            Path::new("/usr/local/share/fonts/s/x.otf"),
+            true,
+            0,
+            0o642
+        ));
+    }
+
+    /// 用户字体目录（~/.local/share/fonts、~/.fonts）永不映射：目录级白名单是
+    /// 「管理员域」语义，不是属主语义——文件碰巧 root 属主也不开。
+    #[test]
+    fn mmap_eligibility_user_dirs_never_map() {
+        for p in ["/home/u/.local/share/fonts/x.ttf", "/home/u/.fonts/x.ttf"] {
+            assert!(!mmap_eligible(Path::new(p), true, 1000, 0o644));
+            assert!(!mmap_eligible(Path::new(p), true, 0, 0o644));
+        }
+    }
+
+    /// 真机对照：/usr/local/share/fonts 下若装有 root 只读字体（云 Pod 部署形态、
+    /// 手动装思源黑体的机器），必须实际 mmap 且字节与 fs::read 一致。该目录存在
+    /// 与否随部署而定（判门机可能没有），不存在则跳过——白名单分支已由纯函数
+    /// 用例锁定，这里只验证真实映射通路。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn eligible_local_font_maps_when_present() {
+        let dir = match std::fs::read_dir("/usr/local/share/fonts") {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("跳过：/usr/local/share/fonts 不可读（{e}），本机无该部署形态");
+                return;
+            }
+        };
+        let mut found = None;
+        let mut stack = vec![dir];
+        while let Some(rd) = stack.pop() {
+            for entry in rd.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    if let Ok(sub) = std::fs::read_dir(&p) {
+                        stack.push(sub);
+                    }
+                } else if let Ok(meta) = std::fs::metadata(&p) {
+                    use std::os::unix::fs::MetadataExt;
+                    if mmap_eligible(&p, meta.is_file(), meta.uid(), meta.mode()) {
+                        found = Some(p);
+                        break;
+                    }
+                }
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+        let Some(path) = found else {
+            eprintln!("跳过：/usr/local/share/fonts 在场但无 root 只读字体，本机为其他部署形态");
+            return;
+        };
+        let expected = std::fs::read(&path).unwrap();
+        let (handle, mapped) = read_font_bytes_traced(&path, true).unwrap();
+        assert!(mapped, "符合资格的本地字体应 mmap：{}", path.display());
+        assert_eq!(
+            handle.as_ref().as_ref(),
+            expected.as_slice(),
+            "映射字节须与读文件一致"
+        );
     }
 }
