@@ -172,6 +172,8 @@ pub struct CpuRenderer {
     /// 1:1 不透明图像的**按行拷贝**累计行数（诊断/测试：验证逐行 memcpy 快路径真的按行走，
     /// 而不是又退回逐像素）。
     image_row_blits: u64,
+    /// 仅本帧有效的不透明源身份；不持有图像，绘制结束即清除。
+    opaque_image_hint: Option<(usize, usize)>,
     /// 测试专用：置真 → 禁用逐行 memcpy 快路径（用来和「通用路径」逐像素对照）。
     #[cfg(test)]
     no_row_blit: bool,
@@ -205,6 +207,7 @@ impl CpuRenderer {
             scaled_prev_used: HashSet::new(),
             layout_misses: 0,
             image_row_blits: 0,
+            opaque_image_hint: None,
             #[cfg(test)]
             no_row_blit: false,
             text_tuning: TextRenderTuning::default(),
@@ -284,10 +287,14 @@ impl CpuRenderer {
         scene: &Scene,
         damage: Option<Rect>,
     ) -> &[u8] {
+        self.opaque_image_hint = if damage.is_none() {
+            opaque_scene_start(scene, self.w, self.h, self.scale)
+        } else { None };
         match damage {
             // S4：仅清损坏矩形，其余保留上帧（配合命令裁剪 = 只重绘变化区）。
             Some(d) => self.clear_rect(d),
             // 全量：每帧零填充（透明底）。面板扩展区空白透出桌面（透明契约）。
+            None if self.opaque_image_hint.is_some() => {},
             None => self.buf.fill(0),
         }
         // 命令裁剪：全量 → 原样；局部 → 与 damage 求交（None 栈顶 = 视口即 damage）。
@@ -427,6 +434,7 @@ impl CpuRenderer {
                 }
             }
         }
+        self.opaque_image_hint = None;
         // 布局缓存 generation GC：保留「本帧 ∪ 上帧」使用的条目（egui GalleyCache
         // 同款）；局部 damage 帧未重绘的静态文本因上帧使用而保留。淘汰条目的字形
         // 位图仍在 glyph_bitmaps（只增不减），重排时直接复用。
@@ -1072,7 +1080,8 @@ impl CpuRenderer {
             if inside
                 && cols > 0
                 && rows > 0
-                && region_is_opaque(src, sw, u0 as usize, v0 as usize, cols, rows)
+                && (self.opaque_image_hint == Some((src.as_ptr() as usize, src.len()))
+                    || region_is_opaque(src, sw, u0 as usize, v0 as usize, cols, rows))
             {
                 for r in 0..rows {
                     let s = ((v0 as usize + r) * sw as usize + u0 as usize) * 4;
@@ -1268,20 +1277,38 @@ fn texel(src: &[u8], sw: u32, x: u32, y: u32) -> [u8; 4] {
 /// 不能整行拷。一次比对 8 字节（2 像素）的 α 字节掩码，遇到第一个非 255 立即退出：
 /// 带透明边缘的图标通常在头几个像素就返回，代价可忽略；整屏亚克力背板（全不透明）
 /// 才扫满全幅，换掉的是逐像素 texel + 分支的 590 万次循环。
+/// 只有无裁剪首图逐像素覆盖全表面且整幅不透明时，才可省去即将被覆盖的透明清零。
+fn opaque_scene_start(scene: &Scene, w: u32, h: u32, scale: f32) -> Option<(usize, usize)> {
+    let SceneCommand::Image { rgba, width, height, rect, tint, opacity } = scene.commands.first()? else { return None };
+    if *width != w || *height != h || tint.is_some() || *opacity != 1.0
+        || rect.origin.x != 0.0 || rect.origin.y != 0.0
+        || rect.size.width * scale != w as f32 || rect.size.height * scale != h as f32
+        || rgba.len() / 4 < (w as usize).saturating_mul(h as usize)
+        || !region_is_opaque(rgba, w, 0, 0, w as usize, h as usize)
+    {
+        return None;
+    }
+    // Scene 在本次绘制期间持有不可变 Arc；身份只在该帧复用，不会钉住旧图像分配。
+    Some((rgba.as_ptr() as usize, rgba.len()))
+}
+
 fn region_is_opaque(src: &[u8], sw: u32, u0: usize, v0: usize, cols: usize, rows: usize) -> bool {
-    // 每 4 字节像素的第 4 字节（α）在高位：两个像素 = 0xFF00_0000_FF00_0000。
+    // 每 4 字节像素的第 4 字节是 α；每批检查八像素，减少大背板上的逐字分支。
     const ALPHA: u64 = 0xFF00_0000_FF00_0000;
     for r in 0..rows {
         let start = ((v0 + r) * sw as usize + u0) * 4;
         let row = &src[start..start + cols * 4];
-        let mut it = row.chunks_exact(8);
-        for w in &mut it {
-            let v = u64::from_ne_bytes([w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]]);
-            if v & ALPHA != ALPHA {
+        let mut it = row.chunks_exact(32);
+        for batch in &mut it {
+            let mut alpha = u64::MAX;
+            for word in batch.chunks_exact(8) {
+                alpha &= u64::from_le_bytes(word.try_into().unwrap());
+            }
+            if alpha & ALPHA != ALPHA {
                 return false;
             }
         }
-        // 奇数像素的行尾（正常不会出现：行字节数 = 4 × 像素数）。
+        // 不足八像素的行尾仍逐像素检查，奇数宽度与局部裁剪也不能漏掉透明像素。
         if it.remainder().chunks_exact(4).any(|p| p[3] != 255) {
             return false;
         }
@@ -1552,6 +1579,55 @@ mod tests {
         assert!(!region_is_opaque(&one, w, 0, 0, 4, 3), "一个半透明像素即否");
         // 只扫给定区域：损坏像素在区域外不影响判定。
         assert!(region_is_opaque(&one, w, 0, 0, 4, 1));
+    }
+
+    #[test]
+    fn opaque_scan_checks_every_pixel_in_batched_and_clipped_odd_rows() {
+        let (width, height) = (19, 5);
+        let mut pixels = vec![0; width * height * 4];
+        for y in 1..4 {
+            for x in 1..18 { pixels[(y * width + x) * 4 + 3] = 255; }
+        }
+        assert!(region_is_opaque(&pixels, width as u32, 1, 1, 17, 3));
+        for y in 1..4 {
+            for x in 1..18 {
+                let alpha = (y * width + x) * 4 + 3;
+                pixels[alpha] = 254;
+                assert!(!region_is_opaque(&pixels, width as u32, 1, 1, 17, 3),
+                    "透明像素 ({x}, {y}) 必须被检查，包含批次边界和尾部");
+                pixels[alpha] = 255;
+            }
+        }
+        assert!(!region_is_opaque(&pixels, width as u32, 0, 0, 19, 5), "区域外透明像素不能被误判");
+    }
+
+    #[test]
+    fn opaque_first_image_never_leaks_previous_pixels_into_later_frames() {
+        use kanesumi_canvas::icon::Icon;
+        let (w, h) = (9, 7);
+        let icon = Icon { rgba: opaque_test_image(w, h).into(), width: w, height: h };
+        let mut renderer = CpuRenderer::new(w as f32, h as f32, 1.0);
+        let mut full = Scene::default();
+        full.image(&icon, Rect::new(0.0, 0.0, w as f32, h as f32), None);
+        assert_eq!(renderer.render_inner(None, &full, None), icon.rgba.as_ref());
+        assert!(renderer.render_inner(None, &Scene::default(), None).iter().all(|b| *b == 0),
+            "后续空帧必须清透明，不能沿用首图提示");
+        renderer.render_inner(None, &full, None);
+        let mut partial = Scene::default();
+        partial.image(&icon, Rect::new(0.0, 0.0, 1.0, h as f32), None);
+        let pixels = renderer.render_inner(None, &partial, None);
+        for y in 0..h as usize {
+            assert!(pixels[(y * w as usize + 1) * 4..(y + 1) * w as usize * 4].iter().all(|b| *b == 0),
+                "局部图像外必须透明");
+        }
+        renderer.render_inner(None, &full, None);
+        let mut transparent = icon.rgba.to_vec();
+        for pixel in transparent.chunks_exact_mut(4) { pixel[3] = 0; }
+        let mut clear = Scene::default();
+        clear.image(&Icon { rgba: transparent.into(), width: w, height: h },
+            Rect::new(0.0, 0.0, w as f32, h as f32), None);
+        assert!(renderer.render_inner(None, &clear, None).iter().all(|b| *b == 0),
+            "同尺寸透明图不能继承上一帧的不透明判断");
     }
 
     /// Image opacity 乘子（R2）：不透明白图，opacity 0 / 0.5 / 1 的像素值。
