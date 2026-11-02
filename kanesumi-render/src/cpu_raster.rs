@@ -287,9 +287,15 @@ impl CpuRenderer {
         scene: &Scene,
         damage: Option<Rect>,
     ) -> &[u8] {
-        self.opaque_image_hint = if damage.is_none() {
-            opaque_scene_start(scene, self.w, self.h, self.scale)
+        #[cfg(test)]
+        let first_copy_allowed = !self.no_row_blit;
+        #[cfg(not(test))]
+        let first_copy_allowed = true;
+        self.opaque_image_hint = if damage.is_none() && first_copy_allowed {
+            copy_opaque_scene_start(scene, self.w, self.h, self.scale, &mut self.buf)
         } else { None };
+        let first_image_copied = self.opaque_image_hint.is_some();
+        if first_image_copied { self.image_row_blits += self.h as u64; }
         match damage {
             // S4：仅清损坏矩形，其余保留上帧（配合命令裁剪 = 只重绘变化区）。
             Some(d) => self.clear_rect(d),
@@ -312,7 +318,8 @@ impl CpuRenderer {
             }
         };
         let mut clip_stack: Vec<Option<Rect>> = Vec::new();
-        for cmd in &scene.commands {
+        for (index, cmd) in scene.commands.iter().enumerate() {
+            if first_image_copied && index == 0 { continue; }
             match cmd {
                 SceneCommand::PushClip { rect } => {
                     let effective = match clip_stack.last().copied() {
@@ -1272,20 +1279,38 @@ fn texel(src: &[u8], sw: u32, x: u32, y: u32) -> [u8; 4] {
 }
 
 /// 只有无裁剪首图逐像素覆盖全表面且整幅不透明时，才可省去即将被覆盖的透明清零。
-fn opaque_scene_start(scene: &Scene, w: u32, h: u32, scale: f32) -> Option<(usize, usize, u32, u32)> {
+fn copy_opaque_scene_start(scene: &Scene, w: u32, h: u32, scale: f32, dst: &mut [u8]) -> Option<(usize, usize, u32, u32)> {
     let SceneCommand::Image { rgba, width, height, rect, tint, opacity } = scene.commands.first()? else { return None };
     let expected = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
     if *width != w || *height != h || tint.is_some() || *opacity != 1.0
         || rect.origin.x != 0.0 || rect.origin.y != 0.0
         || rect.size.width * scale != w as f32 || rect.size.height * scale != h as f32
         || rgba.len() < expected
-        || !region_is_opaque(rgba, w, 0, 0, w as usize, h as usize)
     {
         return None;
     }
+    if !copy_and_check_opaque(&rgba[..expected], dst.get_mut(..expected)?) { return None; }
     // 仅验证该尺寸对应的像素；同一 Arc 的其他尺寸视图必须另行检查透明度。
     // 身份只在当前帧复用，不持有图像，也不检查本视图不使用的尾部数据。
     Some((rgba.as_ptr() as usize, rgba.len(), w, h))
+}
+
+/// 一次读取同时复制与检查 α；失败可能已写入前缀，调用方必须清零并走原绘制路径。
+fn copy_and_check_opaque(src: &[u8], dst: &mut [u8]) -> bool {
+    debug_assert_eq!(src.len(), dst.len());
+    debug_assert_eq!(src.len() % 4, 0);
+    const ALPHA: u64 = 0xFF00_0000_FF00_0000;
+    let mut source = src.chunks_exact(32);
+    let mut target = dst.chunks_exact_mut(32);
+    for (pixels, output) in source.by_ref().zip(target.by_ref()) {
+        let alpha = pixels.chunks_exact(8).fold(u64::MAX,
+            |acc, word| acc & u64::from_le_bytes(word.try_into().unwrap()));
+        output.copy_from_slice(pixels);
+        if alpha & ALPHA != ALPHA { return false; }
+    }
+    let remainder = source.remainder();
+    target.into_remainder().copy_from_slice(remainder);
+    remainder.chunks_exact(4).all(|p| p[3] == 255)
 }
 
 /// 源图指定区域是否全部不透明；每批检查八像素，任何透明像素均回退逐像素混合。
@@ -1641,6 +1666,36 @@ mod tests {
         let mut renderer = CpuRenderer::new(1.0, 1.0, 1.0);
         assert_eq!(renderer.render_inner(None, &scene, None), &[210, 20, 40, 255],
             "后画的透明尾像素必须保留首图，不能直接覆盖缓冲");
+    }
+
+    #[test]
+    fn fused_copy_preserves_opaque_pixels_and_checks_every_alpha() {
+        for pixels in 0..=33 {
+            let source = opaque_test_image(pixels, 1);
+            let mut target = vec![13; source.len()];
+            assert!(copy_and_check_opaque(&source, &mut target));
+            assert_eq!(source, target, "奇数像素与批次尾部必须逐字节相同");
+            for pixel in 0..pixels as usize {
+                let mut transparent = source.clone();
+                transparent[pixel * 4 + 3] = 254;
+                assert!(!copy_and_check_opaque(&transparent, &mut target),
+                    "任何一个非不透明像素都必须使尝试失败");
+            }
+        }
+    }
+
+    #[test]
+    fn late_transparent_first_image_falls_back_after_partial_copy() {
+        use kanesumi_canvas::icon::Icon;
+        let (w, h) = (17, 3);
+        let mut pixels = opaque_test_image(w, h);
+        let end = pixels.len();
+        pixels[end - 1] = 127;
+        let icon = Icon { rgba: pixels.into(), width: w, height: h };
+        let (fast, generic) = render_both_paths(&icon, Rect::new(0.0, 0.0, w as f32, h as f32),
+            (w as f32, h as f32), None);
+        assert_eq!(fast.buf, generic.buf,
+            "部分复制后发现透明像素，必须先清零再混合，不能叠加到自己的暂存像素");
     }
 
     /// Image opacity 乘子（R2）：不透明白图，opacity 0 / 0.5 / 1 的像素值。
