@@ -13,6 +13,8 @@ pub mod input_config;
 pub mod key_repeat;
 pub mod layers;
 pub mod perf;
+#[cfg(any(target_os = "linux", test))]
+mod pixel_copy;
 pub mod renderer_policy;
 pub mod role;
 pub mod system_theme;

@@ -498,14 +498,10 @@ impl DmabufBuffers {
                         break;
                     }
                     if choice.swap_rb {
-                        for k in 0..cw {
-                            let s = src_row + k * 4;
-                            let d = dst_row + k * 4;
-                            buf[d] = rgba[s + 2];
-                            buf[d + 1] = rgba[s + 1];
-                            buf[d + 2] = rgba[s];
-                            buf[d + 3] = rgba[s + 3];
-                        }
+                        crate::pixel_copy::rgba_to_bgra(
+                            &mut buf[dst_row..dst_row + cw * 4],
+                            &rgba[src_row..src_row + cw * 4],
+                        );
                     } else {
                         buf[dst_row..dst_row + cw * 4]
                             .copy_from_slice(&rgba[src_row..src_row + cw * 4]);

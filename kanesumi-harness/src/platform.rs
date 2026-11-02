@@ -5236,15 +5236,10 @@ fn commit_shm_buffers(
             if src_start + row_bytes > bgra.len() || dst_start + row_bytes > mmap.len() {
                 break;
             }
-            for (dst, src) in mmap[dst_start..dst_start + row_bytes]
-                .chunks_exact_mut(4)
-                .zip(bgra[src_start..src_start + row_bytes].chunks_exact(4))
-            {
-                dst[0] = src[2];
-                dst[1] = src[1];
-                dst[2] = src[0];
-                dst[3] = src[3];
-            }
+            crate::pixel_copy::rgba_to_bgra(
+                &mut mmap[dst_start..dst_start + row_bytes],
+                &bgra[src_start..src_start + row_bytes],
+            );
         }
     }
     // 槽位状态更新（buffer-age 回补登记）。
