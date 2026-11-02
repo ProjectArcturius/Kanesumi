@@ -351,6 +351,13 @@ pub fn is_spike(t: &FrameTiming) -> bool {
 
 /// 超过 [`SPIKE_MS`] 才写尖峰日志；返回是否写了（单测直接断言）。
 pub fn maybe_spike(proc: &str, role: &str, surface: &str, t: &FrameTiming) -> bool {
+    static FRAME_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *FRAME_TRACE.get_or_init(|| std::env::var("KANESUMI_FRAME_TRACE").as_deref() == Ok("1"))
+        && let Some(path) = state_log_path("ether-harness-frames.log")
+    {
+        // 独立逐帧量程供上传门使用；不改变尖峰阈值或返回值契约。
+        write_log(&path, &spike_line(proc, role, surface, t));
+    }
     if !is_spike(t) {
         return false;
     }
