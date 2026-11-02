@@ -275,7 +275,7 @@ impl CpuRenderer {
     ///
     /// S4 局部重绘：`damage = Some(d)` 时只清/绘 `d` 内的像素，缓冲区其余部分
     /// **保留上一帧**（命令经 `d` 裁剪）。调用方必须保证 `d` 覆盖本帧全部变化；
-    /// 场景存在未知变化（时钟/面板整体变动等）传 `None` → 全量重绘（每帧零填充）。
+    /// 场景存在未知变化时传 `None` → 全量重绘；仅已验证的不透明首图可代替透明清零。
     pub fn render(&mut self, engine: &TextEngine, scene: &Scene, damage: Option<Rect>) -> &[u8] {
         self.render_inner(Some(engine), scene, damage)
     }
@@ -293,7 +293,7 @@ impl CpuRenderer {
         match damage {
             // S4：仅清损坏矩形，其余保留上帧（配合命令裁剪 = 只重绘变化区）。
             Some(d) => self.clear_rect(d),
-            // 全量：每帧零填充（透明底）。面板扩展区空白透出桌面（透明契约）。
+            // 全量：透明清零；已验证会被首图完整覆盖时直接绘制。
             None if self.opaque_image_hint.is_some() => {},
             None => self.buf.fill(0),
         }
@@ -1271,19 +1271,15 @@ fn texel(src: &[u8], sw: u32, x: u32, y: u32) -> [u8; 4] {
     [src[idx], src[idx + 1], src[idx + 2], src[idx + 3]]
 }
 
-/// 源图指定区域是否**整幅不透明**（α 全 255）。
-///
-/// 用途：`emit_image` 的逐行 memcpy 快路径前置判定 —— 半透明像素必须逐像素混合，
-/// 不能整行拷。一次比对 8 字节（2 像素）的 α 字节掩码，遇到第一个非 255 立即退出：
-/// 带透明边缘的图标通常在头几个像素就返回，代价可忽略；整屏亚克力背板（全不透明）
-/// 才扫满全幅，换掉的是逐像素 texel + 分支的 590 万次循环。
 /// 只有无裁剪首图逐像素覆盖全表面且整幅不透明时，才可省去即将被覆盖的透明清零。
 fn opaque_scene_start(scene: &Scene, w: u32, h: u32, scale: f32) -> Option<(usize, usize)> {
     let SceneCommand::Image { rgba, width, height, rect, tint, opacity } = scene.commands.first()? else { return None };
+    let expected = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
     if *width != w || *height != h || tint.is_some() || *opacity != 1.0
         || rect.origin.x != 0.0 || rect.origin.y != 0.0
         || rect.size.width * scale != w as f32 || rect.size.height * scale != h as f32
-        || rgba.len() / 4 < (w as usize).saturating_mul(h as usize)
+        // 帧内身份涵盖整个 Arc；多余尾部未扫描，不能让后续图像复用不透明提示。
+        || rgba.len() != expected
         || !region_is_opaque(rgba, w, 0, 0, w as usize, h as usize)
     {
         return None;
@@ -1292,6 +1288,7 @@ fn opaque_scene_start(scene: &Scene, w: u32, h: u32, scale: f32) -> Option<(usiz
     Some((rgba.as_ptr() as usize, rgba.len()))
 }
 
+/// 源图指定区域是否全部不透明；每批检查八像素，任何透明像素均回退逐像素混合。
 fn region_is_opaque(src: &[u8], sw: u32, u0: usize, v0: usize, cols: usize, rows: usize) -> bool {
     // 每 4 字节像素的第 4 字节是 α；每批检查八像素，减少大背板上的逐字分支。
     const ALPHA: u64 = 0xFF00_0000_FF00_0000;
@@ -1628,6 +1625,22 @@ mod tests {
             Rect::new(0.0, 0.0, w as f32, h as f32), None);
         assert!(renderer.render_inner(None, &clear, None).iter().all(|b| *b == 0),
             "同尺寸透明图不能继承上一帧的不透明判断");
+    }
+
+    #[test]
+    fn padded_first_image_does_not_mark_its_unchecked_tail_opaque() {
+        use kanesumi_canvas::icon::Icon;
+        // 首图只用第一个不透明像素；同一 Arc 的尾像素在第二条命令中可见且完全透明。
+        let first = Icon {
+            rgba: vec![210, 20, 40, 255, 0, 160, 255, 0].into(), width: 1, height: 1,
+        };
+        let second = Icon { rgba: first.rgba.clone(), width: 2, height: 1 };
+        let mut scene = Scene::default();
+        scene.image(&first, Rect::new(0.0, 0.0, 1.0, 1.0), None);
+        scene.image(&second, Rect::new(-1.0, 0.0, 2.0, 1.0), None);
+        let mut renderer = CpuRenderer::new(1.0, 1.0, 1.0);
+        assert_eq!(renderer.render_inner(None, &scene, None), &[210, 20, 40, 255],
+            "后画的透明尾像素必须保留首图，不能直接覆盖缓冲");
     }
 
     /// Image opacity 乘子（R2）：不透明白图，opacity 0 / 0.5 / 1 的像素值。
