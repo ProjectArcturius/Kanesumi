@@ -32,6 +32,23 @@ pub enum LayerParent {
     Floating(usize),
 }
 
+/// 背板挂载目标；坐标与该表面的逻辑坐标相同。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BackdropTarget {
+    Main,
+    Floating(usize),
+    Layer(LayerId),
+}
+
+/// 壁纸源材质。独立锁屏壁纸仍由应用回退绘制，参 Ether backdrop_m3/PROTOCOL.md。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BackdropMaterial {
+    pub blur: f32,
+    pub tint_rgb: u32,
+    pub tint_opacity: f32,
+    pub region: Option<Rect>,
+}
+
 /// cubic-bezier 缓动曲线 (x1, y1, x2, y2)。
 pub type Curve = [f32; 4];
 
@@ -78,6 +95,8 @@ pub struct LayerClipAnim {
 /// App → 外壳的图层命令。
 #[derive(Debug, Clone)]
 pub enum LayerCommand {
+    /// None 撤销材质；能力由 BackdropAvailability 异步回报，不能先假定可用。
+    SetBackdrop { target: BackdropTarget, material: Option<BackdropMaterial> },
     Create { id: LayerId, parent: LayerParent, rect: Rect },
     /// 设置内容并光栅一次（尺寸 = 图层矩形）。只在内容真的变了时发。
     SetContent { id: LayerId, scene: Scene },
@@ -115,6 +134,7 @@ pub enum LayerCommand {
 /// 外壳 → App 的图层事件。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LayerEvent {
+    BackdropAvailability { target: BackdropTarget, available: bool },
     Done { id: LayerId, serial: u32 },
     Cancelled { id: LayerId, serial: u32 },
     /// 合成器不支持 `ether_composition_v1`（只发一次）：动画会被直接跳到终值。

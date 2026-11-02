@@ -18,9 +18,15 @@
     touchpad fingers, runs inertia and wheel animations on its own clock and samples them at
     each frame's target presentation time, so scrolling never waits for the client.
     See Ether tools/dispatch/tasks/fp4-compositor-scroll.md.
+
+    Version 4 adds compositor-drawn backdrop materials (ether_backdrop_v1): the client
+    declares that part of its surface wants a blurred, tinted view of what lies behind it,
+    and the compositor renders it on the GPU beneath the surface content. Clients stop
+    decoding and blurring the wallpaper themselves. See Ether docs/BACKDROP_MATERIAL_PLAN.md (M3)
+    and docs/research/backdrop_m3/PROTOCOL.md.
   </description>
 
-  <interface name="ether_composition_manager_v1" version="3">
+  <interface name="ether_composition_manager_v1" version="4">
     <description summary="creates visuals for surfaces"/>
 
     <request name="destroy" type="destructor"/>
@@ -37,6 +43,7 @@
     <enum name="error">
       <entry name="visual_exists" value="0" summary="the surface already has a visual"/>
       <entry name="scroller_exists" value="1" summary="the visual already has a scroller" since="3"/>
+      <entry name="backdrop_exists" value="2" summary="the surface already has a backdrop" since="4"/>
     </enum>
 
     <request name="get_scroller" since="3">
@@ -48,6 +55,16 @@
       </description>
       <arg name="id" type="new_id" interface="ether_scroller_v1"/>
       <arg name="visual" type="object" interface="ether_visual_v1"/>
+    </request>
+
+    <request name="get_backdrop" since="4">
+      <description summary="create a backdrop material for a surface">
+        At most one backdrop may exist per surface; a second get_backdrop for the same
+        surface raises the backdrop_exists error. The surface may or may not also have a
+        visual. The compositor answers with an availability event before any other event.
+      </description>
+      <arg name="id" type="new_id" interface="ether_backdrop_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
     </request>
   </interface>
 
@@ -256,6 +273,89 @@
       <description summary="phase change; serial echoes a finished scroll_by / scroll_to (else 0)"/>
       <arg name="phase" type="uint" enum="phase"/>
       <arg name="serial" type="uint"/>
+    </event>
+  </interface>
+
+  <interface name="ether_backdrop_v1" version="1">
+    <description summary="compositor-drawn blurred and tinted backdrop beneath a surface">
+      The material fills the backdrop region (by default the whole surface) beneath the
+      surface's own content: the client's buffer is composited over it, so transparent or
+      translucent pixels show the material. The material is screen-aligned: it shows what
+      is behind the region on the output where it is presented, so moving the surface (or
+      animating its visual offset) moves the window onto a different part of the material
+      instead of dragging a picture along. It is clipped exactly like the surface itself
+      (visual inset clip, visual clip rectangle, parent crops) and multiplied by the
+      surface's presented opacity. Input is unaffected.
+
+      Blur and tint run in sRGB-encoded values, so a client fallback built from the same
+      wallpaper and parameters looks the same. Radii are logical; the compositor scales
+      them per output.
+
+      All requests except destroy are double-buffered and applied on the next commit of
+      the surface. Nothing is drawn until a commit has applied a material, and nothing is
+      drawn while availability is unavailable.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="remove the material; the surface is drawn without it from the next frame"/>
+    </request>
+
+    <enum name="error">
+      <entry name="invalid_source" value="0" summary="unknown source value"/>
+    </enum>
+
+    <enum name="source">
+      <entry name="wallpaper" value="0" summary="the session wallpaper, cover-fitted to the whole output"/>
+      <entry name="behind" value="1" summary="everything composited below this surface on the output"/>
+    </enum>
+
+    <enum name="availability">
+      <entry name="unavailable" value="0" summary="the compositor will not draw the material"/>
+      <entry name="available" value="1" summary="the compositor draws the material"/>
+    </enum>
+
+    <request name="set_source">
+      <description summary="choose what the material blurs (initial value: wallpaper)">
+        wallpaper never includes windows, layers or the cursor and is recomputed only when
+        the wallpaper, the material or the output changes. behind includes everything drawn
+        before this surface on the same output (wallpaper, desktop, windows, lower layers)
+        and is recomputed when that content changes inside the region. While the session is
+        locked the compositor treats every backdrop as wallpaper, whatever was requested.
+      </description>
+      <arg name="source" type="uint" enum="source"/>
+    </request>
+
+    <request name="set_material">
+      <description summary="blur radius and tint">
+        blur is the radius in logical pixels (about twice the Gaussian sigma); 0 means no
+        blur. tint_rgb is 0xRRGGBB; tint_opacity 0..1 mixes the blurred pixels toward the
+        tint (0 = untinted, 1 = solid tint). Negative blur is treated as 0 and tint_opacity
+        is clamped to 0..1.
+      </description>
+      <arg name="blur" type="fixed"/>
+      <arg name="tint_rgb" type="uint"/>
+      <arg name="tint_opacity" type="fixed"/>
+    </request>
+
+    <request name="set_region">
+      <description summary="restrict the material to a rectangle in surface-local logical coordinates"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </request>
+
+    <request name="unset_region">
+      <description summary="the material covers the whole surface again (initial state)"/>
+    </request>
+
+    <event name="availability">
+      <description summary="whether the compositor draws the material">
+        Sent once right after get_backdrop and again whenever it changes (the feature is
+        switched off, the GPU path fails or recovers). While unavailable the client should
+        draw its own fallback; it can keep the backdrop object and wait for available.
+      </description>
+      <arg name="state" type="uint" enum="availability"/>
     </event>
   </interface>
 </protocol>

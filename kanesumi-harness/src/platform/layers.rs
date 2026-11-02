@@ -13,7 +13,7 @@ use wayland_client::{Connection, Dispatch, QueueHandle};
 
 use super::{Shell, SurfaceOutput};
 use crate::cpu_raster::CpuRenderer;
-use crate::layers::{LayerCommand, LayerEvent, LayerId, LayerParent};
+use crate::layers::{BackdropTarget, LayerCommand, LayerEvent, LayerId, LayerParent};
 
 // ── 协议客户端绑定（与 Ether compositor/protocol/ether-composition-v1.xml 同一份）──
 
@@ -63,6 +63,7 @@ pub(super) struct CompLayer {
 /// Shell 持有的图层总状态。
 #[derive(Default)]
 pub(super) struct Composition {
+    pub(super) backdrops: super::backdrop::Backdrops,
     pub(super) manager: Option<EtherCompositionManagerV1>,
     pub(super) subcompositor: Option<SubcompositorState>,
     pub(super) layers: Vec<CompLayer>,
@@ -71,7 +72,7 @@ pub(super) struct Composition {
 
 impl Composition {
     pub(super) fn new(manager: Option<EtherCompositionManagerV1>, subcompositor: Option<SubcompositorState>) -> Self {
-        Self { manager, subcompositor, layers: Vec::new(), unsupported_reported: false }
+        Self { manager, subcompositor, ..Self::default() }
     }
 
     /// 认领 `wl_buffer.release`（图层输出缓冲）。
@@ -130,6 +131,17 @@ impl Shell {
 
     fn apply_layer_command(&mut self, c: LayerCommand, qh: &QueueHandle<Shell>) {
         match c {
+            LayerCommand::SetBackdrop { target, material } => {
+                let surface = match target {
+                    BackdropTarget::Main => Some(self.surface.clone()),
+                    BackdropTarget::Floating(i) => self.floating.get(i).map(|f| f.surface.clone()),
+                    BackdropTarget::Layer(id) => self.layer_index(id).map(|i| self.comp.layers[i].surface.clone()),
+                };
+                if let Some(e) = self.comp.backdrops.set(self.comp.manager.as_ref(), target, material,
+                    surface.into_iter().collect(), qh) {
+                    self.app.on_layer_event(e);
+                }
+            }
             LayerCommand::Create { id, parent, rect } => self.create_layer(id, parent, rect, qh),
             LayerCommand::SetContent { id, scene } => self.set_layer_content(id, &scene, qh),
             LayerCommand::SetRect { id, rect } => {
@@ -233,6 +245,7 @@ impl Shell {
                 }
             }
             LayerCommand::Destroy { id } => {
+                self.comp.backdrops.remove(BackdropTarget::Layer(id));
                 let Some(i) = self.layer_index(id) else { return };
                 let l = self.comp.layers.remove(i);
                 if let Some(v) = l.visual {
@@ -675,6 +688,38 @@ impl Dispatch<EtherScrollerV1, LayerId> for Shell {
             },
         };
         state.app.on_layer_event(e);
+    }
+}
+
+impl Dispatch<proto::ether_backdrop_v1::EtherBackdropV1, BackdropTarget> for Shell {
+    fn event(
+        state: &mut Self,
+        proxy: &proto::ether_backdrop_v1::EtherBackdropV1,
+        event: proto::ether_backdrop_v1::Event,
+        target: &BackdropTarget,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        let proto::ether_backdrop_v1::Event::Availability { state: available } = event;
+        if let Some(e) = state.comp.backdrops.availability(proxy, *target, available) {
+            state.app.on_layer_event(e);
+            state.dirty = true;
+            // 浮层独立节拍；能力变化必须让对应表面交透明内容或恢复回退位图。
+            match *target {
+                BackdropTarget::Floating(i) => {
+                    if let Some(dirty) = state.floating_dirty.get_mut(i) { *dirty = true; }
+                }
+                BackdropTarget::Layer(id) => {
+                    if let Some(i) = state.layer_index(id) {
+                        let parent = &state.comp.layers[i].parent;
+                        if let Some(i) = state.floating_idx(parent) {
+                            state.floating_dirty[i] = true;
+                        }
+                    }
+                }
+                BackdropTarget::Main => {}
+            }
+        }
     }
 }
 

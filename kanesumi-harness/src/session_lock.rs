@@ -54,7 +54,7 @@ use wayland_client::{
 
 use crate::app::{App, InputEvent, LockEvent, Modifiers, PointerButton};
 use crate::cpu_raster::CpuRenderer;
-use crate::layers::{LayerCommand, LayerEvent, LayerId};
+use crate::layers::{BackdropTarget, LayerCommand, LayerEvent, LayerId};
 use crate::platform::layers::proto::ether_composition_manager_v1::EtherCompositionManagerV1;
 use crate::platform::layers::proto::ether_visual_v1::{self, EtherVisualV1};
 use smithay_client_toolkit::subcompositor::SubcompositorState;
@@ -139,6 +139,7 @@ struct LockLayer {
 
 /// 锁屏外壳状态。
 struct LockShell {
+    backdrops: crate::platform::backdrop::Backdrops,
     app: &'static mut dyn App,
     engine: TextEngine,
     registry_state: RegistryState,
@@ -211,7 +212,7 @@ fn run_inner(app: &'static mut dyn App, engine: TextEngine) -> Result<i32, Strin
     let lock_state = SessionLockState::new(&globals, &qh);
     let registry_state = RegistryState::new(&globals);
     let comp_manager = globals
-        .bind::<EtherCompositionManagerV1, LockShell, ()>(&qh, 1..=2, ())
+        .bind::<EtherCompositionManagerV1, LockShell, ()>(&qh, 1..=4, ())
         .ok();
     let subcompositor =
         SubcompositorState::bind(compositor_state.wl_compositor().clone(), &globals, &qh).ok();
@@ -224,6 +225,7 @@ fn run_inner(app: &'static mut dyn App, engine: TextEngine) -> Result<i32, Strin
         .map_err(|e| format!("ext_session_lock_manager_v1 不可用：{e}"))?;
 
     let mut shell = LockShell {
+        backdrops: Default::default(),
         app,
         engine,
         registry_state,
@@ -306,6 +308,13 @@ impl LockShell {
 
     /// 取走 App 的图层命令并执行（父表面未就绪时留在 App 队列里，下一步再取）。
     fn process_layer_commands(&mut self, qh: &QueueHandle<Self>) {
+        if self.backdrops.contains(BackdropTarget::Main) {
+            let surfaces = self.outputs.iter().filter_map(|s| s.surface.as_ref().map(|s| s.wl_surface().clone())).collect();
+            if let Some(e) = self.backdrops.sync(self.comp_manager.as_ref(), BackdropTarget::Main, surfaces, qh) {
+                self.app.on_layer_event(e);
+                self.dirty = true;
+            }
+        }
         let Some((parent, scale)) = self.layer_parent() else {
             return;
         };
@@ -335,6 +344,18 @@ impl LockShell {
         qh: &QueueHandle<Self>,
     ) {
         match c {
+            LayerCommand::SetBackdrop { target, material } => {
+                let surfaces = match target {
+                    BackdropTarget::Main => self.outputs.iter()
+                        .filter_map(|s| s.surface.as_ref().map(|s| s.wl_surface().clone())).collect(),
+                    BackdropTarget::Layer(id) => self.layers.iter().filter(|l| l.id == id).map(|l| l.surface.clone()).collect(),
+                    BackdropTarget::Floating(_) => Vec::new(),
+                };
+                if let Some(e) = self.backdrops.set(self.comp_manager.as_ref(), target, material, surfaces, qh) {
+                    self.app.on_layer_event(e);
+                    self.dirty = true;
+                }
+            }
             LayerCommand::Create { id, rect, .. } => {
                 if self.layer_index(id).is_some() {
                     return;
@@ -519,6 +540,7 @@ impl LockShell {
                 }
             }
             LayerCommand::Destroy { id } => {
+                self.backdrops.remove(BackdropTarget::Layer(id));
                 let Some(i) = self.layer_index(id) else { return };
                 let l = self.layers.remove(i);
                 if let Some(v) = l.visual {
@@ -1094,6 +1116,23 @@ mod tests {
 }
 
 // ── 合成图层协议（与 platform/layers.rs 同一份 ether_composition_v1）────────────
+
+impl wayland_client::Dispatch<crate::platform::layers::proto::ether_backdrop_v1::EtherBackdropV1, BackdropTarget> for LockShell {
+    fn event(
+        state: &mut Self,
+        proxy: &crate::platform::layers::proto::ether_backdrop_v1::EtherBackdropV1,
+        event: crate::platform::layers::proto::ether_backdrop_v1::Event,
+        target: &BackdropTarget,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        let crate::platform::layers::proto::ether_backdrop_v1::Event::Availability { state: available } = event;
+        if let Some(e) = state.backdrops.availability(proxy, *target, available) {
+            state.app.on_layer_event(e);
+            state.dirty = true;
+        }
+    }
+}
 
 impl wayland_client::Dispatch<EtherCompositionManagerV1, ()> for LockShell {
     fn event(

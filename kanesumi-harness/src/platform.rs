@@ -260,6 +260,7 @@ use kanesumi_canvas::set_surface_scale;
 /// 只能重启回主系统读盘；只写 tmpfs（`/tmp`）会随重启丢失（参 `AGENTS.md` 铁律）。
 /// 另外在 `$XDG_RUNTIME_DIR` 留一份便于会话内即时查看（无持久性要求）。
 pub(crate) mod layers;
+pub(crate) mod backdrop;
 mod popups;
 pub(crate) mod font_mmap;
 
@@ -1497,10 +1498,9 @@ impl Shell {
         let dmabuf_device = crate::dmabuf::DmabufDevice::default();
         dmabuf_device.set_recipe(dmabuf_recipe);
         // 合成图层（G3-b）：wl_subcompositor + ether_composition_v1（Ether 私有，别的合成器没有 → None 回落）。
-        // 绑定范围须含 v3（get_scroller / set_clip_rect）；绑到的版本由 Proxy::version 反映，
-        // 滚动器 / 矩形裁剪按 layers.rs 的 SCROLLER_SINCE_VERSION 门控。
+        // 绑定至 v4 背板；各请求仍按实际代理版本门控，旧合成器照常回退。
         let comp = layers::Composition::new(
-            globals.bind::<layers::EtherCompositionManagerV1, Self, ()>(qh, 1..=3, ()).ok(),
+            globals.bind::<layers::EtherCompositionManagerV1, Self, ()>(qh, 1..=4, ()).ok(),
             smithay_client_toolkit::subcompositor::SubcompositorState::bind(
                 compositor_state.wl_compositor().clone(),
                 globals,

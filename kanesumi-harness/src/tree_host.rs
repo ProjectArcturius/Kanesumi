@@ -821,7 +821,8 @@ impl<A: TreeApp> App for TreeHost<A> {
             | LayerEvent::Cancelled { id, .. }
             | LayerEvent::ScrollerOffset { id, .. }
             | LayerEvent::ScrollerState { id, .. } => self.layer_rev.get(id).copied(),
-            LayerEvent::Unsupported => None,
+            LayerEvent::BackdropAvailability { target: crate::layers::BackdropTarget::Layer(id), .. } => self.layer_rev.get(id).copied(),
+            LayerEvent::Unsupported | LayerEvent::BackdropAvailability { .. } => None,
         };
         // 滚动器事件先驱动对应控件（更新偏移 / 相位），再交给 App（默认空实现）。
         if let Some((surf, wid)) = owner {
