@@ -10,6 +10,7 @@ struct SurfaceBackdrop {
     surface: WlSurface,
     proxy: EtherBackdropV1,
     available: Option<bool>,
+    overlay: Option<kanesumi_core::Color>,
 }
 
 struct TargetBackdrop {
@@ -24,6 +25,25 @@ pub(crate) struct Backdrops {
 }
 
 impl Backdrops {
+    pub(crate) fn pending(&self, target: BackdropTarget) -> bool {
+        self.targets.iter().find(|t| t.target == target)
+            .is_some_and(|t| t.surfaces.iter().any(|s| s.available.is_none()))
+    }
+
+    pub(crate) fn probe<D>(
+        &mut self, manager: Option<&EtherCompositionManagerV1>, surface: WlSurface, qh: &QueueHandle<D>,
+    ) -> Option<LayerEvent>
+    where D: Dispatch<EtherBackdropV1, BackdropTarget> + 'static,
+    {
+        let target = BackdropTarget::Main;
+        if let Some(entry) = self.targets.iter().find(|t| t.target == target) {
+            return aggregate(entry).map(|a| event(target, a));
+        }
+        // 零区域只查询能力，不显示材质；真正的底板几何随后复用本对象设置。
+        self.set(manager, target, Some(BackdropMaterial { blur: 0.0, tint_rgb: 0, tint_opacity: 0.0,
+            region: Some(kanesumi_core::Rect::new(0.0, 0.0, 0.0, 0.0)) }), vec![surface], qh)
+    }
+
     pub(crate) fn contains(&self, target: BackdropTarget) -> bool {
         self.targets.iter().any(|t| t.target == target)
     }
@@ -51,7 +71,7 @@ impl Backdrops {
             self.remove(target);
             return Some(event(target, false));
         };
-        let Some(manager) = manager.filter(|m| m.version() >= 4) else {
+        let Some(manager) = manager.filter(|m| m.version() >= 5) else {
             self.remove(target);
             return Some(event(target, false));
         };
@@ -85,6 +105,7 @@ impl Backdrops {
                     surface,
                     proxy,
                     available: None,
+                    overlay: None,
                 });
             }
         }
@@ -144,6 +165,34 @@ impl Backdrops {
         ));
         aggregate(entry).map(|available| event(target, available))
     }
+
+    /// 只委托整表面的单色半透明 wash；应用 Scene 与回退保持原样，避免编码值混合使锁屏变暗。
+    pub(crate) fn prepare_scene<'a>(
+        &mut self, manager: Option<&EtherCompositionManagerV1>, surface: &WlSurface,
+        scene: &'a kanesumi_canvas::Scene, size: kanesumi_core::Size,
+    ) -> std::borrow::Cow<'a, kanesumi_canvas::Scene> {
+        use std::borrow::Cow;
+        let Some(manager) = manager.filter(|m| m.version() >= 5) else { return Cow::Borrowed(scene) };
+        let Some(entry) = self.targets.iter_mut().find(|t| t.surfaces.iter().any(|s| s.surface == *surface)) else { return Cow::Borrowed(scene) };
+        let candidate = if entry.material.region.is_none() { uniform_overlay(scene, size) } else { None };
+        let slot = entry.surfaces.iter_mut().find(|s| s.surface == *surface).unwrap();
+        let overlay = (slot.available == Some(true)).then_some(candidate).flatten();
+        if slot.overlay != overlay {
+            let (rgb, a) = overlay.map(|c| {
+                let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+                ((q(c.r) << 16) | (q(c.g) << 8) | q(c.b), c.a as f64)
+            }).unwrap_or((0, 0.0));
+            manager.set_backdrop_linear_overlay(&slot.proxy, rgb, a);
+            slot.overlay = overlay;
+        }
+        if overlay.is_some() { Cow::Owned(kanesumi_canvas::Scene::default()) } else { Cow::Borrowed(scene) }
+    }
+}
+
+fn uniform_overlay(scene: &kanesumi_canvas::Scene, size: kanesumi_core::Size) -> Option<kanesumi_core::Color> {
+    let [kanesumi_canvas::SceneCommand::FillRect { color, rect, corner_radius }] = scene.commands.as_slice() else { return None };
+    (*corner_radius == 0.0 && color.a > 0.0 && color.a < 1.0 && rect.origin.x <= 0.0 && rect.origin.y <= 0.0
+        && rect.right() >= size.width && rect.bottom() >= size.height).then_some(*color)
 }
 
 impl Drop for Backdrops {
@@ -187,6 +236,25 @@ fn event(target: BackdropTarget, available: bool) -> LayerEvent {
 #[cfg(test)]
 mod tests {
     use super::availability_state;
+
+    #[test]
+    fn uniform_overlay_delegates_only_a_complete_translucent_wash() {
+        use kanesumi_canvas::Scene;
+        use kanesumi_core::{MetroTheme, Rect, Size, ThemeColor};
+        let size = Size::new(100.0, 60.0);
+        let color = ThemeColor::Overlay.alpha(0.5).resolve(&MetroTheme::ether_dark());
+        let mut scene = Scene::default();
+        scene.fill_rect(color, Rect::new(0.0, 0.0, 100.0, 60.0));
+        assert_eq!(super::uniform_overlay(&scene, size), Some(color));
+        scene.fill_rect(color, Rect::new(0.0, 0.0, 10.0, 10.0));
+        assert_eq!(super::uniform_overlay(&scene, size), None, "混合前景必须保留原绘制");
+        scene.commands.clear();
+        scene.fill_rect(color, Rect::new(0.0, 0.0, 99.0, 60.0));
+        assert_eq!(super::uniform_overlay(&scene, size), None, "局部矩形不得扩成全屏 wash");
+        scene.commands.clear();
+        scene.fill_rect(color.with_alpha(1.0), Rect::new(0.0, 0.0, 100.0, 60.0));
+        assert_eq!(super::uniform_overlay(&scene, size), None);
+    }
 
     #[test]
     fn primary_available_must_wait_for_secondary() {

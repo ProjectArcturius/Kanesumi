@@ -498,7 +498,8 @@ impl Shell {
         let (w, h) = (l.rect.size.width.max(1.0), l.rect.size.height.max(1.0));
         let cpu = l.cpu.get_or_insert_with(|| CpuRenderer::new(w, h, l.scale));
         let (pw, ph) = cpu.physical_size();
-        let rgba = cpu.render(engine, scene, None);
+        let prepared = comp.backdrops.prepare_scene(comp.manager.as_ref(), &l.surface, scene, l.rect.size);
+        let rgba = cpu.render(engine, &prepared, None);
         let encode_ms = t.elapsed().as_secs_f32() * 1000.0;
         // 内容只在变化时提交，但提交缓冲默认整幅拷贝：Dock 悬停只改一个图标的颜色，
         // 也要把 1.87 MB 全写一遍（真机尖峰里 submit 占了大头）。用场景差异算出损伤区，

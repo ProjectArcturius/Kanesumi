@@ -212,7 +212,7 @@ fn run_inner(app: &'static mut dyn App, engine: TextEngine) -> Result<i32, Strin
     let lock_state = SessionLockState::new(&globals, &qh);
     let registry_state = RegistryState::new(&globals);
     let comp_manager = globals
-        .bind::<EtherCompositionManagerV1, LockShell, ()>(&qh, 1..=4, ())
+        .bind::<EtherCompositionManagerV1, LockShell, ()>(&qh, 1..=5, ())
         .ok();
     let subcompositor =
         SubcompositorState::bind(compositor_state.wl_compositor().clone(), &globals, &qh).ok();
@@ -391,7 +391,8 @@ impl LockShell {
                 let l = &mut self.layers[i];
                 let (w, h) = (l.rect.size.width.max(1.0), l.rect.size.height.max(1.0));
                 let cpu = l.cpu.get_or_insert_with(|| CpuRenderer::new(w, h, l.scale as f32));
-                let rgba = cpu.render(&self.engine, &scene, None).to_vec();
+                let prepared = self.backdrops.prepare_scene(self.comp_manager.as_ref(), &l.surface, &scene, l.rect.size);
+                let rgba = cpu.render(&self.engine, &prepared, None).to_vec();
                 let (pw, ph) = cpu.physical_size();
                 if pw == 0 || ph == 0 {
                     return;
@@ -599,7 +600,8 @@ impl LockShell {
             cpu.resize(size.width, size.height, scale as f32);
             slot.raster_dims = Some(dims);
         }
-        let rgba = cpu.render(&self.engine, &scene, None).to_vec();
+        let prepared = self.backdrops.prepare_scene(self.comp_manager.as_ref(), surface.wl_surface(), &scene, size);
+        let rgba = cpu.render(&self.engine, &prepared, None).to_vec();
         let (pw, ph) = cpu.physical_size();
         if pw == 0 || ph == 0 {
             return;

@@ -259,6 +259,8 @@ pub struct PopupRequest {
 /// （`TreeHost` 实现它）与测试宿主，仓内其余实现者应为零。
 #[deprecated(note = "新代码用 TreeApp；参 PIPELINE_PLAN §Ⅳ-K4")]
 pub trait App {
+    /// 是否在首帧前探测 Main 背板能力；默认不探测，避免未使用材质的应用增加往返。
+    fn initial_backdrop_probe(&self) -> bool { false }
     fn config(&self) -> &AppConfig;
 
     /// 应用主题（默认 Ether 深色空间桌面）。

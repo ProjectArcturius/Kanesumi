@@ -535,6 +535,22 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
     shell.apply_system_theme();
     // 交互数值：读 `~/.config/ether/input.toml`（正典 §Ⅰ.2；缺失 / 非法 → 默认）。
     shell.apply_input_settings();
+    if shell.app.initial_backdrop_probe() {
+        use crate::layers::{BackdropTarget, LayerEvent};
+        if let Some(e) = shell.comp.backdrops.probe(shell.comp.manager.as_ref(), shell.surface.clone(), &qh) {
+            shell.app.on_layer_event(e);
+        }
+        let until = Instant::now() + Duration::from_millis(100);
+        conn.flush().map_err(|e| format!("背板能力探测 flush 失败：{e}"))?;
+        while shell.running && shell.comp.backdrops.pending(BackdropTarget::Main) && Instant::now() < until {
+            event_loop.dispatch(until.saturating_duration_since(Instant::now()), &mut shell)
+                .map_err(|e| format!("背板能力探测派发失败：{e}"))?;
+        }
+        if shell.comp.backdrops.pending(BackdropTarget::Main) {
+            shell.comp.backdrops.remove(BackdropTarget::Main);
+            shell.app.on_layer_event(LayerEvent::BackdropAvailability { target: BackdropTarget::Main, available: false });
+        }
+    }
     // 引擎宿主兜底：主循环内幂等绑定（每帧，seat 异步 announce 后自动创建）。
     // 绕过 new_capability 竞态——ceyboard 连接时 seat keyboard 能力可能已就绪，
     // 能力事件不触发 → grab 未建立 → 合成器转发的键收不到。
@@ -1498,9 +1514,9 @@ impl Shell {
         let dmabuf_device = crate::dmabuf::DmabufDevice::default();
         dmabuf_device.set_recipe(dmabuf_recipe);
         // 合成图层（G3-b）：wl_subcompositor + ether_composition_v1（Ether 私有，别的合成器没有 → None 回落）。
-        // 绑定至 v4 背板；各请求仍按实际代理版本门控，旧合成器照常回退。
+        // 绑定至 v5 线性遮罩；各请求仍按实际代理版本门控，旧合成器照常回退。
         let comp = layers::Composition::new(
-            globals.bind::<layers::EtherCompositionManagerV1, Self, ()>(qh, 1..=4, ()).ok(),
+            globals.bind::<layers::EtherCompositionManagerV1, Self, ()>(qh, 1..=5, ()).ok(),
             smithay_client_toolkit::subcompositor::SubcompositorState::bind(
                 compositor_state.wl_compositor().clone(),
                 globals,

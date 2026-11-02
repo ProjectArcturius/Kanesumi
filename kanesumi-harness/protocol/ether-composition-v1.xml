@@ -26,7 +26,7 @@
     and docs/research/backdrop_m3/PROTOCOL.md.
   </description>
 
-  <interface name="ether_composition_manager_v1" version="4">
+  <interface name="ether_composition_manager_v1" version="5">
     <description summary="creates visuals for surfaces"/>
 
     <request name="destroy" type="destructor"/>
@@ -65,6 +65,19 @@
       </description>
       <arg name="id" type="new_id" interface="ether_backdrop_v1"/>
       <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+    <request name="set_backdrop_linear_overlay" since="5">
+      <description summary="delegate a uniform foreground wash to the backdrop">
+        Double-buffered with the backdrop surface. After blur and sRGB tint, composite
+        overlay_rgb (0xRRGGBB) over the material in linear light, then encode to sRGB.
+        overlay_opacity is clamped to 0..1; 0 disables the overlay. The client must replace
+        this uniform wash with transparent content so that it is applied exactly once.
+        Other surface content is unchanged. Keeping this request on the manager preserves
+        the v1 backdrop object's version and the original v4 material semantics.
+      </description>
+      <arg name="backdrop" type="object" interface="ether_backdrop_v1"/>
+      <arg name="overlay_rgb" type="uint"/>
+      <arg name="overlay_opacity" type="fixed"/>
     </request>
   </interface>
 

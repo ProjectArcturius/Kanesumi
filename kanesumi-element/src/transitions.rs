@@ -706,9 +706,20 @@ impl Tree {
     /// 首次出现者置位 `content_ready`（并上溯祖先），解挂其挂起的动画。返回本次新就绪的
     /// 节点（`ContentReady` 内部事件，发现顺序）。就绪是单调的：置位后不再复位。
     pub fn report_content_committed(&mut self, painted: &[WidgetId]) -> Vec<WidgetId> {
+        self.report_content_ready(painted, true)
+    }
+
+    /// 合成器已确认提供本图层内容；客户端空场景无需伪造绘制来解挂动画。
+    /// 仅接受已声明图层，普通节点仍须沿用非空绘制的提交契约。
+    pub fn report_compositor_content_committed(&mut self, id: WidgetId) -> Vec<WidgetId> {
+        if !self.is_layer(id) { return Vec::new(); }
+        self.report_content_ready(&[id], false)
+    }
+
+    fn report_content_ready(&mut self, painted: &[WidgetId], require_paint: bool) -> Vec<WidgetId> {
         let mut newly = Vec::new();
         for &id in painted {
-            if self.node_content_ready(id) || !self.node_has_paint(id) {
+            if self.node_content_ready(id) || (require_paint && !self.node_has_paint(id)) {
                 continue;
             }
             // 上溯：子树任一节点首次提交内容 → 祖先（含自身）就绪，直达根或已就绪者。

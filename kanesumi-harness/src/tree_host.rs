@@ -27,6 +27,8 @@ use crate::appmenu::{AppMenuHandle, MenuTree};
 
 /// 元素树应用。
 pub trait TreeApp {
+    /// 首帧前取得 Main 背板能力，避免先生成随即丢弃的壁纸；默认不探测。
+    fn initial_backdrop_probe(&self) -> bool { false }
     fn config(&self) -> &AppConfig;
 
     /// 启动时建树（把页面挂到 `tree.root()` 下）。
@@ -78,6 +80,16 @@ pub trait TreeApp {
     /// 合成图层（G3-b）：外壳每帧取走图层命令。参 `crate::layers`。
     fn take_layer_commands(&mut self) -> Vec<crate::layers::LayerCommand> {
         Vec::new()
+    }
+
+    /// 声明元素树图层的壁纸材质；外壳负责把节点映射为 LayerId，参数改变时才下发。
+    /// 返回 None 撤销材质；能力事件经 on_layer_event 回到同一节点与所在树。
+    fn layer_backdrop(
+        &self,
+        _parent: crate::layers::LayerParent,
+        _widget: WidgetId,
+    ) -> Option<crate::layers::BackdropMaterial> {
+        None
     }
 
     /// 合成器回报图层动画完成 / 打断（或不支持合成图层）。`tree` 为该图层所在的树
@@ -302,6 +314,7 @@ pub struct TreeHost<A: TreeApp> {
     /// 元素树图层（G3-c）↔ 外壳图层 id。key = (表面序号：0 主表面 / i+1 第 i 浮层, 节点)。
     layer_ids: std::collections::HashMap<(usize, WidgetId), crate::layers::LayerId>,
     layer_rev: std::collections::HashMap<crate::layers::LayerId, (usize, WidgetId)>,
+    layer_backdrops: std::collections::HashMap<crate::layers::LayerId, crate::layers::BackdropMaterial>,
     next_layer: u32,
     /// dk3-perf：最近一次 `update` 里主树 tick 的墙钟（毫秒）。
     last_tick_ms: f32,
@@ -344,6 +357,7 @@ impl<A: TreeApp> TreeHost<A> {
             floating,
             layer_ids: std::collections::HashMap::new(),
             layer_rev: std::collections::HashMap::new(),
+            layer_backdrops: std::collections::HashMap::new(),
             next_layer: TREE_LAYER_BASE,
             last_tick_ms: 0.0,
             last_floating_tick_ms: Vec::new(),
@@ -386,6 +400,7 @@ impl<A: TreeApp> TreeHost<A> {
                     LayerOp::Remove { id } => {
                         if let Some(lid) = self.layer_ids.remove(&(surf, id)) {
                             self.layer_rev.remove(&lid);
+                            self.layer_backdrops.remove(&lid);
                             out.push(LayerCommand::Destroy { id: lid });
                         }
                     }
@@ -475,6 +490,39 @@ impl<A: TreeApp> TreeHost<A> {
                 }
             }
         }
+    }
+
+    fn sync_layer_backdrops(&mut self, out: &mut Vec<crate::layers::LayerCommand>) {
+        use crate::layers::{BackdropTarget, LayerCommand, LayerParent};
+        for (&(surf, widget), &id) in &self.layer_ids {
+            let parent = if surf == 0 { LayerParent::Main } else { LayerParent::Floating(surf - 1) };
+            let material = self.app.layer_backdrop(parent, widget);
+            if self.layer_backdrops.get(&id).copied() == material {
+                continue;
+            }
+            if let Some(m) = material {
+                self.layer_backdrops.insert(id, m);
+            } else {
+                self.layer_backdrops.remove(&id);
+            }
+            out.push(LayerCommand::SetBackdrop { target: BackdropTarget::Layer(id), material });
+        }
+    }
+
+    fn report_backdrop_ready(&mut self, event: &crate::layers::LayerEvent) {
+        use crate::layers::{BackdropTarget, LayerEvent};
+        let LayerEvent::BackdropAvailability { target: BackdropTarget::Layer(id), available: true } = event else { return };
+        if !self.layer_backdrops.contains_key(id) { return; }
+        let Some(&(surface, widget)) = self.layer_rev.get(id) else { return };
+        let tree = if surface == 0 {
+            &mut self.tree
+        } else if let Some(f) = self.floating.get_mut(surface - 1) {
+            &mut f.tree
+        } else {
+            return;
+        };
+        // 材质就是该层的可见内容；空客户端 Scene 也必须解挂内容门控动画。
+        tree.report_compositor_content_committed(widget);
     }
 
     /// 第 `index` 个浮层的树（测试 / 外部驱动用）。
@@ -574,6 +622,8 @@ impl<A: TreeApp> App for TreeHost<A> {
     fn config(&self) -> &AppConfig {
         self.app.config()
     }
+
+    fn initial_backdrop_probe(&self) -> bool { self.app.initial_backdrop_probe() }
 
     fn theme(&self) -> MetroTheme {
         *self.tree.theme()
@@ -810,11 +860,13 @@ impl<A: TreeApp> App for TreeHost<A> {
     fn take_layer_commands(&mut self) -> Vec<crate::layers::LayerCommand> {
         let mut out = self.app.take_layer_commands();
         self.drain_tree_layers(&mut out);
+        self.sync_layer_backdrops(&mut out);
         out
     }
 
     fn on_layer_event(&mut self, event: crate::layers::LayerEvent) {
         use crate::layers::LayerEvent;
+        self.report_backdrop_ready(&event);
         // 树图层的事件交给所在那棵树、并带上节点 id；App 自建图层的事件 widget = None。
         let owner = match &event {
             LayerEvent::Done { id, .. }
@@ -1471,6 +1523,101 @@ mod tests {
             accelerators: 0,
         });
         (host, test_engine())
+    }
+
+    struct BackdropDemo {
+        config: AppConfig,
+        id: Option<WidgetId>,
+        material: Option<crate::layers::BackdropMaterial>,
+    }
+
+    impl TreeApp for BackdropDemo {
+        fn config(&self) -> &AppConfig { &self.config }
+        fn build(&mut self, tree: &mut Tree) {
+            let id = tree.insert(tree.root(), kanesumi_element::widgets::Border::new());
+            tree.set_layer(id, true);
+            self.id = Some(id);
+        }
+        fn layer_backdrop(&self, parent: crate::layers::LayerParent, widget: WidgetId) -> Option<crate::layers::BackdropMaterial> {
+            (parent == crate::layers::LayerParent::Main && Some(widget) == self.id).then_some(self.material).flatten()
+        }
+        fn on_action(&mut self, _: &mut Tree, _: WidgetId, _: Action) {}
+    }
+
+    fn backdrop_host() -> TreeHost<BackdropDemo> {
+        TreeHost::new(BackdropDemo {
+            config: AppConfig::new("org.ether.test", "backdrop", EtherRole::Browser, 400.0, 300.0),
+            id: None,
+            material: Some(crate::layers::BackdropMaterial { blur: 24.0, tint_rgb: 0, tint_opacity: 0.5, region: None }),
+        })
+    }
+
+    #[test]
+    fn tree_backdrop_follows_layer_creation_and_sends_only_changes() {
+        use crate::layers::{BackdropTarget, LayerCommand};
+        let mut h = backdrop_host();
+        frame(&mut h, &test_engine());
+        let mut commands = Vec::new();
+        h.drain_tree_layers(&mut commands);
+        h.sync_layer_backdrops(&mut commands);
+        let create = commands.iter().position(|c| matches!(c, LayerCommand::Create { .. })).unwrap();
+        let backdrop = commands.iter().position(|c| matches!(c, LayerCommand::SetBackdrop { .. })).unwrap();
+        assert!(create < backdrop, "声明必须位于真实子表面 Create 之后");
+        let LayerCommand::Create { id, .. } = commands[create] else { unreachable!() };
+        assert!(matches!(commands[backdrop], LayerCommand::SetBackdrop { target: BackdropTarget::Layer(t), material: Some(_) } if t == id));
+        commands.clear();
+        h.sync_layer_backdrops(&mut commands);
+        assert!(commands.is_empty(), "参数不变不能每帧提交材质");
+        h.app.material.as_mut().unwrap().blur = 30.0;
+        h.sync_layer_backdrops(&mut commands);
+        assert_eq!(commands.len(), 1);
+        assert!(matches!(commands[0], LayerCommand::SetBackdrop { material: Some(m), .. } if m.blur == 30.0));
+    }
+
+    #[test]
+    fn tree_backdrop_removal_and_recreation_do_not_reuse_old_layer() {
+        use crate::layers::{BackdropTarget, LayerCommand};
+        let mut h = backdrop_host();
+        let e = test_engine();
+        frame(&mut h, &e);
+        let mut commands = Vec::new();
+        h.drain_tree_layers(&mut commands);
+        h.sync_layer_backdrops(&mut commands);
+        let old = *h.layer_ids.values().next().unwrap();
+        h.app.material = None;
+        commands.clear();
+        h.sync_layer_backdrops(&mut commands);
+        assert!(matches!(commands.as_slice(), [LayerCommand::SetBackdrop { target: BackdropTarget::Layer(t), material: None }] if *t == old));
+        let node = h.app.id.unwrap();
+        h.tree.set_layer(node, false);
+        commands.clear();
+        h.drain_tree_layers(&mut commands);
+        assert!(matches!(commands.as_slice(), [LayerCommand::Destroy { id }] if *id == old));
+        assert!(h.layer_backdrops.is_empty());
+        h.app.material = Some(crate::layers::BackdropMaterial { blur: 24.0, tint_rgb: 0, tint_opacity: 0.5, region: None });
+        h.tree.set_layer(node, true);
+        frame(&mut h, &e);
+        commands.clear();
+        h.drain_tree_layers(&mut commands);
+        h.sync_layer_backdrops(&mut commands);
+        assert!(commands.iter().any(|c| matches!(c, LayerCommand::SetBackdrop { target: BackdropTarget::Layer(t), material: Some(_) } if *t != old)));
+    }
+
+    #[test]
+    fn compositor_backdrop_makes_empty_client_content_ready() {
+        use crate::layers::{BackdropTarget, LayerEvent};
+        let mut h = backdrop_host();
+        frame(&mut h, &test_engine());
+        let mut commands = Vec::new();
+        h.drain_tree_layers(&mut commands);
+        h.sync_layer_backdrops(&mut commands);
+        let node = h.app.id.unwrap();
+        let id = *h.layer_ids.values().next().unwrap();
+        assert!(!h.tree.content_ready(node), "空客户端场景尚未提供内容");
+        h.report_backdrop_ready(&LayerEvent::BackdropAvailability { target: BackdropTarget::Layer(id), available: false });
+        assert!(!h.tree.content_ready(node), "不可用时仍等 CPU 内容");
+        h.report_backdrop_ready(&LayerEvent::BackdropAvailability { target: BackdropTarget::Layer(id), available: true });
+        assert!(h.tree.content_ready(node), "合成器材质是可见内容，应放行门控动画");
     }
 
     fn frame<A: TreeApp>(h: &mut TreeHost<A>, e: &TextEngine) -> Scene {
