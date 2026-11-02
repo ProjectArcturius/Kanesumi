@@ -147,6 +147,7 @@ impl Shell {
             LayerCommand::SetRect { id, rect } => {
                 let Some(i) = self.layer_index(id) else { return };
                 let l = &mut self.comp.layers[i];
+                if l.rect.size != rect.size { l.last_scene = None; }
                 l.rect = rect;
                 place(l);
                 if let Some(cpu) = l.cpu.as_mut() {
@@ -495,6 +496,13 @@ impl Shell {
         let t = std::time::Instant::now();
         let Shell { engine, comp, shm, dmabuf, .. } = self;
         let l = &mut comp.layers[i];
+        if comp.backdrops.available_for_surface(&l.surface) && l.pending.is_none()
+            && transparent_scene(scene) && l.last_scene.as_ref().is_some_and(transparent_scene)
+        {
+            // 元素树开合只增减空裁剪栈时，已提交的透明内容没有变化，无须再上传整幅缓冲。
+            l.last_scene = Some(scene.clone());
+            return;
+        }
         let (w, h) = (l.rect.size.width.max(1.0), l.rect.size.height.max(1.0));
         let cpu = l.cpu.get_or_insert_with(|| CpuRenderer::new(w, h, l.scale));
         let (pw, ph) = cpu.physical_size();
@@ -541,6 +549,10 @@ impl Shell {
             &timing,
         );
     }
+}
+
+fn transparent_scene(scene: &Scene) -> bool {
+    scene.commands.iter().all(|c| cmd_bounds(c).is_none())
 }
 
 /// 一帧场景里一条命令的绘制外框（逻辑坐标）。裁剪命令返回 None（不直接绘制）。
@@ -729,6 +741,17 @@ mod tests {
     use super::*;
     use kanesumi_canvas::{Scene, SceneCommand};
     use kanesumi_core::Color;
+
+    #[test]
+    fn transparent_scene_accepts_only_empty_clip_stacks() {
+        let mut scene = Scene::default();
+        assert!(transparent_scene(&scene));
+        scene.commands.push(SceneCommand::PushClip { rect: Rect::new(0.0, 0.0, 20.0, 10.0) });
+        scene.commands.push(SceneCommand::PopClip);
+        assert!(transparent_scene(&scene), "空裁剪栈不改变透明像素");
+        scene.commands.push(fill(0.0, 0.0, 1.0, 1.0, Color::new(1.0, 0.0, 0.0, 1.0)));
+        assert!(!transparent_scene(&scene), "任何前景绘制都必须走原提交路径");
+    }
 
     fn fill(x: f32, y: f32, w: f32, h: f32, c: Color) -> SceneCommand {
         SceneCommand::FillRect { color: c, rect: Rect::new(x, y, w, h), corner_radius: 0.0 }

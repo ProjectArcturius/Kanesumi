@@ -25,6 +25,11 @@ pub(crate) struct Backdrops {
 }
 
 impl Backdrops {
+    pub(crate) fn available_for_surface(&self, surface: &WlSurface) -> bool {
+        self.targets.iter().flat_map(|t| &t.surfaces)
+            .any(|s| s.surface == *surface && s.available == Some(true))
+    }
+
     pub(crate) fn pending(&self, target: BackdropTarget) -> bool {
         self.targets.iter().find(|t| t.target == target)
             .is_some_and(|t| t.surfaces.iter().any(|s| s.available.is_none()))
