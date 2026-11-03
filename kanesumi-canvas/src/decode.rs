@@ -371,9 +371,12 @@ impl DecodeService {
                 self.hits.fetch_add(1, Ordering::Relaxed);
                 return;
             }
-            if !inner.pending.insert(key.clone()) {
+            // c2：先查后插 —— 在途合并不再「clone 进集合又被丢弃」；未命中才 clone
+            // （原键要进通道交给 worker）。与按 insert 返回值判定逐位等价。
+            if inner.pending.contains(&key) {
                 return;
             }
+            inner.pending.insert(key.clone());
         }
         self.ensure_pool();
         let tx = self.tx.get().expect("工作池已启动");
