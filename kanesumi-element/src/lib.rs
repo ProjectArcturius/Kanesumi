@@ -7,6 +7,7 @@
 //
 // 纯逻辑、跨平台、不依赖 harness：外壳由 harness 的 `TreeHost` 接入（参 ELEMENT_TREE §Ⅷ）。
 
+pub mod access;
 pub mod event;
 pub mod id;
 pub mod ime;
@@ -19,6 +20,10 @@ pub mod visual_state;
 pub mod widget;
 pub mod widgets;
 
+pub use access::{
+    AccessNode, AccessViolation, AccessViolationKind, check_access_contract, check_bounds_hit,
+    check_disabled_state, check_focusable_named,
+};
 pub use event::{Event, Key, Modifiers, PointerButton, ScrollInput, ScrollPhase, ScrollSource};
 pub use id::WidgetId;
 pub use ime::{ImeContentHint, ImeContext};

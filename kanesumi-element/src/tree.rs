@@ -3550,6 +3550,27 @@ impl Widget for OverlayRoot {
     }
 }
 
+// ── 无障碍快照（E6 地基：access.rs 的树侧入口。本段为对 tree.rs 的追加，参卡面 n1104-e3-controls）──
+
+impl Tree {
+    /// 无障碍快照：内容树（`root()` 子树）的纯数据镜像（节点结构与契约检查见 `access.rs`）。
+    ///
+    /// 隐藏节点（含其子树）不出现；先序即树序，同一棵树两次快照逐字段相等。
+    /// 覆盖层上的弹层不在本快照内（菜单族入树后再并入）。文本序列化用
+    /// `AccessNode::to_text`；契约检查见 `access::check_access_contract`。
+    /// 参 docs/ELEMENT_TREE.md §Ⅸ、卡面 n1104-e3-controls。
+    pub fn access_snapshot(&self) -> crate::access::AccessNode {
+        crate::access::snapshot_root(self, self.root)
+    }
+
+    /// 节点控件的 trait 引用（无障碍快照 / 契约检查专用；`pub(crate)` —— 外部一律走 `edit`）。
+    pub(crate) fn access_widget(&self, id: WidgetId) -> Option<&dyn Widget> {
+        self.node(id)
+            .and_then(|n| n.widget.as_ref())
+            .map(|w| &**w)
+    }
+}
+
 #[cfg(test)]
 mod tooltip_tests {
     use super::*;

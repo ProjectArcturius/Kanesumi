@@ -329,3 +329,40 @@ fn within(inner: Rect, outer: Rect, eps: f32) -> bool {
         && inner.right() <= outer.right() + eps
         && inner.bottom() <= outer.bottom() + eps
 }
+
+// ── 无障碍契约（E3：access.rs 快照 + 契约的夹具入口。追加于文件末尾）──────────────
+
+impl TestHarness {
+    /// 无障碍快照（内容树的纯数据镜像，见 `access::AccessNode`）。
+    pub fn access_snapshot(&self) -> crate::access::AccessNode {
+        self.tree.access_snapshot()
+    }
+
+    /// 无障碍契约断言：可聚焦必有非空角色与名字、报告 bounds 与命中区一致、
+    /// 禁用态与框架状态一致（隐藏元素不出现由快照走树保证，见 `hidden_subtree_absent_from_snapshot`）。
+    /// 违例全量收集后一次性报出（消息带控件类型名，便于定位）。
+    pub fn assert_access_contract(&self) {
+        let snap = self.access_snapshot();
+        let vs = crate::access::check_access_contract(&self.tree, &snap);
+        if vs.is_empty() {
+            return;
+        }
+        let lines: Vec<String> = vs
+            .iter()
+            .map(|v| {
+                format!(
+                    "  [{}] {} {}: {}",
+                    v.id.to_u64(),
+                    self.tree.type_name(v.id),
+                    v.kind.label(),
+                    v.detail
+                )
+            })
+            .collect();
+        panic!(
+            "无障碍契约违例 {} 条：\n{}",
+            vs.len(),
+            lines.join("\n")
+        );
+    }
+}
