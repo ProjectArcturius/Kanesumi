@@ -587,7 +587,8 @@ pub trait App {
     /// 解码完成通知（参 SMOOTHNESS_PLAN §Ⅲ-3、裁定 §122）。元素树实现（`TreeHost`）将键转交树。
     fn on_decode_ready(&mut self, _keys: &[kanesumi_canvas::decode::DecodeKey]) {}
 
-    /// 右键菜单内容。`(x, y)` 为表面本地逻辑坐标（右键按下点）。
+    /// 右键菜单内容。`(x, y)` 为表面本地逻辑坐标（右键**释放**点，正典 §Ⅱ/§Ⅵ：
+    /// `WM_CONTEXTMENU` —— harness 在右键释放时来取，按下照常投递 `handle_input`）。
     /// 返回 `Some(items)` = harness 接管右键路由，在指针位置弹出右键菜单（该右键
     /// 事件不再投递 `handle_input`）；`None` = 无右键菜单，事件照常投递（默认）。
     /// `&mut self`：App 可在返回菜单前更新目标状态（如文件浏览器右键先选中命中项）。
@@ -599,6 +600,19 @@ pub trait App {
     /// 右键菜单项点击回调。`path` 为命令路径：顶层 = `[i]`；级联 = `[parent, child]`。
     /// App 据此执行对应命令。参 CONTEXT_MENU_SPEC §Ⅵ。
     fn on_context_command(&mut self, _path: &[usize]) {}
+
+    /// 右键菜单改由**树弹层**承载（E4 菜单族入树，n1104-e4 步骤 3）。返回 `true` =
+    /// App 已把菜单开进自己的元素树覆盖层（弹层表面由外壳承载，矮表面不再被裁剪）；
+    /// `false`（默认）= App 没有树，外壳退回旧叠加渲染路径（`ContextMenuState`，
+    /// E5 前保留）。`TreeHost` 实现本钩子；应用调用面不变。
+    fn open_context_popup(
+        &mut self,
+        _items: Vec<kanesumi_controls::MenuItem>,
+        _x: f32,
+        _y: f32,
+    ) -> bool {
+        false
+    }
 
     /// 渲染一帧：把当前状态解析为绘制命令。
     /// `engine` 为外壳注入的 TextEngine（排版唯一真源），App 用它量测文本、外壳用它光栅化。

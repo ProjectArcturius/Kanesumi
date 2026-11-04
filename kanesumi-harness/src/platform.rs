@@ -840,7 +840,8 @@ pub(crate) struct Shell {
     /// 双击检测器（Press 判定 → 追加 `InputEvent::DoubleClick`）。
     click_tracker: crate::app::ClickTracker,
     /// 右键菜单状态机（harness 接管右键路由，参 CONTEXT_MENU_SPEC §Ⅵ.2）。
-    /// 主表面右键 → `App::context_menu` → 菜单开在主表面内；点选 → `App::on_context_command`。
+    /// 主表面右键（释放时取内容）→ 树弹层承载优先，旧 App 退回 `ContextMenuState`
+    /// 叠加渲染；点选 → `App::on_context_command`。
     ctx_menu: crate::context_menu::ContextMenuState,
 
     // ── IME（zwp_text_input_v3，参 IME_WIRING_PLAN 阶段 D） ─────
@@ -2893,8 +2894,9 @@ impl Shell {
     }
 
     /// 主表面输入：右键菜单优先路由（参 CONTEXT_MENU_SPEC §Ⅵ.2）→ 未消费才投给 App。
-    /// - 菜单关着 + 右键按下 → `App::context_menu(x, y)` 取内容：Some → 开菜单并消费；
-    ///   None → 右键照常投递（App 自处理）。
+    /// - 菜单关着 + 右键**释放**（正典 §Ⅱ/§Ⅵ `WM_CONTEXTMENU`）→ `App::context_menu(x, y)`
+    ///   取内容：Some → 树弹层承载（`App::open_context_popup`，`TreeHost` 实现）；旧 App
+    ///   返回 false → 旧叠加渲染路径开菜单；None → 右键照常投递（App 自处理）。
     /// - 菜单开着 → 事件喂状态机（悬停/点选/LightDismiss/Esc/再右键），点选 → `on_context_command`。
     fn emit_input(&mut self, event: InputEvent) {
         // 按键计数：按键按住期间 Move 恒置脏（拖拽/滑杆拖动需逐帧回馈，不套用门控）。
@@ -2918,9 +2920,11 @@ impl Shell {
         };
 
         let action = {
-            // 仅「菜单关着 + 右键按下」才请求 App 内容（&mut app 与 &mut ctx 分开借用）。
+            // 仅「菜单关着 + 右键**释放**」才请求 App 内容（INTERACTION_CANON §Ⅱ/§Ⅵ，
+            // Win32 `WM_CONTEXTMENU`：释放弹菜单、目标 = 按下命中项；按下照常投递）。
+            // &mut app 与 &mut ctx 分开借用，逐段顺序取。
             let items = if !self.ctx_menu.is_visible() {
-                if let InputEvent::PointerPressed {
+                if let InputEvent::PointerReleased {
                     x, y, button: PointerButton::Right, ..
                 } = &event
                 {
@@ -2932,9 +2936,24 @@ impl Shell {
             } else {
                 None
             };
+            // 树弹层承载优先（E4 菜单族入树，n1104-e4 步骤 3）：`TreeHost` 把菜单开进
+            // 元素树覆盖层，弹层表面由外壳承载 —— 矮表面（Dock / TopBar）不再被裁剪；
+            // 旧 App（无树）返回 false → 退回旧叠加渲染路径（`ContextMenuState`，E5 前保留）。
+            let carried = match (&event, &items) {
+                (InputEvent::PointerReleased { x, y, .. }, Some(items)) => guard(
+                    "open_context_popup",
+                    || self.app.open_context_popup(items.clone(), *x, *y),
+                )
+                .unwrap_or(false),
+                _ => false,
+            };
             let screen = Rect::new(0.0, 0.0, self.width, self.height);
-            self.ctx_menu
-                .route_main_event(Some(&self.engine), &event, screen, items)
+            if carried {
+                ContextMenuAction::Consumed
+            } else {
+                self.ctx_menu
+                    .route_main_event(Some(&self.engine), &event, screen, items)
+            }
         };
         match action {
             ContextMenuAction::PassThrough => {

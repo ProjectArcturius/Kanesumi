@@ -19,8 +19,9 @@
 use kanesumi_canvas::Scene;
 use kanesumi_canvas::scene::SceneCommand;
 use kanesumi_canvas::text::TextEngine;
+use kanesumi_controls::{MenuItem, MetroContextMenu};
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
-use kanesumi_element::{Action, Key, Modifiers, Tree, WidgetId};
+use kanesumi_element::{Action, Key, Modifiers, PopupSpec, Tree, WidgetId};
 
 use crate::app::{App, AppConfig, FloatingLayer, ImeContext, InputEvent, LockEvent, PopupRequest};
 use crate::appmenu::{AppMenuHandle, MenuTree};
@@ -152,6 +153,22 @@ pub trait TreeApp {
     fn on_input(&mut self, _tree: &mut Tree, _event: &InputEvent) -> bool {
         false
     }
+
+    // ── harness 右键路由（E4 菜单族入树，n1104-e4 步骤 3；参 CONTEXT_MENU_SPEC §Ⅵ）──
+    //
+    // 外壳在右键**释放**时来取内容（正典 §Ⅱ/§Ⅵ `WM_CONTEXTMENU`）；`Some` = 外壳开
+    // 树弹层（[`TreeHost` 经 `App::open_context_popup`]），选中经 [`Self::on_context_command`]
+    // 回来；`None`（默认）= 右键照常进树，应用自己处理 `ContextRequested`。
+    // 与旧 [`App::context_menu`] / [`App::on_context_command`] 同形 —— 旧 App 迁 TreeApp
+    // 时回调签名不变，只多出 `tree` 参数。
+
+    /// 右键菜单内容（harness 路由接管用）。`(x, y)` = 右键释放点（表面本地逻辑坐标）。
+    fn context_menu(&mut self, _tree: &mut Tree, _x: f32, _y: f32) -> Option<Vec<MenuItem>> {
+        None
+    }
+
+    /// 右键菜单项点击回调。`path`：顶层 = `[i]`；级联 = `[parent, child]`。
+    fn on_context_command(&mut self, _tree: &mut Tree, _path: &[usize]) {}
 
     // ── IME 引擎宿主（zwp_input_method_v2）。参 CEYBOARD_SPEC §Ⅴ ─────────────
 
@@ -318,6 +335,10 @@ pub struct TreeHost<A: TreeApp> {
     popup_damage: std::collections::HashMap<u64, Option<Rect>>,
     /// 浮层表面的树（与 `TreeApp::floating_layers` 一一对应）。
     floating: Vec<FloatingTree>,
+    /// harness 右键路由的树弹层（`App::open_context_popup` 开出的菜单弹层）。
+    /// `Some` = 选中动作在 [`Self::drain_actions`] 里拦给 [`TreeApp::on_context_command`]；
+    /// 弹层被移除（任何原因）后清空。旧路径（`App::context_menu` 未实现树弹层）不涉及。
+    context_popup: Option<WidgetId>,
     /// 元素树图层（G3-c）↔ 外壳图层 id。key = (表面序号：0 主表面 / i+1 第 i 浮层, 节点)。
     layer_ids: std::collections::HashMap<(usize, WidgetId), crate::layers::LayerId>,
     layer_rev: std::collections::HashMap<crate::layers::LayerId, (usize, WidgetId)>,
@@ -362,6 +383,7 @@ impl<A: TreeApp> TreeHost<A> {
             popup_scene: std::collections::HashMap::new(),
             popup_damage: std::collections::HashMap::new(),
             floating,
+            context_popup: None,
             layer_ids: std::collections::HashMap::new(),
             layer_rev: std::collections::HashMap::new(),
             layer_backdrops: std::collections::HashMap::new(),
@@ -581,7 +603,17 @@ impl<A: TreeApp> TreeHost<A> {
             let mut any = false;
             let actions = self.tree.take_actions();
             any |= !actions.is_empty();
+            // harness 右键菜单的树弹层已不在树上（任何原因关闭）→ 清跟踪 id，
+            // 防止 WidgetId 复用后被误认为还是那份菜单。
+            if self.context_popup.is_some_and(|p| !self.tree.contains(p)) {
+                self.context_popup = None;
+            }
             for (from, action) in actions {
+                let mut slot = Some(action);
+                if self.take_context_command(from, &mut slot) {
+                    continue;
+                }
+                let action = slot.expect("未拦截时动作必须在场");
                 self.app.on_action(&mut self.tree, from, action);
             }
             for i in 0..self.floating.len() {
@@ -597,6 +629,31 @@ impl<A: TreeApp> TreeHost<A> {
             }
         }
         log::error!("TreeHost: 动作链 16 轮仍未收敛，疑似控件间循环触发");
+    }
+
+    /// harness 右键路由的选中动作：本弹层的 `MenuInvoked` → [`TreeApp::on_context_command`]。
+    /// 返回 `true` = 已拦截（不再投给 [`TreeApp::on_action`]）。
+    fn take_context_command(&mut self, from: WidgetId, action: &mut Option<Action>) -> bool {
+        if self.context_popup != Some(from) {
+            return false;
+        }
+        self.context_popup = None;
+        // 先验类型再取走：非 MenuInvoked 的动作原样留给通用分派（slot 保持在场）。
+        if !action.as_ref().is_some_and(|a| a.is::<kanesumi_controls::MenuInvoked>()) {
+            return false;
+        }
+        let Some(action) = action.take() else {
+            return false;
+        };
+        let Ok(invoked) = action.downcast::<kanesumi_controls::MenuInvoked>() else {
+            return false;
+        };
+        let path = match invoked.path.parent {
+            None => vec![invoked.path.index],
+            Some(p) => vec![p, invoked.path.index],
+        };
+        self.app.on_context_command(&mut self.tree, &path);
+        true
     }
 
     /// 上一帧树帧是否整幅（`full=true`）。桥接层把树损伤转给旧 `App::damage_hint`
@@ -979,6 +1036,33 @@ impl<A: TreeApp> App for TreeHost<A> {
             }
             self.drain_actions();
         }
+    }
+
+    fn context_menu(&mut self, x: f32, y: f32) -> Option<Vec<MenuItem>> {
+        self.app.context_menu(&mut self.tree, x, y)
+    }
+
+    /// harness 右键路由的树弹层承载：菜单开进本树覆盖层，锚点 = 右键按下命中的
+    /// 元素（`PopupClosed` / 焦点交还对象），位置 = 释放点（框架 `popup_slot` 点锚定
+    /// 翻折，放置区由外壳 `enable_popups` 放大到整个输出 —— 矮表面（Dock / TopBar）
+    /// 的菜单不再被条面裁剪）。空菜单不开（与旧 `ContextMenuState::open` 同语义）。
+    fn open_context_popup(&mut self, items: Vec<MenuItem>, x: f32, y: f32) -> bool {
+        if items.is_empty() {
+            return false;
+        }
+        let anchor = self.tree.context_target().unwrap_or_else(|| self.tree.root());
+        let id = self.tree.open_popup(
+            MetroContextMenu::for_tree(anchor, items),
+            PopupSpec {
+                anchor: Some(anchor),
+                at: Some(Point::new(x, y)),
+                ..PopupSpec::default()
+            },
+        );
+        // 与 `MenuFlyout::open_at` 同款：指针路径焦点入弹层（键盘导航可达）。
+        self.tree.focus(id, false);
+        self.context_popup = Some(id);
+        true
     }
 
     fn should_close(&self) -> bool {
@@ -2025,5 +2109,152 @@ mod tests {
         );
         assert!(popup_damage_hits(false, Some(Rect::new(120.0, 60.0, 10.0, 10.0)), extent));
         assert!(popup_damage_hits(true, None, extent), "主表面整幅 → 全部参与判定");
+    }
+
+    // ── harness 右键路由的树弹层承载（n1104-e4 步骤 3；参 CONTEXT_MENU_SPEC §Ⅵ）────
+
+    use kanesumi_controls::MenuInvoked;
+
+    /// 实现右键钩子的 TreeApp：记录释放点、菜单内容与命令回环。
+    struct CtxApp {
+        config: AppConfig,
+        /// `App::context_menu` 收到的 (x, y)（应为释放点）。
+        asked: Option<(f32, f32)>,
+        /// `TreeApp::on_context_command` 收到的命令路径。
+        commands: Vec<Vec<usize>>,
+        /// 关闭应用右键弹层时经 `TreeApp::on_action` 收到的 MenuInvoked 次数
+        /// （应为 0 —— 被外壳拦给 on_context_command，不再走通用分派）。
+        leaked_invoked: u32,
+    }
+
+    impl TreeApp for CtxApp {
+        fn config(&self) -> &AppConfig {
+            &self.config
+        }
+        fn build(&mut self, tree: &mut Tree) {
+            tree.insert(tree.root(), kanesumi_element::widgets::Border::new());
+        }
+        fn context_menu(&mut self, _tree: &mut Tree, x: f32, y: f32) -> Option<Vec<MenuItem>> {
+            self.asked = Some((x, y));
+            Some(vec![MenuItem::new("新建"), MenuItem::new("打开").separator()])
+        }
+        fn on_context_command(&mut self, _tree: &mut Tree, path: &[usize]) {
+            self.commands.push(path.to_vec());
+        }
+        fn on_action(&mut self, _tree: &mut Tree, _from: WidgetId, action: Action) {
+            if action.is::<MenuInvoked>() {
+                self.leaked_invoked += 1;
+            }
+        }
+    }
+
+    /// 右键**释放** → 树弹层承载（`popups()` 申报弹层表面，尺寸 = 内容量测值）；
+    /// 点选 → `on_context_command` 收命令路径，选中动作不进通用分派；焦点回锚点。
+    #[test]
+    fn context_menu_routed_through_tree_popup() {
+        let mut host = TreeHost::new(CtxApp {
+            config: AppConfig::new("org.ether.test", "ctx", EtherRole::Browser, 400.0, 300.0),
+            asked: None,
+            commands: Vec::new(),
+            leaked_invoked: 0,
+        });
+        // 模拟外壳 `sync_popups`：放置区告知 App + 分离弹层（Dock / TopBar 同款契约）。
+        assert!(host.enable_popups(Rect::new(0.0, 0.0, 400.0, 300.0)));
+        let e = test_engine();
+        frame(&mut host, &e);
+
+        // 右键按下：照常投树（外壳不取内容、不开菜单；正典 §Ⅱ 释放才弹）。
+        // 树记下按下命中目标（`context_target`），作为弹层锚点。
+        host.handle_input(InputEvent::PointerPressed {
+            x: 50.0,
+            y: 40.0,
+            button: PointerButton::Right,
+            modifiers: Modifiers::NONE,
+        });
+        let app = host.app();
+        assert!(app.asked.is_none(), "按下不得取菜单内容");
+        assert!(host.tree.popups().next().is_none(), "按下不开菜单");
+
+        // 释放：模拟外壳 `Shell::emit_input` 的释放分支 —— 先取内容，再树弹层承载
+        //（`App::open_context_popup` 由 TreeHost 实现），外壳据 `popups()` 开弹层表面。
+        let items = host.context_menu(60.0, 50.0);
+        assert_eq!(host.app().asked, Some((60.0, 50.0)), "释放点取内容");
+        let items = items.expect("App 提供了菜单内容");
+        assert!(host.open_context_popup(items, 60.0, 50.0), "树弹层承载");
+        frame(&mut host, &e);
+        let popup = host.tree.popups().next().expect("右键菜单应开进树");
+        let extent = host.tree.popup_extent(popup).expect("弹层有范围");
+        assert_eq!(
+            (extent.origin.x, extent.origin.y),
+            (60.0, 50.0),
+            "面板左上角 = 释放点"
+        );
+        assert!(extent.size.width > 0.0 && extent.size.height > 0.0);
+        let reqs = host.popups();
+        assert_eq!(reqs.len(), 1, "外壳应收到一份弹层申报");
+        assert!(reqs[0].grab, "右键菜单抓取（点外合成器关闭）");
+        assert_eq!(host.tree.focused(), Some(popup), "焦点入弹层");
+
+        // 点选第一项（面板内 20,16）→ 拦给 on_context_command（路径 [0]）。
+        let (x0, y0) = (extent.origin.x + 20.0, extent.origin.y + 16.0);
+        host.handle_input(InputEvent::PointerPressed {
+            x: x0,
+            y: y0,
+            button: PointerButton::Left,
+            modifiers: Modifiers::NONE,
+        });
+        host.handle_input(InputEvent::PointerReleased {
+            x: x0,
+            y: y0,
+            button: PointerButton::Left,
+            modifiers: Modifiers::NONE,
+        });
+        frame(&mut host, &e);
+        let app = host.app();
+        assert_eq!(app.commands, vec![vec![0]], "命令路径 [0]");
+        assert_eq!(app.leaked_invoked, 0, "选中动作拦给 on_context_command");
+        // 分离模式退场：选中当帧起跑 PopOut，节点留到 Done（同 `popup_motion_done`）。
+        let exiting = host.tree.popups().collect::<Vec<_>>();
+        for id in exiting {
+            assert!(host.tree.popup_closing(id), "选中后应处于退场");
+            host.tree.on_popup_motion_done(id);
+        }
+        assert!(host.tree.popups().next().is_none(), "点选后关闭");
+        assert!(host.context_popup.is_none());
+    }
+
+    /// Esc / 点外关闭：`App::on_context_command` 不回调（未选中任何项）。
+    #[test]
+    fn context_menu_dismiss_does_not_invoke_command() {
+        let mut host = TreeHost::new(CtxApp {
+            config: AppConfig::new("org.ether.test", "ctx", EtherRole::Browser, 400.0, 300.0),
+            asked: None,
+            commands: Vec::new(),
+            leaked_invoked: 0,
+        });
+        assert!(host.enable_popups(Rect::new(0.0, 0.0, 400.0, 300.0)));
+        let e = test_engine();
+        frame(&mut host, &e);
+        let items = host.context_menu(60.0, 50.0).expect("菜单内容");
+        assert!(host.open_context_popup(items, 60.0, 50.0));
+        frame(&mut host, &e);
+        assert!(host.tree.popups().next().is_some());
+        host.handle_input(InputEvent::KeyPressed {
+            key: Key::Escape,
+            modifiers: Modifiers::NONE,
+            repeat: false,
+        });
+        frame(&mut host, &e);
+        // 分离模式的退场动画节点留到合成器 Done 才摘（外壳 `popup_motion_done`）——
+        // 测试里直接结算（与 `TreeHost::popup_motion_done` 同一条树入口）。
+        let exiting = host.tree.popups().collect::<Vec<_>>();
+        for id in exiting {
+            assert!(host.tree.popup_closing(id), "Esc 后应处于退场");
+            host.tree.on_popup_motion_done(id);
+        }
+        assert!(host.tree.popups().next().is_none(), "Esc 关闭");
+        let app = host.app();
+        assert!(app.commands.is_empty(), "Esc 不得回调命令");
+        assert!(host.context_popup.is_none(), "关闭后清跟踪");
     }
 }

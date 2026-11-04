@@ -1,11 +1,17 @@
-// context_menu.rs —— 右键菜单状态机（App 侧 helper）。参 CONTEXT_MENU_SPEC.md §Ⅵ/§Ⅶ。
+// context_menu.rs —— 右键菜单状态机（旧 App 侧 helper）。参 CONTEXT_MENU_SPEC.md §Ⅵ/§Ⅶ。
+//
+// **E4 之后这是旧叠加渲染路径**（n1104-e4 步骤 3）：`TreeHost` 宿主的应用走
+// `App::open_context_popup`（菜单开进元素树覆盖层，弹层表面由外壳承载，矮表面不再被
+// 裁剪）；本状态机服务于「无树」的旧 App（gallery 一类），直到 E5 迁移删除。
 //
 // App 持有一个 `ContextMenuState`，在 `handle_input` / `render` 中接入：
-// - 右键按下 → `App::context_menu(x, y)` 取菜单内容 → `state.open(...)`；
+// - 右键**释放**（正典 §Ⅱ/§Ⅵ `WM_CONTEXTMENU`）→ `App::context_menu(x, y)` 取内容 →
+//   `state.open(...)`（按下照常投给 App）；
 // - 每帧 `state.update(dt)` 推进动画；`render` 把菜单画进主表面 Scene（坐标天然一致，
 //   无浮层坐标转换）；点选 → `state.handle_pointer` 返回命令路径 → `on_context_command`。
 //
-// 菜单画在**主表面内**（右键目标是应用内容，坐标即表面本地坐标），无需浮层表面。
+// 菜单画在**主表面内**（右键目标是应用内容，坐标即表面本地坐标）—— 矮表面上会被
+// 裁剪，这正是树弹层承载要替换掉的旧路径（out/n1104-e4-containers 报告附复现）。
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::Scene;
@@ -115,9 +121,11 @@ impl ContextMenuState {
 
     /// 主表面右键路由（harness 调用，参 CONTEXT_MENU_SPEC §Ⅵ.2）。返回 [`ContextMenuAction`]：
     /// - 菜单**开着**：交给 [`ContextMenuState::handle_pointer`]（悬停/点选/LightDismiss/Esc/再右键）；
-    /// - 菜单**关着 + 右键按下**：`items = Some` → 在指针位置打开菜单并 Consumed（右键不再
-    ///   投给 App）；`items = None` → PassThrough（App 自处理右键）；
+    /// - 菜单**关着 + 右键释放**（正典 §Ⅱ/§Ⅵ `WM_CONTEXTMENU`）：`items = Some` → 在
+    ///   指针位置打开菜单并 Consumed（右键不再投给 App）；`items = None` → PassThrough；
     /// - 其余事件：PassThrough（照常投给 App）。
+    ///
+    /// 旧叠加渲染路径（`TreeHost` 走 `App::open_context_popup` 树弹层承载，E5 前保留）。
     pub fn route_main_event(
         &mut self,
         engine: Option<&TextEngine>,
@@ -128,7 +136,7 @@ impl ContextMenuState {
         if self.is_visible() {
             return self.handle_pointer(engine, event, screen);
         }
-        if let InputEvent::PointerPressed {
+        if let InputEvent::PointerReleased {
             x,
             y,
             button: PointerButton::Right,
@@ -417,10 +425,11 @@ mod tests {
     // ── route_main_event（harness 主表面右键路由，参 CONTEXT_MENU_SPEC §Ⅵ.2） ──
 
     #[test]
-    fn route_opens_on_right_press_with_items() {
+    fn route_opens_on_right_release_with_items() {
         let Some(engine) = engine() else { return };
         let mut s = ContextMenuState::new();
-        let ev = InputEvent::PointerPressed {
+        // 正典 §Ⅱ/§Ⅵ：右键**释放**时弹（`WM_CONTEXTMENU`），按下照常投给 App。
+        let ev = InputEvent::PointerReleased {
             x: 100.0,
             y: 100.0,
             button: PointerButton::Right,
@@ -435,10 +444,10 @@ mod tests {
     }
 
     #[test]
-    fn route_passes_right_press_without_items() {
+    fn route_passes_right_release_without_items() {
         let Some(engine) = engine() else { return };
         let mut s = ContextMenuState::new();
-        let ev = InputEvent::PointerPressed {
+        let ev = InputEvent::PointerReleased {
             x: 100.0,
             y: 100.0,
             button: PointerButton::Right,
