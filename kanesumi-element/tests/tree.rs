@@ -10,7 +10,7 @@ use kanesumi_element::testing::TestHarness;
 use kanesumi_element::widgets::{Border, Label, Stack};
 use kanesumi_element::{
     Align, ArrangeCtx, Event, EventCtx, FocusGroupSpec, Insets, Key, LayoutProps, MeasureCtx,
-    PaintCtx, PointerButton, PopupDismissed, PopupSpec, UpdateCtx, VisualState, Widget,
+    Modifiers, PaintCtx, PointerButton, PopupDismissed, PopupSpec, UpdateCtx, VisualState, Widget,
 };
 
 // ── 测试控件 ──────────────────────────────────────────────────────────────────
@@ -1649,4 +1649,131 @@ fn popup_group_focus_enters_moves_and_returns_to_anchor() {
     h.key(Key::Escape);
     assert!(!h.tree.contains(pop), "Esc 关闭轻触弹层");
     assert_eq!(h.tree.focused(), Some(anchor), "关闭后焦点归还锚点");
+}
+
+// ── 右键菜单（INTERACTION_CANON §Ⅱ/§Ⅵ：右键**释放**时弹，目标 = 按下命中项）───────
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CtxEv {
+    /// `ContextRequested`（携带事件坐标）。
+    ContextAt(Point),
+    /// 右键 `PointerUp`。
+    RightUp(Point),
+}
+
+/// 记录 ContextRequested / 右键释放到达顺序的最小目标（n1104-e4 红测）。
+struct CtxProbe {
+    events: Rc<std::cell::RefCell<Vec<CtxEv>>>,
+}
+
+impl Widget for CtxProbe {
+    fn measure(&mut self, _: &mut MeasureCtx, _: Size) -> Size {
+        Size::new(80.0, 40.0)
+    }
+    fn paint(&mut self, _: &mut PaintCtx, _: &mut Scene) {}
+    fn event(&mut self, _ctx: &mut EventCtx, event: &Event) {
+        match event {
+            Event::ContextRequested { pos } => {
+                self.events.borrow_mut().push(CtxEv::ContextAt(*pos));
+            }
+            Event::PointerUp {
+                button: PointerButton::Right,
+                pos,
+                ..
+            } => self.events.borrow_mut().push(CtxEv::RightUp(*pos)),
+            _ => {}
+        }
+    }
+    fn has_visual_states(&self) -> bool {
+        true
+    }
+}
+
+/// 正典 §Ⅱ/§Ⅵ：右键菜单在**释放**时出现、锚在松开点；按下不投递。
+/// 交付次序 = 先 `ContextRequested` 后 `PointerUp`（librarian 桌面格子的
+/// 「按下登记意图、释放弹菜单」既有流程依赖这一先后）。
+#[test]
+fn context_menu_fires_on_right_release_at_release_point() {
+    let mut h = TestHarness::new(300.0, 200.0);
+    let events = Rc::new(std::cell::RefCell::new(Vec::new()));
+    h.tree.insert_with(
+        h.root(),
+        CtxProbe {
+            events: events.clone(),
+        },
+        fixed(80.0, 40.0),
+    );
+    h.frame();
+    let pa = Point::new(20.0, 10.0);
+    let pb = Point::new(60.0, 30.0);
+    h.tree.pointer_move(pa);
+    h.tree.pointer_down(pa, PointerButton::Right, Modifiers::NONE);
+    h.frame();
+    assert!(
+        events.borrow().is_empty(),
+        "右键按下不得投 ContextRequested（正典 §Ⅱ 释放才弹）：{:?}",
+        events.borrow()
+    );
+    h.tree.pointer_move(pb);
+    h.tree.pointer_up(pb, PointerButton::Right, Modifiers::NONE);
+    h.frame();
+    let seen = events.borrow();
+    assert_eq!(
+        seen.as_slice(),
+        &[CtxEv::ContextAt(pb), CtxEv::RightUp(pb)][..],
+        "释放时才弹、先菜单后 ButtonUp、锚在松开点 {pb:?}：{seen:?}"
+    );
+}
+
+/// 正典 §Ⅳ：弹层关闭后焦点回到触发元素；触发元素不可聚焦（Dock 条同款）时
+/// 退到最近可聚焦祖先，无可聚焦祖先则清空 —— 焦点不得悬在已移除的弹层节点上。
+#[test]
+fn closing_popup_restores_focus_or_clears_when_anchor_not_focusable() {
+    // 1) 锚点不可聚焦且无可聚焦祖先：Esc 关闭 → 焦点清空（不得悬在已移除的弹层上）。
+    let mut h = TestHarness::new(300.0, 300.0);
+    let rail = h
+        .tree
+        .insert_with(h.root(), Border::new(), fixed(200.0, 40.0));
+    h.frame();
+    let pop = h.tree.open_popup(
+        panel(),
+        PopupSpec {
+            anchor: Some(rail),
+            ..PopupSpec::default()
+        },
+    );
+    let item = h.tree.insert(pop, TestButton::new(50.0, 20.0));
+    h.frame();
+    assert!(h.tree.focus(item, true), "焦点移入弹层");
+    assert!(h.key(Key::Escape), "Esc 关闭弹层");
+    assert!(!h.tree.contains(pop));
+    let f = h.tree.focused();
+    assert!(
+        f.is_none_or(|id| h.tree.contains(id)),
+        "关闭后焦点不得悬在已移除的弹层节点（focused={f:?}）"
+    );
+    assert_eq!(f, None, "无可聚焦祖先 → 焦点清空");
+
+    // 2) 锚点不可聚焦但有可聚焦祖先：焦点交还祖先。
+    let group = h
+        .tree
+        .insert_with(h.root(), TestButton::new(200.0, 60.0), fixed(200.0, 60.0));
+    let trigger = h.tree.insert(group, Border::new());
+    h.frame();
+    let pop = h.tree.open_popup(
+        panel(),
+        PopupSpec {
+            anchor: Some(trigger),
+            ..PopupSpec::default()
+        },
+    );
+    let item = h.tree.insert(pop, TestButton::new(50.0, 20.0));
+    h.frame();
+    assert!(h.tree.focus(item, true));
+    h.key(Key::Escape);
+    assert_eq!(
+        h.tree.focused(),
+        Some(group),
+        "锚点不可聚焦时焦点退到最近可聚焦祖先"
+    );
 }
