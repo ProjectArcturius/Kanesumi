@@ -14,11 +14,11 @@
 use kanesumi_canvas::Scene;
 use kanesumi_core::{Point, Rect, Size};
 use kanesumi_element::{
-    Event, EventCtx, Insets, Key, MeasureCtx, PaintCtx, PointerButton, PopupSpec, UpdateCtx,
-    Widget, WidgetId,
+    ArrangeCtx, Event, EventCtx, Insets, MeasureCtx, PaintCtx, PopupSpec, UpdateCtx, Widget,
+    WidgetId,
 };
 
-use crate::dropdown_menu::{MenuItem, MenuPath, MetroDropdownMenu};
+use crate::dropdown_menu::{MenuPath, MenuItem, MetroDropdownMenu};
 
 /// 元素树动作：菜单项被选中。来源 id 是弹层自身；按 `owner` 区分是哪个控件的菜单。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +33,7 @@ pub struct MenuInvoked {
 }
 
 pub struct MenuFlyout {
-    owner: WidgetId,
+    /// 面板本体即弹层节点；`owner` 记在 `menu.owner`（选中动作与分派用）。
     menu: MetroDropdownMenu,
 }
 
@@ -41,7 +41,9 @@ impl MenuFlyout {
     pub fn new(owner: WidgetId, items: Vec<MenuItem>) -> Self {
         let mut menu = MetroDropdownMenu::new(items);
         menu.anim.open();
-        Self { owner, menu }
+        // 面板本体承担交互：选中动作带 owner（App 按 owner 分派），由本菜单发。
+        menu.owner = Some(owner);
+        Self { menu }
     }
 
     /// 由控件在自己的事件回调里调用：以自身为锚点打开菜单。`keyboard` 为真时把焦点移入菜单
@@ -85,189 +87,53 @@ impl MenuFlyout {
         id
     }
 
-    fn item(&self, path: MenuPath) -> Option<&MenuItem> {
-        match path.parent {
-            None => self.menu.items.get(path.index),
-            Some(p) => self.menu.items.get(p)?.submenu.get(path.index),
-        }
-    }
-
-    /// 选中某项：子菜单父项只展开，不算选中；其余发动作并关闭。
-    fn invoke(&mut self, ctx: &mut EventCtx, path: MenuPath) {
-        let Some(item) = self.item(path) else { return };
-        if path.parent.is_none() && item.is_submenu() {
-            if let Some(engine) = ctx.engine().cloned() {
-                self.menu.open_submenu(&engine, ctx.surface(), path.index);
-                ctx.invalidate_paint();
-            }
-            return;
-        }
-        match path.parent {
-            None => {
-                self.menu.select(path.index);
-            }
-            Some(_) => {
-                self.menu.select_submenu(path);
-            }
-        }
-        let (label, checked) = self
-            .item(path)
-            .map(|it| (it.label.clone(), it.checked))
-            .unwrap_or_default();
-        ctx.emit(MenuInvoked {
-            owner: self.owner,
-            path,
-            label,
-            checked,
-        });
-        ctx.close_popup(ctx.id());
-    }
-
-    fn step_hover(&mut self, delta: isize) {
-        // 子菜单展开时方向键作用于子菜单。
-        let (items_len, hovered) = match self.menu.submenu.as_ref() {
-            Some(s) => (s.menu.items.len(), s.menu.hovered),
-            None => (self.menu.items.len(), self.menu.hovered),
-        };
-        if items_len == 0 {
-            return;
-        }
-        let n = items_len as isize;
-        let next = match hovered {
-            Some(i) => (i as isize + delta).rem_euclid(n) as usize,
-            None if delta > 0 => 0,
-            None => (n - 1) as usize,
-        };
-        match self.menu.submenu.as_mut() {
-            Some(s) => s.menu.hovered = Some(next),
-            None => self.menu.hovered = Some(next),
-        }
-    }
-
-    fn hovered_path(&self) -> Option<MenuPath> {
-        match self.menu.submenu.as_ref() {
-            Some(s) => s.menu.hovered.map(|i| MenuPath {
-                parent: Some(s.parent),
-                index: i,
-            }),
-            None => self.menu.hovered.map(|i| MenuPath {
-                parent: None,
-                index: i,
-            }),
-        }
-    }
 }
 
+/// 全方法委托 [`MetroDropdownMenu` 的 `Widget` 实现](MetroDropdownMenu)。
+/// `owner` 已随构造写进面板（`menu.owner`），选中动作由面板发出。
 impl Widget for MenuFlyout {
-    fn measure(&mut self, ctx: &mut MeasureCtx, _available: Size) -> Size {
-        self.menu.panel_size(ctx.engine())
+    fn measure(&mut self, ctx: &mut MeasureCtx, available: Size) -> Size {
+        Widget::measure(&mut self.menu, ctx, available)
     }
 
-    fn arrange(&mut self, _ctx: &mut kanesumi_element::ArrangeCtx, rect: Rect) {
-        self.menu.panel_rect = rect;
+    fn arrange(&mut self, ctx: &mut ArrangeCtx, rect: Rect) {
+        Widget::arrange(&mut self.menu, ctx, rect)
     }
 
     fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
-        let theme = *ctx.theme();
-        self.menu.render_panel(&theme, ctx.engine(), scene);
-        self.menu.render_submenu(&theme, ctx.engine(), scene);
-        if self.menu.is_animating() {
-            ctx.request_anim_frame();
-        }
+        Widget::paint(&mut self.menu, ctx, scene)
     }
 
     fn update(&mut self, ctx: &mut UpdateCtx, dt: f64) {
-        self.menu.update(dt);
-        ctx.invalidate_paint();
-        if self.menu.is_animating() {
-            ctx.request_anim_frame();
-        }
+        Widget::update(&mut self.menu, ctx, dt)
     }
 
     fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
-        match event {
-            Event::PointerMove { pos } => {
-                if let Some(engine) = ctx.engine().cloned()
-                    && self.menu.hover(&engine, ctx.surface(), *pos)
-                {
-                    ctx.invalidate_paint();
-                }
-            }
-            Event::PointerUp {
-                pos,
-                button: PointerButton::Left,
-                ..
-            } => {
-                if let Some(path) = self.menu.path_at(*pos) {
-                    self.invoke(ctx, path);
-                }
-                ctx.set_handled();
-            }
-            Event::KeyDown { key, .. } => {
-                match key {
-                    Key::Down => self.step_hover(1),
-                    Key::Up => self.step_hover(-1),
-                    Key::Right => {
-                        if let (Some(i), Some(engine)) = (self.menu.hovered, ctx.engine().cloned())
-                            && self.menu.items.get(i).is_some_and(|it| it.is_submenu())
-                        {
-                            self.menu.open_submenu(&engine, ctx.surface(), i);
-                            if let Some(s) = self.menu.submenu.as_mut() {
-                                s.menu.hovered = Some(0);
-                            }
-                        }
-                    }
-                    Key::Left => self.menu.close_submenu(),
-                    Key::Enter | Key::Char(' ') => {
-                        if let Some(path) = self.hovered_path() {
-                            self.invoke(ctx, path);
-                        }
-                    }
-                    // Esc / Tab 留给框架（关闭弹层 / 焦点遍历）。
-                    _ => return,
-                }
-                ctx.invalidate_paint();
-                ctx.set_handled();
-            }
-            _ => {}
-        }
+        Widget::event(&mut self.menu, ctx, event)
     }
 
     fn focusable(&self) -> bool {
-        true
+        Widget::focusable(&self.menu)
     }
 
-    /// 菜单以悬停高亮表示当前项，不要框架焦点框。
     fn focus_visual(&self) -> bool {
-        false
+        Widget::focus_visual(&self.menu)
     }
 
     fn hit_test(&self, rect: Rect, pos: Point) -> bool {
-        rect.contains(pos)
-            || self
-                .menu
-                .submenu_state()
-                .is_some_and(|s| s.panel.contains(pos))
+        Widget::hit_test(&self.menu, rect, pos)
     }
 
-    /// 级联子菜单画在面板之外：声明外扩，框架据此计入损伤。
     fn paint_overflow(&self) -> Insets {
-        let Some(s) = self.menu.submenu_state() else {
-            return Insets::ZERO;
-        };
-        let (p, r) = (s.panel, self.menu.panel_rect);
-        Insets::new(
-            (r.origin.x - p.origin.x).max(0.0),
-            (r.origin.y - p.origin.y).max(0.0),
-            (p.right() - r.right()).max(0.0),
-            (p.bottom() - r.bottom()).max(0.0),
-        )
+        Widget::paint_overflow(&self.menu)
     }
 }
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kanesumi_element::Key;
     use kanesumi_element::testing::TestHarness;
     use kanesumi_element::{Align, LayoutProps};
 

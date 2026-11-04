@@ -11,9 +11,13 @@
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::Scene;
-use kanesumi_core::{MetroTheme, Point, Rect};
+use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
-use crate::dropdown_menu::{MenuItem, MenuPath, MenuInteractionSignature, MetroDropdownMenu};
+use kanesumi_element::{
+    Event, EventCtx, MeasureCtx, PaintCtx, PopupSpec, UpdateCtx, Widget, WidgetId,
+};
+
+use crate::dropdown_menu::{MenuInteractionSignature, MenuItem, MenuPath, MetroDropdownMenu};
 use crate::popup::{PopupState, place_context_menu};
 
 /// 右键菜单控件 —— 无遮罩弹层，锚定指针。
@@ -34,6 +38,40 @@ impl MetroContextMenu {
             menu: MetroDropdownMenu::new(Vec::new()),
             anchor: Point::new(0.0, 0.0),
         }
+    }
+
+    /// 元素树弹层构造：`owner` = 打开菜单的锚点控件（选中动作的 `MenuInvoked.owner`、
+    /// 关闭通知与焦点交还对象）。面板即刻为展开态（入场动画由弹层表面承担）。
+    pub fn for_tree(owner: WidgetId, items: Vec<MenuItem>) -> Self {
+        let mut menu = MetroDropdownMenu::new(items);
+        menu.anim.open();
+        menu.owner = Some(owner);
+        Self {
+            menu,
+            anchor: Point::new(0.0, 0.0),
+        }
+    }
+
+    /// 在指针位置打开右键菜单（元素树路径，参 CONTEXT_MENU_SPEC §Ⅲ / ELEMENT_MIGRATION §8）。
+    /// 点锚定：面板左上角落在 `at`，右 / 下放不下翻左 / 上（框架 `popup_slot`），
+    /// 放置区 = `popup_bounds`（矮表面由外壳放大到整个输出，菜单不再被条面裁剪）。
+    /// 无遮罩（LightDismiss 点外关闭，框架负责）。返回弹层 id。
+    pub fn open(ctx: &mut EventCtx, items: Vec<MenuItem>, at: Point, keyboard: bool) -> WidgetId {
+        let owner = ctx.id();
+        let mut flyout = MetroContextMenu::for_tree(owner, items);
+        if keyboard && !flyout.menu.items.is_empty() {
+            flyout.menu.hovered = Some(0);
+        }
+        let id = ctx.open_popup(
+            flyout,
+            PopupSpec {
+                anchor: Some(owner),
+                at: Some(at),
+                ..PopupSpec::default()
+            },
+        );
+        ctx.focus_widget(id, keyboard);
+        id
     }
 
     /// 在 `anchor`（指针坐标）打开右键菜单。`screen` 为可显示区域（输出/表面矩形）。
@@ -154,6 +192,50 @@ impl MetroContextMenu {
     /// 菜单状态（供外部判断/测试）。
     pub fn state(&self) -> PopupState {
         self.menu.state()
+    }
+}
+
+/// 面板即弹层节点：全部交互在 [`MetroDropdownMenu` 的 `Widget` 实现](MetroDropdownMenu)，
+/// 本包装只补「右键 = 点锚定 + 无遮罩」的打开入口（[`Self::open`]）。
+impl Widget for MetroContextMenu {
+    fn measure(&mut self, ctx: &mut MeasureCtx, available: Size) -> Size {
+        Widget::measure(&mut self.menu, ctx, available)
+    }
+
+    fn arrange(&mut self, ctx: &mut kanesumi_element::ArrangeCtx, rect: Rect) {
+        Widget::arrange(&mut self.menu, ctx, rect)
+    }
+
+    fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
+        Widget::paint(&mut self.menu, ctx, scene)
+    }
+
+    fn update(&mut self, ctx: &mut UpdateCtx, dt: f64) {
+        Widget::update(&mut self.menu, ctx, dt)
+    }
+
+    fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
+        Widget::event(&mut self.menu, ctx, event)
+    }
+
+    fn focusable(&self) -> bool {
+        Widget::focusable(&self.menu)
+    }
+
+    fn focus_visual(&self) -> bool {
+        Widget::focus_visual(&self.menu)
+    }
+
+    fn hit_test(
+        &self,
+        rect: Rect,
+        pos: Point,
+    ) -> bool {
+        Widget::hit_test(&self.menu, rect, pos)
+    }
+
+    fn paint_overflow(&self) -> kanesumi_element::Insets {
+        Widget::paint_overflow(&self.menu)
     }
 }
 
@@ -284,5 +366,217 @@ mod tests {
         assert_eq!(hit, Some(MenuPath { parent: None, index: 0 }));
         // 面板外 → None。
         assert_eq!(menu.path_at(Point::new(5.0, 5.0)), None);
+    }
+}
+
+// ── 元素树弹层（E4）：右键释放打开 / 点外关 / 键盘 / 焦点回锚 / 尺寸=量测值 ──────
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, LayoutProps};
+
+    /// 最小右键目标：右键（释放）→ `MetroContextMenu::open`，记录 PopupClosed 次数。
+    struct Target {
+        items: Vec<MenuItem>,
+        closed: u32,
+    }
+
+    impl Widget for Target {
+        fn measure(&mut self, _: &mut MeasureCtx, _: Size) -> Size {
+            Size::new(100.0, 32.0)
+        }
+        fn paint(&mut self, _: &mut PaintCtx, _: &mut Scene) {}
+        fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
+            match event {
+                Event::ContextRequested { pos } => {
+                    MetroContextMenu::open(ctx, self.items.clone(), *pos, false);
+                    ctx.set_handled();
+                }
+                Event::PopupClosed { .. } => self.closed += 1,
+                _ => {}
+            }
+        }
+        fn focusable(&self) -> bool {
+            true
+        }
+    }
+
+    fn items() -> Vec<MenuItem> {
+        vec![
+            MenuItem::new("新建"),
+            MenuItem::new("排序").with_submenu(vec![
+                MenuItem::new("名称").radio("sort"),
+                MenuItem::new("日期").radio("sort"),
+            ]),
+            MenuItem::new("复制"),
+            MenuItem::new("粘贴"),
+        ]
+    }
+
+    fn harness() -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(600.0, 400.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            Target {
+                items: items(),
+                closed: 0,
+            },
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                margin: kanesumi_element::Insets::new(20.0, 20.0, 0.0, 0.0),
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    fn popup(h: &TestHarness) -> WidgetId {
+        h.tree.popups().next().expect("右键菜单应已打开")
+    }
+
+    /// 右键（按下+释放）→ 菜单弹层；按正典 §Ⅱ 在**释放**时打开（框架保证）。
+    fn right_click(h: &mut TestHarness, id: WidgetId) {
+        let c = h.center(id);
+        h.press_at(c, kanesumi_element::PointerButton::Right);
+        h.release_at(c, kanesumi_element::PointerButton::Right);
+        h.frame();
+    }
+
+    /// 菜单弹层尺寸 = 内容测量值（`panel_size`），点锚定落在指针处。
+    #[test]
+    fn opens_point_anchored_with_measured_size() {
+        let (mut h, target) = harness();
+        right_click(&mut h, target);
+        let p = popup(&h);
+        let expected = {
+            let m = h.tree.get::<MetroContextMenu>(p).unwrap();
+            let mut probe = m.clone();
+            probe.anchor = Point::new(0.0, 0.0);
+            probe.menu.panel_size(&h.engine)
+        };
+        let pr = h.rect(p);
+        assert_eq!(pr.size, expected, "弹层矩形 = 面板量测值");
+        assert_eq!(pr.origin, Point::new(70.0, 36.0), "面板左上角 = 指针点");
+        // 无遮罩：弹层自身之外不画整面 FillRect（render_panel 只画面板）。
+        // 无遮罩（CONTEXT_MENU_SPEC §Ⅳ）：面板之外不得有整面压暗 FillRect。
+        let cmds = h.tree.painted(p);
+        let mask = cmds.iter().any(|c| {
+            matches!(
+                c,
+                kanesumi_canvas::SceneCommand::FillRect { rect, .. }
+                if rect.size.width >= 599.0 && rect.size.height >= 399.0
+            )
+        });
+        assert!(!mask, "右键菜单无全屏遮罩");
+    }
+
+    /// 矮表面（Dock 条同款 76px）：弹层不裁进条面 —— 外壳放大 `popup_bounds` 后，
+    /// 弹层完整尺寸 = 量测值（旧叠加渲染在 76px 表面内必然塌缩，E4 入树的意义）。
+    #[test]
+    fn full_size_on_short_surface_with_expanded_bounds() {
+        let (mut h, target) = harness();
+        h.resize(400.0, 76.0);
+        // Shell 对 LayerBottom 的同款放置区：整个输出（条上方为主）。
+        h.tree
+            .set_popup_bounds(Some(Rect::new(0.0, -(800.0 - 76.0), 400.0, 800.0)));
+        h.frame();
+        right_click(&mut h, target);
+        let p = popup(&h);
+        let extent = h.tree.popup_extent(p).expect("弹层有范围");
+        let expected = {
+            let m = h.tree.get::<MetroContextMenu>(p).unwrap().clone();
+            m.menu.panel_size(&h.engine)
+        };
+        assert_eq!(extent.size, expected, "矮表面上弹层仍 = 内容量测值");
+        assert!(
+            extent.size.height > 76.0,
+            "菜单高度 {} 超出条面 76px 也不得被裁",
+            extent.size.height
+        );
+    }
+
+    /// 点外关闭（LightDismiss）+ 焦点交还锚点 + PopupClosed 通知。
+    #[test]
+    fn outside_click_dismisses_and_focus_returns() {
+        let (mut h, target) = harness();
+        right_click(&mut h, target);
+        assert_eq!(h.tree.focused(), Some(popup(&h)), "打开后焦点在弹层");
+        h.click_at(Point::new(590.0, 390.0));
+        assert!(h.tree.popups().next().is_none(), "点外关闭");
+        assert_eq!(h.tree.focused(), Some(target), "焦点回锚点");
+        assert_eq!(h.tree.get::<Target>(target).unwrap().closed, 1);
+        assert!(h.take::<crate::menu_flyout::MenuInvoked>().is_empty());
+    }
+
+    /// Esc 关闭：焦点回锚点（正典 §Ⅳ）。
+    #[test]
+    fn esc_closes_and_focus_returns() {
+        let (mut h, target) = harness();
+        right_click(&mut h, target);
+        assert!(h.key(kanesumi_element::Key::Escape), "Esc 关闭弹层");
+        assert!(h.tree.popups().next().is_none());
+        assert_eq!(h.tree.focused(), Some(target));
+        assert_eq!(h.tree.get::<Target>(target).unwrap().closed, 1);
+    }
+
+    /// 方向键 / Enter / 子菜单：Down 至嵌套项 → Right 展开 → Down → Enter 激活
+    /// 子菜单项（路径 [parent, child]，单选组勾选），随后关闭、焦点回锚点。
+    #[test]
+    fn keyboard_navigates_submenu_and_activates() {
+        let (mut h, target) = harness();
+        right_click(&mut h, target);
+        let p = popup(&h);
+        assert_eq!(h.tree.focused(), Some(p));
+        h.key(kanesumi_element::Key::Down); // → 新建
+        h.key(kanesumi_element::Key::Down); // → 排序（嵌套项）
+        h.key(kanesumi_element::Key::Right); // 展开子菜单，预选「名称」
+        h.key(kanesumi_element::Key::Down); // → 日期
+        h.key(kanesumi_element::Key::Enter);
+        let acts = h.take::<crate::menu_flyout::MenuInvoked>();
+        assert_eq!(acts.len(), 1);
+        assert_eq!(acts[0].1.owner, target);
+        assert_eq!(
+            acts[0].1.path,
+            MenuPath {
+                parent: Some(1),
+                index: 1
+            }
+        );
+        assert!(acts[0].1.checked, "单选组项选中后为勾选");
+        assert!(h.tree.popups().next().is_none(), "选中后关闭");
+        assert_eq!(h.tree.focused(), Some(target), "关闭后焦点回锚点");
+        assert_eq!(h.tree.get::<Target>(target).unwrap().closed, 1);
+    }
+
+    /// 级联子菜单区域可命中、并声明为绘制外扩（三条保险断言在打开态仍成立）。
+    #[test]
+    fn submenu_hit_and_overflow_declared() {
+        let (mut h, target) = harness();
+        right_click(&mut h, target);
+        let p = popup(&h);
+        let pr = h.rect(p);
+        // 悬停「排序」（第 2 项：一项 32 + 分隔线 2 之后）展开子菜单。
+        h.move_to(Point::new(pr.origin.x + 20.0, pr.origin.y + 32.0 + 16.0));
+        h.frame();
+        let sub = h
+            .tree
+            .get::<MetroContextMenu>(p)
+            .and_then(|m| m.menu.submenu_state().map(|s| s.panel))
+            .expect("悬停嵌套项应展开子菜单");
+        assert_eq!(h.tree.hit(sub.center()), Some(p), "子菜单区域命中菜单弹层");
+        let ov = h
+            .tree
+            .get::<MetroContextMenu>(p)
+            .unwrap()
+            .menu
+            .paint_overflow();
+        assert!(ov != kanesumi_element::Insets::ZERO, "子菜单声明外扩");
+        h.assert_paint_within(p, ov);
+        h.assert_no_hit_outside(p);
+        h.assert_contained();
     }
 }

@@ -2,7 +2,12 @@ use std::cell::Cell;
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::{MetroTheme, Point, Rect, TextStyle, TextVAlign};
+use kanesumi_core::{MetroTheme, Point, Rect, Size, TextStyle, TextVAlign};
+
+use kanesumi_element::{
+    ArrangeCtx, Event, EventCtx, Insets, Key, MeasureCtx, PaintCtx, PointerButton, UpdateCtx,
+    Widget,
+};
 
 use crate::popup::{PopupAnim, PopupState, place_submenu, popup_gap, render_overlay, snap_edge};
 
@@ -124,6 +129,9 @@ pub struct MetroDropdownMenu {
     pub panel_rect: Rect,
     /// `panel_size` 结果缓存（Size: Copy，直接 Cell）。None = 需重算。
     panel_size_cache: Cell<Option<kanesumi_core::Size>>,
+    /// 树弹层的锚点控件（元素树路径，[`Widget::event`] 据此发 `MenuInvoked`）。
+    /// `None` = 旧路径纯绘用法，不发动作。参 `menu_flyout.rs` / `context_menu.rs`。
+    pub(crate) owner: Option<kanesumi_element::WidgetId>,
 }
 
 impl MetroDropdownMenu {
@@ -136,6 +144,7 @@ impl MetroDropdownMenu {
             anim: PopupAnim::new(),
             panel_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             panel_size_cache: Cell::new(None),
+            owner: None,
         }
     }
 
@@ -673,6 +682,85 @@ impl MetroDropdownMenu {
         }
         true
     }
+
+    // ── 元素树弹层的共享交互（Widget 实现，参 `menu_flyout.rs` / `context_menu.rs`）──
+
+    /// 键盘步进（↑ / ↓，跨分隔线跳项、循环）。子菜单展开时作用于子菜单。
+    pub fn step_hover(&mut self, delta: isize) {
+        let (items_len, hovered) = match self.submenu.as_ref() {
+            Some(s) => (s.menu.items.len(), s.menu.hovered),
+            None => (self.items.len(), self.hovered),
+        };
+        if items_len == 0 {
+            return;
+        }
+        let n = items_len as isize;
+        let next = match hovered {
+            Some(i) => (i as isize + delta).rem_euclid(n) as usize,
+            None if delta > 0 => 0,
+            None => (n - 1) as usize,
+        };
+        match self.submenu.as_mut() {
+            Some(s) => s.menu.hovered = Some(next),
+            None => self.hovered = Some(next),
+        }
+    }
+
+    /// 当前键盘 / 悬停项路径（子菜单展开时为子菜单内路径）。
+    pub fn hovered_path(&self) -> Option<MenuPath> {
+        match self.submenu.as_ref() {
+            Some(s) => s.menu.hovered.map(|i| MenuPath {
+                parent: Some(s.parent),
+                index: i,
+            }),
+            None => self.hovered.map(|i| MenuPath {
+                parent: None,
+                index: i,
+            }),
+        }
+    }
+
+    /// 元素树语义的「激活一项」（点选 / Enter）：嵌套父项只展开子菜单不算选中；
+    /// 其余标记勾选（单选组互斥）并关闭弹层（本节点即弹层根）。`owner` 在场时发
+    /// `MenuInvoked { owner, path, .. }`。
+    pub fn activate_at(&mut self, ctx: &mut kanesumi_element::EventCtx, path: MenuPath) {
+        if path.parent.is_none() && self.items.get(path.index).is_some_and(|it| it.is_submenu()) {
+            if let Some(engine) = ctx.engine().cloned() {
+                self.open_submenu(&engine, ctx.surface(), path.index);
+            }
+            ctx.invalidate_paint();
+            return;
+        }
+        match path.parent {
+            None => {
+                self.select(path.index);
+            }
+            Some(_) => {
+                self.select_submenu(path);
+            }
+        }
+        let (label, checked) = self
+            .item(path)
+            .map(|it| (it.label.clone(), it.checked))
+            .unwrap_or_default();
+        if let Some(owner) = self.owner {
+            ctx.emit(crate::menu_flyout::MenuInvoked {
+                owner,
+                path,
+                label,
+                checked,
+            });
+        }
+        ctx.close_popup(ctx.id());
+    }
+
+    /// `item(path)` 的私有读取（顶层 / 子菜单统一）。
+    fn item(&self, path: MenuPath) -> Option<&MenuItem> {
+        match path.parent {
+            None => self.items.get(path.index),
+            Some(p) => self.items.get(p)?.submenu.get(path.index),
+        }
+    }
 }
 
 /// 命中结果 —— `parent=None` = 顶层项；`parent=Some(p)` = 顶层 p 的子菜单第 `index` 项。
@@ -693,6 +781,118 @@ fn menu_item_style() -> TextStyle {
 /// 菜单图标样式：16px。图标字形保持 Normal —— 符号笔画本就细，加粗会糊。
 fn icon_style() -> TextStyle {
     TextStyle::new(16.0, 16.0, kanesumi_core::FontWeight::Normal)
+}
+
+// ── 元素树弹层（E4 菜单族入树，参 docs/ELEMENT_MIGRATION.md §8）────────────────
+//
+// 面板本体就是弹层节点：挂在覆盖层，框架按 `PopupSpec` 放置（`at` 点锚定 = 右键
+// 菜单的四象限翻折，`anchor` 下缘锚定 = 下拉菜单），自身矩形 = 面板。级联子菜单画在
+// 面板之外（`paint_overflow` 声明、`hit_test` 一并命中）；选中发 `MenuInvoked`（owner
+// = 打开它的控件）并关闭自身；任何原因的关闭都由框架交还焦点（`close_popup` 契约）。
+impl Widget for MetroDropdownMenu {
+    fn measure(&mut self, ctx: &mut MeasureCtx, _available: Size) -> Size {
+        self.panel_size(ctx.engine())
+    }
+
+    fn arrange(&mut self, _ctx: &mut ArrangeCtx, rect: Rect) {
+        self.panel_rect = rect;
+    }
+
+    fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
+        let theme = *ctx.theme();
+        self.render_panel(&theme, ctx.engine(), scene);
+        self.render_submenu(&theme, ctx.engine(), scene);
+        if self.is_animating() {
+            ctx.request_anim_frame();
+        }
+    }
+
+    fn update(&mut self, ctx: &mut UpdateCtx, dt: f64) {
+        self.update(dt);
+        ctx.invalidate_paint();
+        if self.is_animating() {
+            ctx.request_anim_frame();
+        }
+    }
+
+    fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
+        match event {
+            Event::PointerMove { pos } => {
+                if let Some(engine) = ctx.engine().cloned()
+                    && self.hover(&engine, ctx.surface(), *pos)
+                {
+                    ctx.invalidate_paint();
+                }
+            }
+            Event::PointerUp {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                if let Some(path) = self.path_at(*pos) {
+                    self.activate_at(ctx, path);
+                }
+                ctx.set_handled();
+            }
+            Event::KeyDown { key, .. } => {
+                match key {
+                    Key::Down => self.step_hover(1),
+                    Key::Up => self.step_hover(-1),
+                    Key::Right => {
+                        if let (Some(i), Some(engine)) = (self.hovered, ctx.engine().cloned())
+                            && self.items.get(i).is_some_and(|it| it.is_submenu())
+                        {
+                            self.open_submenu(&engine, ctx.surface(), i);
+                            if let Some(s) = self.submenu.as_mut() {
+                                s.menu.hovered = Some(0);
+                            }
+                        }
+                    }
+                    Key::Left => self.close_submenu(),
+                    Key::Enter | Key::Char(' ') => {
+                        if let Some(path) = self.hovered_path() {
+                            self.activate_at(ctx, path);
+                        }
+                    }
+                    // Esc / Tab 留给框架（关闭弹层 / 焦点遍历）。
+                    _ => return,
+                }
+                ctx.invalidate_paint();
+                ctx.set_handled();
+            }
+            _ => {}
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    /// 菜单以悬停高亮表示当前项，不要框架焦点框。
+    fn focus_visual(&self) -> bool {
+        false
+    }
+
+    fn hit_test(&self, rect: Rect, pos: Point) -> bool {
+        rect.contains(pos)
+            || self
+                .submenu_state()
+                .is_some_and(|s| s.panel.contains(pos))
+    }
+
+    /// 级联子菜单画在面板之外：声明外扩，框架据此计入损伤。
+    fn paint_overflow(&self) -> Insets {
+        let Some(s) = self.submenu_state() else {
+            return Insets::ZERO;
+        };
+        let (p, r) = (s.panel, self.panel_rect);
+        Insets::new(
+            (r.origin.x - p.origin.x).max(0.0),
+            (r.origin.y - p.origin.y).max(0.0),
+            (p.right() - r.right()).max(0.0),
+            (p.bottom() - r.bottom()).max(0.0),
+        )
+    }
 }
 
 #[cfg(test)]
