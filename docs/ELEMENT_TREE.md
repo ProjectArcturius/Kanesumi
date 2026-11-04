@@ -430,6 +430,28 @@ pub trait TreeApp {
 第二期接 **AccessKit**（Rust 生态标准，Linux 侧桥接 AT-SPI），树的 id 即 AccessKit 节点 id。
 这是自绘路线相对 UWP 最大的结构缺口（审计 §Ⅲ P2-9），有了树它才第一次**可做**。
 
+### §Ⅸ-1 快照与契约（2026-11-05 立，E6 地基；卡面 n1104-e3-controls）
+
+`accessibility()` 有了第一个消费者：`Tree::access_snapshot()`（`element/src/access.rs` 定义节点
+结构与契约，`tree.rs` 末段为入口）把内容树导出成**纯数据快照** `AccessNode`
+（role / name / value / checked / disabled / focusable / bounds / children + 节点 id，
+`expanded` / `selected` 已入形状、数据源待 AccessInfo 扩展）。先序即树序、同一棵树两次
+快照逐字段相等；`AccessNode::to_text()` 文本序列化供测试与报告比对；隐藏节点（含子树）
+不出现；覆盖层上的弹层暂不在快照内（菜单族入树后再并入）。
+
+框架契约（测试强制，`TestHarness::assert_access_contract` 一键跑）：
+
+1. 可聚焦元素必有非空 role 与 name（name 取自控件自身文本 / 标签，禁占位串糊弄）；
+2. 报告 bounds 与命中区一致（`hit_test` 不得接受 bounds 外的点；树命中结果必须落在
+   报告 bounds 内 —— 同时充当快照过期检测）；
+3. 禁用态反映在快照（祖先禁用传递，同 `ControlStates::disabled`）；
+4. 隐藏元素不出现。
+
+每条契约都有反向自检测试（故意造违例树断言检查报错）。对照 WinUI AutomationPeer
+核心属性（ControlType / AutomationProperties.Name / Toggle / ExpandCollapse /
+SelectionItem / IsEnabled / BoundingRectangle / IsOffscreen），只提取契约不复制代码。
+gallery 的 `examples/access_snapshot.rs` 命令行打印快照供人工核对。
+
 ## §Ⅹ 实施分期与分工
 
 | 期 | 内容 | 执行 | 验收 |

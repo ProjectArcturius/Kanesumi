@@ -12,6 +12,9 @@ kanesumi-canvas = { path = "../kanesumi-canvas" }
 kanesumi-anim = { path = "../kanesumi-anim" }
 kanesumi-structure = { path = "../kanesumi-structure" }
 kanesumi-controls = { path = "../kanesumi-controls" }
+# access_snapshot 示例直连元素树（快照 / 契约检查）。已是传递依赖（经 controls），
+# 不引入新依赖树；示例不经 harness，避免其 wayland 系统库门槛。
+kanesumi-element = { path = "../kanesumi-element" }
 
 # daily driver 接 harness 外壳（Linux 上 platform::run）。Phase 3 续（HANDOVER §1）。
 kanesumi-harness = { path = "../kanesumi-harness" }
