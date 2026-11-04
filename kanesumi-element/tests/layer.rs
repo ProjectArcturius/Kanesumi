@@ -20,6 +20,25 @@ fn fixed(x: f32, y: f32, w: f32, h: f32) -> LayoutProps {
 const RED: Color = Color::rgb(1.0, 0.0, 0.0);
 const BLUE: Color = Color::rgb(0.0, 0.0, 1.0);
 
+/// 布局后回调读到本帧的新矩形，产生的图层操作也进入同一帧。
+#[test]
+fn layout_callback_reads_current_geometry_before_layer_sync() {
+    let mut h = TestHarness::new(300.0, 200.0);
+    let row = h.tree.insert_with(h.root(), Border::new(), fixed(0.0, 20.0, 80.0, 40.0));
+    let bar = h.tree.insert_with(h.root(), Border::new().background(BLUE), fixed(0.0, 0.0, 4.0, 24.0));
+    h.tree.set_layer(bar, true);
+    h.frame();
+    h.tree.take_layer_ops();
+    h.tree.update_props(row, |p| p.margin.top = 75.0);
+    h.frame_with_layout(|tree| {
+        let rect = tree.rect(row).unwrap();
+        assert_eq!(rect.origin.y, 75.0, "不能读到上一帧的 20px");
+        tree.set_layer_offset(bar, 0.0, rect.origin.y);
+    });
+    assert!(h.tree.take_layer_ops().iter().any(|op| matches!(op,
+        LayerOp::Offset { id, y: 75.0, .. } if *id == bar)));
+}
+
 fn fills(cmds: &[SceneCommand]) -> Vec<(Color, Rect)> {
     cmds.iter()
         .filter_map(|c| match c {

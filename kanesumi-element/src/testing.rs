@@ -74,8 +74,13 @@ impl TestHarness {
 
     /// 出一帧（dt = 1/60s）。出帧即视为外壳提交本帧，随即汇报内容就绪。
     pub fn frame(&mut self) -> &FrameOutput {
+        self.frame_with_layout(|_| {})
+    }
+
+    /// 同生产 TreeHost 在本帧布局后同步依赖几何的视觉属性。
+    pub fn frame_with_layout(&mut self, after_layout: impl FnOnce(&mut Tree)) -> &FrameOutput {
         self.tree.tick_timers(1.0 / 60.0);
-        self.last = self.tree.frame(&self.engine, self.size, 1.0 / 60.0);
+        self.last = self.tree.frame_with_layout(&self.engine, self.size, 1.0 / 60.0, after_layout);
         let painted = std::mem::take(&mut self.last.painted);
         self.tree.report_content_committed(&painted);
         self.last.painted = painted;

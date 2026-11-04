@@ -1179,6 +1179,18 @@ impl Tree {
     /// 帧末只清「帧开始前就存在」的 `dirty`；帧内新产生的失效（布局 / 绘制 / 动画推进中）
     /// 经 `invalidate_epoch` 识别并留到下一帧（参 ELEMENT_TREE §帧调度）。
     pub fn frame(&mut self, engine: &TextEngine, size: Size, dt: f64) -> FrameOutput {
+        self.frame_with_layout(engine, size, dt, |_| {})
+    }
+
+    /// 当前帧布局完成后、绘制及图层同步前同步依赖几何的视觉属性。
+    /// 回调不得重建树、失效量测或执行 I/O。参 ELEMENT_TREE §Ⅰ「当前帧布局后的视觉同步」。
+    pub fn frame_with_layout(
+        &mut self,
+        engine: &TextEngine,
+        size: Size,
+        dt: f64,
+        after_layout: impl FnOnce(&mut Self),
+    ) -> FrameOutput {
         let epoch0 = self.invalidate_epoch;
         self.frame_dt = dt;
         self.frame_painted.clear();
@@ -1232,6 +1244,7 @@ impl Tree {
         self.measure_node(self.overlay, bounds.size, engine);
         self.arrange_node(self.overlay, bounds, engine);
         self.validate_focus();
+        after_layout(self);
         if cfg!(debug_assertions) {
             self.check_containment();
         }

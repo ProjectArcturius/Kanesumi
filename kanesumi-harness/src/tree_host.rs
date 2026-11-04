@@ -40,6 +40,10 @@ pub trait TreeApp {
     /// 每帧 tick：非控件状态（时钟、后台任务结果）在这里写回树。
     fn tick(&mut self, _tree: &mut Tree, _dt: f64) {}
 
+    /// 本帧布局后、绘制前同步依赖几何的视觉属性；不得重建或失效量测、执行 I/O。
+    /// 参 ELEMENT_TREE §Ⅰ「当前帧布局后的视觉同步」。
+    fn after_layout(&mut self, _tree: &mut Tree) {}
+
     /// 应用级快捷键（XAML `KeyboardAccelerator`）：**没有任何控件处理**的按键才会到这里
     /// （无焦点时的数字键、Ctrl+Q 等）。返回 true = 已消费。
     fn on_key(&mut self, _tree: &mut Tree, _key: Key, _modifiers: Modifiers) -> bool {
@@ -135,6 +139,9 @@ pub trait TreeApp {
 
     /// 浮层树的每帧 tick（与 `tick` 对应）。
     fn tick_floating(&mut self, _index: usize, _tree: &mut Tree, _dt: f64) {}
+
+    /// 浮层对应的布局后视觉同步入口，约束与 `after_layout` 相同。
+    fn after_layout_floating(&mut self, _index: usize, _tree: &mut Tree) {}
 
     // ── 输入预拦截（阶段机）。参 K4「应用模型统一」（archive/k-app-model.md）──────
 
@@ -598,6 +605,11 @@ impl<A: TreeApp> TreeHost<A> {
         self.damage_full
     }
 
+    fn frame_main(&mut self, engine: &TextEngine, size: Size, dt: f64) -> kanesumi_element::FrameOutput {
+        let app = &mut self.app;
+        self.tree.frame_with_layout(engine, size, dt, |tree| app.after_layout(tree))
+    }
+
     /// 给进行中的弹层表面动画记一帧（帧节拍日志）。参 `Tree::popup_motion`。
     ///
     /// 弹层动画由合成器按 vsync 推进，客户端**不提交弹层帧**：本函数只记「客户端在动画
@@ -672,7 +684,8 @@ impl<A: TreeApp> App for TreeHost<A> {
             return Scene::default();
         };
         let dt = std::mem::take(&mut f.pending_dt);
-        let out = f.tree.frame(engine, size, dt);
+        let app = &mut self.app;
+        let out = f.tree.frame_with_layout(engine, size, dt, |tree| app.after_layout_floating(index, tree));
         // 本帧产物即将提交：把进入提交的节点汇报给树（内容就绪门控就绪信号）。
         f.tree.report_content_committed(&out.painted);
         f.damage = frame_damage(&out);
@@ -1032,7 +1045,7 @@ impl<A: TreeApp> App for TreeHost<A> {
         }
         self.tree.request_full_repaint();
         let dt = std::mem::take(&mut self.pending_dt);
-        let frame = self.tree.frame(engine, Size::new(w, h), dt);
+        let frame = self.frame_main(engine, Size::new(w, h), dt);
         self.tree.report_content_committed(&frame.painted);
         frame.scene
     }
@@ -1046,7 +1059,7 @@ impl<A: TreeApp> App for TreeHost<A> {
         // 每个输出各出一帧整幅：同一次渲染里 primary / 副输出交替，局部帧会互相剔除。
         self.tree.request_full_repaint();
         let dt = std::mem::take(&mut self.pending_dt);
-        let frame = self.tree.frame(engine, size, dt);
+        let frame = self.frame_main(engine, size, dt);
         self.tree.report_content_committed(&frame.painted);
         // 锁屏外壳不消费局部损伤（每输出整幅提交），损伤只随帧交给装配钩子记日志。
         self.damage = None;
@@ -1111,7 +1124,7 @@ impl<A: TreeApp> App for TreeHost<A> {
         // 约束）。段名与 `platform/popups.rs` 的起 / 收一致，同一进程同一线程共享计数器。
         self.note_popup_motion_frames();
         let dt = std::mem::take(&mut self.pending_dt);
-        let frame = self.tree.frame(engine, size, dt);
+        let frame = self.frame_main(engine, size, dt);
         self.damage_full = frame.full;
         // 本帧产物即将由外壳提交：汇报进入提交的节点（内容就绪门控就绪信号）。
         // 平台提交点紧随本调用（platform.rs 主循环），故就绪与解挂同帧生效。
@@ -1475,6 +1488,62 @@ mod tests {
             self.id = Some(tree.insert(tree.root(), TreeAnim { anim, kicked: false }));
         }
         fn on_action(&mut self, _: &mut Tree, _: WidgetId, _: Action) {}
+    }
+
+    struct LayoutProbe {
+        config: AppConfig,
+        main: Option<WidgetId>,
+        overlay: Option<WidgetId>,
+        seen: [f32; 2],
+    }
+
+    impl LayoutProbe {
+        fn node(tree: &mut Tree) -> WidgetId {
+            tree.insert_with(tree.root(), kanesumi_element::widgets::Border::new(), LayoutProps {
+                width: Some(40.0), height: Some(24.0),
+                h_align: Align::Start, v_align: Align::Start,
+                margin: kanesumi_element::Insets::new(0.0, 20.0, 0.0, 0.0),
+                ..LayoutProps::default()
+            })
+        }
+    }
+
+    impl TreeApp for LayoutProbe {
+        fn config(&self) -> &AppConfig { &self.config }
+        fn build(&mut self, tree: &mut Tree) { self.main = Some(Self::node(tree)); }
+        fn on_action(&mut self, _: &mut Tree, _: WidgetId, _: Action) {}
+        fn after_layout(&mut self, tree: &mut Tree) {
+            self.seen[0] = tree.rect(self.main.unwrap()).unwrap().origin.y;
+        }
+        fn floating_layers(&self) -> Vec<FloatingLayer> {
+            vec![FloatingLayer::new("probe", crate::app::LayerKind::Overlay,
+                crate::app::AnchorKind::Fullscreen, 0.0, 0.0)]
+        }
+        fn build_floating(&mut self, _: usize, tree: &mut Tree) {
+            self.overlay = Some(Self::node(tree));
+        }
+        fn after_layout_floating(&mut self, index: usize, tree: &mut Tree) {
+            assert_eq!(index, 0);
+            self.seen[1] = tree.rect(self.overlay.unwrap()).unwrap().origin.y;
+        }
+    }
+
+    /// 外壳必须在主表面与浮层的当前帧排布完成后调用应用，不能漏接或提前一帧。
+    #[test]
+    fn layout_hooks_receive_current_main_and_floating_geometry() {
+        let mut h = TreeHost::new(LayoutProbe {
+            config: AppConfig::new("org.ether.test", "layout", EtherRole::Browser, 400.0, 300.0),
+            main: None, overlay: None, seen: [-1.0; 2],
+        });
+        let e = test_engine();
+        frame(&mut h, &e);
+        h.render_floating(&e, 0, Size::new(400.0, 300.0));
+        assert_eq!(h.app.seen, [20.0, 20.0]);
+        h.tree.update_props(h.app.main.unwrap(), |p| p.margin.top = 75.0);
+        h.floating[0].tree.update_props(h.app.overlay.unwrap(), |p| p.margin.top = 90.0);
+        frame(&mut h, &e);
+        h.render_floating(&e, 0, Size::new(400.0, 300.0));
+        assert_eq!(h.app.seen, [75.0, 90.0]);
     }
 
     struct Demo {
