@@ -1802,9 +1802,6 @@ impl Tree {
                 modifiers,
             },
         );
-        if button == PointerButton::Right {
-            self.deliver(target, &Event::ContextRequested { pos });
-        }
     }
 
     /// 双击：外壳在第二次按下之后调用。投给按下时的命中目标（捕获者）或当前命中。
@@ -1817,6 +1814,14 @@ impl Tree {
     pub fn pointer_up(&mut self, pos: Point, button: PointerButton, modifiers: Modifiers) {
         self.pointer = Some(pos);
         if let Some(t) = self.captured.take().or_else(|| self.hit(pos)) {
+            // 右键菜单在**释放**时弹出（INTERACTION_CANON §Ⅱ/§Ⅵ，Win32 `WM_CONTEXTMENU`）：
+            // 目标 = 按下瞬间命中的元素（按下即捕获），位置 = 松开点。
+            // 次序在 `PointerUp` **之前** —— librarian 桌面格子的「按下登记意图、
+            // 释放弹菜单」既有流程（`ContextRequested` 登记 → `PointerUp` 发菜单动作）
+            // 依赖这一先后，不能照抄 Win32 的 Up-先-Context-后。
+            if button == PointerButton::Right {
+                self.deliver(t, &Event::ContextRequested { pos });
+            }
             self.deliver(
                 t,
                 &Event::PointerUp {
@@ -2562,8 +2567,21 @@ impl Tree {
             self.remove(id);
         }
         if let Some(anchor) = spec.anchor.filter(|a| self.contains(*a)) {
-            if focus_inside {
-                self.focus(anchor, keyboard);
+            if focus_inside && !self.focus(anchor, keyboard) {
+                // 锚点不可聚焦（Dock 条这类非聚焦容器上的菜单同款）：退到最近的
+                // **可聚焦祖先**；没有则显式清空 —— 焦点不得悬在刚移除的弹层节点上
+                // 等 `validate_focus` 兜底（「关菜单后焦点不回」缺陷）。
+                let fallback = self
+                    .ancestors_inclusive(anchor)
+                    .into_iter()
+                    .filter(|a| *a != anchor)
+                    .find(|a| self.is_focusable(*a));
+                match fallback {
+                    Some(f) => {
+                        self.focus(f, keyboard);
+                    }
+                    None => self.set_focus(None, keyboard),
+                }
             }
             self.deliver(anchor, &Event::PopupClosed { popup: id });
         }
