@@ -301,6 +301,28 @@ mod tree_tests {
         h.assert_contained();
         h.assert_no_hit_outside(id);
         h.assert_paint_within(id, Insets::ZERO);
+        h.assert_access_contract();
+    }
+
+    /// 无障碍契约（E3）：勾选态进快照 checked；禁用反映在快照（参 access.rs）。
+    #[test]
+    fn access_contract_reports_checked_and_disabled() {
+        let (mut h, id) = harness(MetroCheckBox::new("启用蓝牙"));
+        let snap = h.access_snapshot();
+        let node = snap.find(id).expect("复选框在快照内");
+        assert_eq!(node.checked, Some(false), "未勾选 → checked=false");
+        h.click(id);
+        let snap = h.access_snapshot();
+        assert_eq!(
+            snap.find(id).unwrap().checked,
+            Some(true),
+            "勾选后 checked=true（勾选态反映在快照）"
+        );
+        h.tree.set_enabled(id, false);
+        h.frame();
+        let snap = h.access_snapshot();
+        assert!(snap.find(id).unwrap().disabled);
+        h.assert_access_contract();
     }
 
     #[test]

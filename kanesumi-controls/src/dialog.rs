@@ -575,6 +575,7 @@ mod tree_tests {
         let (mut h, opener) = harness();
         let d = open(&mut h, opener);
         h.assert_contained();
+        h.assert_no_hit_outside(d);
         h.assert_paint_within(d, Insets::ZERO);
     }
 }

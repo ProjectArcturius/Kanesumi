@@ -721,6 +721,7 @@ mod tree_tests {
         h.click(opener);
         let p = h.tree.popups().next().unwrap();
         h.assert_contained();
+        h.assert_no_hit_outside(p);
         h.assert_paint_within(p, Insets::new(0.0, 8.0, 0.0, 0.0));
     }
 }

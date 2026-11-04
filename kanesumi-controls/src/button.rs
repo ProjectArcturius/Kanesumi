@@ -218,6 +218,36 @@ mod tree_tests {
         h.assert_contained();
         h.assert_no_hit_outside(id);
         h.assert_paint_within(id, kanesumi_element::Insets::ZERO);
+        h.assert_access_contract();
+    }
+
+    /// 无障碍契约（E3）：快照带角色与标签文本；禁用反映在快照（参 access.rs）。
+    #[test]
+    fn access_contract_and_disabled_reflection() {
+        use kanesumi_element::{AccessRole, AccessViolationKind};
+        let (mut h, id) = harness();
+        let snap = h.access_snapshot();
+        let node = snap.find(id).expect("按钮在快照内");
+        assert_eq!(node.role, Some(AccessRole::Button));
+        assert_eq!(node.name.as_deref(), Some("确定"), "名字取自控件标签");
+        assert!(node.focusable);
+        assert!(kanesumi_element::check_access_contract(&h.tree, &snap).is_empty());
+
+        h.tree.set_enabled(id, false);
+        h.frame();
+        let snap = h.access_snapshot();
+        assert!(snap.find(id).unwrap().disabled, "禁用反映在快照");
+        h.assert_access_contract();
+
+        // 反向自检：过期快照被禁用检查抓住（防止检查形同虚设）。
+        let stale = snap;
+        h.tree.set_enabled(id, true);
+        h.frame();
+        let vs = kanesumi_element::check_disabled_state(&h.tree, &stale);
+        assert!(
+            vs.iter().any(|v| v.id == id && v.kind == AccessViolationKind::DisabledMismatch),
+            "过期快照被抓住"
+        );
     }
 
     #[test]

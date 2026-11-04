@@ -181,6 +181,17 @@ impl kanesumi_element::Widget for MetroTwoPaneView {
     fn hit_test(&self, _rect: Rect, _pos: kanesumi_core::Point) -> bool {
         false
     }
+
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            // 布局容器（无自绘、空白穿透）→ Group；无文本来源，名字待定
+            //（命名契约只绑可聚焦元素 —— 参 report「补齐清单」）。
+            role: kanesumi_element::AccessRole::Group,
+            name: String::new(),
+            value: None,
+            checked: None,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -235,6 +246,7 @@ mod tree_tests {
         h.assert_contained();
         h.assert_no_hit_outside(id);
         h.assert_paint_within(id, Insets::ZERO);
+        h.assert_access_contract();
     }
 }
 

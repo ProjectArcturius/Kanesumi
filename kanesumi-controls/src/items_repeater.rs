@@ -733,6 +733,16 @@ mod tree_tests {
         fn focusable(&self) -> bool {
             true
         }
+
+        fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+            // 行名取自数据索引（`bind` 重绑后随索引更新），不用占位串。
+            Some(kanesumi_element::AccessInfo {
+                role: kanesumi_element::AccessRole::ListItem,
+                name: format!("行 {}", self.index),
+                value: None,
+                checked: None,
+            })
+        }
     }
 
     /// 键可由外部重排的工厂（测 `items_changed` 后按 key 复用）。
@@ -936,6 +946,15 @@ mod tree_tests {
             r.origin.y >= view.origin.y - 0.01 && r.bottom() <= view.bottom() + 0.01,
             "目标行在视口内 {r:?} ⊄ {view:?}"
         );
+    }
+
+    #[test]
+    fn passes_insurance_and_access_contract() {
+        let (h, id, _) = harness(100, 300.0);
+        h.assert_contained();
+        h.assert_no_hit_outside(id);
+        h.assert_paint_within(id, kanesumi_element::Insets::ZERO);
+        h.assert_access_contract();
     }
 
     #[test]

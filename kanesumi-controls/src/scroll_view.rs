@@ -661,6 +661,16 @@ impl kanesumi_element::Widget for MetroScrollView {
         true
     }
 
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Some(kanesumi_element::AccessInfo {
+            // 滚动容器 → Group；无文本来源，名字待定（命名契约只绑可聚焦元素）。
+            role: kanesumi_element::AccessRole::Group,
+            name: String::new(),
+            value: None,
+            checked: None,
+        })
+    }
+
     fn bring_into_view(&mut self, ctx: &mut kanesumi_element::EventCtx, target: Rect) -> bool {
         let rect = ctx.rect();
         // 表面坐标 → 内容坐标（内容原点 = 视口原点 − offset）。
@@ -733,7 +743,7 @@ mod tree_tests {
     use kanesumi_core::Point;
     use kanesumi_element::testing::TestHarness;
     use kanesumi_element::widgets::Stack;
-    use kanesumi_element::{Align, Key, LayoutProps, Modifiers, ScrollInput, ScrollPhase, ScrollSource, WidgetId};
+    use kanesumi_element::{Align, Insets, Key, LayoutProps, Modifiers, ScrollInput, ScrollPhase, ScrollSource, WidgetId};
 
     /// 视口 200×100，内容 = 10 个 40 高的按钮（共 400）。
     fn harness() -> (TestHarness, WidgetId, Vec<WidgetId>) {
@@ -796,6 +806,8 @@ mod tree_tests {
         assert_eq!(h.tree.hit(Point::new(50.0, 5.0)), Some(items[1]));
         h.assert_contained();
         h.assert_no_hit_outside(sv);
+        h.assert_paint_within(sv, Insets::ZERO);
+        h.assert_access_contract();
     }
 
     #[test]

@@ -144,6 +144,20 @@ mod tree_tests {
         h.assert_contained();
         h.assert_no_hit_outside(id);
         h.assert_paint_within(id, Insets::ZERO);
+        h.assert_access_contract();
+    }
+
+    /// 无障碍契约（E3）：隐藏元素不出现于快照；恢复可见后回来（参 access.rs 契约四）。
+    #[test]
+    fn hidden_text_absent_from_access_snapshot() {
+        let (mut h, id) = harness(MetroText::body("可见文本", Color::WHITE));
+        assert!(h.access_snapshot().find(id).is_some(), "可见时在快照内");
+        h.tree.update_props(id, |p| p.visible = false);
+        h.frame();
+        assert!(h.access_snapshot().find(id).is_none(), "隐藏后不出现（XAML Collapsed）");
+        h.tree.update_props(id, |p| p.visible = true);
+        h.frame();
+        assert!(h.access_snapshot().find(id).is_some(), "恢复可见后回来");
     }
 
     /// 压窄用例：强制 40px 宽后三断言仍成立（文本按自身策略换行 / 收束在矩形内）。
