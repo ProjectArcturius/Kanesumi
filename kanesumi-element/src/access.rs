@@ -214,7 +214,7 @@ fn visit_named(n: &AccessNode, out: &mut Vec<AccessViolation>) {
                 detail: "可聚焦元素 accessibility() 未提供角色".into(),
             });
         }
-        if n.name.as_deref().map_or(true, |s| s.trim().is_empty()) {
+        if n.name.as_deref().is_none_or(|s| s.trim().is_empty()) {
             out.push(AccessViolation {
                 id: n.id,
                 kind: AccessViolationKind::FocusableNoName,
