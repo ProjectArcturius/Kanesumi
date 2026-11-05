@@ -472,7 +472,7 @@ gallery 的 `examples/access_snapshot.rs` 命令行打印快照供人工核对�
 | E3 | 🔵 24/47 | 已迁：button check_box text_box · icon_button switch slider radio_buttons rating_control · text surface info_badge progress(Bar+Ring) person_picture info_bar animated_icon · password_box number_box metro_tile pips_pager pager_control title_bar · tab_row swipe_control color_picker。操作规范 `docs/ELEMENT_MIGRATION.md` |
 | E4 | 🔵 | ✅ 定时器、`paint_after`、滚动钩子 / `bring_into_view`、隐藏动画暂停、`MetroScrollView` 滚动容器、**`ItemsRepeater` 虚拟化（§Ⅳ-bis realize 钩子；keyed 回收）**。⬜ 弹层类控件（下方）、覆盖层映射 `floating_layers` |
 
-### 进度对真（2026-11-05，监工卡 n1104-idioms 首件）
+### 进度对真（2026-11-05，监工卡 n1104-idioms 首件；终记 2026-11-06）
 
 上表停在 09-30（E3 24/47）；今晚 n1104 批原卡「迁剩余 23 个控件」的误判即源于此。
 按代码重数（命令 + 数字如实记录；基线 `a334008`，含本批待合并分支的账另列）：
@@ -504,8 +504,8 @@ kanesumi-controls/src/lib.rs             # 仅 re-export 命中关键词，非�
 | 期 | 对真状态（2026-11-05） |
 |---|---|
 | E3 | ✅ 控件面基本收口：**46/58** controls 文件含元素树 `Widget` 实现，生产控件类型 **47**（45 `Metro*` + MenuFlyout + BreadcrumbOverflow）；09-30 表「E3 余下」三组 18 个具名条目里 16 项已迁（弹层类 9：selector_flyout、drop_down_button、split_button、menu_bar、command_bar_flyout、teaching_tip、auto_suggest_box、breadcrumb_bar、dialog；滚动虚拟化类 4：list、tree_view、tab_view、navigation_view；特殊 3：expander、candidate_window、two_pane/parallax 容器）。**仅 context_menu、dropdown_menu 两控件仍在旧路径**（本批 `oc/n1104-e4-containers` 入树，见 E4 行）；特殊组的 repeater 是纯几何虚拟化引擎非控件（MetroRepeater，list/tab/tree 共用），`decl.rs` / `retained.rs` 是框架残余非控件——三者随 E5 末退役（§Ⅺ-2 与 CANON_VS_TEMPORARY） |
-| E4 | ✅ 框架能力全落地：09-30 行所列 ✅ 项之外，覆盖层映射 `floating_layers` 已接（`kanesumi-harness/src/tree_host.rs` `FloatingTree`）；⬜ 弹层类控件 → 本批 `oc/n1104-e4-containers`（kanesumi `072a54f`，5 提交：右键释放时序、MetroContextMenu / MetroDropdownMenu 实现 Widget、harness 右键路由树弹层承载、无头快照证据），待本卡合并 |
-| E6 | 🔵→数据层已立：`accessibility()`（`widget.rs`）此前**全仓无消费者**；本批 `oc/n1104-e3-controls`（kanesumi `eab6c39`，3 提交）落 `Tree::access_snapshot()` 纯数据快照 + 四条框架契约（含反向自检）+ 补齐覆盖（controls 42→45 文件）；AT-SPI 桥未接（需新依赖，未授权）。待本卡合并 |
+| E4 | ✅ 框架能力全落地：09-30 行所列 ✅ 项之外，覆盖层映射 `floating_layers` 已接（`kanesumi-harness/src/tree_host.rs` `FloatingTree`）；⬜ 弹层类控件 → 本批 `oc/n1104-e4-containers`（kanesumi `072a54f`，5 提交：右键释放时序、MetroContextMenu / MetroDropdownMenu 实现 Widget、harness 右键路由树弹层承载、无头快照证据），**已合并**（cherry-pick 至 `integration/n1104`：`e9fe682`…`cbee1b8`） |
+| E6 | 🔵→**数据层已立（已合并）**：`accessibility()`（`widget.rs`）此前**全仓无消费者**；本批 `oc/n1104-e3-controls`（kanesumi `eab6c39`，3 提交）落 `Tree::access_snapshot()` 纯数据快照 + 四条框架契约（含反向自检）+ 补齐覆盖（controls 42→45 文件），cherry-pick 至 `integration/n1104`（`5e7e7b6`…`e3674ed`）。合并门：容器 test 三包 **1178 passed / 0 failed**（含新增 `idioms_enforce` 7 项）、clippy 同镜像同命令与基线 `a334008` **逐条一致**（`4cf3e74` 修 `unnecessary_map_or`）。复审发现待办：菜单族三文件 focusable 而无 `accessibility()`（`context_menu.rs:221` / `dropdown_menu.rs:867` / `menu_flyout.rs:236`），建议 e4 补小卡。AT-SPI 桥未接（需新依赖，未授权） |
 
 **E3 余下（需 E4 能力，调度者先定模板再派工）**：
 - 弹层类（走覆盖层 `open_popup`）：dropdown_menu、selector_flyout、drop_down_button、split_button、menu_bar、context_menu、command_bar_flyout、teaching_tip、auto_suggest_box、breadcrumb_bar、dialog；

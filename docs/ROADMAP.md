@@ -12,6 +12,19 @@
 > **2026-09-30 路径变更**：M2 / M3 / M4 的**实现路径**改由 `docs/ELEMENT_TREE.md`（框架持有的保留元素树）
 > 统一承担，分期 E1~E6 见该文 §Ⅹ。三阶段的**目标与验收不变**，下文各批次保留作为验收清单；
 > 其中「给每个控件补 `measure()`/`hit_test()`」「App 每帧登记焦点」「`RetainedScene` 增量」三条做法作废。
+>
+> **n1104 批记录（2026-11-05/06，监工卡 n1104-idioms）**：
+> - **E3 / E4 / E6 状态对真并合并**：E3 控件面 46/58 文件（生产控件 47 类型）、E4 弹层类由
+>   `oc/n1104-e4-containers` 菜单族入树收口、E6 数据层由 `oc/n1104-e3-controls` 落地
+>   （`Tree::access_snapshot` + 四条契约）。明细与命令见 `ELEMENT_TREE.md` §Ⅹ「进度对真」；
+>   合并门：容器 test 三包 1178 绿 / clippy 与基线逐条一致。
+> - **M1-3 强制层推广**（`tests/idioms_enforce.rs` + `clippy.toml` 草案）：裸色纪律推广到
+>   `kanesumi-element`（controls 域已有 token_discipline）；裸尺寸 / 命中内手算矩形 / 动画
+>   路径墙钟三条按**新增代码清单**生效（不批量改旧代码，历史豁免记 `CANON_VS_TEMPORARY`）。
+> - **M3-4 右键一等语义已落树**：e4 右键改在释放时投递、菜单路由改由树弹层承载（应用调用面不变）。
+> - **M7 数据层 ✅（AT-SPI 桥 ⬜）**：无障碍快照与契约已合并；桥接需新依赖未授权，待后续开卡。
+>   复审发现：菜单族三文件 focusable 而无 `accessibility()`（`WINUI_REFERENCE_MAP.md` #7），
+>   待 e4 补小卡。
 
 ---
 
