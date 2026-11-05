@@ -10,6 +10,7 @@
 use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::sizes::ICON_12;
 use kanesumi_core::typography::{MetroTypography, TextStyle};
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
 use kanesumi_element::{
@@ -391,9 +392,9 @@ impl MetroBreadcrumbBar {
             if !is_last {
                 let chevron_rect = Rect::new(
                     x + 2.0,
-                    rect.origin.y + (rect.size.height - 12.0) / 2.0,
-                    12.0,
-                    12.0,
+                    rect.origin.y + (rect.size.height - ICON_12) / 2.0,
+                    ICON_12,
+                    ICON_12,
                 );
                 glyph::chevron_right(scene, chevron_rect, colors.on_surface_variant);
                 x += CHEVRON_GAP;

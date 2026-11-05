@@ -11,6 +11,7 @@
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::sizes::ICON_16;
 use kanesumi_core::{Color, CornerRadius, MetroTheme, Rect, Size, TextStyle, TextVAlign};
 use kanesumi_element::{
     Event, Key, MeasureCtx, PaintCtx, PointerButton, PopupSpec, Widget, WidgetId,
@@ -143,12 +144,13 @@ impl MetroCalendarDatePicker {
             TextAlign::Left,
         );
 
-        // 日历字形（E787 的 Kanesumi 自绘近似：外框 + 顶栏 + 两挂环）。
+        // 日历字形（E787 的 Kanesumi 自绘近似：外框 + 顶栏 + 两挂环）。字形 16 见尺寸表
+        // `kanesumi_core::sizes::ICON_16`（N18）。
         let glyph = Rect::new(
-            rect.right() - PICKER_GLYPH_W + (PICKER_GLYPH_W - 16.0) / 2.0,
-            rect.origin.y + (rect.size.height - 16.0) / 2.0,
-            16.0,
-            16.0,
+            rect.right() - PICKER_GLYPH_W + (PICKER_GLYPH_W - ICON_16) / 2.0,
+            rect.origin.y + (rect.size.height - ICON_16) / 2.0,
+            ICON_16,
+            ICON_16,
         );
         calendar_glyph(scene, glyph, colors.on_surface_variant);
     }

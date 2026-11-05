@@ -4,6 +4,7 @@ use std::rc::Rc;
 use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::sizes::ICON_12;
 use kanesumi_core::{MetroTheme, MetroTypography, Point, Rect, Size, TextVAlign};
 use kanesumi_element::{
     Event, EventCtx, Key, MeasureCtx, PaintCtx, PointerButton, PopupSpec, UpdateCtx, Widget,
@@ -162,9 +163,9 @@ impl MetroSelectorFlyout {
         // 箭头 —— Metro 自绘 chevron（不依赖 Fluent codepoint，参 V7）。
         let arrow_rect = Rect::new(
             trigger.origin.x + trigger.size.width - 22.0,
-            trigger.origin.y + (trigger.size.height - 12.0) / 2.0,
-            12.0,
-            12.0,
+            trigger.origin.y + (trigger.size.height - ICON_12) / 2.0,
+            ICON_12,
+            ICON_12,
         );
         glyph::chevron_down(scene, arrow_rect, colors.on_surface);
 

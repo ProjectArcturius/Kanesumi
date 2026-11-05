@@ -10,6 +10,7 @@
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Icon, Scene, TextAlign};
+use kanesumi_core::sizes::ICON_16;
 use kanesumi_core::{MetroTheme, Point, Rect};
 
 use crate::ime::{ImeContentHint, ImeContext};
@@ -544,11 +545,15 @@ impl MetroTextBox {
                 .on_surface_variant
                 .with_alpha(theme.indication.secondary_opacity);
             if let Some(icon) = &self.delete_icon {
-                scene.image(icon, Rect::new(c.x - 8.0, c.y - 8.0, 16.0, 16.0), Some(col));
+                scene.image(
+                    icon,
+                    Rect::new(c.x - ICON_16 / 2.0, c.y - ICON_16 / 2.0, ICON_16, ICON_16),
+                    Some(col),
+                );
             } else {
                 scene.text(
                     "✕".into(),
-                    Rect::new(c.x - 8.0, c.y - 8.0, 16.0, 16.0),
+                    Rect::new(c.x - ICON_16 / 2.0, c.y - ICON_16 / 2.0, ICON_16, ICON_16),
                     col,
                     style,
                     TextAlign::Center,

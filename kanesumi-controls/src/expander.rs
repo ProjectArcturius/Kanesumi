@@ -28,8 +28,9 @@ pub enum ExpandDirection {
 pub const EXPANDER_HEADER_HEIGHT: f32 = 48.0;
 /// Header 左内边距（ExpanderHeaderPadding = 16,0,0,0）。
 pub const EXPANDER_HEADER_PAD_X: f32 = 16.0;
-/// Chevron 按钮边长（ExpanderChevronButtonSize = 32）。
-pub const EXPANDER_CHEVRON_SIZE: f32 = 32.0;
+/// Chevron 按钮边长（ExpanderChevronButtonSize = 32）。取值入尺寸表
+/// `kanesumi_core::sizes::ICON_32`（N18 图标尺寸档）。
+pub const EXPANDER_CHEVRON_SIZE: f32 = kanesumi_core::sizes::ICON_32;
 /// Chevron 右侧边距（ExpanderChevronMargin = 20,0,8,0 的 right）。
 pub const EXPANDER_CHEVRON_MARGIN_RIGHT: f32 = 8.0;
 

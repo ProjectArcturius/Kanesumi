@@ -12,6 +12,7 @@
 use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::sizes::ICON_12;
 use kanesumi_core::typography::TextVAlign;
 use kanesumi_core::{CornerRadius, MetroTheme, Point, Rect, Size};
 
@@ -572,9 +573,14 @@ impl Date {
     }
 }
 
-/// 头部按钮（上月 / 下月）的箭头矩形。
+/// 头部按钮（上月 / 下月）的箭头矩形。12 见尺寸表 `kanesumi_core::sizes::ICON_12`（N18）。
 fn nav_arrow_rect(button: Rect) -> Rect {
-    Rect::new(button.center().x - 6.0, button.center().y - 6.0, 12.0, 12.0)
+    Rect::new(
+        button.center().x - ICON_12 / 2.0,
+        button.center().y - ICON_12 / 2.0,
+        ICON_12,
+        ICON_12,
+    )
 }
 
 impl MetroCalendarView {

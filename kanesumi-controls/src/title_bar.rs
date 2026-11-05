@@ -10,6 +10,7 @@ use kanesumi_canvas::glyph;
 use kanesumi_canvas::icon::Icon;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::sizes::ICON_16;
 use kanesumi_core::typography::{body_weight, TextStyle};
 use kanesumi_core::{MetroTheme, Point, Rect};
 
@@ -175,10 +176,10 @@ impl MetroTitleBar {
                 scene.fill_rect(bg, b);
             }
             let chevron = Rect::new(
-                b.origin.x + (b.size.width - 16.0) / 2.0,
-                b.origin.y + (b.size.height - 16.0) / 2.0,
-                16.0,
-                16.0,
+                b.origin.x + (b.size.width - ICON_16) / 2.0,
+                b.origin.y + (b.size.height - ICON_16) / 2.0,
+                ICON_16,
+                ICON_16,
             );
             glyph::chevron_left(scene, chevron, fg);
         }

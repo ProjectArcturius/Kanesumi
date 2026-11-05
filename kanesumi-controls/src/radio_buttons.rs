@@ -10,8 +10,8 @@ use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::typography::TextVAlign;
 use kanesumi_core::{CornerRadius, MetroTheme, Point, Rect, Size};
 
-/// 单选圆直径（20）。
-pub const RADIO_CIRCLE: f32 = 20.0;
+/// 单选圆直径（20）。取值入尺寸表 `kanesumi_core::sizes::ICON_20`（N18 图标尺寸档）。
+pub const RADIO_CIRCLE: f32 = kanesumi_core::sizes::ICON_20;
 /// 选中圆点直径（10）。
 pub const RADIO_DOT: f32 = 10.0;
 /// 圆 → 标签 gap（6）。

@@ -11,6 +11,7 @@ use kanesumi_canvas::glyph;
 use kanesumi_canvas::icon::Icon;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::sizes::ICON_12;
 use kanesumi_core::typography::{MetroTypography, TextStyle};
 use kanesumi_core::{FontWeight, MetroTheme, Point, Rect};
 
@@ -499,9 +500,9 @@ impl MetroNavigationView {
                 if !item.children.is_empty() {
                     let chev = Rect::new(
                         r.right() - 28.0,
-                        r.origin.y + (r.size.height - 12.0) / 2.0,
-                        12.0,
-                        12.0,
+                        r.origin.y + (r.size.height - ICON_12) / 2.0,
+                        ICON_12,
+                        ICON_12,
                     );
                     glyph::chevron_right(scene, chev, colors.on_surface_variant.with_alpha(alpha));
                 }

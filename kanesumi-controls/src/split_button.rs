@@ -9,6 +9,7 @@
 use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::sizes::ICON_12;
 use kanesumi_core::typography::{TextVAlign, TextStyle};
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
@@ -267,10 +268,10 @@ impl MetroSplitButton {
 
         // Secondary chevron（右侧，Pad 0,0,9,0 → 右 9px）
         let chevron = Rect::new(
-            secondary.right() - 9.0 - 12.0,
-            rect.origin.y + (rect.size.height - 12.0) / 2.0,
-            12.0,
-            12.0,
+            secondary.right() - 9.0 - ICON_12,
+            rect.origin.y + (rect.size.height - ICON_12) / 2.0,
+            ICON_12,
+            ICON_12,
         );
         glyph::chevron_down(scene, chevron, colors.on_surface_variant);
 

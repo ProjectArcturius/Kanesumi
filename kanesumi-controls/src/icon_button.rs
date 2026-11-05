@@ -1,6 +1,7 @@
 use kanesumi_canvas::icon::Icon;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::sizes::ICON_16;
 use kanesumi_core::{MetroTheme, Rect, Size};
 
 use crate::state::ControlState;
@@ -142,10 +143,10 @@ impl MetroIconButton {
         if self.label.is_empty() {
             // 纯图标：居中
             let icon_rect = Rect::new(
-                rect.origin.x + (rect.size.width - 16.0) / 2.0,
-                rect.origin.y + (rect.size.height - 16.0) / 2.0,
-                16.0,
-                16.0,
+                rect.origin.x + (rect.size.width - ICON_16) / 2.0,
+                rect.origin.y + (rect.size.height - ICON_16) / 2.0,
+                ICON_16,
+                ICON_16,
             );
             self.draw_icon(fg, icon_rect, scene);
         } else {
@@ -155,10 +156,10 @@ impl MetroIconButton {
                 IconButtonSize::Compact => (4.0, 4.0),
             };
             let icon_rect = Rect::new(
-                rect.origin.x + (rect.size.width - 16.0) / 2.0,
+                rect.origin.x + (rect.size.width - ICON_16) / 2.0,
                 rect.origin.y + icon_top,
-                16.0,
-                16.0,
+                ICON_16,
+                ICON_16,
             );
             self.draw_icon(fg, icon_rect, scene);
             let label_style = label_style();

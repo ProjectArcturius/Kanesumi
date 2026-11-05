@@ -18,8 +18,8 @@ use kanesumi_core::{MetroTheme, Point, Rect, Size};
 pub const TREE_ITEM_H: f32 = 28.0;
 /// 每级缩进（depth×16）。
 pub const TREE_INDENT: f32 = 16.0;
-/// chevron 边长（16）。
-pub const TREE_CHEVRON: f32 = 16.0;
+/// chevron 边长（16）。取值入尺寸表 `kanesumi_core::sizes::ICON_16`（N18）。
+pub const TREE_CHEVRON: f32 = kanesumi_core::sizes::ICON_16;
 
 /// 树节点。
 #[derive(Debug, Clone, PartialEq)]

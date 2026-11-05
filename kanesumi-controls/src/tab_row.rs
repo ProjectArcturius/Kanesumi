@@ -2,6 +2,7 @@ use kanesumi_anim::{EasingMode, MetroAnim, UwpEasing};
 use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::sizes::ICON_12;
 use kanesumi_core::typography::body_weight;
 use kanesumi_core::{Color, FontWeight, MetroTheme, Point, Rect, TextStyle};
 
@@ -346,9 +347,9 @@ impl MetroTabRow {
     }
 }
 
-/// 翻页键矩形内缩成 12×12 的 chevron 绘制区。
+/// 翻页键矩形内缩成 12×12 的 chevron 绘制区（12 见尺寸表 `kanesumi_core::sizes::ICON_12`）。
 fn inset_btn(btn: Rect) -> Rect {
-    let d = 12.0_f32.min(btn.size.width).min(btn.size.height);
+    let d = ICON_12.min(btn.size.width).min(btn.size.height);
     Rect::new(
         btn.origin.x + (btn.size.width - d) / 2.0,
         btn.origin.y + (btn.size.height - d) / 2.0,

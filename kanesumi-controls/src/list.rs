@@ -58,9 +58,10 @@ impl MetroList {
         self.scroll = offset.clamp(0.0, self.max_scroll(theme, viewport_h));
     }
 
-    /// 行高：body 行高 + 上下 8px，下限 40（UWP MinHeight）。
+    /// 行高：body 行高 + 上下 8px，下限 40（UWP MinHeight）。下限入尺寸表
+    /// `kanesumi_core::sizes::LIST_ROW_MIN_HEIGHT`（N18 列表行高）。
     pub fn row_height(&self, theme: &MetroTheme) -> f32 {
-        (theme.typography.body.line_height + 16.0).max(40.0)
+        (theme.typography.body.line_height + 16.0).max(kanesumi_core::sizes::LIST_ROW_MIN_HEIGHT)
     }
 
     /// 虚拟化布局器（MetroRepeater StackLayout，参 CONTROL_SPEC §41）。

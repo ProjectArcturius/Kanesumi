@@ -22,8 +22,9 @@ pub enum IconDirection {
 const ICON_MORPH: f64 = 0.1;
 
 /// 图标槽固有尺寸（16×16）。CONTROL_SPEC §31 未给尺寸；Kanesumi 实现与既有测试一律用
-/// 16px 图标槽（chevron 约 9.6px），故 `measure` 取此值。
-const ICON_SIZE: f32 = 16.0;
+/// 16px 图标槽（chevron 约 9.6px），故 `measure` 取此值。取值入尺寸表
+/// `kanesumi_core::sizes::ICON_16`（N18）。
+const ICON_SIZE: f32 = kanesumi_core::sizes::ICON_16;
 
 /// MetroAnimatedIcon —— 状态动画 chevron。参 CONTROL_SPEC §31。
 #[derive(Debug, Clone)]

@@ -10,8 +10,8 @@ use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::typography::TextStyle;
 use kanesumi_core::{FontWeight, MetroTheme, Point, Rect};
 
-/// star cell 边长（≈24）。
-pub const RATING_ITEM_SIZE: f32 = 24.0;
+/// star cell 边长（≈24）。取值入尺寸表 `kanesumi_core::sizes::ICON_24`（N18 图标尺寸档）。
+pub const RATING_ITEM_SIZE: f32 = kanesumi_core::sizes::ICON_24;
 /// 星间距（4）。
 pub const RATING_ITEM_SPACING: f32 = 4.0;
 

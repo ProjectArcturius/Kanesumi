@@ -16,8 +16,8 @@ use kanesumi_core::{Color, CornerRadius, MetroTheme, Point, Rect};
 
 use crate::state::ControlState;
 
-/// 勾选框边长（20）。
-pub const CHECKBOX_SIZE: f32 = 20.0;
+/// 勾选框边长（20）。取值入尺寸表 `kanesumi_core::sizes::ICON_20`（N18 图标尺寸档）。
+pub const CHECKBOX_SIZE: f32 = kanesumi_core::sizes::ICON_20;
 /// 描边厚度（CheckBoxBorderThemeThickness 1）。
 pub const CHECKBOX_STROKE: f32 = 1.0;
 /// 列 0 宽（20）+ 内容 Padding 左 8。

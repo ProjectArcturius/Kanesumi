@@ -10,6 +10,7 @@
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::sizes::ICON_16;
 use kanesumi_core::typography::{MetroTypography, TextStyle, base_weight};
 use kanesumi_core::{Color, MetroTheme, Point, Rect};
 
@@ -154,9 +155,10 @@ impl MetroInfoBar {
         Rect::new(rect.right() - 38.0 - 5.0, rect.origin.y + 5.0, 38.0, 38.0)
     }
 
-    /// 图标 rect（16px，Margin 0,16,14,16，ContentRoot Padding 16 之后）。
+    /// 图标 rect（16px，Margin 0,16,14,16，ContentRoot Padding 16 之后）。边长 16 见
+    /// 尺寸表 `kanesumi_core::sizes::ICON_16`（N18）；Margin/Padding 16 是 UWP 间距，不入档。
     fn icon_rect(rect: Rect) -> Rect {
-        Rect::new(rect.origin.x + 16.0, rect.origin.y + 16.0, 16.0, 16.0)
+        Rect::new(rect.origin.x + 16.0, rect.origin.y + 16.0, ICON_16, ICON_16)
     }
 
     /// 内容可用宽度（除去 Padding 16 与 Close 区）。

@@ -2,12 +2,13 @@ use std::cell::Cell;
 
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::{MetroTheme, Point, Rect, Size, TextStyle, TextVAlign};
+use kanesumi_core::sizes::ICON_12;
+use kanesumi_core::{MetroTheme, Point, Rect, TextStyle, TextVAlign};
 
 use kanesumi_element::{
     ArrangeCtx, Event, EventCtx, Insets, Key, MeasureCtx, PaintCtx, PointerButton, UpdateCtx,
     Widget,
-};
+};)
 
 use crate::popup::{PopupAnim, PopupState, place_submenu, popup_gap, render_overlay, snap_edge};
 
@@ -497,9 +498,9 @@ impl MetroDropdownMenu {
             if item.is_submenu() {
                 let chevron_rect = Rect::new(
                     self.panel_rect.right() - 22.0,
-                    y + (self.item_height - 12.0) / 2.0,
-                    12.0,
-                    12.0,
+                    y + (self.item_height - ICON_12) / 2.0,
+                    ICON_12,
+                    ICON_12,
                 );
                 kanesumi_canvas::glyph::chevron_right(scene, chevron_rect, colors.on_surface_variant);
             }
@@ -588,9 +589,9 @@ impl MetroDropdownMenu {
             if item.is_submenu() {
                 let chevron_rect = Rect::new(
                     sub.panel.right() - 22.0,
-                    y + (self.item_height - 12.0) / 2.0,
-                    12.0,
-                    12.0,
+                    y + (self.item_height - ICON_12) / 2.0,
+                    ICON_12,
+                    ICON_12,
                 );
                 kanesumi_canvas::glyph::chevron_right(scene, chevron_rect, colors.on_surface_variant);
             }
