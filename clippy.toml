@@ -1,0 +1,31 @@
+# Kanesumi 强制层草案（IDIOMS §Ⅸ，n1104-idioms）。
+#
+# 入列协议：每条 disallowed-* 在启用前必须全仓 grep 确认**零现存使用**（生产段与测试段
+# 都算），否则 clippy `--all-targets` 会新增告警、撞「与基线逐条一致」的门。确认方式：
+#   grep -rn "<符号>" kanesumi-*/src kanesumi-gallery/{src,examples}   # 必须无输出
+# 无法全仓禁用的符号（如框架/平台合法使用的 Instant::now），改由
+# kanesumi-controls/tests/idioms_enforce.rs 的**清单域静态检查**把守（只对新增代码生效）。
+
+[disallowed-macros]
+# 全仓现存 0 处（2026-11-05 对 a334008+e4+e3 合并树核对）。库不交付占位（IDIOMS §Ⅶ：
+# 未完成的工作不以 todo! 形式提交；要停在止损条款，见 common 禁区）。
+"todo!" = "不要提交占位：未完成的工作停在止损条款并写报告（IDIOMS §Ⅶ/§Ⅹ）"
+"unimplemented!" = "不要提交占位：未完成的工作停在止损条款并写报告（IDIOMS §Ⅶ/§Ⅹ）"
+
+# ── 候选（暂不入列，原因如下）────────────────────────────────────────────────────
+#
+# [disallowed-methods] "kanesumi_core::Color::from_rgba" 等
+#   —— 不能禁：core 的令牌层（theme/colors/indicator/status）本来就以 from_rgba 定义调色板
+#      （kanesumi-core/src/color.rs:44），规则是「控件消费令牌」，不是「禁颜色构造」。
+#      controls 域由 token_discipline.rs（M1-3）把守，element 域由 idioms_enforce.rs R1 把守。
+#
+# [disallowed-methods] "std::time::Instant::now"
+#   —— 不能全仓禁：框架/平台合法使用（element/src/tree.rs 弹层表面动画、transitions.rs、
+#      harness frame_clock/perf/platform 共 6 文件）。clippy 粒度是 crate 级，没有路径域；
+#      「控件动画路径禁墙钟」由 idioms_enforce.rs R4（update 函数体域）把守。
+#
+# [disallowed-methods] "std::thread::sleep"
+#   —— harness 平台层 4 处合法（轮询等待），粒度问题同上。
+#
+# [disallowed-types] …
+#   —— 候选待 size-tokens / N18 尺寸表落地后再议（裸尺寸的可靠判定在 idioms_enforce.rs R2）。
