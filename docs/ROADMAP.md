@@ -23,8 +23,10 @@
 >   路径墙钟三条按**新增代码清单**生效（不批量改旧代码，历史豁免记 `CANON_VS_TEMPORARY`）。
 > - **M3-4 右键一等语义已落树**：e4 右键改在释放时投递、菜单路由改由树弹层承载（应用调用面不变）。
 > - **M7 数据层 ✅（AT-SPI 桥 ⬜）**：无障碍快照与契约已合并；桥接需新依赖未授权，待后续开卡。
->   复审发现：菜单族三文件 focusable 而无 `accessibility()`（`WINUI_REFERENCE_MAP.md` #7），
->   待 e4 补小卡。
+>   复审发现的「菜单族三文件 focusable 而无 `accessibility()`」已收口（2026-11-06，`oc/k-menu-a11y`）：
+>   补 `AccessRole::Menu` 与三处实现、弹层并入快照、命中改按 `bounds ⊕ paint_overflow` 判。
+>   仍未做：菜单条目还不是独立 AT 节点（面板单节点绘制）；AT-SPI 桥。两者都要开卡，见
+>   `ELEMENT_TREE.md` §Ⅹ E6 行。
 
 ---
 
