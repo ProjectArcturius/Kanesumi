@@ -172,6 +172,9 @@ impl AccessItem {
         if let Some(v) = self.selected {
             let _ = write!(out, " selected={v}");
         }
+        if self.focused {
+            out.push_str(" focused");
+        }
         if self.disabled {
             out.push_str(" disabled");
         }

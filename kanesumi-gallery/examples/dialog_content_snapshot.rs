@@ -16,7 +16,7 @@ use kanesumi_harness::cpu_raster::CpuRenderer;
 use kanesumi_harness::element::widgets::{Border, Label, Stack};
 use kanesumi_harness::element::{
     Action, AccessInfo, AccessRole, Align, Event, EventCtx, Insets, LayoutProps, MeasureCtx,
-    PaintCtx, PopupSide, PopupSpec, Tree, Widget, WidgetId,
+    PaintCtx, Tree, Widget, WidgetId,
 };
 use kanesumi_harness::{
     App, AppConfig, EtherRole, InputEvent, Modifiers, PointerButton, TreeApp, TreeHost,
@@ -39,16 +39,9 @@ impl Widget for RenameOpener {
             dlg.buttons.primary = Some("确定".into());
             dlg.buttons.close = Some("取消".into());
             dlg.buttons.default_button = DialogDefaultButton::Primary;
-            ctx.open_popup(
-                dlg,
-                PopupSpec {
-                    side: PopupSide::Center,
-                    modal: true,
-                    light_dismiss: false,
-                    scrim: true,
-                    ..PopupSpec::default()
-                },
-            );
+            // 走 `show_modal`：它会打开弹层、把焦点移进去，并把「当前按钮」预置成默认按钮
+            // （因此截图里能看到焦点环）。
+            dlg.show_modal(ctx);
             ctx.set_handled();
         }
     }

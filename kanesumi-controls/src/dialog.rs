@@ -71,6 +71,10 @@ pub struct MetroDialog {
     pub width: f32,
     pub min_width: f32,
     pub max_width: f32,
+    /// 当前按钮（键盘 ←/→ 或指针悬停选定）。打开时预置为默认按钮。
+    ///
+    /// 键盘与指针共用这一个状态：分成两套会同时亮两个按钮。
+    pub focused_button: Option<DialogButton>,
     opacity: MetroAnim,
     scale: MetroAnim,
 }
@@ -95,6 +99,7 @@ impl Default for MetroDialog {
             width: 448.0,
             min_width: 320.0,
             max_width: 548.0,
+            focused_button: None,
             opacity,
             scale,
         }
@@ -221,6 +226,61 @@ impl MetroDialog {
             .map(|(slot, _, _)| slot)
     }
 
+    /// 视觉顺序（左 → 右）的已配置按钮：Primary → Secondary → Close。
+    ///
+    /// ←/→ 按这个顺序走；反过来排会让「按 → 往右走」变成往左跳。
+    fn ordered_buttons(&self) -> Vec<DialogButton> {
+        [
+            (DialogButton::Primary, self.buttons.primary.is_some()),
+            (DialogButton::Secondary, self.buttons.secondary.is_some()),
+            (DialogButton::Close, self.buttons.close.is_some()),
+        ]
+        .into_iter()
+        .filter(|(_, configured)| *configured)
+        .map(|(b, _)| b)
+        .collect()
+    }
+
+    /// 在已配置按钮间移动当前按钮（`delta` = ±1），到端循环。
+    pub fn step_button(&mut self, delta: isize) {
+        let order = self.ordered_buttons();
+        if order.is_empty() {
+            return;
+        }
+        let n = order.len() as isize;
+        let cur = self
+            .focused_button
+            .or_else(|| self.default_button())
+            .and_then(|b| order.iter().position(|x| *x == b))
+            .map(|i| i as isize)
+            .unwrap_or(if delta > 0 { -1 } else { n });
+        let next = (cur + delta.signum()).rem_euclid(n) as usize;
+        self.focused_button = Some(order[next]);
+    }
+
+    /// 配置的默认按钮；未配置或指向未配置的按钮时退回首个已配置按钮。
+    fn default_button(&self) -> Option<DialogButton> {
+        let configured = |b: DialogButton| match b {
+            DialogButton::Primary => self.buttons.primary.is_some(),
+            DialogButton::Secondary => self.buttons.secondary.is_some(),
+            DialogButton::Close => self.buttons.close.is_some(),
+        };
+        let preferred = match self.buttons.default_button {
+            DialogDefaultButton::Primary => Some(DialogButton::Primary),
+            DialogDefaultButton::Secondary => Some(DialogButton::Secondary),
+            DialogDefaultButton::Close => Some(DialogButton::Close),
+            DialogDefaultButton::None => None,
+        };
+        preferred
+            .filter(|b| configured(*b))
+            .or_else(|| self.ordered_buttons().into_iter().next())
+    }
+
+    /// Enter / Space 会激活的按钮：当前按钮 → 默认按钮。
+    pub fn activated_button(&self) -> Option<DialogButton> {
+        self.focused_button.or_else(|| self.default_button())
+    }
+
     /// 按钮区布局 —— **唯一实现**：渲染、命中、无障碍三处都从这里取。
     ///
     /// 此前渲染与命中各写了一遍「从右到左、宽 130、间距 2」，两处一旦有一位不一致，
@@ -342,6 +402,17 @@ impl MetroDialog {
             };
             btn.state = ControlState::Normal;
             btn.render(theme, engine, btn_rect, scene);
+            // 焦点环必须画在按钮**之后**：先画会被按钮自己的底色盖住（外圈只剩 1px，
+            // 深色下几乎看不见）。这里是「当前按钮」唯一的焦点视觉。
+            if self.focused_button == Some(slot) {
+                crate::focus::draw_focus_ring(
+                    scene,
+                    theme.indication.focus_stroke,
+                    theme.scheme,
+                    btn_rect,
+                    theme.tokens.corner_radius,
+                );
+            }
         }
     }
 }
@@ -397,6 +468,9 @@ impl MetroDialog {
 
     /// 元素树：模态打开（表面居中、焦点陷阱、点外部不关闭）。返回弹层 id。
     pub fn show_modal(&mut self, ctx: &mut EventCtx) -> WidgetId {
+        // 打开即把「当前按钮」定在默认按钮上：否则键盘用户先看到没有任何高亮的按钮区，
+        // 而且第一次按 → 会跳过它。
+        self.focused_button = self.default_button();
         let id = ctx.open_popup(
             self.clone(),
             PopupSpec {
@@ -481,16 +555,43 @@ impl Widget for MetroDialog {
                     ctx.close_popup(ctx.id());
                     ctx.set_handled();
                 }
-                // Enter = Primary（未配置 Primary 时无动作）。
-                Key::Enter => {
-                    if self.buttons.primary.is_some() {
-                        ctx.emit(DialogResult(DialogButton::Primary));
+                // ← / →：在**已配置**的按钮之间移动（视觉顺序 Primary → Secondary → Close）。
+                Key::Left => {
+                    self.step_button(-1);
+                    ctx.invalidate_paint();
+                    ctx.set_handled();
+                }
+                Key::Right => {
+                    self.step_button(1);
+                    ctx.invalidate_paint();
+                    ctx.set_handled();
+                }
+                // Enter / Space：激活当前按钮；没有当前按钮时退回默认按钮 → 首个可用按钮。
+                Key::Enter | Key::Char(' ') => {
+                    if let Some(b) = self.activated_button() {
+                        ctx.emit(DialogResult(b));
                         ctx.close_popup(ctx.id());
                     }
                     ctx.set_handled();
                 }
                 _ => {}
             },
+            // 指针移进按钮区：与键盘共用同一个「当前按钮」，避免两套高亮打架。
+            Event::PointerMove { pos } => {
+                if let Some(b) = self.hit_button_in(ctx.rect(), *pos)
+                    && self.focused_button != Some(b)
+                {
+                    self.focused_button = Some(b);
+                    ctx.invalidate_paint();
+                }
+            }
+            // 焦点回来时若还没选过按钮，补上默认按钮（避免「有焦点但按钮区无高亮」）。
+            Event::FocusIn { .. } => {
+                if self.focused_button.is_none() {
+                    self.focused_button = self.default_button();
+                    ctx.invalidate_paint();
+                }
+            }
             _ => {}
         }
     }
@@ -537,11 +638,14 @@ impl Widget for MetroDialog {
                 } else {
                     label
                 };
-                kanesumi_element::AccessItem::new(
+                let mut item = kanesumi_element::AccessItem::new(
                     kanesumi_element::AccessRole::Button,
                     name,
                     bounds,
-                )
+                );
+                // 读屏要能说「当前在哪个按钮」——键盘 ←/→ 与指针悬停共用这一个状态。
+                item.focused = self.focused_button == Some(slot);
+                item
             })
             .collect()
     }
@@ -786,6 +890,153 @@ mod tree_tests {
         h.assert_contained();
         h.assert_no_hit_outside(d);
         h.assert_paint_within(d, Insets::ZERO);
+    }
+
+    // ── 按钮键盘导航（←/→ + Enter，第五批）──────────────────────────────────
+
+    /// 三按钮对话框：Primary 默认、Secondary、Close 全部配置。
+    fn three_button_dialog() -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(600.0, 500.0);
+        let mut dlg = MetroDialog::new("保存工作？", "是否保存对当前文件的更改？");
+        dlg.buttons.primary = Some("保存".into());
+        dlg.buttons.secondary = Some("不保存".into());
+        dlg.buttons.close = Some("取消".into());
+        dlg.buttons.default_button = DialogDefaultButton::Primary;
+        let opener = h.tree.insert_with(
+            h.root(),
+            Opener { dlg },
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        let popup = open(&mut h, opener);
+        h.tree.focus(popup, true);
+        h.frame();
+        (h, popup)
+    }
+
+    fn focused_of(h: &TestHarness, popup: WidgetId) -> Option<DialogButton> {
+        h.tree.get::<MetroDialog>(popup).unwrap().focused_button
+    }
+
+    #[test]
+    fn opens_with_default_button_selected() {
+        let (h, popup) = three_button_dialog();
+        assert_eq!(
+            focused_of(&h, popup),
+            Some(DialogButton::Primary),
+            "打开即落在默认按钮上（否则按钮区没有任何高亮）"
+        );
+    }
+
+    #[test]
+    fn arrow_keys_move_between_configured_buttons_and_wrap() {
+        let (mut h, popup) = three_button_dialog();
+        h.key(Key::Right);
+        assert_eq!(focused_of(&h, popup), Some(DialogButton::Secondary));
+        h.key(Key::Right);
+        assert_eq!(
+            focused_of(&h, popup),
+            Some(DialogButton::Close),
+            "视觉顺序在右"
+        );
+        h.key(Key::Right);
+        assert_eq!(focused_of(&h, popup), Some(DialogButton::Primary), "到尾循环");
+        h.key(Key::Left);
+        assert_eq!(focused_of(&h, popup), Some(DialogButton::Close), "反向循环");
+    }
+
+    #[test]
+    fn arrow_keys_skip_unconfigured_buttons() {
+        let mut h = TestHarness::new(600.0, 500.0);
+        let mut dlg = MetroDialog::new("删除？", "不可撤销");
+        dlg.buttons.primary = Some("删除".into());
+        dlg.buttons.close = Some("取消".into());
+        let opener = h.tree.insert_with(
+            h.root(),
+            Opener { dlg },
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        let popup = open(&mut h, opener);
+        h.tree.focus(popup, true);
+        h.frame();
+        h.key(Key::Right);
+        assert_eq!(
+            focused_of(&h, popup),
+            Some(DialogButton::Close),
+            "未配置 Secondary 时不占位（Primary 之后直接 Close）"
+        );
+    }
+
+    #[test]
+    fn enter_activates_the_focused_button() {
+        let (mut h, popup) = three_button_dialog();
+        h.key(Key::Right); // → Secondary
+        h.key(Key::Enter);
+        let results: Vec<DialogResult> = h
+            .take::<DialogResult>()
+            .into_iter()
+            .map(|(_, r)| r)
+            .collect();
+        assert_eq!(
+            results,
+            vec![DialogResult(DialogButton::Secondary)],
+            "Enter 激活当前按钮，而不是永远 Primary"
+        );
+        assert!(h.tree.popups().next().is_none(), "激活后关闭");
+    }
+
+    #[test]
+    fn space_activates_and_esc_still_closes() {
+        let (mut h, _popup) = three_button_dialog();
+        h.key(Key::Char(' '));
+        let results: Vec<DialogResult> = h
+            .take::<DialogResult>()
+            .into_iter()
+            .map(|(_, r)| r)
+            .collect();
+        assert_eq!(results, vec![DialogResult(DialogButton::Primary)], "Space 同 Enter");
+
+        let (mut h2, _p2) = three_button_dialog();
+        h2.key(Key::Escape);
+        let results: Vec<DialogResult> = h2
+            .take::<DialogResult>()
+            .into_iter()
+            .map(|(_, r)| r)
+            .collect();
+        assert_eq!(results, vec![DialogResult(DialogButton::Close)], "Esc 仍是关闭");
+        assert!(h2.tree.popups().next().is_none());
+    }
+
+    #[test]
+    fn focused_button_is_drawn_and_reported_to_at() {
+        let (h, popup) = three_button_dialog();
+        let snap = h.access_snapshot();
+        let node = snap.find(popup).expect("对话框在快照内");
+        let focused: Vec<&str> = node
+            .items
+            .iter()
+            .filter(|i| i.focused)
+            .map(|i| i.name.as_str())
+            .collect();
+        assert_eq!(focused, vec!["保存（默认）"], "当前按钮报给读屏");
+
+        let strokes = h
+            .tree
+            .painted(popup)
+            .iter()
+            .filter(|c| matches!(c, kanesumi_canvas::SceneCommand::StrokeRect { .. }))
+            .count();
+        assert!(strokes >= 2, "盒体描边 + 焦点环（实得 {strokes} 条描边）");
+        h.assert_access_contract();
     }
 }
 

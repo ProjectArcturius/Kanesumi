@@ -75,6 +75,8 @@ pub struct AccessItem {
     pub checked: Option<bool>,
     /// 选中态（列表行这类；不适用为 None）。
     pub selected: Option<bool>,
+    /// 键盘 / 指针的**当前项**（对话框按钮、工具栏这类自绘项用；读屏靠它播报「当前在哪个按钮」）。
+    pub focused: bool,
     /// 控件坐标系里的矩形（与被报告节点的 bounds 同一坐标系）。
     pub bounds: Rect,
     pub disabled: bool,
@@ -90,6 +92,7 @@ impl AccessItem {
             value: None,
             checked: None,
             selected: None,
+            focused: false,
             bounds,
             disabled: false,
             children: Vec::new(),
