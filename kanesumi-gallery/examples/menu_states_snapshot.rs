@@ -26,6 +26,7 @@ use kanesumi_harness::{
 /// 可右键的空白面板（右键释放 → 树弹层承载的右键菜单）。
 struct Window {
     config: AppConfig,
+    items: Vec<MenuItem>,
 }
 
 impl TreeApp for Window {
@@ -39,7 +40,9 @@ impl TreeApp for Window {
         );
         tree.insert(
             tree.root(),
-            RightClickTarget { items: items() },
+            RightClickTarget {
+                items: self.items.clone(),
+            },
         );
     }
     fn on_action(&mut self, _tree: &mut Tree, _from: WidgetId, _action: Action) {}
@@ -81,6 +84,30 @@ fn items() -> Vec<MenuItem> {
     ]
 }
 
+/// 40 条命令：面板必须封顶在 MENU_MAX_HEIGHT 内，而不是长到屏幕外。
+fn long_items() -> Vec<MenuItem> {
+    (0..40)
+        .map(|i| {
+            let item = MenuItem::new(format!("命令 {i:02}"));
+            if i % 5 == 0 { item.disabled() } else { item }
+        })
+        .collect()
+}
+
+fn save(engine: &TextEngine, scene: &Scene, size: Size, scale: f32, out: &str) {
+    let mut cpu = CpuRenderer::new(size.width, size.height, scale);
+    let rgba = cpu.render(engine, scene, None).to_vec();
+    let (w, h) = cpu.physical_size();
+    let pixmap = resvg::tiny_skia::Pixmap::from_vec(
+        rgba,
+        resvg::tiny_skia::IntSize::from_wh(w, h).expect("尺寸合法"),
+    )
+    .expect("像素缓冲尺寸不符");
+    pixmap
+        .save_png(std::path::Path::new(out))
+        .expect("写 PNG 失败");
+    println!("snapshot {out} {w}x{h}");
+}
 fn engine() -> TextEngine {
     kanesumi_harness::element::testing::test_engine()
 }
@@ -108,6 +135,7 @@ fn main() {
             size.width,
             size.height,
         ),
+        items: items(),
     });
     frame(&mut host, &engine, size);
 
@@ -136,15 +164,48 @@ fn main() {
         y: 40.0 + 32.0 * 3.0 + 16.0,
     });
     let scene = frame(&mut host, &engine, size);
+    save(&engine, &scene, size, scale, &out);
 
-    let mut cpu = CpuRenderer::new(size.width, size.height, scale);
-    let rgba = cpu.render(&engine, &scene, None).to_vec();
-    let (w, h) = cpu.physical_size();
-    let pixmap = resvg::tiny_skia::Pixmap::from_vec(
-        rgba,
-        resvg::tiny_skia::IntSize::from_wh(w, h).expect("尺寸合法"),
-    )
-    .expect("像素缓冲尺寸不符");
-    pixmap.save_png(std::path::Path::new(&out)).expect("写 PNG 失败");
-    println!("snapshot {out} {w}x{h}");
+    // ── 第二张：长菜单（40 项）—— 面板必须封顶、不许长出屏幕 ─────────────────
+    let long_size = Size::new(420.0, 620.0);
+    let mut long = TreeHost::new(Window {
+        config: AppConfig::new(
+            "org.ether.gallery.menustates",
+            "长菜单",
+            EtherRole::Browser,
+            long_size.width,
+            long_size.height,
+        ),
+        items: long_items(),
+    });
+    frame(&mut long, &engine, long_size);
+    for ev in [
+        InputEvent::PointerPressed {
+            x: 60.0,
+            y: 30.0,
+            button: PointerButton::Right,
+            modifiers: Modifiers::NONE,
+        },
+        InputEvent::PointerReleased {
+            x: 60.0,
+            y: 30.0,
+            button: PointerButton::Right,
+            modifiers: Modifiers::NONE,
+        },
+    ] {
+        long.handle_input(ev);
+    }
+    let long_scene = frame(&mut long, &engine, long_size);
+    let long_out = {
+        let p = std::path::Path::new(&out);
+        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("menu_states");
+        p.with_file_name(format!("{stem}-long.png"))
+    };
+    save(
+        &engine,
+        &long_scene,
+        long_size,
+        scale,
+        &long_out.to_string_lossy(),
+    );
 }
