@@ -68,6 +68,32 @@ fn main() {
             ..start
         },
     );
+    // 树：节点是**合成项**（`TreeItem`），带展开态与选中态。
+    let tree_root = kanesumi_controls::TreeViewNode::with_children(
+        "",
+        vec![
+            kanesumi_controls::TreeViewNode::with_children(
+                "文档",
+                vec![
+                    kanesumi_controls::TreeViewNode::new("项目"),
+                    kanesumi_controls::TreeViewNode::new("报告"),
+                ],
+            ),
+            kanesumi_controls::TreeViewNode::new("图片"),
+        ],
+    );
+    let mut tv = kanesumi_controls::MetroTreeView::new(tree_root);
+    tv.root.children[0].expanded = true;
+    tv.selected = Some(vec![0, 1]);
+    h.tree.insert_with(
+        col,
+        tv,
+        LayoutProps {
+            width: Some(280.0),
+            height: Some(160.0),
+            ..start
+        },
+    );
     h.frame();
 
     let snap = h.tree.access_snapshot();
