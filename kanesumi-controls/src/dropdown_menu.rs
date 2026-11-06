@@ -22,6 +22,11 @@ pub(crate) const MENU_ACCESS_NAME: &str = "菜单";
 /// 参 docs/DECISIONS_2026-10-05.md §100（TopBar 不要分割线，分组改用留白）。
 pub const MENU_GROUP_GAP: f32 = 8.0;
 
+/// 勾选列宽（逻辑 pt）：菜单有可勾选项时，左缘固定留出这一列画勾，标签统一右移 ——
+/// 勾选与否**不改变文字起点**（旧做法是在标签里拼「✓」前缀，勾了的行文字整体右移一格，
+/// 一列命令的下缘看得出来错位）。参 CONTROL_SPEC §39「视觉」。
+pub const MENU_CHECK_GUTTER: f32 = 16.0;
+
 /// 菜单项。参 CONTROL_SPEC §8（MenuFlyout）：
 /// - 项高 ≈32（Padding `11,9,11,10` + 14px 字）；图标 16px；快捷键右侧；
 /// - PointerOver = 中性高亮，瞬时；分隔线高 1、左右 12 留白。
@@ -41,6 +46,10 @@ pub struct MenuItem {
     pub gap_after: bool,
     /// 嵌套子菜单（MenuFlyoutSubItem 语义，参 CONTROL_SPEC §39）。
     pub submenu: Vec<MenuItem>,
+    /// 可用（XAML `MenuFlyoutItem.IsEnabled`）。`false` = 不响应悬停 / 键盘 / 点击，
+    /// 文字按禁用透明度画。剪切 / 粘贴这类「现在做不了」的命令必须有这个状态，
+    /// 否则应用只能把项删掉或让它点了没反应。
+    pub enabled: bool,
 }
 
 impl MenuItem {
@@ -54,7 +63,20 @@ impl MenuItem {
             separator_after: false,
             gap_after: false,
             submenu: Vec::new(),
+            enabled: true,
         }
+    }
+
+    /// 禁用项（灰显、不响应悬停与点击、键盘导航跳过）。
+    pub fn disabled(mut self) -> Self {
+        self.enabled = false;
+        self
+    }
+
+    /// 右侧快捷键提示（纯展示，不注册加速键；加速键归应用 `on_key`）。
+    pub fn with_shortcut(mut self, text: impl Into<String>) -> Self {
+        self.shortcut = Some(text.into());
+        self
     }
 
     pub fn with_icon(label: impl Into<String>, icon: impl Into<String>) -> Self {
@@ -222,6 +244,18 @@ impl MetroDropdownMenu {
     ///
     /// **V21 缓存**：结果按 `items` / `item_height` 稳定，首次计算后走 `panel_size_cache`。
     /// 外部修改字段后需 [`Self::invalidate_layout`]（Cell 无法拦截 pub 字段写入）。
+    /// 勾选列宽：菜单里存在**可勾选项**（勾选态或单选组）时预留，否则为 0。
+    ///
+    /// 判据是「有没有可勾选的项」而不是「当前有没有勾」——按当前勾选态决定会让
+    /// 取消勾选的一瞬间整列文字左移，看起来像菜单自己抖了一下。
+    pub fn check_gutter(&self) -> f32 {
+        let checkable = self
+            .items
+            .iter()
+            .any(|i| i.checked || i.radio_group.is_some());
+        if checkable { MENU_CHECK_GUTTER } else { 0.0 }
+    }
+
     pub fn panel_size(&self, engine: &TextEngine) -> kanesumi_core::Size {
         if let Some(cached) = self.panel_size_cache.get() {
             return cached;
@@ -249,7 +283,7 @@ impl MetroDropdownMenu {
             .filter(|i| i.separator_after && !i.gap_after)
             .count() as f32;
         let gaps = self.items.iter().filter(|i| i.gap_after).count() as f32;
-        let width = (icon_w + text_w + shortcut_w + 22.0 + 24.0).max(120.0);
+        let width = (self.check_gutter() + icon_w + text_w + shortcut_w + 22.0 + 24.0).max(120.0);
         let height =
             self.items.len() as f32 * self.item_height + separators * 2.0 + gaps * MENU_GROUP_GAP;
         let size = kanesumi_core::Size::new(width, height);
@@ -349,7 +383,11 @@ impl MetroDropdownMenu {
                 return;
             }
         }
-        self.hovered = self.item_at(pos);
+        self.hovered = self.item_at(pos).filter(|i| {
+            // 禁用项不亮、也不展开子菜单：指针扫过时高亮停在上一项才是「坏手感」，
+            // 所以这里把 hovered 清成 None（Windows 同款：禁用行不出现悬停底）。
+            self.items.get(*i).is_some_and(|it| it.enabled)
+        });
         let submenu_target = self.hovered.filter(|i| self.items[*i].is_submenu());
         if let Some(i) = submenu_target {
             if self.submenu.as_ref().map(|s| s.parent) != Some(i) {
@@ -372,9 +410,11 @@ impl MetroDropdownMenu {
             return;
         }
         let parent_rect = self.item_rect(idx);
-        let sub_size = MetroDropdownMenu::new(items.clone()).panel_size(engine);
-        let panel = place_submenu(parent_rect, sub_size, screen, popup_gap().min(2.0));
         let mut menu = MetroDropdownMenu::new(items);
+        // 行高跟随父菜单：面板总量测与子菜单量测用同一行高，否则级联面板比父面板矮/高一截。
+        menu.item_height = self.item_height;
+        let sub_size = menu.panel_size(engine);
+        let panel = place_submenu(parent_rect, sub_size, screen, popup_gap().min(2.0));
         menu.panel_rect = panel;
         menu.anim.open();
         self.submenu = Some(SubmenuState {
@@ -454,21 +494,41 @@ impl MetroDropdownMenu {
                 (next - y).max(0.0),
             );
 
-            // 悬停高亮（中性）+ 级联展开项也高亮
+            // 悬停高亮（中性）+ 级联展开项也高亮（禁用项不亮，见 `hover_inner`）。
             if self.hovered == Some(i)
                 || self.submenu.as_ref().map(|s| s.parent) == Some(i)
             {
                 scene.fill_rect(theme.indication.hover_tint, item_rect);
             }
 
+            // 禁用项整体降透明度：文字 / 图标 / 快捷键 / chevron 一起暗，不单暗一个。
+            let dim = |c: kanesumi_core::Color| {
+                if item.enabled {
+                    c
+                } else {
+                    c.with_alpha(theme.indication.disabled_opacity)
+                }
+            };
             let mut x = self.panel_rect.origin.x + 11.0;
-            // 图标
+            // 勾选列：有可勾选项时左缘留一列，勾在这里画、标签统一起点（勾与不勾不位移）。
+            if self.check_gutter() > 0.0 {
+                if item.checked {
+                    let check_rect = Rect::new(
+                        self.panel_rect.origin.x + 11.0,
+                        y + (self.item_height - ICON_12) / 2.0,
+                        ICON_12,
+                        ICON_12,
+                    );
+                    kanesumi_canvas::glyph::check(scene, check_rect, dim(colors.on_surface));
+                }
+                x += MENU_CHECK_GUTTER;
+            }            // 图标
             if let Some(icon) = &item.icon {
                 let icon_rect = Rect::new(x, y + (self.item_height - 16.0) / 2.0, 16.0, 16.0);
                 scene.text(
                     icon.clone(),
                     icon_rect,
-                    colors.on_surface,
+                    dim(colors.on_surface),
                     icon_style(),
                     TextAlign::Center,
                 );
@@ -496,7 +556,7 @@ impl MetroDropdownMenu {
             scene.label(
                 item.label.clone(),
                 text_rect,
-                colors.on_surface,
+                dim(colors.on_surface),
                 style.with_v_align(TextVAlign::Center),
                 TextAlign::Left,
             );
@@ -508,7 +568,11 @@ impl MetroDropdownMenu {
                     ICON_12,
                     ICON_12,
                 );
-                kanesumi_canvas::glyph::chevron_right(scene, chevron_rect, colors.on_surface_variant);
+                kanesumi_canvas::glyph::chevron_right(
+                    scene,
+                    chevron_rect,
+                    dim(colors.on_surface_variant),
+                );
             }
             // 快捷键（右侧）：矩形由面板右缘派生并夹到可用宽，单行省略号。
             // 纵向同上交给 TextVAlign::Center。参 o4 纵向对齐。
@@ -522,7 +586,7 @@ impl MetroDropdownMenu {
                 scene.label(
                     sc,
                     sc_rect,
-                    colors.on_surface_variant,
+                    dim(colors.on_surface_variant),
                     style.with_v_align(TextVAlign::Center),
                     TextAlign::Right,
                 );
@@ -548,77 +612,16 @@ impl MetroDropdownMenu {
     }
 
     /// 渲染子菜单（若展开）。画在顶层面板之上。
-    pub fn render_submenu(&self, theme: &MetroTheme, _engine: &TextEngine, scene: &mut Scene) {
+    ///
+    /// **委托给子菜单自己的 [`Self::render_panel`]，不再另写一份排版**：
+    /// 旧实现是逐行复制顶层面板的绘制代码，于是「顶层的改进」到不了子菜单 ——
+    /// 勾选列、禁用降透明度、图标让位、快捷键避让在两级菜单里长相不同，
+    /// 而这类复制粘贴的分叉正是自绘框架最贵的债（改一处忘一处，症状只在子菜单里出现）。
+    pub fn render_submenu(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
         let Some(sub) = &self.submenu else {
             return;
         };
-        crate::popup::render_panel_base(theme, sub.panel, sub.menu.anim.panel_progress(), scene);
-        let style = menu_item_style();
-        let colors = &theme.colors;
-        let mut y = sub.panel.origin.y;
-        // 同 render_panel：容器语义 = 裁到子面板矩形（审计 P0-2）。
-        scene.push_clip(sub.panel);
-        for (i, item) in sub.menu.items.iter().enumerate() {
-            let item_rect = Rect::new(
-                sub.panel.origin.x,
-                y,
-                sub.panel.size.width,
-                self.item_height,
-            );
-            if sub.menu.hovered == Some(i) {
-                scene.fill_rect(theme.indication.hover_tint, item_rect);
-            }
-            let mut x = sub.panel.origin.x + 11.0;
-            if let Some(icon) = &item.icon {
-                let icon_rect = Rect::new(x, y + (self.item_height - 16.0) / 2.0, 16.0, 16.0);
-                scene.text(
-                    icon.clone(),
-                    icon_rect,
-                    colors.on_surface,
-                    icon_style(),
-                    TextAlign::Center,
-                );
-                x += 28.0;
-            }
-            let text_right = sub.panel.right() - 11.0;
-            let text_w = (text_right - x).max(0.0);
-            // 纵向交给 TextVAlign::Center（行盒中线对齐 item 中线，与手算 (h−lh)/2
-            // 逐位同值）。参 o4 纵向对齐。
-            let text_rect = Rect::new(x, y, text_w, self.item_height);
-            scene.label(
-                item.label.clone(),
-                text_rect,
-                colors.on_surface,
-                style.with_v_align(TextVAlign::Center),
-                TextAlign::Left,
-            );
-            if item.is_submenu() {
-                let chevron_rect = Rect::new(
-                    sub.panel.right() - 22.0,
-                    y + (self.item_height - ICON_12) / 2.0,
-                    ICON_12,
-                    ICON_12,
-                );
-                kanesumi_canvas::glyph::chevron_right(scene, chevron_rect, colors.on_surface_variant);
-            }
-            y += self.item_height;
-            if item.gap_after {
-                // 留白式分组间距：只留空，不画线。
-                y += MENU_GROUP_GAP;
-            } else if item.separator_after {
-                scene.fill_rect(
-                    colors.divider,
-                    Rect::new(
-                        sub.panel.origin.x + 12.0,
-                        y,
-                        sub.panel.size.width - 24.0,
-                        1.0,
-                    ),
-                );
-                y += 2.0;
-            }
-        }
-        scene.pop_clip();
+        sub.menu.render_panel(theme, engine, scene);
     }
 
     /// 子菜单 `update(dt)`（动画推进）。
@@ -692,24 +695,59 @@ impl MetroDropdownMenu {
 
     // ── 元素树弹层的共享交互（Widget 实现，参 `menu_flyout.rs` / `context_menu.rs`）──
 
-    /// 键盘步进（↑ / ↓，跨分隔线跳项、循环）。子菜单展开时作用于子菜单。
+    /// 键盘步进（↑ / ↓，跳过分隔线与禁用项、循环）。子菜单展开时作用于子菜单。
     pub fn step_hover(&mut self, delta: isize) {
-        let (items_len, hovered) = match self.submenu.as_ref() {
-            Some(s) => (s.menu.items.len(), s.menu.hovered),
-            None => (self.items.len(), self.hovered),
-        };
-        if items_len == 0 {
-            return;
+        let mut next = None;
+        {
+            let (items, hovered) = match self.submenu.as_ref() {
+                Some(s) => (s.menu.items.as_slice(), s.menu.hovered),
+                None => (self.items.as_slice(), self.hovered),
+            };
+            let n = items.len() as isize;
+            if n == 0 {
+                return;
+            }
+            let mut cursor = match hovered {
+                Some(i) => i as isize,
+                None if delta > 0 => -1,
+                None => n,
+            };
+            // 至多走一圈：全是禁用项时停在原位、不选中任何项。
+            for _ in 0..n {
+                cursor += delta.signum();
+                let idx = cursor.rem_euclid(n) as usize;
+                if items[idx].enabled {
+                    next = Some(idx);
+                    break;
+                }
+            }
         }
-        let n = items_len as isize;
-        let next = match hovered {
-            Some(i) => (i as isize + delta).rem_euclid(n) as usize,
-            None if delta > 0 => 0,
-            None => (n - 1) as usize,
+        if let Some(idx) = next {
+            match self.submenu.as_mut() {
+                Some(s) => s.menu.hovered = Some(idx),
+                None => self.hovered = Some(idx),
+            }
+        }
+    }
+
+    /// 跳到首个 / 末个可用项（Home / End，XAML 菜单同款）。子菜单展开时作用于子菜单。
+    pub fn hover_edge(&mut self, last: bool) {
+        let idx = {
+            let items = match self.submenu.as_ref() {
+                Some(s) => s.menu.items.as_slice(),
+                None => self.items.as_slice(),
+            };
+            if last {
+                items.iter().rposition(|it| it.enabled)
+            } else {
+                items.iter().position(|it| it.enabled)
+            }
         };
-        match self.submenu.as_mut() {
-            Some(s) => s.menu.hovered = Some(next),
-            None => self.hovered = Some(next),
+        if let Some(idx) = idx {
+            match self.submenu.as_mut() {
+                Some(s) => s.menu.hovered = Some(idx),
+                None => self.hovered = Some(idx),
+            }
         }
     }
 
@@ -731,6 +769,11 @@ impl MetroDropdownMenu {
     /// 其余标记勾选（单选组互斥）并关闭弹层（本节点即弹层根）。`owner` 在场时发
     /// `MenuInvoked { owner, path, .. }`。
     pub fn activate_at(&mut self, ctx: &mut kanesumi_element::EventCtx, path: MenuPath) {
+        // 禁用项：点了 / 回车都没有动作，菜单也不关（关闭等于假装执行成功）。
+        if self.item(path).is_some_and(|it| !it.enabled) {
+            ctx.set_handled();
+            return;
+        }
         if path.parent.is_none() && self.items.get(path.index).is_some_and(|it| it.is_submenu()) {
             if let Some(engine) = ctx.engine().cloned() {
                 self.open_submenu(&engine, ctx.surface(), path.index);
@@ -845,13 +888,17 @@ impl Widget for MetroDropdownMenu {
                 match key {
                     Key::Down => self.step_hover(1),
                     Key::Up => self.step_hover(-1),
+                    // Home / End：跳到首 / 末个可用项（XAML 菜单同款；只有 ↑↓ 时，
+                    // 长菜单要按十几次才能到头）。
+                    Key::Home => self.hover_edge(false),
+                    Key::End => self.hover_edge(true),
                     Key::Right => {
                         if let (Some(i), Some(engine)) = (self.hovered, ctx.engine().cloned())
-                            && self.items.get(i).is_some_and(|it| it.is_submenu())
+                            && self.items.get(i).is_some_and(|it| it.is_submenu() && it.enabled)
                         {
                             self.open_submenu(&engine, ctx.surface(), i);
                             if let Some(s) = self.submenu.as_mut() {
-                                s.menu.hovered = Some(0);
+                                s.menu.hovered = s.menu.items.iter().position(|it| it.enabled);
                             }
                         }
                     }
@@ -1386,6 +1433,171 @@ mod tests {
             menu.anim.panel_progress() >= 0.9,
             "稳态关闭第一帧面板进度 {}，不得跳 0",
             menu.anim.panel_progress()
+        );
+    }
+
+    // ── 禁用项与勾选列（菜单手感 / 能力，2026-11-06）────────────────────────────
+
+    /// 含禁用项与级联的菜单：0 普通 / 1 禁用 / 2 带子菜单 / 3 禁用 / 4 普通。
+    fn menu_with_disabled() -> MetroDropdownMenu {
+        MetroDropdownMenu::new(vec![
+            MenuItem::new("复制"),
+            MenuItem::new("粘贴").disabled(),
+            MenuItem::new("排序").with_submenu(vec![
+                MenuItem::new("名称").radio("sort"),
+                MenuItem::new("日期").radio("sort"),
+            ]),
+            MenuItem::new("全选").disabled(),
+            MenuItem::new("属性"),
+        ])
+    }
+
+    #[test]
+    fn keyboard_navigation_skips_disabled_items_and_wraps() {
+        let mut menu = menu_with_disabled();
+        menu.open(Rect::new(0.0, 0.0, 120.0, 160.0));
+        menu.hovered = None;
+        menu.step_hover(1);
+        assert_eq!(menu.hovered, Some(0), "首个可用项");
+        menu.step_hover(1);
+        assert_eq!(menu.hovered, Some(2), "跳过禁用项 1");
+        menu.step_hover(1);
+        assert_eq!(menu.hovered, Some(4), "跳过禁用项 3");
+        menu.step_hover(1);
+        assert_eq!(menu.hovered, Some(0), "到尾后循环回首项");
+        menu.step_hover(-1);
+        assert_eq!(menu.hovered, Some(4), "反向同样跳过禁用项");
+    }
+
+    #[test]
+    fn home_and_end_jump_to_first_and_last_enabled() {
+        let mut menu = menu_with_disabled();
+        menu.open(Rect::new(0.0, 0.0, 120.0, 160.0));
+        menu.hovered = Some(2);
+        menu.hover_edge(true);
+        assert_eq!(menu.hovered, Some(4), "End 到末个可用项");
+        menu.hover_edge(false);
+        assert_eq!(menu.hovered, Some(0), "Home 到首个可用项");
+    }
+
+    #[test]
+    fn hovering_disabled_item_clears_highlight_and_keeps_submenu_closed() {
+        let Some(engine) = find_engine() else { return };
+        let mut menu = menu_with_disabled();
+        menu.open(Rect::new(0.0, 0.0, 120.0, 160.0));
+        let r0 = menu.item_rect(0);
+        menu.hover(&engine, TEST_SCREEN, Point::new(r0.origin.x + 10.0, r0.origin.y + 10.0));
+        assert_eq!(menu.hovered, Some(0));
+        // 扫过禁用项：不留高亮（否则上一项亮着，像是选中了它）
+        let r1 = menu.item_rect(1);
+        let changed = menu.hover(&engine, TEST_SCREEN, Point::new(r1.origin.x + 10.0, r1.origin.y + 10.0));
+        assert!(changed, "悬停语义变化要通知宿主重绘");
+        assert_eq!(menu.hovered, None, "禁用项不亮，且清掉上一项的高亮");
+        assert!(menu.submenu.is_none());
+    }
+
+    #[test]
+    fn disabled_item_does_not_open_its_submenu_on_hover() {
+        let Some(engine) = find_engine() else { return };
+        let mut menu = MetroDropdownMenu::new(vec![
+            MenuItem::new("排序")
+                .with_submenu(vec![MenuItem::new("名称")])
+                .disabled(),
+            MenuItem::new("帮助"),
+        ]);
+        menu.open(Rect::new(0.0, 0.0, 120.0, 64.0));
+        let r0 = menu.item_rect(0);
+        menu.hover(&engine, TEST_SCREEN, Point::new(r0.origin.x + 10.0, r0.origin.y + 10.0));
+        assert!(menu.submenu.is_none(), "禁用项的子菜单不应因悬停展开");
+    }
+
+    #[test]
+    fn check_gutter_only_reserved_when_items_are_checkable() {
+        let Some(engine) = find_engine() else { return };
+        // 标签取长一些，越过面板 120pt 的最小宽度地板 —— 否则两种面板都是 120，量不出差。
+        let long = "按修改时间从新到旧排序";
+        let plain = MetroDropdownMenu::new(vec![MenuItem::new(long), MenuItem::new("属性")]);
+        assert_eq!(plain.check_gutter(), 0.0, "无可勾选项不占列");
+        let with_radio = MetroDropdownMenu::new(vec![
+            MenuItem::new(long).radio("sort"),
+            MenuItem::new("按名称排序").radio("sort"),
+        ]);
+        assert_eq!(with_radio.check_gutter(), MENU_CHECK_GUTTER);
+        // 面板宽度要把它算进去，否则勾画在文字上。
+        let plain_w = plain.panel_size(&engine).width;
+        let radio_w = with_radio.panel_size(&engine).width;
+        assert!(
+            radio_w - plain_w >= MENU_CHECK_GUTTER - 0.5,
+            "勾选列计入面板宽：{radio_w} vs {plain_w}"
+        );
+    }
+
+    #[test]
+    fn checked_item_draws_checkmark_and_labels_share_start_x() {
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
+        let mut menu = MetroDropdownMenu::new(vec![
+            MenuItem::new("名称").radio("sort"),
+            MenuItem::new("日期").radio("sort"),
+        ]);
+        menu.items[0].checked = true;
+        menu.open(Rect::new(0.0, 0.0, 160.0, 64.0));
+        menu.anim.open();
+        let mut scene = Scene::default();
+        menu.render_panel(&theme, &engine, &mut scene);
+
+        let triangles = scene
+            .commands
+            .iter()
+            .filter(|c| matches!(c, kanesumi_canvas::SceneCommand::Triangle { .. }))
+            .count();
+        assert!(triangles >= 4, "勾选标记 = 4 个三角（实得 {triangles}）");
+
+        // 两个标签的左缘必须一致：勾选不改变文字起点。
+        let label_x: Vec<f32> = scene
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                kanesumi_canvas::SceneCommand::Text { rect, content, .. } if content == "名称" || content == "日期" => {
+                    Some(rect.origin.x)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(label_x.len(), 2, "两项文字都画了");
+        assert_eq!(label_x[0], label_x[1], "勾选项与未勾选项文字起点相同");
+    }
+
+    #[test]
+    fn disabled_items_render_dimmed() {
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
+        let mut menu = MetroDropdownMenu::new(vec![
+            MenuItem::new("复制"),
+            MenuItem::new("粘贴").disabled(),
+        ]);
+        menu.open(Rect::new(0.0, 0.0, 160.0, 64.0));
+        menu.anim.open();
+        let mut scene = Scene::default();
+        menu.render_panel(&theme, &engine, &mut scene);
+
+        let alpha_of = |label: &str| {
+            scene
+                .commands
+                .iter()
+                .find_map(|c| match c {
+                    kanesumi_canvas::SceneCommand::Text { content, color, .. } if content == label => {
+                        Some(color.a)
+                    }
+                    _ => None,
+                })
+                .unwrap_or(1.0)
+        };
+        assert_eq!(alpha_of("复制"), 1.0, "可用项不降透明度");
+        let dim = alpha_of("粘贴");
+        assert!(
+            dim < 1.0 && dim > 0.0,
+            "禁用项按 disabled_opacity 降透明度（实得 {dim}）"
         );
     }
 }
