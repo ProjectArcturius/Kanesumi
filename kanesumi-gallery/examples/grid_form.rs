@@ -14,7 +14,7 @@ use kanesumi_controls::{
     MetroTextBox, TextChanged,
 };
 use kanesumi_core::{MetroTheme, ThemeColor};
-use kanesumi_harness::element::widgets::{Border, Grid, Label, Stack};
+use kanesumi_harness::element::widgets::{Border, Grid, Image, Label, Stack};
 use kanesumi_harness::element::{Action, Align, Insets, LayoutProps, Tree, WidgetId};
 use kanesumi_harness::{AppConfig, EtherRole, TreeApp};
 
@@ -134,6 +134,29 @@ impl TreeApp for Form {
         );
         tree.insert(actions, MetroButton::new("取消"));
         tree.insert(actions, MetroButton::accent("保存"));
+
+        // 内容槽（XAML `Button.Content` 对等物）：按钮里放图标 + 文字，不是只能吃一个字符串。
+        // 注意 label 仍要写 —— 它在内容槽模式下是读屏名字。
+        // 资产路径按示例所在 crate 解析：相对 cwd 的路径在别处运行会静默画不出图标。
+        let share_svg = format!("{}/assets/icons/share.svg", env!("CARGO_MANIFEST_DIR"));
+        let share = tree.insert(actions, MetroButton::new("分享设备设置"));
+        let row = tree.insert(share, Stack::row().with_spacing(6.0));
+        tree.insert_with(
+            row,
+            Image::svg(share_svg).size(16.0, 16.0),
+            LayoutProps {
+                v_align: Align::Center,
+                ..LayoutProps::default()
+            },
+        );
+        tree.insert_with(
+            row,
+            Label::new("分享"),
+            LayoutProps {
+                v_align: Align::Center,
+                ..LayoutProps::default()
+            },
+        );
     }
 
     fn on_action(&mut self, tree: &mut Tree, _from: WidgetId, action: Action) {
