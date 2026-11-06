@@ -3556,8 +3556,9 @@ impl Tree {
     /// 无障碍快照：内容树（`root()` 子树）的纯数据镜像（节点结构与契约检查见 `access.rs`）。
     ///
     /// 隐藏节点（含其子树）不出现；先序即树序，同一棵树两次快照逐字段相等。
-    /// 覆盖层上的弹层不在本快照内（菜单族入树后再并入）。文本序列化用
-    /// `AccessNode::to_text`；契约检查见 `access::check_access_contract`。
+    /// **覆盖层上打开的弹层**（菜单 / 对话框 / 提示）按打开顺序追加为根节点的后续子节点；
+    /// 它们与前序内容节点之间不是视觉包含关系，只是「顶层元素」的对等表达。
+    /// 文本序列化用 `AccessNode::to_text`；契约检查见 `access::check_access_contract`。
     /// 参 docs/ELEMENT_TREE.md §Ⅸ、卡面 n1104-e3-controls。
     pub fn access_snapshot(&self) -> crate::access::AccessNode {
         crate::access::snapshot_root(self, self.root)

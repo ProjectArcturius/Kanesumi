@@ -3,7 +3,11 @@
 // `accessibility()`（widget.rs）自 E2 起只定接口、无消费者 —— 本文件是第一个：
 // `Tree::access_snapshot()`（tree.rs 末段的入口）把内容树导出成一份**纯数据**快照，
 // 这是 WinUI UIA 对等物的数据层，也是后续 AccessKit / AT-SPI 桥的唯一输入。
-// 不接 AT-SPI（需新依赖，未授权）。弹层在覆盖层上，不在本快照内（菜单族入树后再并入）。
+// 不接 AT-SPI（需新依赖，未授权）。
+//
+// 覆盖层弹层（菜单族 / 对话框 / 提示）自 n1104 批已入树，故本快照把它们按**打开顺序**
+// 挂在根节点的子节点之后（后开的在更后面 = 更靠上，与绘制次序一致）；这是「顶层元素」
+// 的对等物，不是视觉父子关系 —— AT 侧的父子也与是否视觉包含无关。
 //
 // 契约（框架强制，测试挡住；对应 WinUI AutomationPeer 核心属性，只提取契约）：
 //   1. 可聚焦必有非空角色与名字      —— role ← ControlType，name ← AutomationProperties.Name
@@ -11,6 +15,9 @@
 //   3. 禁用态反映在 state            —— disabled ← !IsEnabledProperty
 //   4. 隐藏元素不出现（走树时剪除，含其子树）
 // 每条契约都有反向自检测试（故意造违例树，断言检查报错），防止检查形同虚设。
+//
+// 命中一致性（契约 2）按 `rect ⊕ paint_overflow` 判：级联子菜单、溢出面板这类
+// **声明过**外扩的控件本就该在自己的声明区域里被命中，拿裸 rect 判会误报。
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -110,6 +117,7 @@ fn role_label(role: Option<AccessRole>) -> &'static str {
         Some(AccessRole::Label) => "Label",
         Some(AccessRole::List) => "List",
         Some(AccessRole::ListItem) => "ListItem",
+        Some(AccessRole::Menu) => "Menu",
         Some(AccessRole::Group) => "Group",
         Some(AccessRole::Other) => "Other",
         None => "-",
@@ -118,10 +126,16 @@ fn role_label(role: Option<AccessRole>) -> &'static str {
 
 // ── 快照 ─────────────────────────────────────────────────────────────────────
 
-/// 从 `root` 导出子树快照。隐藏节点（含其子树）与控件已被取出的节点不出现；
-/// 先序即树序，同一棵树两次快照逐字段相等。
+/// 从 `root` 导出子树快照，并把覆盖层上打开的弹层按打开顺序追加为根节点的后续子节点。
+/// 隐藏节点（含其子树）与控件已被取出的节点不出现；先序即树序，同一棵树两次快照逐字段相等。
 pub(crate) fn snapshot_root(tree: &Tree, root: WidgetId) -> AccessNode {
-    walk(tree, root)
+    let mut snap = walk(tree, root);
+    for popup in tree.popups() {
+        if tree.is_visible(popup) && tree.access_widget(popup).is_some() {
+            snap.children.push(walk(tree, popup));
+        }
+    }
+    snap
 }
 
 fn walk(tree: &Tree, id: WidgetId) -> AccessNode {
@@ -229,11 +243,11 @@ fn visit_named(n: &AccessNode, out: &mut Vec<AccessViolation>) {
 
 /// 契约二：报告 bounds 与命中区一致。
 ///
-/// 两层校验：
-/// - 节点级：`Widget::hit_test` 不得接受 bounds 外的点（对照 `assert_no_hit_outside`
+/// 两层校验（两层都按 `bounds ⊕ paint_overflow` 判，见 [`hit_area`]）：
+/// - 节点级：`Widget::hit_test` 不得接受声明区外的点（对照 `assert_no_hit_outside`
 ///   的 1px 外圈采样，直接调控件自己的 hit_test）；
 /// - 树级：以 24px 网格采样表面，`Tree::hit` 的结果若在快照内，命中点必须落在其
-///   报告 bounds 中（命中与快照同帧几何）。不在快照内的命中结果（覆盖层弹层）跳过。
+///   报告范围内（命中与快照同帧几何）。不在快照内的命中结果（遮罩等框架自绘）跳过。
 pub fn check_bounds_hit(tree: &Tree, root: &AccessNode) -> Vec<AccessViolation> {
     let mut out = Vec::new();
     visit_hit(tree, root, &mut out);
@@ -248,7 +262,7 @@ pub fn check_bounds_hit(tree: &Tree, root: &AccessNode) -> Vec<AccessViolation> 
         while y < s.bottom() {
             if let Some(h) = tree.hit(Point::new(x, y))
                 && let Some(node) = index.get(&h.to_u64())
-                && !node.bounds.contains(Point::new(x, y))
+                && !hit_area(tree, &h, node).contains(Point::new(x, y))
             {
                 out.push(AccessViolation {
                     id: h,
@@ -263,10 +277,29 @@ pub fn check_bounds_hit(tree: &Tree, root: &AccessNode) -> Vec<AccessViolation> 
     out
 }
 
+/// 控件允许被命中的报告范围 = 快照 bounds ⊕ 控件声明的 `paint_overflow`。
+///
+/// 级联子菜单、被折叠层级的溢出面板这类内容**本就在**自身矩形之外（`hit_test` 一并命中，
+/// `paint_overflow` 也一并声明、`assert_paint_within` 同样放行）；拿裸 bounds 判命中一致性
+/// 只会把正确实现判成违例。未声明外扩的控件退化为裸 bounds，判定不变。
+fn hit_area(tree: &Tree, id: &WidgetId, node: &AccessNode) -> Rect {
+    match tree.access_widget(*id) {
+        Some(w) => w.paint_overflow().inflate(node.bounds),
+        None => node.bounds,
+    }
+}
+
 fn visit_hit(tree: &Tree, n: &AccessNode, out: &mut Vec<AccessViolation>) {
     if let Some(w) = tree.access_widget(n.id) {
         let b = n.bounds;
-        let (x0, y0, x1, y1) = (b.origin.x - 1.0, b.origin.y - 1.0, b.right() + 1.0, b.bottom() + 1.0);
+        // 外 1px 的探针只在**声明区之外**才算违例（声明区内的命中是正确的）。
+        let area = hit_area(tree, &n.id, n);
+        let (x0, y0, x1, y1) = (
+            b.origin.x - 1.0,
+            b.origin.y - 1.0,
+            b.right() + 1.0,
+            b.bottom() + 1.0,
+        );
         let (cx, cy) = (b.center().x, b.center().y);
         for p in [
             Point::new(x0, cy),
@@ -278,6 +311,9 @@ fn visit_hit(tree: &Tree, n: &AccessNode, out: &mut Vec<AccessViolation>) {
             Point::new(x0, y1),
             Point::new(x1, y1),
         ] {
+            if area.contains(p) {
+                continue;
+            }
             if w.hit_test(b, p) {
                 out.push(AccessViolation {
                     id: n.id,
@@ -692,5 +728,148 @@ mod tests {
     fn harness_assert_passes_on_wellformed_tree() {
         let (h, _, _) = harness();
         h.assert_access_contract();
+    }
+
+    // ── 覆盖层弹层入快照（菜单族无障碍的地基）──────────────────────────────────
+
+    /// 从根上摘下弹层节点（弹层的父是覆盖层，不是内容根）。
+    fn popup_children(snap: &AccessNode, root_count: usize) -> &[AccessNode] {
+        &snap.children[root_count..]
+    }
+
+    #[test]
+    fn popup_nodes_join_snapshot_after_content_in_open_order() {
+        let (mut h, a, _) = harness();
+        let content_children = h.tree.access_snapshot().children.len();
+        let first = h.tree.open_popup(
+            Probe::named(AccessRole::Menu, "菜单", Size::new(120.0, 80.0)),
+            crate::PopupSpec::default(),
+        );
+        h.frame();
+        let second = h.tree.open_popup(
+            Probe::named(AccessRole::Menu, "菜单", Size::new(120.0, 80.0)),
+            crate::PopupSpec::default(),
+        );
+        h.frame();
+        let snap = h.tree.access_snapshot();
+
+        let pops = popup_children(&snap, content_children);
+        assert_eq!(
+            pops.iter().map(|n| n.id).collect::<Vec<_>>(),
+            vec![first, second],
+            "弹层按打开顺序追加在内容节点之后（后开的更靠上）"
+        );
+        let node = snap.find(first).expect("弹层在快照内");
+        assert_eq!(node.role, Some(AccessRole::Menu));
+        assert_eq!(node.name.as_deref(), Some("菜单"));
+        // 内容树部分不受影响：探针 A 仍在原位置。
+        assert!(snap.find(a).is_some());
+    }
+
+    #[test]
+    fn closed_popup_leaves_snapshot() {
+        let (mut h, _, _) = harness();
+        let content_children = h.tree.access_snapshot().children.len();
+        let popup = h.tree.open_popup(
+            Probe::named(AccessRole::Menu, "菜单", Size::new(100.0, 60.0)),
+            crate::PopupSpec::default(),
+        );
+        h.frame();
+        assert!(h.tree.access_snapshot().find(popup).is_some(), "打开后在快照内");
+        h.tree.close_popup(popup);
+        h.frame();
+        let snap = h.tree.access_snapshot();
+        assert!(snap.find(popup).is_none(), "关闭后离开快照");
+        assert!(popup_children(&snap, content_children).is_empty());
+    }
+
+    /// 命中一致性按 `bounds ⊕ paint_overflow` 判：声明区内的命中不是违例。
+    struct OverflowProbe {
+        overflow: Insets,
+        /// 命中范围比声明区更大 → 仍然违例（防止「允许外扩」退化成「什么都能命中」）。
+        hit_beyond: bool,
+        info: AccessInfo,
+    }
+
+    impl Widget for OverflowProbe {
+        fn measure(&mut self, _ctx: &mut MeasureCtx, _available: Size) -> Size {
+            Size::new(40.0, 20.0)
+        }
+        fn paint(&mut self, _ctx: &mut PaintCtx, _scene: &mut Scene) {}
+        fn focusable(&self) -> bool {
+            true
+        }
+        fn hit_test(&self, rect: Rect, pos: Point) -> bool {
+            let area = self.overflow.inflate(rect);
+            if self.hit_beyond {
+                // 声明区外再越 20pt：必须被抓。
+                self.overflow
+                    .inflate(Insets::all(20.0).inflate(rect))
+                    .contains(pos)
+            } else {
+                area.contains(pos)
+            }
+        }
+        fn paint_overflow(&self) -> Insets {
+            self.overflow
+        }
+        fn accessibility(&self) -> Option<AccessInfo> {
+            Some(self.info.clone())
+        }
+    }
+
+    fn overflow_harness(overflow: Insets, hit_beyond: bool) -> (TestHarness, crate::id::WidgetId) {
+        let mut h = TestHarness::new(200.0, 120.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            OverflowProbe {
+                overflow,
+                hit_beyond,
+                info: AccessInfo {
+                    role: AccessRole::Menu,
+                    name: "级联".into(),
+                    value: None,
+                    checked: None,
+                },
+            },
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    #[test]
+    fn declared_overflow_hit_is_not_a_contract_violation() {
+        let (h, id) = overflow_harness(Insets::new(0.0, 0.0, 60.0, 0.0), false);
+        let snap = h.tree.access_snapshot();
+        let vs = check_access_contract(&h.tree, &snap);
+        assert!(vs.is_empty(), "声明过外扩的命中不算越界：{vs:?}");
+        // 溢出区确实可命中（否则这条契约就没被真正检验）。
+        let b = snap.find(id).unwrap().bounds;
+        assert_eq!(
+            h.tree.hit(Point::new(b.right() + 30.0, b.center().y)),
+            Some(id),
+            "声明区内的点命中该控件"
+        );
+    }
+
+    #[test]
+    fn hit_beyond_declared_overflow_is_still_flagged() {
+        let (h, id) = overflow_harness(Insets::new(0.0, 0.0, 60.0, 0.0), true);
+        let snap = h.tree.access_snapshot();
+        let kinds: Vec<_> = check_bounds_hit(&h.tree, &snap)
+            .into_iter()
+            .filter(|v| v.id == id)
+            .map(|v| v.kind)
+            .collect();
+        assert!(
+            kinds.contains(&AccessViolationKind::HitOutsideBounds)
+                || kinds.contains(&AccessViolationKind::HitResultOutsideBounds),
+            "超出声明区的命中仍要报违例：{kinds:?}"
+        );
     }
 }
