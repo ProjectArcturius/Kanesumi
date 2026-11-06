@@ -3103,10 +3103,15 @@ impl Shell {
     }
 
     /// 应用新缩放：重配渲染器物理尺寸 + buffer_scale。
+    ///
+    /// 无 `wp_viewport` 的表面只能经整数 `buffer_scale` 通报倍率，故其**光栅倍率必须
+    /// 等于通报值**（分数向上取整）。若按 1.5 光栅却通报 2，合成器会把内容当 2 倍缩半 →
+    /// 尺寸错 25% 且整体发糊（2026-11-06 E495 实机现象）。根因与修法参 docs/HIDPI_PLAN.md §Ⅰ。
     fn apply_scale(&mut self, scale: f32) {
         if scale <= 0.0 || !scale.is_finite() {
             return;
         }
+        let scale = effective_raster_scale(scale, self.viewport.is_some());
         self.scale = scale;
         // 图标等应用侧预光栅资产按此缩放出物理像素（参 kanesumi-canvas scale 模块）。
         set_surface_scale(scale);
@@ -3136,6 +3141,9 @@ impl Shell {
         if let Some(popup) = self.im_popup.as_mut()
             && popup.surface == *surface
         {
+            // 候选窗没有 wp_viewport（input-method popup 只走整数 buffer_scale），
+            // 按整数倍率光栅，避免 1.5× 下候选文字被缩糊。
+            let scale = effective_raster_scale(scale, false);
             popup.surface.set_buffer_scale(scale.round().max(1.0) as i32);
             if let Some(cpu) = popup.cpu.as_mut() {
                 cpu.resize(popup.width, popup.height, scale);
@@ -3150,6 +3158,7 @@ impl Shell {
             return;
         };
         let floating = &mut self.floating[index];
+        let scale = effective_raster_scale(scale, floating.viewport.is_some());
         floating.scale = scale;
         set_surface_scale(scale);
         if let Some(viewport) = floating.viewport.as_ref() {
@@ -4507,6 +4516,23 @@ fn repeat_trace_len(text: &str) -> Option<usize> {
     (!text.is_empty() && text.bytes().all(|byte| byte == b'a')).then_some(text.len())
 }
 
+/// 一个表面的**有效光栅倍率**：有 viewport 就按真实倍率原生出图（1.5× 就按 1.5 光栅），
+/// 没有 viewport 就只能按 `buffer_scale` 的整数倍率出图（1.5 → 2）。
+///
+/// 为什么必须区分：合成器按 `buf 尺寸 / buffer_scale` 反推逻辑尺寸。分数倍率下若按 1.5
+/// 光栅却通报 2，逻辑尺寸只剩 0.75 倍 —— 错位与发糊同时出现（2026-11-06 E495）。
+/// 参 docs/HIDPI_PLAN.md §Ⅰ、裁定 §148。
+fn effective_raster_scale(scale: f32, has_viewport: bool) -> f32 {
+    if !scale.is_finite() || scale <= 0.0 {
+        return 1.0;
+    }
+    if has_viewport || scale <= 1.0 {
+        scale
+    } else {
+        scale.ceil()
+    }
+}
+
 impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Shell {
     fn event(
         state: &mut Self,
@@ -5372,6 +5398,20 @@ impl Dispatch<wl_buffer::WlBuffer, ()> for Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 有效光栅倍率：有 viewport 走真实倍率，没有就向上取整（协议只能报整数）。
+    /// 参 docs/HIDPI_PLAN.md §Ⅰ、裁定 §148。
+    #[test]
+    fn raster_scale_matches_buffer_scale_without_viewport() {
+        assert_eq!(effective_raster_scale(1.5, true), 1.5, "有 viewport 原生 1.5×");
+        assert_eq!(effective_raster_scale(1.5, false), 2.0, "无 viewport 必须按 2 光栅");
+        assert_eq!(effective_raster_scale(2.0, false), 2.0);
+        assert_eq!(effective_raster_scale(1.0, false), 1.0);
+        assert_eq!(effective_raster_scale(1.25, false), 2.0);
+        // 坏值不得放大缓冲。
+        assert_eq!(effective_raster_scale(0.0, true), 1.0);
+        assert_eq!(effective_raster_scale(f32::NAN, true), 1.0);
+    }
 
     #[test]
     fn sparse_initial_write_uses_zeroes_but_never_trusts_an_old_slot() {

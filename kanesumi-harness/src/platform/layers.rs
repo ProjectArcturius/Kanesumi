@@ -17,6 +17,21 @@ use crate::layers::{BackdropTarget, LayerCommand, LayerEvent, LayerId, LayerPare
 
 // ── 协议客户端绑定（与 Ether compositor/protocol/ether-composition-v1.xml 同一份）──
 
+/// 子表面的有效光栅倍率。
+///
+/// 子表面只能经 `wl_surface.set_buffer_scale`（整数）通报倍率，没有 `wp_viewport` 可用；
+/// 因此「光栅倍率」必须等于「通报倍率」，分数倍率一律向上取整（1.5 → 2）。
+/// 反例（2026-11-06 E495 实机）：按 1.5 光栅却通报 2 → 合成器把 1.5 的内容当 2 倍缩半，
+/// 图层整体缩小 25% 且边缘发糊，表现为「到处错位」。
+/// 参 docs/HIDPI_PLAN.md §Ⅰ、裁定 §148。
+fn subsurface_raster_scale(scale: f32) -> f32 {
+    if scale.is_finite() && scale > 1.0 {
+        scale.ceil()
+    } else {
+        1.0
+    }
+}
+
 pub mod proto {
     use wayland_client;
     use wayland_client::protocol::*;
@@ -315,6 +330,10 @@ impl Shell {
                 }
             },
         };
+        // 子表面没有 wp_viewport，只能靠 buffer_scale（整数）通报倍率 —— 光栅倍率必须
+        // 等于通报值，否则 1.5× 下按 1.5 光栅却通报 2，合成器再缩 0.75，整片错位兼发糊。
+        // 参 docs/HIDPI_PLAN.md §Ⅰ、裁定 §148。
+        let scale = subsurface_raster_scale(scale);
         let (subsurface, surface) = sub.create_subsurface(parent_surface.clone(), qh);
         // desync：图层自己的 commit 立即生效（内容只交一次，动画请求不必等父表面提交）。
         subsurface.set_desync();
@@ -388,6 +407,8 @@ impl Shell {
                 None => return,
             },
         };
+        // 同上：滚动器子表面无 viewport，光栅倍率与 buffer_scale 必须同为整数。
+        let scale = subsurface_raster_scale(scale);
         let (subsurface, surface) = sub.create_subsurface(parent_surface.clone(), qh);
         // desync：滚动器的 set_viewport / set_realized 双缓冲随本表面 commit 原子生效。
         subsurface.set_desync();
