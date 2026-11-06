@@ -445,12 +445,32 @@ pub trait TreeApp {
 2. 报告 bounds 与命中区一致（`hit_test` 不得接受 bounds 外的点；树命中结果必须落在
    报告 bounds 内 —— 同时充当快照过期检测）；
 3. 禁用态反映在快照（祖先禁用传递，同 `ControlStates::disabled`）；
-4. 隐藏元素不出现。
+4. 隐藏元素不出现；
+5. **合成项**（见 §Ⅸ-2）必须有名字，且落在宿主可交互范围（`bounds ⊕ paint_overflow`）内 ——
+   读屏点到的地方必须真能点到。
 
 每条契约都有反向自检测试（故意造违例树断言检查报错）。对照 WinUI AutomationPeer
 核心属性（ControlType / AutomationProperties.Name / Toggle / ExpandCollapse /
 SelectionItem / IsEnabled / BoundingRectangle / IsOffscreen），只提取契约不复制代码。
 gallery 的 `examples/access_snapshot.rs` 命令行打印快照供人工核对。
+
+### §Ⅸ-2 合成项（2026-11-06，菜单条目级无障碍）
+
+菜单 / 列表把几十行画在**一个**框架节点里，它们不是树的子节点 —— 但读屏必须能逐条枚举。
+WinUI 的做法也是给虚拟化项合成 AutomationPeer，而不是给每一行建框架元素；我们照抄这个契约，
+不照抄它的实现。
+
+- `Widget::access_items(&self, rect) -> Vec<AccessItem>`（默认空）：控件把自己矩形里的行报成
+  AT 子元素。`AccessItem { role, name, value, checked, bounds, disabled, children }`
+  —— `children` 用于级联（子菜单条目挂在父项之下，不摊平到一级）。
+- 快照里落在宿主节点的 `items` 上，`AccessNode::to_text()` 以 `#序号` 打印；
+  `AccessNode::find_item(name)` 供测试与诊断。
+- 合成项**不参与**命中 / 焦点 / 布局（几何由控件自己算并原样上报），框架只校验契约 5。
+- 角色：`AccessRole::MenuItem`（UIA `ControlType.MenuItem`）。
+- 现在菜单的每条命令都有自己的角色、名字、勾选态、禁用态与快捷键（`value`）。
+
+仍未做：**每条命令还不是框架节点**（不能单独聚焦 / 单独参与 Tab 或命中路由）；AT-SPI 桥
+（需新依赖，未授权）。两者都不影响读屏枚举，只影响「把菜单当普通控件树操作」的场景。
 
 ## §Ⅹ 实施分期与分工
 
