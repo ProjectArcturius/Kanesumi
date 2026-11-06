@@ -9,11 +9,15 @@
 // 可选位置参数把同一份文本写入文件。顺带跑 `check_access_contract`：
 // 契约违例非空时以非零码退出（正常页面应零违例）。
 
-use kanesumi_controls::{MetroButton, MetroCheckBox, MetroSlider, MetroText, MetroTextBox};
+use kanesumi_controls::{
+    MenuItem, MetroButton, MetroCheckBox, MetroDropdownMenu, MetroList, MetroSlider, MetroText,
+    MetroTextBox,
+};
 use kanesumi_core::{Color, ThemeColor};
 use kanesumi_harness::element::check_access_contract;
 use kanesumi_harness::element::props::{Align, Insets, LayoutProps};
 use kanesumi_harness::element::testing::TestHarness;
+use kanesumi_harness::element::PopupSpec;
 use kanesumi_harness::element::widgets::{Border, Stack};
 
 fn main() {
@@ -50,6 +54,22 @@ fn main() {
     );
     h.frame();
 
+    // 列表：可见行是**合成项**（`ListItem`），读屏靠它逐行读。
+    h.tree.insert_with(
+        col,
+        MetroList::new(vec![
+            "第一行".into(),
+            "第二行".into(),
+            "第三行".into(),
+        ]),
+        LayoutProps {
+            width: Some(280.0),
+            height: Some(120.0),
+            ..start
+        },
+    );
+    h.frame();
+
     let snap = h.tree.access_snapshot();
     let text = snap.to_text();
     print!("{text}");
@@ -57,6 +77,22 @@ fn main() {
         std::fs::write(&path, &text).unwrap_or_else(|e| panic!("写 {path} 失败: {e}"));
         println!("-- 已写入 {path}");
     }
+
+    // 菜单：条目同样是合成项（`MenuItem`），级联子菜单挂在父项之下。
+    h.tree.open_popup(
+        MetroDropdownMenu::new(vec![
+            MenuItem::new("复制").with_shortcut("Ctrl+C"),
+            MenuItem::new("粘贴").disabled(),
+            MenuItem::new("排序").with_submenu(vec![
+                MenuItem::new("名称").radio("sort"),
+                MenuItem::new("日期").radio("sort"),
+            ]),
+        ]),
+        PopupSpec::default(),
+    );
+    h.frame();
+    println!("-- 菜单打开后的快照（合成项以 #序号 打印、每层缩进）：");
+    print!("{}", h.tree.access_snapshot().to_text());
 
     let vs = check_access_contract(&h.tree, &snap);
     if vs.is_empty() {
