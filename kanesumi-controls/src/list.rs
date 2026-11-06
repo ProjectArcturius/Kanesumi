@@ -307,10 +307,15 @@ impl kanesumi_element::Widget for MetroList {
             .filter_map(|i| {
                 let name = self.rows.get(i)?;
                 let y = rect.origin.y - self.scroll + i as f32 * row_h;
+                // 视口边缘的半行：bounds 取与列表矩形的交集（读屏读的是看得见的那段）。
+                // 不裁会直接违反契约 5「合成项须在宿主范围内」——
+                // 这个洞是 `access_snapshot` 示例跑出来的：列表声明高 120、实际只分到 94，
+                // 第三行整行越界。
+                let bounds = Rect::new(rect.origin.x, y, rect.size.width, row_h).intersect(rect)?;
                 let mut item = kanesumi_element::AccessItem::new(
                     kanesumi_element::AccessRole::ListItem,
                     name.clone(),
-                    Rect::new(rect.origin.x, y, rect.size.width, row_h),
+                    bounds,
                 );
                 item.selected = Some(self.selected == Some(i));
                 item.disabled = self.disabled;
@@ -772,6 +777,33 @@ mod tests {
         h.assert_access_contract();
     }
 
+    /// 视口边缘的半行：合成项 bounds 必须裁到列表矩形内（契约 5）。
+    ///
+    /// 这条是 `access_snapshot` 示例跑出来的：列表声明高 120、实际只分到 94，
+    /// 第三行整行越界 → 契约当场报违例。断言里刻意用「不整除」的高度。
+    #[test]
+    fn access_items_clip_partial_rows_at_viewport_edge() {
+        let (h, id) = list_harness(3, 94.344826);
+        let snap = h.access_snapshot();
+        let node = snap.find(id).expect("列表在快照内");
+        assert_eq!(node.items.len(), 3, "三行都在视口内（最后一行只露一部分）");
+        for item in &node.items {
+            assert!(
+                item.bounds.origin.y >= node.bounds.origin.y - 0.5
+                    && item.bounds.bottom() <= node.bounds.bottom() + 0.5,
+                "合成项裁到列表矩形内：{} {:?} ⊄ {:?}",
+                item.name,
+                item.bounds,
+                node.bounds
+            );
+        }
+        assert!(
+            node.items[2].bounds.size.height < 40.0,
+            "第三行只剩可见那段：{:?}",
+            node.items[2].bounds
+        );
+        h.assert_access_contract();
+    }
     /// 滚动后上报的行随视口改变，且选中行带 selected=true。
     #[test]
     fn access_items_follow_scroll_and_selection() {
