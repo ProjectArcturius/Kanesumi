@@ -226,6 +226,11 @@ impl Widget for MetroContextMenu {
         Widget::focus_visual(&self.menu)
     }
 
+    /// 无障碍：右键菜单的面板与下拉菜单同构，整体委托（角色 / 名字 / 当前项同源）。
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Widget::accessibility(&self.menu)
+    }
+
     fn hit_test(
         &self,
         rect: Rect,
@@ -400,6 +405,16 @@ mod tree_tests {
         }
         fn focusable(&self) -> bool {
             true
+        }
+        /// 夹具也是「真实的可聚焦控件」：整树无障碍契约要求可聚焦元件有角色与名字，
+        /// 夹具缺这两项会让契约断言红在夹具上，掩盖产品件的真实违例。
+        fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+            Some(kanesumi_element::AccessInfo {
+                role: kanesumi_element::AccessRole::Button,
+                name: "右键目标".to_string(),
+                value: None,
+                checked: None,
+            })
         }
     }
 
@@ -578,5 +593,20 @@ mod tree_tests {
         h.assert_paint_within(p, ov);
         h.assert_no_hit_outside(p);
         h.assert_contained();
+    }
+
+    /// 无障碍（E6）：右键菜单入快照后报告 `Menu` 角色与非空名字，打开态契约成立。
+    #[test]
+    fn access_snapshot_reports_menu_role() {
+        use kanesumi_element::AccessRole;
+        let (mut h, target) = harness();
+        right_click(&mut h, target);
+        let p = popup(&h);
+        let snap = h.access_snapshot();
+        let node = snap.find(p).expect("右键菜单在无障碍快照内");
+        assert_eq!(node.role, Some(AccessRole::Menu));
+        assert_eq!(node.name.as_deref(), Some("菜单"), "名字是类型名级落点");
+        assert!(node.focusable);
+        h.assert_access_contract();
     }
 }

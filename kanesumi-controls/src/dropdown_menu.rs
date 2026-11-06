@@ -6,11 +6,17 @@ use kanesumi_core::sizes::ICON_12;
 use kanesumi_core::{MetroTheme, Point, Rect, Size, TextStyle, TextVAlign};
 
 use kanesumi_element::{
-    ArrangeCtx, Event, EventCtx, Insets, Key, MeasureCtx, PaintCtx, PointerButton, UpdateCtx,
-    Widget,
+    AccessInfo, AccessRole, ArrangeCtx, Event, EventCtx, Insets, Key, MeasureCtx, PaintCtx,
+    PointerButton, UpdateCtx, Widget,
 };
 
 use crate::popup::{PopupAnim, PopupState, place_submenu, popup_gap, render_overlay, snap_edge};
+
+/// 菜单面板的无障碍名字（菜单自身没有标题，AT 需要**类型名级**的落点）。
+///
+/// 不取第一项标签当名字：菜单被 AT 读成「新建，菜单」会把条目错当控件名，
+/// 而条目在第一期还只是面板内绘制的内容（见 `access.rs` 头注）。
+pub(crate) const MENU_ACCESS_NAME: &str = "菜单";
 
 /// 留白式分组间距（逻辑 pt）：以空白表达组间分界，**不画线**。
 /// 参 docs/DECISIONS_2026-10-05.md §100（TopBar 不要分割线，分组改用留白）。
@@ -874,6 +880,21 @@ impl Widget for MetroDropdownMenu {
         false
     }
 
+    /// 无障碍：角色 `Menu`；名字用类型名级落点（[`MENU_ACCESS_NAME`]）；
+    /// 当前项（悬停 / 键盘预选）放 `value` —— 条目还不是独立节点，这是唯一能让
+    /// 读屏播报「现在停在哪个命令」的通道。参 `access.rs` 头注。
+    fn accessibility(&self) -> Option<AccessInfo> {
+        Some(AccessInfo {
+            role: AccessRole::Menu,
+            name: MENU_ACCESS_NAME.to_string(),
+            value: self
+                .hovered
+                .and_then(|i| self.items.get(i))
+                .map(|it| it.label.clone()),
+            checked: None,
+        })
+    }
+
     fn hit_test(&self, rect: Rect, pos: Point) -> bool {
         rect.contains(pos)
             || self
@@ -1325,6 +1346,28 @@ mod tests {
             );
         }
         kanesumi_canvas::set_surface_scale(1.0);
+    }
+
+    /// 无障碍（E6）：菜单面板报告 `Menu` 角色、类型名级名字与当前项；打开态下契约成立。
+    #[test]
+    fn accessibility_reports_menu_role_and_current_item() {
+        use kanesumi_element::testing::TestHarness;
+        use kanesumi_element::{AccessRole as Role, PopupSpec};
+
+        let mut h = TestHarness::new(420.0, 300.0);
+        let mut menu = MetroDropdownMenu::new(vec![MenuItem::new("新建"), MenuItem::new("打开")]);
+        menu.anim.open();
+        menu.hovered = Some(1);
+        let id = h.tree.open_popup(menu, PopupSpec::default());
+        h.frame();
+
+        let snap = h.access_snapshot();
+        let node = snap.find(id).expect("菜单弹层在快照内");
+        assert_eq!(node.role, Some(Role::Menu));
+        assert_eq!(node.name.as_deref(), Some(MENU_ACCESS_NAME));
+        assert_eq!(node.value.as_deref(), Some("打开"), "当前项放 value");
+        assert!(node.focusable, "菜单接收键盘，可聚焦");
+        h.assert_access_contract();
     }
 
     /// RM-1028-5 回归（k-framework-fix1 消费方 1/3）：走真实控件对象，稳态开后关闭，

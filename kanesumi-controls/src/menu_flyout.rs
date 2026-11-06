@@ -120,6 +120,11 @@ impl Widget for MenuFlyout {
         Widget::focus_visual(&self.menu)
     }
 
+    /// 无障碍：菜单弹层本体即面板，整体委托（角色 `Menu` / 名字 / 当前项同源）。
+    fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+        Widget::accessibility(&self.menu)
+    }
+
     fn hit_test(&self, rect: Rect, pos: Point) -> bool {
         Widget::hit_test(&self.menu, rect, pos)
     }
@@ -165,6 +170,16 @@ mod tests {
         }
         fn focusable(&self) -> bool {
             true
+        }
+        /// 夹具也是「真实的可聚焦控件」：整树无障碍契约要求可聚焦元件有角色与名字，
+        /// 夹具缺这两项会让契约断言红在夹具上，掩盖产品件的真实违例。
+        fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+            Some(kanesumi_element::AccessInfo {
+                role: kanesumi_element::AccessRole::Button,
+                name: "打开菜单".to_string(),
+                value: None,
+                checked: None,
+            })
         }
     }
 
@@ -271,5 +286,20 @@ mod tests {
         assert_eq!(h.tree.hit(sub.center()), Some(p), "子菜单区域命中菜单弹层");
         let ov = h.tree.get::<MenuFlyout>(p).unwrap().paint_overflow();
         h.assert_paint_within(p, ov);
+    }
+
+    /// 无障碍（E6）：菜单弹层入快照后报告 `Menu` 角色与非空名字，打开态契约成立。
+    #[test]
+    fn access_snapshot_reports_menu_role() {
+        use kanesumi_element::AccessRole;
+        let (mut h, owner) = harness();
+        h.click(owner);
+        let p = popup(&h);
+        let snap = h.access_snapshot();
+        let node = snap.find(p).expect("菜单弹层在无障碍快照内");
+        assert_eq!(node.role, Some(AccessRole::Menu));
+        assert_eq!(node.name.as_deref(), Some("菜单"), "名字是类型名级落点");
+        assert!(node.focusable);
+        h.assert_access_contract();
     }
 }
