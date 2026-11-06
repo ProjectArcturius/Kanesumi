@@ -317,6 +317,17 @@
 | 按钮区 | 四列网格 `Stretch \| 0.5* \| 0.5* \| Stretch`：Primary / Secondary / Close |
 | 背景 | Metro 时代纯色 chrome（`BackgroundChromeMediumLow`）；边框 `BaseLow` 1px |
 
+### 内容槽与按钮（2026-11-06）
+
+- **内容 = 任意元素**（`ContentDialog.Content`）：对话框节点下有子节点时，子节点占据**内容区**
+  （标题之下、按钮行之上的矩形，`MetroDialog::content_area`），文本正文不再绘制；
+  盒体高度按内容自适应并夹在 **184..756**（无子节点时沿用固定 240 的纯文本对话框）。
+  内容区矩形由文本与子树共用同一个函数 —— 两种对话框的正文起点不得差几像素。
+- **按钮布局只有一处实现**（`button_layout`）：渲染、命中、无障碍三处共用，从右往左紧挨着排，
+  只有已配置的按钮占位（缺 Secondary 时 Close 与 Primary 相邻）。
+- **无障碍**：三个按钮报成 `Button` 合成项（默认按钮名字后缀「（默认）」）；按钮仍是控件自绘、
+  不是框架节点，所以 Tab 走到不了它们（做成真节点要动焦点陷阱与 Enter 语义，另开卡）。
+
 ### 遮罩（scrim）
 - 整个 `LayoutRoot`（含遮罩）背景 = `SystemControlPageBackgroundMediumAltMediumBrush`（OS）
 - 经典遗留：`ContentDialogDimmingThemeBrush` = **#99FFFFFF**（白 60% 遮罩）→ 无 Acrylic 时用它
