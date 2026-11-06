@@ -479,6 +479,24 @@ impl EventCtx<'_> {
     pub fn close_popup(&mut self, popup: WidgetId) {
         self.tree.close_popup(popup);
     }
+
+    /// 在**任意节点**下挂子节点（典型：刚 `open_popup` 打开的对话框里塞内容）。
+    ///
+    /// 有了它，「打开弹层 + 填内容」可以一次写完，不必回到外壳层去拿可变引用 ——
+    /// 应用侧不该为了放一个输入框而先 `host.parts_mut()`。
+    pub fn insert_child(&mut self, parent: WidgetId, widget: impl Widget) -> WidgetId {
+        self.tree.insert(parent, widget)
+    }
+
+    /// 同上，带框架布局属性。
+    pub fn insert_child_with(
+        &mut self,
+        parent: WidgetId,
+        widget: impl Widget,
+        props: LayoutProps,
+    ) -> WidgetId {
+        self.tree.insert_with(parent, widget, props)
+    }
     /// 修改**另一个**节点（典型：输入框在键入时更新它打开的建议弹层）。语义同 `Tree::edit`。
     /// 目标是自身（回调期间已被取出）或不存在 / 类型不符时返回 None。
     pub fn edit<T: Widget, R>(
