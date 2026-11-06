@@ -928,8 +928,8 @@ impl Widget for MetroDropdownMenu {
     }
 
     /// 无障碍：角色 `Menu`；名字用类型名级落点（[`MENU_ACCESS_NAME`]）；
-    /// 当前项（悬停 / 键盘预选）放 `value` —— 条目还不是独立节点，这是唯一能让
-    /// 读屏播报「现在停在哪个命令」的通道。参 `access.rs` 头注。
+    /// 当前项（悬停 / 键盘预选）放 `value` —— 条目在快照里是**合成项**（见 `access_items`），
+    /// 播报「停在哪个命令」还要靠这一档。
     fn accessibility(&self) -> Option<AccessInfo> {
         Some(AccessInfo {
             role: AccessRole::Menu,
@@ -940,6 +940,55 @@ impl Widget for MetroDropdownMenu {
                 .map(|it| it.label.clone()),
             checked: None,
         })
+    }
+
+    /// 无障碍合成项：把每一行菜单命令报成 AT 子元素（UIA 的「项 Peer」）。
+    ///
+    /// 菜单把几十行画在**一个**框架节点里，读屏要能逐条枚举命令、逐条读名字与勾选态，
+    /// 只能由控件自己上报。级联子菜单的条目挂在父项之下（`children`），不摊平 ——
+    /// 摊平会让读屏以为「名称」是一级命令。
+    fn access_items(&self, rect: Rect) -> Vec<kanesumi_element::AccessItem> {
+        let _ = rect;
+        self.items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                let mut node =
+                    kanesumi_element::AccessItem::new(AccessRole::MenuItem, item.label.clone(), self.item_rect(i));
+                // 快捷键读出来（UIA 的 AcceleratorKey 语义）：只有键名，不注册。
+                node.value = item.shortcut.clone();
+                node.checked = (item.checked || item.radio_group.is_some()).then_some(item.checked);
+                node.disabled = !item.enabled;
+                // 子菜单已展开时，把它的条目挂在父项之下。
+                if let Some(sub) = self.submenu.as_ref().filter(|s| s.parent == i) {
+                    node.children = sub
+                        .menu
+                        .items
+                        .iter()
+                        .enumerate()
+                        .map(|(k, child)| {
+                            let r = Rect::new(
+                                sub.panel.origin.x,
+                                sub.panel.origin.y + k as f32 * self.item_height,
+                                sub.panel.size.width,
+                                self.item_height,
+                            );
+                            let mut c = kanesumi_element::AccessItem::new(
+                                AccessRole::MenuItem,
+                                child.label.clone(),
+                                r,
+                            );
+                            c.value = child.shortcut.clone();
+                            c.checked = (child.checked || child.radio_group.is_some())
+                                .then_some(child.checked);
+                            c.disabled = !child.enabled;
+                            c
+                        })
+                        .collect();
+                }
+                node
+            })
+            .collect()
     }
 
     fn hit_test(&self, rect: Rect, pos: Point) -> bool {
@@ -1417,8 +1466,80 @@ mod tests {
         h.assert_access_contract();
     }
 
-    /// RM-1028-5 回归（k-framework-fix1 消费方 1/3）：走真实控件对象，稳态开后关闭，
-    /// 第一帧面板进度 ≥ 0.9 —— open/close 重建轨道致跳 0 的缺陷在此必须红。
+    /// 无障碍合成项：菜单命令逐条成为 AT 子元素（UIA 项 Peer 语义）。
+    #[test]
+    fn access_snapshot_exposes_menu_items() {
+        use kanesumi_element::testing::TestHarness;
+        use kanesumi_element::PopupSpec;
+
+        let mut h = TestHarness::new(420.0, 320.0);
+        let mut menu = menu_with_disabled();
+        menu.items[2].submenu[0].checked = true;
+        menu.items[0].shortcut = Some("Ctrl+C".into());
+        menu.anim.open();
+        let id = h.tree.open_popup(menu, PopupSpec::default());
+        h.frame();
+
+        let snap = h.access_snapshot();
+        let node = snap.find(id).expect("菜单在快照内");
+        assert_eq!(node.items.len(), 5, "五行命令各是一个合成项：{:?}", node.items.iter().map(|i| &i.name).collect::<Vec<_>>());
+        let copy = snap.find_item("复制").expect("复制项");
+        assert_eq!(copy.role, kanesumi_element::AccessRole::MenuItem);
+        assert_eq!(copy.value.as_deref(), Some("Ctrl+C"), "快捷键读出来");
+        assert!(!copy.disabled);
+        let paste = snap.find_item("粘贴").expect("粘贴项");
+        assert!(paste.disabled, "禁用项要报给 AT");
+        let sort = snap.find_item("排序").expect("排序项");
+        assert_eq!(sort.checked, None, "非勾选项不报勾选态");
+        assert!(paste.bounds.size.height > 0.0, "合成项有几何：{:?}", paste.bounds);
+        h.assert_access_contract();
+    }
+
+    /// 级联子菜单的条目挂在父项之下，不摊平成一级命令。
+    #[test]
+    fn access_snapshot_nests_submenu_items_under_parent() {
+        use kanesumi_element::testing::TestHarness;
+        use kanesumi_element::PopupSpec;
+
+        let mut h = TestHarness::new(420.0, 320.0);
+        let mut menu = menu_with_disabled();
+        menu.items[2].submenu[0].checked = true;
+        menu.anim.open();
+        let id = h.tree.open_popup(menu, PopupSpec::default());
+        h.frame();
+
+        // 悬停「排序」展开子菜单。
+        let row = menu_item_rect(&h, id, 2);
+        h.move_to(Point::new(row.origin.x + 20.0, row.origin.y + 10.0));
+        h.frame();
+
+        let snap = h.access_snapshot();
+        let node = snap.find(id).expect("菜单在快照内");
+        let sort = node
+            .items
+            .iter()
+            .find(|i| i.name == "排序")
+            .expect("排序项");
+        assert_eq!(sort.children.len(), 2, "子菜单两项挂在其下");
+        assert_eq!(sort.children[0].name, "名称");
+        assert_eq!(sort.children[0].checked, Some(true), "单选勾选态跟着走");
+        assert!(
+            !node.items.iter().any(|i| i.name == "名称"),
+            "子菜单项不摊平到一级"
+        );
+        h.assert_access_contract();
+    }
+
+    /// 取弹层内第 `i` 行的屏幕矩形（用于把指针移到该行）。
+    fn menu_item_rect(
+        h: &kanesumi_element::testing::TestHarness,
+        id: kanesumi_element::WidgetId,
+        i: usize,
+    ) -> Rect {
+        let r = h.rect(id);
+        Rect::new(r.origin.x, r.origin.y + i as f32 * 32.0, r.size.width, 32.0)
+    }
+    /// RM-1028-5 回归（k-framework-fix1 消费方 1/3）：走真实控件对象，稳态开后关闭，    /// 第一帧面板进度 ≥ 0.9 —— open/close 重建轨道致跳 0 的缺陷在此必须红。
     #[test]
     fn close_from_steady_open_keeps_first_frame() {
         let mut menu = MetroDropdownMenu::new(vec![MenuItem::new("一"), MenuItem::new("二")]);

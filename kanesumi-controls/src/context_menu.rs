@@ -226,9 +226,14 @@ impl Widget for MetroContextMenu {
         Widget::focus_visual(&self.menu)
     }
 
-    /// 无障碍：右键菜单的面板与下拉菜单同构，整体委托（角色 / 名字 / 当前项同源）。
+    /// 无障碍：右键菜单的面板与下拉菜单同构，整体委托（角色 / 名字 / 当前项 / 合成条目同源）。
     fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
         Widget::accessibility(&self.menu)
+    }
+
+    /// 合成条目同理委托：右键菜单的条目与下拉菜单是同一套语义。
+    fn access_items(&self, rect: Rect) -> Vec<kanesumi_element::AccessItem> {
+        Widget::access_items(&self.menu, rect)
     }
 
     fn hit_test(
