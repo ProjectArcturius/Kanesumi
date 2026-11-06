@@ -105,6 +105,41 @@ impl MetroCheckBox {
 
     /// 渲染。顺序：勾选框（描边/填充/字形）→ 标签。
     pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
+        self.render_chrome(theme, engine, rect, scene);
+
+        // 标签（Padding 左 8 + 20 列）
+        if !self.label.is_empty() {
+            let colors = &theme.colors;
+            let style = theme.typography.body;
+            let alpha = if self.interact == ControlState::Disabled {
+                theme.indication.disabled_opacity
+            } else {
+                1.0
+            };
+            let fg = colors.on_surface.with_alpha(colors.on_surface.a * alpha);
+            let label_x = rect.origin.x + CHECKBOX_SIZE + CHECKBOX_BOX_GAP;
+            let label_w = (rect.right() - label_x).max(0.0);
+            let label_rect = Rect::new(
+                label_x,
+                rect.origin.y + (rect.size.height - style.line_height) / 2.0,
+                label_w,
+                style.line_height,
+            );
+            scene.text(self.label.clone(), label_rect, fg, style, TextAlign::Left);
+        }
+    }
+
+    /// 只画勾选框本体（底 / 描边 / 勾选字形）。
+    ///
+    /// 内容槽模式复用这里：控件里放了子节点时，画完选框就把画面让给内容，
+    /// **不画自己的标签** —— 与按钮同一套规则（参 `docs/DEV_GUIDE.md` §2.6）。
+    pub fn render_chrome(
+        &self,
+        theme: &MetroTheme,
+        engine: &TextEngine,
+        rect: Rect,
+        scene: &mut Scene,
+    ) {
         let colors = &theme.colors;
         let style = theme.typography.body;
         let disabled = self.interact == ControlState::Disabled;
@@ -178,19 +213,6 @@ impl MetroCheckBox {
             );
         }
 
-        // 标签（Padding 左 8 + 20 列）
-        if !self.label.is_empty() {
-            let fg = colors.on_surface.with_alpha(colors.on_surface.a * alpha);
-            let label_x = rect.origin.x + CHECKBOX_SIZE + CHECKBOX_BOX_GAP;
-            let label_w = (rect.right() - label_x).max(0.0);
-            let label_rect = Rect::new(
-                label_x,
-                rect.origin.y + (rect.size.height - style.line_height) / 2.0,
-                label_w,
-                style.line_height,
-            );
-            scene.text(self.label.clone(), label_rect, fg, style, TextAlign::Left);
-        }
     }
 }
 
@@ -202,12 +224,33 @@ pub struct CheckToggled(pub CheckState);
 
 impl kanesumi_element::Widget for MetroCheckBox {
     /// 固有尺寸：勾选框 20 + 间距 8 + 标签；不小于 MinWidth 120 × MinHeight 32（CONTROL_SPEC §36）。
+    ///
+    /// 有子节点时按**内容槽**量测（子节点 = 标签位置的任意元素），标签不再计入尺寸。
     fn measure(
         &mut self,
         ctx: &mut kanesumi_element::MeasureCtx,
-        _available: kanesumi_core::Size,
+        available: kanesumi_core::Size,
     ) -> kanesumi_core::Size {
         let style = ctx.theme().typography.body;
+        let kids = ctx.children();
+        if !kids.is_empty() {
+            let avail = kanesumi_core::Size::new(
+                (available.width - CHECKBOX_SIZE - CHECKBOX_BOX_GAP).max(0.0),
+                available.height,
+            );
+            let mut content = kanesumi_core::Size::ZERO;
+            for c in kids {
+                let d = ctx.measure_child(c, avail);
+                content = kanesumi_core::Size::new(
+                    content.width.max(d.width),
+                    content.height.max(d.height),
+                );
+            }
+            return kanesumi_core::Size::new(
+                (CHECKBOX_SIZE + CHECKBOX_BOX_GAP + content.width).max(CHECKBOX_MIN_WIDTH),
+                content.height.max(style.line_height).max(CHECKBOX_MIN_HEIGHT),
+            );
+        }
         let label_w = if self.label.is_empty() {
             0.0
         } else {
@@ -219,10 +262,28 @@ impl kanesumi_element::Widget for MetroCheckBox {
         )
     }
 
+    /// 内容排进勾选框右侧的区域（与标签同一列起点）。
+    fn arrange(&mut self, ctx: &mut kanesumi_element::ArrangeCtx, rect: Rect) {
+        let inner = Rect::new(
+            rect.origin.x + CHECKBOX_SIZE + CHECKBOX_BOX_GAP,
+            rect.origin.y,
+            (rect.size.width - CHECKBOX_SIZE - CHECKBOX_BOX_GAP).max(0.0),
+            rect.size.height,
+        );
+        for c in ctx.children() {
+            ctx.arrange_child(c, inner);
+        }
+    }
+
     fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
         let saved = self.interact;
         self.interact = crate::state::control_state(ctx.state());
-        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+        if ctx.children().is_empty() {
+            self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+        } else {
+            // 内容槽模式：只画勾选框，标签位置留给子节点。
+            self.render_chrome(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+        }
         self.interact = saved;
     }
 
@@ -473,5 +534,73 @@ mod tests {
             })
             .fold(1.0f32, f32::min);
         assert!(a < 1.0, "禁用降透明度，实际 a={}", a);
+    }
+
+    // ── 内容槽（勾选框里放富标签，2026-11-06）────────────────────────────────
+
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, LayoutProps, WidgetId};
+
+    /// 勾选框里放内容：子节点占位在勾选框右侧（与标签同一列）。
+    fn content_harness() -> (TestHarness, WidgetId, WidgetId) {
+        use kanesumi_element::widgets::Label;
+        let mut h = TestHarness::new(400.0, 200.0);
+        let cb = h.tree.insert_with(
+            h.root(),
+            MetroCheckBox::new("启用蓝牙（读屏名字）"),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        let label = h.tree.insert(
+            cb,
+            Label::new("启用蓝牙"),
+        );
+        h.frame();
+        (h, cb, label)
+    }
+
+    #[test]
+    fn content_slot_places_child_right_of_the_box() {
+        let (h, cb, label) = content_harness();
+        let r = h.rect(cb);
+        let lr = h.rect(label);
+        assert!(
+            lr.origin.x >= r.origin.x + CHECKBOX_SIZE + CHECKBOX_BOX_GAP - 0.5,
+            "内容在勾选框右侧：勾选框 {r:?}，内容 {lr:?}"
+        );
+        assert!(lr.right() <= r.right() + 0.5, "内容不越出控件");
+        h.assert_contained();
+    }
+
+    #[test]
+    fn content_slot_suppresses_label_text() {
+        let (h, cb, _) = content_harness();
+        let texts: Vec<String> = h
+            .tree
+            .painted(cb)
+            .iter()
+            .filter_map(|c| match c {
+                SceneCommand::Text { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !texts.iter().any(|t| t.contains("读屏名字")),
+            "内容槽模式下不再画自己的标签：{texts:?}"
+        );
+    }
+
+    #[test]
+    fn content_slot_keeps_label_as_accessibility_name() {
+        let (h, cb, _) = content_harness();
+        let snap = h.access_snapshot();
+        assert_eq!(
+            snap.find(cb).and_then(|n| n.name.clone()).as_deref(),
+            Some("启用蓝牙（读屏名字）")
+        );
+        h.assert_access_contract();
     }
 }
