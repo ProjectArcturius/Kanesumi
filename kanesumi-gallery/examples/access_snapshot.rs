@@ -11,10 +11,10 @@
 
 use kanesumi_controls::{MetroButton, MetroCheckBox, MetroSlider, MetroText, MetroTextBox};
 use kanesumi_core::{Color, ThemeColor};
-use kanesumi_element::check_access_contract;
-use kanesumi_element::props::{Align, Insets, LayoutProps};
-use kanesumi_element::testing::TestHarness;
-use kanesumi_element::widgets::{Border, Stack};
+use kanesumi_harness::element::check_access_contract;
+use kanesumi_harness::element::props::{Align, Insets, LayoutProps};
+use kanesumi_harness::element::testing::TestHarness;
+use kanesumi_harness::element::widgets::{Border, Stack};
 
 fn main() {
     // 无外壳夹具：树 + 字体 + 出帧（字体找不到即 panic 并说明，不静默跳过）。
