@@ -460,14 +460,17 @@ gallery 的 `examples/access_snapshot.rs` 命令行打印快照供人工核对�
 WinUI 的做法也是给虚拟化项合成 AutomationPeer，而不是给每一行建框架元素；我们照抄这个契约，
 不照抄它的实现。
 
-- `Widget::access_items(&self, rect) -> Vec<AccessItem>`（默认空）：控件把自己矩形里的行报成
-  AT 子元素。`AccessItem { role, name, value, checked, bounds, disabled, children }`
-  —— `children` 用于级联（子菜单条目挂在父项之下，不摊平到一级）。
+- `Widget::access_items(&self, rect, theme) -> Vec<AccessItem>`（默认空）：控件把自己矩形里的行报成
+  AT 子元素。`AccessItem { role, name, value, checked, selected, bounds, disabled, children }`
+  —— `children` 用于级联（子菜单条目挂在父项之下，不摊平到一级）；`theme` 供算行高这类依赖
+  主题的几何。
 - 快照里落在宿主节点的 `items` 上，`AccessNode::to_text()` 以 `#序号` 打印；
   `AccessNode::find_item(name)` 供测试与诊断。
 - 合成项**不参与**命中 / 焦点 / 布局（几何由控件自己算并原样上报），框架只校验契约 5。
-- 角色：`AccessRole::MenuItem`（UIA `ControlType.MenuItem`）。
-- 现在菜单的每条命令都有自己的角色、名字、勾选态、禁用态与快捷键（`value`）。
+- 角色：`AccessRole::MenuItem`（UIA `ControlType.MenuItem`）、`ListItem`（列表行）。
+- 已接入两处消费者：**菜单**（每条命令的角色 / 名字 / 勾选 / 禁用 / 快捷键，级联挂在父项下）
+  与 **`MetroList`**（只报视口内的行，与绘制 / 命中同一个虚拟化窗口；滚动后上报的行随之改变；
+  选中行带 `selected`）。列表这条也验证了机制不是菜单专用。
 
 仍未做：**每条命令还不是框架节点**（不能单独聚焦 / 单独参与 Tab 或命中路由）；AT-SPI 桥
 （需新依赖，未授权）。两者都不影响读屏枚举，只影响「把菜单当普通控件树操作」的场景。
