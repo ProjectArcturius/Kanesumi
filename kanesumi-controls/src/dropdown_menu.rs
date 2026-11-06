@@ -27,6 +27,14 @@ pub const MENU_GROUP_GAP: f32 = 8.0;
 /// 一列命令的下缘看得出来错位）。参 CONTROL_SPEC §39「视觉」。
 pub const MENU_CHECK_GUTTER: f32 = 16.0;
 
+/// 面板最大高度（逻辑 pt）。超过则面板封顶、内容内部滚动。
+///
+/// WinUI 的 `MenuFlyoutPresenter` 没有公开的 `MaxHeight`（模板里零声明）；504 取自同一族的
+/// ComboBox 下拉 `MaxDropDownHeight`（CONTROL_SPEC §8 一手源），**属推断值**、登记在
+/// `CANON_VS_TEMPORARY` 待真机对照。不封顶的后果是长菜单直接长到屏幕外，
+/// `place_popup` 只会平移，用户看到的是一个被裁掉一半、又没有滚动条的菜单。
+pub const MENU_MAX_HEIGHT: f32 = 504.0;
+
 /// 菜单项。参 CONTROL_SPEC §8（MenuFlyout）：
 /// - 项高 ≈32（Padding `11,9,11,10` + 14px 字）；图标 16px；快捷键右侧；
 /// - PointerOver = 中性高亮，瞬时；分隔线高 1、左右 12 留白。
@@ -161,6 +169,12 @@ pub struct MetroDropdownMenu {
     /// 树弹层的锚点控件（元素树路径，[`Widget::event`] 据此发 `MenuInvoked`）。
     /// `None` = 旧路径纯绘用法，不发动作。参 `menu_flyout.rs` / `context_menu.rs`。
     pub(crate) owner: Option<kanesumi_element::WidgetId>,
+    /// 内容滚动偏移（逻辑 pt）。面板封顶 [MENU_MAX_HEIGHT] 后靠它看到后面的项。
+    pub scroll: f32,
+    /// 最近一次已知的指针位置（滚轮事件不带坐标，靠它判断指针是否在面板上）。
+    last_pointer: Option<Point>,
+    /// 面板高度上限（默认 [MENU_MAX_HEIGHT]；子菜单 / 测试可改小）。
+    pub max_height: f32,
 }
 
 impl MetroDropdownMenu {
@@ -174,6 +188,9 @@ impl MetroDropdownMenu {
             panel_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             panel_size_cache: Cell::new(None),
             owner: None,
+            scroll: 0.0,
+            last_pointer: None,
+            max_height: MENU_MAX_HEIGHT,
         }
     }
 
@@ -184,6 +201,8 @@ impl MetroDropdownMenu {
 
     pub fn open(&mut self, at: Rect) {
         self.panel_rect = at;
+        // 每次打开都从头看：保留上次的滚动位置会让菜单「莫名其妙停在中间」。
+        self.scroll = 0.0;
         self.anim.open();
     }
 
@@ -277,18 +296,46 @@ impl MetroDropdownMenu {
             .filter_map(|i| i.shortcut.as_ref())
             .map(|s| engine.measure(s, style.size))
             .fold(0.0, f32::max);
+        let width = (self.check_gutter() + icon_w + text_w + shortcut_w + 22.0 + 24.0).max(120.0);
+        let size = kanesumi_core::Size::new(width, self.content_height().min(self.max_height));
+        self.panel_size_cache.set(Some(size));
+        size
+    }
+
+    /// 内容总高（项 + 分隔线 + 分组留白），不受面板最大高度限制。
+    pub fn content_height(&self) -> f32 {
         let separators = self
             .items
             .iter()
             .filter(|i| i.separator_after && !i.gap_after)
             .count() as f32;
         let gaps = self.items.iter().filter(|i| i.gap_after).count() as f32;
-        let width = (self.check_gutter() + icon_w + text_w + shortcut_w + 22.0 + 24.0).max(120.0);
-        let height =
-            self.items.len() as f32 * self.item_height + separators * 2.0 + gaps * MENU_GROUP_GAP;
-        let size = kanesumi_core::Size::new(width, height);
-        self.panel_size_cache.set(Some(size));
-        size
+        self.items.len() as f32 * self.item_height + separators * 2.0 + gaps * MENU_GROUP_GAP
+    }
+
+    /// 可滚动距离（内容高 − 面板高）。面板装得下时为 0。
+    pub fn max_scroll(&self) -> f32 {
+        (self.content_height() - self.panel_rect.size.height).max(0.0)
+    }
+
+    /// 滚动（`dy` 逻辑像素，正 = 内容上移 = 看到更靠后的项），夹在 `[0, max_scroll]`。
+    /// 返回是否真的动了（宿主据此决定是否重绘）。
+    pub fn scroll_by(&mut self, dy: f32) -> bool {
+        let before = self.scroll;
+        self.scroll = (self.scroll + dy).clamp(0.0, self.max_scroll());
+        (self.scroll - before).abs() > 0.01
+    }
+
+    /// 把第 `i` 项滚进可见区（键盘导航用；已可见时不动）。
+    fn scroll_into_view(&mut self, i: usize) {
+        let r = self.item_rect(i);
+        let top = self.panel_rect.origin.y;
+        let bottom = self.panel_rect.bottom();
+        if r.origin.y < top {
+            self.scroll = (self.scroll - (top - r.origin.y)).max(0.0);
+        } else if r.bottom() > bottom {
+            self.scroll = (self.scroll + (r.bottom() - bottom)).min(self.max_scroll());
+        }
     }
 
     /// 项命中测试（相对面板原点，面板以 `panel_rect.origin` 起排）。
@@ -299,7 +346,7 @@ impl MetroDropdownMenu {
         {
             return None;
         }
-        let local_y = pos.y - self.panel_rect.origin.y;
+        let local_y = pos.y - self.panel_rect.origin.y + self.scroll;
         let mut y = 0.0;
         for (i, item) in self.items.iter().enumerate() {
             let h = self.item_height;
@@ -326,7 +373,7 @@ impl MetroDropdownMenu {
     /// 纵向边缘吸附到物理像素网格：相邻项的悬停底共用边缘，2× 下不会互相露 1 px 缝
     /// （真机已知问题 #18）。面板原点本身也可能带小数，所以从吸附后的原点起算。
     pub fn item_rect(&self, i: usize) -> Rect {
-        let mut y = snap_edge(self.panel_rect.origin.y);
+        let mut y = snap_edge(self.panel_rect.origin.y - self.scroll);
         for (k, item) in self.items.iter().enumerate() {
             if k == i {
                 break;
@@ -411,8 +458,9 @@ impl MetroDropdownMenu {
         }
         let parent_rect = self.item_rect(idx);
         let mut menu = MetroDropdownMenu::new(items);
-        // 行高跟随父菜单：面板总量测与子菜单量测用同一行高，否则级联面板比父面板矮/高一截。
+        // 行高与高度上限跟随父菜单：级联面板不能比父面板高，也不能用另一套行高。
         menu.item_height = self.item_height;
+        menu.max_height = self.max_height;
         let sub_size = menu.panel_size(engine);
         let panel = place_submenu(parent_rect, sub_size, screen, popup_gap().min(2.0));
         menu.panel_rect = panel;
@@ -484,7 +532,7 @@ impl MetroDropdownMenu {
         scene.push_clip(self.panel_rect);
         // 边缘吸附到物理像素网格，与 `item_rect` 同源：相邻项的悬停底共用边缘，
         // 2x 下不会露 1 px 缝（真机已知问题 #18）。
-        let mut y = snap_edge(self.panel_rect.origin.y);
+        let mut y = snap_edge(self.panel_rect.origin.y - self.scroll);
         for (i, item) in self.items.iter().enumerate() {
             let next = snap_edge(y + self.item_height);
             let item_rect = Rect::new(
@@ -608,7 +656,41 @@ impl MetroDropdownMenu {
                 y = snap_edge(y + 2.0);
             }
         }
+        
+        // 滚动指示：面板封顶后右侧一条细条，thumb 高度按可见比例。没有指示时
+        // 用户只看到「最后一项被切了一半」，不会想到还能滚。
+        self.render_scroll_hint(theme, scene);
         scene.pop_clip();
+    }
+
+    /// 右侧细滚动条（仅面板装不下时画）。
+    fn render_scroll_hint(&self, theme: &MetroTheme, scene: &mut Scene) {
+        let max = self.max_scroll();
+        if max <= 0.0 {
+            return;
+        }
+        const BAR_W: f32 = 3.0;
+        const INSET: f32 = 4.0;
+        let panel = self.panel_rect;
+        let track_h = (panel.size.height - INSET * 2.0).max(0.0);
+        let visible_ratio = (panel.size.height / self.content_height()).clamp(0.08, 1.0);
+        let thumb_h = (track_h * visible_ratio).max(24.0).min(track_h);
+        let progress = (self.scroll / max).clamp(0.0, 1.0);
+        let thumb_y = panel.origin.y + INSET + (track_h - thumb_h) * progress;
+        let color = theme
+            .colors
+            .on_surface_variant
+            .with_alpha(theme.indication.base_medium_low);
+        scene.fill_rounded_rect(
+            color,
+            Rect::new(
+                panel.right() - INSET - BAR_W,
+                snap_edge(thumb_y),
+                BAR_W,
+                thumb_h,
+            ),
+            kanesumi_core::CornerRadius::Capsule,
+        );
     }
 
     /// 渲染子菜单（若展开）。画在顶层面板之上。
@@ -724,8 +806,8 @@ impl MetroDropdownMenu {
         }
         if let Some(idx) = next {
             match self.submenu.as_mut() {
-                Some(s) => s.menu.hovered = Some(idx),
-                None => self.hovered = Some(idx),
+                Some(s) => { s.menu.hovered = Some(idx); s.menu.scroll_into_view(idx); }
+                None => { self.hovered = Some(idx); self.scroll_into_view(idx); }
             }
         }
     }
@@ -745,8 +827,8 @@ impl MetroDropdownMenu {
         };
         if let Some(idx) = idx {
             match self.submenu.as_mut() {
-                Some(s) => s.menu.hovered = Some(idx),
-                None => self.hovered = Some(idx),
+                Some(s) => { s.menu.hovered = Some(idx); s.menu.scroll_into_view(idx); }
+                None => { self.hovered = Some(idx); self.scroll_into_view(idx); }
             }
         }
     }
@@ -846,6 +928,8 @@ impl Widget for MetroDropdownMenu {
 
     fn arrange(&mut self, _ctx: &mut ArrangeCtx, rect: Rect) {
         self.panel_rect = rect;
+        // 面板变矮 / 项变少后旧滚动量可能越界，就地夹回。
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll());
     }
 
     fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
@@ -868,10 +952,22 @@ impl Widget for MetroDropdownMenu {
     fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
         match event {
             Event::PointerMove { pos } => {
+                self.last_pointer = Some(*pos);
                 if let Some(engine) = ctx.engine().cloned()
                     && self.hover(&engine, ctx.surface(), *pos)
                 {
                     ctx.invalidate_paint();
+                }
+            }
+            // 滚轮 / 触控板：面板封顶后靠它看后面的项。指针在面板内或菜单有焦点时才吃。
+            Event::Scroll { dy, dx, .. } if *dx == 0.0 => {
+                // 滚轮事件不带坐标：用最近指针位置判断「指针在面板上」；菜单有焦点时也吃。
+                let over_panel = self
+                    .last_pointer
+                    .is_some_and(|p| self.panel_rect.contains(p));
+                if (over_panel || ctx.state().focused) && self.scroll_by(*dy) {
+                    ctx.invalidate_paint();
+                    ctx.set_handled();
                 }
             }
             Event::PointerUp {
@@ -947,14 +1043,27 @@ impl Widget for MetroDropdownMenu {
     /// 菜单把几十行画在**一个**框架节点里，读屏要能逐条枚举命令、逐条读名字与勾选态，
     /// 只能由控件自己上报。级联子菜单的条目挂在父项之下（`children`），不摊平 ——
     /// 摊平会让读屏以为「名称」是一级命令。
+    ///
+    /// **只报视口内的项**：菜单封顶后靠滚动看后面的项，滚动出面板的项不能再报（契约 5
+    /// 会抓住越界的合成项，而且读屏也不该读到屏幕上没有的命令）。
     fn access_items(&self, rect: Rect, _theme: &kanesumi_core::MetroTheme) -> Vec<kanesumi_element::AccessItem> {
         let _ = rect;
         self.items
             .iter()
             .enumerate()
+            .filter(|(i, _)| {
+                let r = self.item_rect(*i);
+                r.bottom() > self.panel_rect.origin.y && r.origin.y < self.panel_rect.bottom()
+            })
             .map(|(i, item)| {
+                // 被面板边缘裁到一半的项：bounds 取与面板的交集（读屏读的是看得见的那段），
+                // 否则契约 5「合成项须在宿主范围内」会当场报违例。
+                let visible = self
+                    .item_rect(i)
+                    .intersect(self.panel_rect)
+                    .unwrap_or(self.panel_rect);
                 let mut node =
-                    kanesumi_element::AccessItem::new(AccessRole::MenuItem, item.label.clone(), self.item_rect(i));
+                    kanesumi_element::AccessItem::new(AccessRole::MenuItem, item.label.clone(), visible);
                 // 快捷键读出来（UIA 的 AcceleratorKey 语义）：只有键名，不注册。
                 node.value = item.shortcut.clone();
                 node.checked = (item.checked || item.radio_group.is_some()).then_some(item.checked);
@@ -1538,6 +1647,151 @@ mod tests {
     ) -> Rect {
         let r = h.rect(id);
         Rect::new(r.origin.x, r.origin.y + i as f32 * 32.0, r.size.width, 32.0)
+    }
+    // ── 长菜单滚动（面板封顶 MENU_MAX_HEIGHT，2026-11-06）────────────────────────
+
+    fn long_menu(n: usize) -> MetroDropdownMenu {
+        MetroDropdownMenu::new((0..n).map(|i| MenuItem::new(format!("命令 {i}"))).collect())
+    }
+
+    #[test]
+    fn long_menu_panel_height_is_capped() {
+        let Some(engine) = find_engine() else { return };
+        let menu = long_menu(40);
+        let size = menu.panel_size(&engine);
+        assert_eq!(size.height, MENU_MAX_HEIGHT, "面板封顶在最大高度");
+        assert!(
+            menu.content_height() > MENU_MAX_HEIGHT + 100.0,
+            "内容本身远高于上限：{}",
+            menu.content_height()
+        );
+    }
+
+    #[test]
+    fn short_menu_is_not_capped_and_cannot_scroll() {
+        let Some(engine) = find_engine() else { return };
+        let mut menu = long_menu(3);
+        let size = menu.panel_size(&engine);
+        assert!(size.height < MENU_MAX_HEIGHT, "三项菜单不需要封顶");
+        menu.open(Rect::new(0.0, 0.0, size.width, size.height));
+        assert_eq!(menu.max_scroll(), 0.0);
+        assert!(!menu.scroll_by(50.0), "装得下时滚动无效");
+    }
+
+    #[test]
+    fn scroll_shifts_item_geometry_and_hit_testing() {
+        let Some(engine) = find_engine() else { return };
+        let mut menu = long_menu(40);
+        let size = menu.panel_size(&engine);
+        menu.open(Rect::new(0.0, 0.0, size.width, size.height));
+
+        let before = menu.item_rect(2);
+        assert!(menu.scroll_by(64.0), "有内容可滚");
+        let after = menu.item_rect(2);
+        assert!(
+            (before.origin.y - after.origin.y - 64.0).abs() < 0.5,
+            "滚动 64pt 后第 3 项上移 64pt：{} → {}",
+            before.origin.y,
+            after.origin.y
+        );
+        // 命中跟着几何走：现在落在面板顶部的那一行应是滚动后可见的首项。
+        let hit = menu.item_at(Point::new(after.origin.x + 10.0, after.origin.y + 10.0));
+        assert_eq!(hit, Some(2), "命中与渲染同一套滚动偏移");
+    }
+
+    #[test]
+    fn scroll_is_clamped_to_bounds() {
+        let Some(engine) = find_engine() else { return };
+        let mut menu = long_menu(40);
+        let size = menu.panel_size(&engine);
+        menu.open(Rect::new(0.0, 0.0, size.width, size.height));
+        assert!(!menu.scroll_by(-100.0), "顶部再往上滚无效");
+        assert_eq!(menu.scroll, 0.0);
+        menu.scroll_by(10_000.0);
+        assert_eq!(menu.scroll, menu.max_scroll(), "滚到底停在 max_scroll");
+    }
+
+    #[test]
+    fn keyboard_end_scrolls_last_item_into_view() {
+        let Some(engine) = find_engine() else { return };
+        let mut menu = long_menu(40);
+        let size = menu.panel_size(&engine);
+        menu.open(Rect::new(0.0, 0.0, size.width, size.height));
+
+        menu.hover_edge(true); // End
+        assert_eq!(menu.hovered, Some(39));
+        assert!(menu.scroll > 0.0, "长菜单里跳到末项必须滚动");
+        let r = menu.item_rect(39);
+        assert!(
+            r.bottom() <= menu.panel_rect.bottom() + 0.5 && r.origin.y >= menu.panel_rect.origin.y - 0.5,
+            "末项要落在面板内：{r:?} vs 面板 {:?}",
+            menu.panel_rect
+        );
+    }
+
+    #[test]
+    fn scroll_hint_only_when_panel_overflows() {
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
+        let hint_bars = |menu: &MetroDropdownMenu| {
+            let mut scene = Scene::default();
+            menu.render_panel(&theme, &engine, &mut scene);
+            scene
+                .commands
+                .iter()
+                .filter(|c| match c {
+                    kanesumi_canvas::SceneCommand::FillRect { rect, .. } => {
+                        // 贴右缘、宽 3pt 的细条
+                        (menu.panel_rect.right() - rect.right()).abs() < 8.0
+                            && (rect.size.width - 3.0).abs() < 0.5
+                    }
+                    _ => false,
+                })
+                .count()
+        };
+
+        let mut short = long_menu(3);
+        let size = short.panel_size(&engine);
+        short.open(Rect::new(0.0, 0.0, size.width, size.height));
+        short.anim.open();
+        assert_eq!(hint_bars(&short), 0, "装得下时没有滚动条");
+
+        let mut long = long_menu(40);
+        let size = long.panel_size(&engine);
+        long.open(Rect::new(0.0, 0.0, size.width, size.height));
+        long.anim.open();
+        assert_eq!(hint_bars(&long), 1, "封顶后出现一条滚动指示");
+    }
+
+    #[test]
+    fn access_items_report_visible_items_only() {
+        use kanesumi_element::testing::TestHarness;
+        use kanesumi_element::PopupSpec;
+
+        let mut h = TestHarness::new(420.0, 700.0);
+        let mut menu = long_menu(40);
+        menu.anim.open();
+        let id = h.tree.open_popup(menu, PopupSpec::default());
+        h.frame();
+
+        let snap = h.access_snapshot();
+        let node = snap.find(id).expect("菜单在快照内");
+        assert!(!node.items.is_empty(), "有可见项");
+        assert!(
+            node.items.len() < 40,
+            "只报视口内的项（实得 {}）",
+            node.items.len()
+        );
+        for item in &node.items {
+            assert!(
+                item.bounds.origin.y >= node.bounds.origin.y - 0.5
+                    && item.bounds.bottom() <= node.bounds.bottom() + 0.5,
+                "合成项在面板内：{:?} ⊄ {:?}",
+                item.bounds,
+                node.bounds
+            );
+        }
+        h.assert_access_contract();
     }
     /// RM-1028-5 回归（k-framework-fix1 消费方 1/3）：走真实控件对象，稳态开后关闭，    /// 第一帧面板进度 ≥ 0.9 —— open/close 重建轨道致跳 0 的缺陷在此必须红。
     #[test]
