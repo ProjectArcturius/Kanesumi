@@ -468,6 +468,18 @@ impl MetroDialog {
 
     /// 元素树：模态打开（表面居中、焦点陷阱、点外部不关闭）。返回弹层 id。
     pub fn show_modal(&mut self, ctx: &mut EventCtx) -> WidgetId {
+        self.show_modal_with(ctx, |_, _| {})
+    }
+
+    /// 打开模态并按 `build` 把内容挂进对话框（弹层 id 已给出）。
+    ///
+    /// 内容槽的自然写法：一次调用同时完成「开」、「定位」、「填内容」。没有它，应用得先
+    /// `show_modal` 再回头去树里插子节点 —— 为了放一个输入框而暴露树可变引用。
+    pub fn show_modal_with(
+        &mut self,
+        ctx: &mut EventCtx,
+        build: impl FnOnce(&mut EventCtx, WidgetId),
+    ) -> WidgetId {
         // 打开即把「当前按钮」定在默认按钮上：否则键盘用户先看到没有任何高亮的按钮区，
         // 而且第一次按 → 会跳过它。
         self.focused_button = self.default_button();
@@ -481,6 +493,7 @@ impl MetroDialog {
                 ..PopupSpec::default()
             },
         );
+        build(ctx, id);
         ctx.focus_widget(id, true);
         id
     }
@@ -920,6 +933,63 @@ mod tree_tests {
 
     fn focused_of(h: &TestHarness, popup: WidgetId) -> Option<DialogButton> {
         h.tree.get::<MetroDialog>(popup).unwrap().focused_button
+    }
+
+    /// `show_modal_with`：开弹层 + 填内容一次写完（应用不再需要 `parts_mut`）。
+    #[test]
+    fn show_modal_with_builds_content_in_one_call() {
+        struct Builder;
+        impl Widget for Builder {
+            fn measure(&mut self, _: &mut MeasureCtx, _: Size) -> Size {
+                Size::new(80.0, 32.0)
+            }
+            fn paint(&mut self, _: &mut PaintCtx, _: &mut Scene) {}
+            fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
+                if let Event::Click = event {
+                    let mut dlg = MetroDialog::new("重命名", "");
+                    dlg.buttons.primary = Some("确定".into());
+                    dlg.show_modal_with(ctx, |ctx, popup| {
+                        ctx.insert_child_with(
+                            popup,
+                            kanesumi_element::widgets::Border::new().background(kanesumi_core::Color::rgb(0.4, 0.4, 0.4)),
+                            LayoutProps {
+                                width: Some(200.0),
+                                height: Some(60.0),
+                                ..LayoutProps::default()
+                            },
+                        );
+                    });
+                    ctx.set_handled();
+                }
+            }
+            fn focusable(&self) -> bool {
+                true
+            }
+            fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+                Some(kanesumi_element::AccessInfo {
+                    role: kanesumi_element::AccessRole::Button,
+                    name: "打开".into(),
+                    value: None,
+                    checked: None,
+                })
+            }
+        }
+
+        let mut h = TestHarness::new(600.0, 500.0);
+        let opener = h.tree.insert(h.root(), Builder);
+        h.frame();
+        h.click(opener);
+        h.frame();
+
+        let popup = h.tree.popups().next().expect("对话框已打开");
+        let kids = h.tree.children(popup).to_vec();
+        assert_eq!(kids.len(), 1, "内容在闭包里挂进了对话框");
+        assert_eq!(
+            h.rect(kids[0]).size,
+            Size::new(200.0, 60.0),
+            "内容按给定尺寸排布"
+        );
+        h.assert_access_contract();
     }
 
     #[test]

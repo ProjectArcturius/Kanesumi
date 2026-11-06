@@ -39,9 +39,23 @@ impl Widget for RenameOpener {
             dlg.buttons.primary = Some("确定".into());
             dlg.buttons.close = Some("取消".into());
             dlg.buttons.default_button = DialogDefaultButton::Primary;
-            // 走 `show_modal`：它会打开弹层、把焦点移进去，并把「当前按钮」预置成默认按钮
-            // （因此截图里能看到焦点环）。
-            dlg.show_modal(ctx);
+            // `show_modal_with`：开弹层 + 定位 + 填内容一次写完，应用不必回头去树里插节点。
+            dlg.show_modal_with(ctx, |ctx, popup| {
+                let col = ctx.insert_child_with(
+                    popup,
+                    Stack::column().with_spacing(8.0),
+                    LayoutProps::default(),
+                );
+                ctx.insert_child(col, MetroTextBox::with_placeholder("新名称"));
+                ctx.insert_child_with(
+                    col,
+                    Label::new("扩展名保持不变").color(ThemeColor::OnSurfaceVariant),
+                    LayoutProps {
+                        h_align: Align::Start,
+                        ..LayoutProps::default()
+                    },
+                );
+            });
             ctx.set_handled();
         }
     }
@@ -145,21 +159,8 @@ fn main() {
     }
     frame(&mut host, &engine, size);
 
-    // 内容槽：把「输入框 + 提示」挂到对话框节点下（弹层打开后由应用挂内容）。
-    let popup = host.tree().popups().next().expect("对话框弹层已打开");
-    {
-        let (_, tree) = host.parts_mut();
-        let col = tree.insert(popup, Stack::column().with_spacing(8.0));
-        tree.insert(col, MetroTextBox::with_placeholder("新名称"));
-        tree.insert_with(
-            col,
-            Label::new("扩展名保持不变").color(ThemeColor::OnSurfaceVariant),
-            LayoutProps {
-                h_align: Align::Start,
-                ..LayoutProps::default()
-            },
-        );
-    }
+    // 内容已在触发器的 `show_modal_with` 里挂好，这里只出帧。
+    let _popup = host.tree().popups().next().expect("对话框弹层已打开");
 
     let scene = frame(&mut host, &engine, size);
     save(&engine, &scene, size, scale, &out);
