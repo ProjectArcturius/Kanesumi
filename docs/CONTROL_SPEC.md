@@ -34,6 +34,7 @@
 | FontSize / Weight | 14 / Normal |
 | 无 MinWidth/MinHeight | 尺寸 = 内容 + Padding；最小可点区域靠宿主约束 |
 | 激活键 | Space / Enter |
+| 内容 | **任意元素**（`Button.Content`）：按钮节点下有子节点时，子节点即内容，标签不再绘制；`label` 转为无障碍名字（`AutomationProperties.Name` 的角色）。内容按 Padding 内矩形排布，命中与点击由事件冒泡回到按钮（2026-11-06 实装，参 `docs/DEV_GUIDE.md` §2.6） |
 
 ### 视觉状态（CommonStates，全部瞬时）
 

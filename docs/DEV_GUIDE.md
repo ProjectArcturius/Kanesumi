@@ -246,7 +246,29 @@ let panel = tree.open_popup(
 `kanesumi-gallery/examples/popup_demo.rs`，协议细节参 Ether `docs/POPUP_PLAN.md`
 与 `ELEMENT_TREE.md` §Ⅴ.2。
 
-### 2.6 键盘
+### 2.6 内容槽（控件里放任意元素）
+
+控件**不是只能吃字符串**：往按钮这类控件节点下挂子节点，子节点就是它的内容（对应 XAML
+`Button.Content` 为任意元素时的语义）。图标 + 文字的按钮因此不需要自造控件：
+
+```rust
+let share = tree.insert(col, MetroButton::new("分享设备设置")); // label 仍是读屏名字
+let row = tree.insert(share, Stack::row().with_spacing(6.0));
+tree.insert_with(row, Image::svg(icon_path).size(16.0, 16.0), LayoutProps { v_align: Align::Center, ..LayoutProps::default() });
+tree.insert_with(row, Label::new("分享"), LayoutProps { v_align: Align::Center, ..LayoutProps::default() });
+```
+
+三条规则先知道：
+
+1. **有子节点时标签不再绘制**，但 `label` 仍是**无障碍名字**（否则图标按钮在读屏里是无名按钮）；
+2. 内容排进控件内边距之内的矩形（按钮 `8,5,8,6`），由控件自己的 `arrange` 决定 —— 应用只写布局属性；
+3. **点击内容 = 点击控件**：事件从命中节点冒泡到祖先，按钮照常发 `ButtonClicked`。
+
+内容槽目前实装在 `MetroButton`（`kanesumi-controls/src/button.rs`「内容槽」一节）；其他控件按同一
+套路推广（在 `measure` / `arrange` / `paint` 里把「自己的标签」换成「子节点」）。
+样板见 `kanesumi-gallery/examples/grid_form.rs` 的「分享」按钮。
+
+### 2.7 键盘
 
 外壳把 wl_keyboard 经 xkbcommon 语义化后的 keysym 映射为 `Key`（`platform::map_key`）。
 应用与控件匹配**语义键**，不再比原始码。全表：

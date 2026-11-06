@@ -31,6 +31,11 @@
 - 弹层类走 `open_popup` + `PopupSpec`（`widget.rs:406`；模板见 `ELEMENT_MIGRATION.md` §8）；
 - 有展开/选中语义的控件在快照数据源落地前，勾选/展开态放 `AccessInfo.checked`、选中行放
   `value`（expander 先例 `controls/src/expander.rs:436`）——终态见 access.rs 结构体注释。
+- **内容槽**：控件可以容纳任意子节点（XAML `Content`）。做法固定三条：① `measure` 里
+  `ctx.children()` 非空就按子节点量测（`MeasureCtx::children`）；② `arrange` 把子节点排进
+  **内边距内矩形**；③ `paint` 里用 `PaintCtx::children()` 判断，有子节点就只画 chrome、不画自己的
+  标签，但标签仍作 `AccessInfo.name`。样板 `controls/src/button.rs`「内容槽」一节。
+  不允许「新增一个专门吃内容的控件类型」来代替内容槽 —— 那会让每个控件各长一套。
 
 ## §Ⅲ 布局
 
