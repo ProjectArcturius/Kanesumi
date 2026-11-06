@@ -4,6 +4,7 @@
 // 否则就回到了「每个控件各算一套几何」的老路。
 
 use kanesumi_core::{Rect, Size};
+use kanesumi_structure::GridChild;
 
 /// 四边距（外边距 / 内边距）。
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -113,6 +114,12 @@ pub struct LayoutProps {
     pub min_main: f32,
     /// `false` = 不量测、不绘制、不命中、不可聚焦（XAML `Collapsed`）。
     pub visible: bool,
+    /// **附着属性**：在 `Grid` 父里的单元与跨度（XAML `Grid.Row` / `Grid.Column` /
+    /// `Grid.RowSpan` / `Grid.ColumnSpan`）。
+    ///
+    /// 与 XAML 一样挂在**子**身上而不是写在 `Grid` 里：同一个子节点换个父容器时，
+    /// 布局信息跟着它走，容器不必维护「谁在哪一格」的旁表。非 `Grid` 父忽略此属性。
+    pub grid_cell: GridChild,
 }
 
 impl Default for LayoutProps {
@@ -129,6 +136,7 @@ impl Default for LayoutProps {
             shrink: 1.0,
             min_main: 0.0,
             visible: true,
+            grid_cell: GridChild::at(0, 0),
         }
     }
 }
