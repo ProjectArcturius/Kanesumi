@@ -73,6 +73,8 @@ pub struct AccessItem {
     pub name: String,
     pub value: Option<String>,
     pub checked: Option<bool>,
+    /// 选中态（列表行这类；不适用为 None）。
+    pub selected: Option<bool>,
     /// 控件坐标系里的矩形（与被报告节点的 bounds 同一坐标系）。
     pub bounds: Rect,
     pub disabled: bool,
@@ -87,6 +89,7 @@ impl AccessItem {
             name: name.into(),
             value: None,
             checked: None,
+            selected: None,
             bounds,
             disabled: false,
             children: Vec::new(),
@@ -229,9 +232,9 @@ pub trait Widget: Any {
 
     /// **合成无障碍项**：本控件内部的 AT 子元素（菜单条目、列表行这类画在一个节点里的内容）。
     ///
-    /// `rect` = 本节点 arrange 后的矩形；返回的项用自己的 `bounds` 上报位置。
+    /// `rect` = 本节点 arrange 后的矩形；`theme` 供算行高这类依赖主题的几何；返回的项用自己的 `bounds` 上报位置。
     /// 默认空 —— 普通控件只实现 [`Self::accessibility`]。参 [`AccessItem`] 的「与真节点的区别」。
-    fn access_items(&self, _rect: Rect) -> Vec<AccessItem> {
+    fn access_items(&self, _rect: Rect, _theme: &MetroTheme) -> Vec<AccessItem> {
         Vec::new()
     }
 

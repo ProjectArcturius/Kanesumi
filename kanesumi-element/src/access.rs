@@ -169,6 +169,9 @@ impl AccessItem {
         if let Some(c) = self.checked {
             let _ = write!(out, " checked={c}");
         }
+        if let Some(v) = self.selected {
+            let _ = write!(out, " selected={v}");
+        }
         if self.disabled {
             out.push_str(" disabled");
         }
@@ -226,7 +229,7 @@ fn walk(tree: &Tree, id: WidgetId) -> AccessNode {
             .map(|&c| walk(tree, c))
             .collect(),
         // 合成项：控件把「画在自己矩形里的那些行」报成 AT 子元素（菜单条目这类）。
-        items: widget.map(|w| w.access_items(bounds)).unwrap_or_default(),
+        items: widget.map(|w| w.access_items(bounds, tree.theme())).unwrap_or_default(),
     }
 }
 
@@ -876,7 +879,7 @@ mod tests {
                 checked: None,
             })
         }
-        fn access_items(&self, rect: Rect) -> Vec<AccessItem> {
+        fn access_items(&self, rect: Rect, _theme: &kanesumi_core::MetroTheme) -> Vec<AccessItem> {
             (0..self.rows)
                 .map(|i| {
                     AccessItem::new(
@@ -982,7 +985,7 @@ mod tests {
             fn paint_overflow(&self) -> Insets {
                 Insets::new(0.0, 0.0, 80.0, 0.0)
             }
-            fn access_items(&self, rect: Rect) -> Vec<AccessItem> {
+            fn access_items(&self, rect: Rect, _theme: &kanesumi_core::MetroTheme) -> Vec<AccessItem> {
                 vec![AccessItem::new(
                     AccessRole::MenuItem,
                     "级联项",

@@ -232,8 +232,8 @@ impl Widget for MetroContextMenu {
     }
 
     /// 合成条目同理委托：右键菜单的条目与下拉菜单是同一套语义。
-    fn access_items(&self, rect: Rect) -> Vec<kanesumi_element::AccessItem> {
-        Widget::access_items(&self.menu, rect)
+    fn access_items(&self, rect: Rect, theme: &MetroTheme) -> Vec<kanesumi_element::AccessItem> {
+        Widget::access_items(&self.menu, rect, theme)
     }
 
     fn hit_test(

@@ -947,7 +947,7 @@ impl Widget for MetroDropdownMenu {
     /// 菜单把几十行画在**一个**框架节点里，读屏要能逐条枚举命令、逐条读名字与勾选态，
     /// 只能由控件自己上报。级联子菜单的条目挂在父项之下（`children`），不摊平 ——
     /// 摊平会让读屏以为「名称」是一级命令。
-    fn access_items(&self, rect: Rect) -> Vec<kanesumi_element::AccessItem> {
+    fn access_items(&self, rect: Rect, _theme: &kanesumi_core::MetroTheme) -> Vec<kanesumi_element::AccessItem> {
         let _ = rect;
         self.items
             .iter()

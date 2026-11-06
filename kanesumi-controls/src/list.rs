@@ -285,6 +285,39 @@ impl kanesumi_element::Widget for MetroList {
             checked: None,
         })
     }
+
+    /// 无障碍合成项：把**视口内的行**报成 AT 子项（UIA 虚拟化列表的项 Peer 语义）。
+    ///
+    /// 只报可见行，和绘制 / 命中用同一个可见窗口（`MetroList::virtualizer` 的
+    /// `visible_range`）—— 上报看不见的行会让读屏读到屏幕上不存在的条目，契约 5
+    /// （合成项须落在宿主范围内）也会当场抓住它。滚动后上报的行随之改变。
+    fn access_items(
+        &self,
+        rect: Rect,
+        theme: &kanesumi_core::MetroTheme,
+    ) -> Vec<kanesumi_element::AccessItem> {
+        let row_h = self.row_height(theme);
+        let Some((first, last)) = self
+            .virtualizer(theme)
+            .visible_range(rect.size.height, self.scroll)
+        else {
+            return Vec::new();
+        };
+        (first..=last)
+            .filter_map(|i| {
+                let name = self.rows.get(i)?;
+                let y = rect.origin.y - self.scroll + i as f32 * row_h;
+                let mut item = kanesumi_element::AccessItem::new(
+                    kanesumi_element::AccessRole::ListItem,
+                    name.clone(),
+                    Rect::new(rect.origin.x, y, rect.size.width, row_h),
+                );
+                item.selected = Some(self.selected == Some(i));
+                item.disabled = self.disabled;
+                Some(item)
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -694,5 +727,71 @@ mod tests {
             panic!("应有行文本命令");
         };
         assert!(color.a < 1.0, "禁用态行文字应降透明度，实际 a={}", color.a);
+    }
+
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, LayoutProps, WidgetId};
+
+    /// 列表夹具（本模块独立，不复用 `tree_tests::harness`）。
+    fn list_harness(rows: usize, height: f32) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(400.0, 300.0);
+        let items = (0..rows).map(|i| format!("行 {i}")).collect();
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroList::new(items),
+            LayoutProps {
+                width: Some(200.0),
+                height: Some(height),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    /// 无障碍合成项：只报视口内的行，选中态跟着走（UIA 虚拟化列表的项 Peer）。
+    #[test]
+    fn access_items_report_visible_rows_only() {
+        // 可见高 120、行高 ≥40 → 视口内约 3 行；共 50 行。
+        let (h, id) = list_harness(50, 120.0);
+        let snap = h.access_snapshot();
+        let node = snap.find(id).expect("列表在快照内");
+        assert!(
+            !node.items.is_empty() && node.items.len() < 8,
+            "只报视口内的行（{} 项，共 50 行）",
+            node.items.len()
+        );
+        assert_eq!(node.items[0].name, "行 0");
+        assert_eq!(
+            node.items[0].role,
+            kanesumi_element::AccessRole::ListItem
+        );
+        assert!(node.items.iter().all(|i| !*i.selected.as_ref().unwrap_or(&true)), "未选中");
+        h.assert_access_contract();
+    }
+
+    /// 滚动后上报的行随视口改变，且选中行带 selected=true。
+    #[test]
+    fn access_items_follow_scroll_and_selection() {
+        let (mut h, id) = list_harness(50, 120.0);
+        h.tree.edit::<MetroList, _>(id, |l, _| {
+            l.select(Some(10));
+            l.scroll = 400.0;
+        });
+        h.frame();
+        let snap = h.access_snapshot();
+        let node = snap.find(id).expect("列表在快照内");
+        assert!(
+            node.items.iter().all(|i| i.name != "行 0"),
+            "滚出视口的行不再上报：{:?}",
+            node.items.iter().map(|i| &i.name).collect::<Vec<_>>()
+        );
+        assert!(
+            node.items.iter().any(|i| i.selected == Some(true)),
+            "选中行（滚动后进入视口）带 selected"
+        );
+        h.assert_access_contract();
     }
 }

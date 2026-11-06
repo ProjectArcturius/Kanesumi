@@ -126,8 +126,12 @@ impl Widget for MenuFlyout {
     }
 
     /// 合成条目同样委托：菜单命令逐条成为 AT 子元素。
-    fn access_items(&self, rect: Rect) -> Vec<kanesumi_element::AccessItem> {
-        Widget::access_items(&self.menu, rect)
+    fn access_items(
+        &self,
+        rect: Rect,
+        theme: &kanesumi_core::MetroTheme,
+    ) -> Vec<kanesumi_element::AccessItem> {
+        Widget::access_items(&self.menu, rect, theme)
     }
 
     fn hit_test(&self, rect: Rect, pos: Point) -> bool {
