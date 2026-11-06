@@ -159,6 +159,27 @@ impl LayoutProps {
         let h = self.height.unwrap_or(a.height).min(self.max.height).min(a.height);
         Size::new(w.max(0.0), h.max(0.0))
     }
+
+    /// 放进 `Grid` 的某个单元（XAML `Grid.Row="r" Grid.Column="c"` 的等价写法）。
+    ///
+    /// 让「在哪一格」像属性赋值一样写，而不是让每个应用自造 `cell()` 辅助函数：
+    ///
+    /// ```ignore
+    /// tree.insert_with(form, Label::new("设备名称"), LayoutProps::in_cell(0, 0));
+    /// tree.insert_with(form, MetroTextBox::new(), LayoutProps::in_cell(0, 1));
+    /// ```
+    pub fn in_cell(row: usize, col: usize) -> Self {
+        Self {
+            grid_cell: GridChild::at(row, col),
+            ..Self::default()
+        }
+    }
+
+    /// 跨多行 / 多列（`Grid.RowSpan` / `Grid.ColumnSpan`）；与 [`Self::in_cell`] 链式搭配。
+    pub fn spanning(mut self, row_span: usize, col_span: usize) -> Self {
+        self.grid_cell = self.grid_cell.with_span(row_span.max(1), col_span.max(1));
+        self
+    }
 }
 
 /// min 优先于 max（XAML 语义：MinWidth > MaxWidth 时取 MinWidth）；NaN / 负 → 0。
