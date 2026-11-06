@@ -3,7 +3,8 @@ use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::{MetroTheme, Rect, Size, TextStyle};
 use kanesumi_element::{
-    Event, EventCtx, Key, MeasureCtx, PaintCtx, PointerButton, PopupSpec, Widget, WidgetId,
+    ArrangeCtx, Event, EventCtx, Key, MeasureCtx, PaintCtx, PointerButton, PopupSpec, Widget,
+    WidgetId,
 };
 
 use crate::button::MetroButton;
@@ -214,31 +215,46 @@ impl MetroDialog {
     /// 命中测试（给定盒体矩形）——元素树里盒体矩形由框架 arrange 决定，故与 `screen`
     /// 版本分开；旧 `hit_button` 转发到此。
     fn hit_button_in(&self, box_rect: Rect, p: kanesumi_core::Point) -> Option<DialogButton> {
-        let pad = 24.0;
-        let button_w = 130.0_f32.min(202.0);
-        let button_y = box_rect.origin.y + box_rect.size.height - 24.0 - 32.0;
-        // 与 render 相同的布局：Close(最右) → Secondary → Primary
-        let mut x = box_rect.origin.x + box_rect.size.width - pad - button_w;
-        for slot in [
-            DialogButton::Close,
-            DialogButton::Secondary,
-            DialogButton::Primary,
-        ] {
-            let rect = Rect::new(x, button_y, button_w, 32.0);
-            if rect.contains(p) {
-                // 仅返回已配置的按钮
-                let configured = match slot {
-                    DialogButton::Primary => self.buttons.primary.is_some(),
-                    DialogButton::Secondary => self.buttons.secondary.is_some(),
-                    DialogButton::Close => self.buttons.close.is_some(),
-                };
-                if configured {
-                    return Some(slot);
-                }
-            }
-            x -= button_w + 2.0;
-        }
-        None
+        self.button_layout(box_rect)
+            .into_iter()
+            .find(|(_, _, rect)| rect.contains(p))
+            .map(|(slot, _, _)| slot)
+    }
+
+    /// 按钮区布局 —— **唯一实现**：渲染、命中、无障碍三处都从这里取。
+    ///
+    /// 此前渲染与命中各写了一遍「从右到左、宽 130、间距 2」，两处一旦有一位不一致，
+    /// 症状是「看见的按钮点不到、点得到的地方没有按钮」，而且只在某个偏门组合下复现。
+    /// 返回顺序 = 从右到左（Close → Secondary → Primary），只含已配置的按钮。
+    fn button_layout(&self, box_rect: Rect) -> Vec<(DialogButton, String, Rect)> {
+        const PAD: f32 = 24.0;
+        const BUTTON_W: f32 = 130.0;
+        const BUTTON_H: f32 = 32.0;
+        const GAP: f32 = 2.0;
+        let button_y = box_rect.origin.y + box_rect.size.height - PAD - BUTTON_H;
+        // 从右往左**紧挨着排**：只有已配置的按钮占位（缺 Secondary 时 Close 与 Primary 相邻）。
+        // 按槽位序号排会留出空档 —— 第一版就这样把「确定」推到了对话框最左边。
+        let mut occupied = 0usize;
+        [
+            (DialogButton::Close, self.buttons.close.as_deref()),
+            (DialogButton::Secondary, self.buttons.secondary.as_deref()),
+            (DialogButton::Primary, self.buttons.primary.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(slot, label)| {
+            let label = label?;
+            let x = box_rect.origin.x + box_rect.size.width
+                - PAD
+                - BUTTON_W
+                - occupied as f32 * (BUTTON_W + GAP);
+            occupied += 1;
+            Some((
+                slot,
+                label.to_string(),
+                Rect::new(x, button_y, BUTTON_W, BUTTON_H),
+            ))
+        })
+        .collect()
     }
 
     /// 渲染：遮罩 + 盒体（标题 / 内容 / 按钮区）。
@@ -251,16 +267,20 @@ impl MetroDialog {
             .overlay_color
             .with_alpha(theme.overlay_color.a * self.overlay_alpha());
         scene.fill_rect(scrim, screen);
-        self.render_box(theme, engine, self.box_rect(screen), scene);
+        self.render_box(theme, engine, self.box_rect(screen), scene, false);
     }
 
     /// 画盒体（标题 / 内容 / 按钮区）——不含遮罩。元素树面板 Widget 复用（盒体矩形由框架给出）。
+    ///
+    /// `has_content_children`：节点下有子节点（内容槽）时不画文本正文，画面让给子节点 ——
+    /// 与按钮 / 勾选框同一套规则（参 docs/DEV_GUIDE.md §2.6）。
     fn render_box(
         &self,
         theme: &MetroTheme,
         engine: &TextEngine,
         box_rect: Rect,
         scene: &mut Scene,
+        has_content_children: bool,
     ) {
         let colors = &theme.colors;
 
@@ -278,11 +298,6 @@ impl MetroDialog {
 
         // 标题（20px，最多 2 行）——CONTROL_SPEC §9 Title FontSize 20，标题类字重（G-67），MaxLines 2。
         let title_style = TextStyle::new(20.0, 26.0, kanesumi_core::typography::heading_weight());
-        let title_h = if self.title.is_empty() {
-            0.0
-        } else {
-            title_style.line_height
-        };
         if !self.title.is_empty() {
             let title_rect = Rect::new(
                 inner.origin.x,
@@ -299,57 +314,34 @@ impl MetroDialog {
             );
         }
 
-        // 内容 —— 起点 = 标题下沿 + TitleMargin(12)。
+        // 内容 —— 矩形与内容子树共用 `content_area`（有子节点时这段文字不画）。
         // 旧 bug：只加 title_gap 没加 title_h → 正文与标题重叠 26px。参 CONTROL_SPEC §9。
-        if !self.content.is_empty() {
+        if !self.content.is_empty() && !has_content_children {
             let content_style = kanesumi_core::MetroTypography::metro().body_medium;
-            let title_margin = if self.title.is_empty() { 0.0 } else { 12.0 };
-            let y_off = title_h + title_margin;
-            let content_rect = Rect::new(
-                inner.origin.x,
-                inner.origin.y + y_off,
-                inner.size.width,
-                (inner.size.height - 32.0 - y_off).max(0.0),
-            );
             scene.text(
                 self.content.clone(),
-                content_rect,
+                self.content_area(box_rect),
                 colors.on_surface,
                 content_style,
                 TextAlign::Left,
             );
         }
 
-        // 按钮区（右下，Primary → Secondary → Close）
-        let buttons = [
-            (self.buttons.close.as_deref(), 0),
-            (self.buttons.secondary.as_deref(), 1),
-            (self.buttons.primary.as_deref(), 2),
-        ];
-        let button_w = 130.0_f32.min(202.0);
-        let mut x = box_rect.origin.x + box_rect.size.width - pad;
-        for (label, slot) in buttons {
-            let Some(label) = label else { continue };
-            x -= button_w;
-            let default = match slot {
-                0 => self.buttons.default_button == DialogDefaultButton::Close,
-                1 => self.buttons.default_button == DialogDefaultButton::Secondary,
-                _ => self.buttons.default_button == DialogDefaultButton::Primary,
-            };
+        // 按钮区（右下）：布局与命中、无障碍共用 `button_layout`，不在此另算一遍。
+        for (slot, label, btn_rect) in self.button_layout(box_rect) {
+            let default = matches!(
+                (slot, self.buttons.default_button),
+                (DialogButton::Primary, DialogDefaultButton::Primary)
+                    | (DialogButton::Secondary, DialogDefaultButton::Secondary)
+                    | (DialogButton::Close, DialogDefaultButton::Close)
+            );
             let mut btn = if default {
-                MetroButton::accent(label.to_string())
+                MetroButton::accent(label)
             } else {
-                MetroButton::new(label.to_string())
+                MetroButton::new(label)
             };
             btn.state = ControlState::Normal;
-            let btn_rect = Rect::new(
-                x,
-                box_rect.origin.y + box_rect.size.height - 24.0 - 32.0,
-                button_w,
-                32.0,
-            );
             btn.render(theme, engine, btn_rect, scene);
-            x -= 2.0; // 按钮间距
         }
     }
 }
@@ -364,10 +356,45 @@ impl MetroDialog {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DialogResult(pub DialogButton);
 
-/// 盒体固有高（旧 `box_rect` 的 240，受表面高夹紧）。
+/// 盒体固有高（旧 `box_rect` 的 240，受表面高夹紧；无内容子树时沿用）。
 const DIALOG_BOX_H: f32 = 240.0;
 
+// 盒体内边距与行高（CONTROL_SPEC §9：Padding `24,18,24,24`、按钮高 32）。
+const DIALOG_PAD_X: f32 = 24.0;
+const DIALOG_PAD_TOP: f32 = 18.0;
+const DIALOG_PAD_BOTTOM: f32 = 24.0;
+const DIALOG_TITLE_GAP: f32 = 12.0;
+const DIALOG_CONTENT_GAP: f32 = 8.0;
+const DIALOG_BUTTON_ROW: f32 = 32.0;
+/// 高度范围（CONTROL_SPEC §9 Min/Max 184/756）。
+const DIALOG_MIN_H: f32 = 184.0;
+const DIALOG_MAX_H: f32 = 756.0;
+
 impl MetroDialog {
+    /// 内容区（标题之下、按钮行之上的矩形）——文本正文与内容子树共用同一个矩形，
+    /// 免得「有子节点」和「只有文字」两种对话框的正文起点差几像素。
+    pub fn content_area(&self, box_rect: Rect) -> Rect {
+        let inner = Rect::new(
+            box_rect.origin.x + DIALOG_PAD_X,
+            box_rect.origin.y + DIALOG_PAD_TOP,
+            (box_rect.size.width - DIALOG_PAD_X * 2.0).max(0.0),
+            (box_rect.size.height - DIALOG_PAD_TOP - DIALOG_PAD_BOTTOM).max(0.0),
+        );
+        let title_h = if self.title.is_empty() { 0.0 } else { 26.0 };
+        let title_gap = if self.title.is_empty() {
+            0.0
+        } else {
+            DIALOG_TITLE_GAP
+        };
+        let y_off = title_h + title_gap;
+        Rect::new(
+            inner.origin.x,
+            inner.origin.y + y_off,
+            inner.size.width,
+            (inner.size.height - DIALOG_BUTTON_ROW - DIALOG_CONTENT_GAP - y_off).max(0.0),
+        )
+    }
+
     /// 元素树：模态打开（表面居中、焦点陷阱、点外部不关闭）。返回弹层 id。
     pub fn show_modal(&mut self, ctx: &mut EventCtx) -> WidgetId {
         let id = ctx.open_popup(
@@ -386,16 +413,52 @@ impl MetroDialog {
 }
 
 impl Widget for MetroDialog {
-    fn measure(&mut self, _ctx: &mut MeasureCtx, _available: Size) -> Size {
-        Size::new(
-            self.width.clamp(self.min_width, self.max_width),
-            DIALOG_BOX_H,
-        )
+    /// 尺寸：宽按 `width` 夹在 MIN/MAX 宽；高在**有内容子树**时按内容算
+    /// （18 上边距 + 标题行 + 12 间距 + 内容 + 8 间距 + 32 按钮行 + 24 下边距），
+    /// 夹在 CONTROL_SPEC §9 的 184..756；无内容子树时沿用固定 240（纯文本对话框）。
+    fn measure(&mut self, ctx: &mut MeasureCtx, available: Size) -> Size {
+        let width = self.width.clamp(self.min_width, self.max_width);
+        let kids = ctx.children();
+        if kids.is_empty() {
+            return Size::new(width, DIALOG_BOX_H);
+        }
+        let style = kanesumi_core::MetroTypography::metro().body_medium;
+        let title_h = if self.title.is_empty() {
+            0.0
+        } else {
+            let title_style =
+                TextStyle::new(20.0, 26.0, kanesumi_core::typography::heading_weight());
+            title_style.line_height
+        };
+        let title_margin = if self.title.is_empty() { 0.0 } else { 12.0 };
+        let chrome = DIALOG_PAD_TOP + title_h + title_margin + DIALOG_CONTENT_GAP
+            + DIALOG_BUTTON_ROW
+            + DIALOG_PAD_BOTTOM;
+        let avail = Size::new(
+            (width - DIALOG_PAD_X * 2.0).max(0.0),
+            (available.height - chrome).max(0.0),
+        );
+        let mut content = Size::new(0.0, style.line_height);
+        for c in kids {
+            let d = ctx.measure_child(c, avail);
+            content = Size::new(content.width.max(d.width), content.height.max(d.height));
+        }
+        let height = (chrome + content.height).clamp(DIALOG_MIN_H, DIALOG_MAX_H);
+        Size::new(width, height)
+    }
+
+    /// 内容子树排进标题之下、按钮行之上的内容区。
+    fn arrange(&mut self, ctx: &mut ArrangeCtx, rect: Rect) {
+        let inner = self.content_area(rect);
+        for c in ctx.children() {
+            ctx.arrange_child(c, inner);
+        }
     }
 
     fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
         let theme = *ctx.theme();
-        self.render_box(&theme, ctx.engine(), ctx.rect(), scene);
+        let has_content = !ctx.children().is_empty();
+        self.render_box(&theme, ctx.engine(), ctx.rect(), scene, has_content);
     }
 
     fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
@@ -449,6 +512,39 @@ impl Widget for MetroDialog {
             checked: None,
         })
     }
+
+    /// 合成项：对话框按钮（UIA 里按钮是该 Group 的子元素）。
+    ///
+    /// 按钮是控件自绘的（不是框架节点），所以 Tab 走到不了它们 —— 读屏至少要能枚举、
+    /// 能读到名字与是否默认按钮（默认按钮在名字后缀「（默认）」）。把按钮做成真节点是
+    /// 另一张卡（要动焦点陷阱与 Enter 语义），这里先补可读性。
+    fn access_items(
+        &self,
+        rect: Rect,
+        _theme: &kanesumi_core::MetroTheme,
+    ) -> Vec<kanesumi_element::AccessItem> {
+        self.button_layout(rect)
+            .into_iter()
+            .map(|(slot, label, bounds)| {
+                let is_default = matches!(
+                    (slot, self.buttons.default_button),
+                    (DialogButton::Primary, DialogDefaultButton::Primary)
+                        | (DialogButton::Secondary, DialogDefaultButton::Secondary)
+                        | (DialogButton::Close, DialogDefaultButton::Close)
+                );
+                let name = if is_default {
+                    format!("{label}（默认）")
+                } else {
+                    label
+                };
+                kanesumi_element::AccessItem::new(
+                    kanesumi_element::AccessRole::Button,
+                    name,
+                    bounds,
+                )
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -458,6 +554,110 @@ mod tree_tests {
     use kanesumi_element::testing::TestHarness;
     use kanesumi_element::{Align, Insets, LayoutProps};
 
+    // ── 内容槽与按钮无障碍（2026-11-06）────────────────────────────────────
+
+    /// 带内容子树的对话框：标题 + 一个固定尺寸的「内容」。
+    fn content_harness(child: Size) -> (TestHarness, WidgetId, WidgetId) {
+        struct Probe {
+            size: Size,
+        }
+        impl Widget for Probe {
+            fn measure(&mut self, _: &mut MeasureCtx, _: Size) -> Size {
+                self.size
+            }
+            fn paint(&mut self, _: &mut PaintCtx, _: &mut Scene) {}
+        }
+        let mut h = TestHarness::new(600.0, 700.0);
+        let mut dlg = MetroDialog::new("重命名", "占位正文");
+        dlg.buttons.primary = Some("确定".into());
+        dlg.buttons.close = Some("取消".into());
+        dlg.buttons.default_button = DialogDefaultButton::Primary;
+        let opener = h.tree.insert_with(
+            h.root(),
+            Opener { dlg },
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        let popup = open(&mut h, opener);
+        let content = h
+            .tree
+            .insert_with(popup, Probe { size: child }, LayoutProps::default());
+        h.frame();
+        (h, popup, content)
+    }
+
+    #[test]
+    fn content_slot_sizes_dialog_by_its_child() {
+        let (h, popup, content) = content_harness(Size::new(200.0, 300.0));
+        let r = h.rect(popup);
+        assert!(
+            r.size.height > DIALOG_BOX_H,
+            "内容 300 高时对话框要比固定 240 高：{}",
+            r.size.height
+        );
+        assert!(r.size.height <= DIALOG_MAX_H, "仍夹在最大高内：{}", r.size.height);
+        let cr = h.rect(content);
+        let area = {
+            let dlg = h.tree.get::<MetroDialog>(popup).expect("对话框");
+            dlg.content_area(r)
+        };
+        assert!(
+            (cr.origin.y - area.origin.y).abs() < 0.5
+                && (cr.origin.x - area.origin.x).abs() < 0.5,
+            "内容排在 content_area：{cr:?} vs {area:?}"
+        );
+        h.assert_contained();
+    }
+
+    #[test]
+    fn content_slot_suppresses_text_but_keeps_title() {
+        let (h, popup, _) = content_harness(Size::new(120.0, 40.0));
+        let texts: Vec<String> = h
+            .tree
+            .painted(popup)
+            .iter()
+            .filter_map(|c| match c {
+                kanesumi_canvas::SceneCommand::Text { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().any(|t| t == "重命名"), "标题照画：{texts:?}");
+        assert!(
+            !texts.iter().any(|t| t == "占位正文"),
+            "有内容子树时不画文本正文：{texts:?}"
+        );
+    }
+
+    #[test]
+    fn dialog_buttons_are_accessibility_items() {
+        let (h, popup, _) = content_harness(Size::new(120.0, 40.0));
+        let snap = h.access_snapshot();
+        let node = snap.find(popup).expect("对话框在快照内");
+        let names: Vec<&str> = node.items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["取消", "确定（默认）"], "按钮按从右到左报出，默认按钮带后缀");
+        let primary = node.items.iter().find(|i| i.name.contains("确定")).unwrap();
+        assert_eq!(primary.role, kanesumi_element::AccessRole::Button);
+        assert_eq!(primary.bounds.size.height, 32.0, "按钮高 32");
+        h.assert_access_contract();
+    }
+
+    #[test]
+    fn dialog_button_hit_matches_accessibility_bounds() {
+        // 渲染 / 命中 / 无障碍共用 `button_layout`，所以「看见的按钮」= 「能点的位置」= 「报出去的矩形」。
+        let (h, popup, _) = content_harness(Size::new(120.0, 40.0));
+        let snap = h.access_snapshot();
+        let node = snap.find(popup).expect("对话框在快照内");
+        let dlg = h.tree.get::<MetroDialog>(popup).expect("对话框");
+        for item in &node.items {
+            let p = item.bounds.center();
+            let hit = dlg.hit_button_in(h.rect(popup), p);
+            assert!(hit.is_some(), "无障碍报出的按钮矩形中心必须能命中：{} {p:?}", item.name);
+        }
+    }
     /// 触发器：点击模态打开对话框。
     struct Opener {
         dlg: MetroDialog,
@@ -476,6 +676,15 @@ mod tree_tests {
         }
         fn focusable(&self) -> bool {
             true
+        }
+        /// 夹具也是可聚焦控件：无障碍契约要求有角色与名字。
+        fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
+            Some(kanesumi_element::AccessInfo {
+                role: kanesumi_element::AccessRole::Button,
+                name: "打开对话框".to_string(),
+                value: None,
+                checked: None,
+            })
         }
     }
 
