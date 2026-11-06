@@ -317,6 +317,17 @@ impl PaintCtx<'_> {
     pub fn state(&self) -> ControlStates {
         self.state
     }
+    /// 本节点的子节点（含被回收池隐藏的）。
+    ///
+    /// 绘制期需要它的理由：带**内容槽**的控件（按钮里放图标 + 文字，XAML
+    /// `Button.Content`）要据此决定「画自己的标签」还是「把画面让给内容」。
+    /// 只读 —— 控件不得在绘制期改树。
+    pub fn children(&self) -> Vec<WidgetId> {
+        self.tree.children(self.id).to_vec()
+    }
+    pub fn child_props(&self, child: WidgetId) -> LayoutProps {
+        self.tree.props(child).unwrap_or_default()
+    }
     /// 请求下一帧 `update`（视觉状态过渡 / 动画未到稳态）。
     pub fn request_anim_frame(&mut self) {
         self.tree.request_anim(self.id);
