@@ -1017,6 +1017,8 @@ else → SinglePane（PanePriority 指定单面板）
 > Settings 左侧导航 / Librarian 侧栏。Kanesumi 实现 Left（Pane）与 Top 两模式核心：
 > Pane toggle / 项列表（icon+label）/ 选中指示条 / Header+Content 布局。子项级联、flyout、
 > 动画式展开收窄暂略（Phase 3 续）。
+>
+> **无障碍（2026-11-06）**：导航项报成合成项（ListItem + selected + 展开时的子项与 xpanded）；Header 为空时控件名退回类型名级「导航」（可聚焦元素不得无名）。
 
 ### 结构与尺寸（Left 模式）
 
