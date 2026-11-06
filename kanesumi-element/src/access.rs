@@ -25,8 +25,9 @@ use std::fmt::Write as _;
 use kanesumi_core::{Point, Rect};
 
 use crate::id::WidgetId;
+use crate::props::Insets;
 use crate::tree::Tree;
-use crate::widget::{AccessInfo, AccessRole};
+use crate::widget::{AccessInfo, AccessItem, AccessRole};
 
 /// 无障碍快照节点 —— 纯数据（不含控件引用，不回指树）。
 ///
@@ -51,13 +52,20 @@ pub struct AccessNode {
     pub focusable: bool,
     /// arrange 后的矩形（与命中所用的同一 rect）。
     pub bounds: Rect,
+    /// 控件声明的绘制外扩（`Widget::paint_overflow`）。级联子菜单这类内容在矩形之外，
+    /// 合成项的可交互范围按 `bounds ⊕ overflow` 判。
+    pub overflow: Insets,
     pub children: Vec<AccessNode>,
+    /// 控件自己报告的**合成项**（菜单条目、列表行这类画在单节点内的内容）。
+    /// 与 `children` 的区别：合成项不参与命中 / 焦点 / 布局，是 AT 的可枚举视图。
+    pub items: Vec<AccessItem>,
 }
 
 impl AccessNode {
     /// 文本序列化（先序、每层缩进两格），供测试与报告比对。行格式：
     /// `[id] 角色 name="…" value="…" checked=… disabled focusable bounds=x,y 宽×高`；
     /// 角色缺失记 `-`，`Some` 但空的 name / value 原样输出（`name=""`），None 省略。
+    /// 合成项以 `#序号` 代替 `[id]`，缩进比其宿主节点多一层。
     pub fn to_text(&self) -> String {
         let mut out = String::new();
         self.write_to(&mut out, 0);
@@ -97,6 +105,9 @@ impl AccessNode {
         for c in &self.children {
             c.write_to(out, depth + 1);
         }
+        for (i, item) in self.items.iter().enumerate() {
+            item.write_to(out, depth + 1, i);
+        }
     }
 
     /// 按节点 id 查子树里的快照节点（测试与诊断用）。
@@ -105,6 +116,22 @@ impl AccessNode {
             return Some(self);
         }
         self.children.iter().find_map(|c| c.find(id))
+    }
+
+    /// 按名字查合成项（含子项；测试与诊断用）。
+    pub fn find_item(&self, name: &str) -> Option<&AccessItem> {
+        fn find_in<'a>(items: &'a [AccessItem], name: &str) -> Option<&'a AccessItem> {
+            for it in items {
+                if it.name == name {
+                    return Some(it);
+                }
+                if let Some(found) = find_in(&it.children, name) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find_in(&self.items, name).or_else(|| self.children.iter().find_map(|c| c.find_item(name)))
     }
 }
 
@@ -118,14 +145,47 @@ fn role_label(role: Option<AccessRole>) -> &'static str {
         Some(AccessRole::List) => "List",
         Some(AccessRole::ListItem) => "ListItem",
         Some(AccessRole::Menu) => "Menu",
+        Some(AccessRole::MenuItem) => "MenuItem",
         Some(AccessRole::Group) => "Group",
         Some(AccessRole::Other) => "Other",
         None => "-",
     }
 }
 
-// ── 快照 ─────────────────────────────────────────────────────────────────────
+// ── 合成项的序列化 ───────────────────────────────────────────────────────────
 
+impl AccessItem {
+    fn write_to(&self, out: &mut String, depth: usize, index: usize) {
+        let _ = write!(
+            out,
+            "{}#{index} {} name=\"{}\"",
+            "  ".repeat(depth),
+            role_label(Some(self.role)),
+            self.name
+        );
+        if let Some(v) = &self.value {
+            let _ = write!(out, " value=\"{v}\"");
+        }
+        if let Some(c) = self.checked {
+            let _ = write!(out, " checked={c}");
+        }
+        if self.disabled {
+            out.push_str(" disabled");
+        }
+        let b = self.bounds;
+        let _ = write!(
+            out,
+            " bounds={},{} {}×{}",
+            b.origin.x, b.origin.y, b.size.width, b.size.height
+        );
+        out.push('\n');
+        for (i, c) in self.children.iter().enumerate() {
+            c.write_to(out, depth + 1, i);
+        }
+    }
+}
+
+// ── 快照 ─────────────────────────────────────────────────────────────────────
 /// 从 `root` 导出子树快照，并把覆盖层上打开的弹层按打开顺序追加为根节点的后续子节点。
 /// 隐藏节点（含其子树）与控件已被取出的节点不出现；先序即树序，同一棵树两次快照逐字段相等。
 pub(crate) fn snapshot_root(tree: &Tree, root: WidgetId) -> AccessNode {
@@ -145,6 +205,7 @@ fn walk(tree: &Tree, id: WidgetId) -> AccessNode {
         Some(i) => (Some(i.role), Some(i.name), i.value, i.checked),
         None => (None, None, None, None),
     };
+    let bounds = tree.rect(id).unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
     AccessNode {
         id,
         role,
@@ -156,13 +217,16 @@ fn walk(tree: &Tree, id: WidgetId) -> AccessNode {
         selected: None,
         disabled: tree.states_of(id).disabled,
         focusable: widget.is_some_and(|w| w.focusable()),
-        bounds: tree.rect(id).unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0)),
+        bounds,
+        overflow: widget.map(|w| w.paint_overflow()).unwrap_or(Insets::ZERO),
         children: tree
             .children(id)
             .iter()
             .filter(|&&c| tree.is_visible(c) && tree.access_widget(c).is_some())
             .map(|&c| walk(tree, c))
             .collect(),
+        // 合成项：控件把「画在自己矩形里的那些行」报成 AT 子元素（菜单条目这类）。
+        items: widget.map(|w| w.access_items(bounds)).unwrap_or_default(),
     }
 }
 
@@ -189,6 +253,10 @@ pub enum AccessViolationKind {
     HitResultOutsideBounds,
     /// 快照 disabled 与框架状态不一致（快照已过期）。
     DisabledMismatch,
+    /// 合成项名字为空白。
+    ItemNoName,
+    /// 合成项 bounds 超出宿主可交互范围（bounds ⊕ paint_overflow）。
+    ItemOutsideHost,
 }
 
 impl AccessViolationKind {
@@ -200,6 +268,8 @@ impl AccessViolationKind {
             Self::HitOutsideBounds => "命中越出 bounds",
             Self::HitResultOutsideBounds => "命中结果不在 bounds 内",
             Self::DisabledMismatch => "禁用态未反映",
+            Self::ItemNoName => "合成项无名字",
+            Self::ItemOutsideHost => "合成项越出宿主范围",
         }
     }
 }
@@ -209,6 +279,7 @@ pub fn check_access_contract(tree: &Tree, root: &AccessNode) -> Vec<AccessViolat
     let mut out = check_focusable_named(root);
     out.extend(check_bounds_hit(tree, root));
     out.extend(check_disabled_state(tree, root));
+    out.extend(check_items(root));
     out
 }
 
@@ -239,6 +310,57 @@ fn visit_named(n: &AccessNode, out: &mut Vec<AccessViolation>) {
     for c in &n.children {
         visit_named(c, out);
     }
+}
+
+/// 契约五：合成项必须有名字，且**落在宿主控件的可交互范围**内
+/// （`bounds ⊕ paint_overflow`）—— 读屏点到的地方必须真能点到。
+pub fn check_items(root: &AccessNode) -> Vec<AccessViolation> {
+    let mut out = Vec::new();
+    visit_items(root, &mut out);
+    out
+}
+
+fn visit_items(n: &AccessNode, out: &mut Vec<AccessViolation>) {
+    if !n.items.is_empty() {
+        // 合成项的范围 = 宿主 bounds ⊕ 控件的绘制外扩声明（菜单的级联子面板就在这里）。
+        let area = n.overflow.inflate(n.bounds);
+        for item in &n.items {
+            visit_item(item, n.id, area, out);
+        }
+    }
+    for c in &n.children {
+        visit_items(c, out);
+    }
+}
+
+fn visit_item(item: &AccessItem, host: WidgetId, area: Rect, out: &mut Vec<AccessViolation>) {
+    if item.name.trim().is_empty() {
+        out.push(AccessViolation {
+            id: host,
+            kind: AccessViolationKind::ItemNoName,
+            detail: format!("合成项（{:?}）名字为空白", item.role),
+        });
+    }
+    if !rect_within(item.bounds, area, 0.5) {
+        out.push(AccessViolation {
+            id: host,
+            kind: AccessViolationKind::ItemOutsideHost,
+            detail: format!(
+                "合成项「{}」bounds {:?} 超出宿主可交互范围 {area:?}",
+                item.name, item.bounds
+            ),
+        });
+    }
+    for c in &item.children {
+        visit_item(c, host, area, out);
+    }
+}
+
+fn rect_within(inner: Rect, outer: Rect, eps: f32) -> bool {
+    inner.origin.x >= outer.origin.x - eps
+        && inner.origin.y >= outer.origin.y - eps
+        && inner.right() <= outer.right() + eps
+        && inner.bottom() <= outer.bottom() + eps
 }
 
 /// 契约二：报告 bounds 与命中区一致。
@@ -728,6 +850,163 @@ mod tests {
     fn harness_assert_passes_on_wellformed_tree() {
         let (h, _, _) = harness();
         h.assert_access_contract();
+    }
+
+    // ── 合成项（画在单节点里的行，如菜单条目）──────────────────────────────────
+
+    /// 报告合成项的探针：行高 24，`items` 按 rect 生成，可故意越界 / 无名。
+    struct ItemProbe {
+        rows: usize,
+        /// 每行名字；空串 = 故意违例。
+        names: Vec<String>,
+        /// 越出宿主矩形多少（0 = 规整）。
+        overflow_rows: f32,
+    }
+
+    impl Widget for ItemProbe {
+        fn measure(&mut self, _ctx: &mut MeasureCtx, _available: Size) -> Size {
+            Size::new(120.0, 24.0 * self.rows as f32)
+        }
+        fn paint(&mut self, _ctx: &mut PaintCtx, _scene: &mut Scene) {}
+        fn accessibility(&self) -> Option<AccessInfo> {
+            Some(AccessInfo {
+                role: AccessRole::Menu,
+                name: "菜单".into(),
+                value: None,
+                checked: None,
+            })
+        }
+        fn access_items(&self, rect: Rect) -> Vec<AccessItem> {
+            (0..self.rows)
+                .map(|i| {
+                    AccessItem::new(
+                        AccessRole::MenuItem,
+                        self.names.get(i).cloned().unwrap_or_default(),
+                        Rect::new(
+                            rect.origin.x,
+                            rect.origin.y + i as f32 * 24.0 + self.overflow_rows,
+                            rect.size.width,
+                            24.0,
+                        ),
+                    )
+                })
+                .collect()
+        }
+    }
+
+    fn item_harness(probe: ItemProbe) -> (TestHarness, crate::id::WidgetId) {
+        let mut h = TestHarness::new(300.0, 200.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            probe,
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    #[test]
+    fn synthesized_items_are_in_snapshot_and_serialized() {
+        let (h, id) = item_harness(ItemProbe {
+            rows: 2,
+            names: vec!["复制".into(), "粘贴".into()],
+            overflow_rows: 0.0,
+        });
+        let snap = h.tree.access_snapshot();
+        let node = snap.find(id).expect("节点在快照内");
+        assert_eq!(node.items.len(), 2, "两行命令各是一个合成项");
+        assert_eq!(node.items[0].name, "复制");
+        assert_eq!(node.items[0].role, AccessRole::MenuItem);
+        assert!(
+            node.items[0].bounds.origin.y >= node.bounds.origin.y - 0.5,
+            "合成项 bounds 在宿主坐标系内"
+        );
+        let text = snap.to_text();
+        assert!(text.contains("#0 MenuItem name=\"复制\""), "文本序列化带 #序号：\n{text}");
+        assert!(text.contains("#1 MenuItem name=\"粘贴\""), "{text}");
+        h.assert_access_contract();
+    }
+
+    #[test]
+    fn item_outside_host_is_flagged() {
+        let (h, id) = item_harness(ItemProbe {
+            rows: 2,
+            names: vec!["复制".into(), "粘贴".into()],
+            // 第二行整体下移一行高：越出宿主 bounds（且该探针没有声明外扩）。
+            overflow_rows: 24.0,
+        });
+        let snap = h.tree.access_snapshot();
+        let kinds: Vec<_> = check_items(&snap)
+            .into_iter()
+            .filter(|v| v.id == id)
+            .map(|v| v.kind)
+            .collect();
+        assert!(
+            kinds.contains(&AccessViolationKind::ItemOutsideHost),
+            "越出宿主的合成项要被抓住：{kinds:?}"
+        );
+    }
+
+    #[test]
+    fn item_without_name_is_flagged() {
+        let (h, id) = item_harness(ItemProbe {
+            rows: 1,
+            names: vec![String::new()],
+            overflow_rows: 0.0,
+        });
+        let snap = h.tree.access_snapshot();
+        let kinds: Vec<_> = check_items(&snap)
+            .into_iter()
+            .filter(|v| v.id == id)
+            .map(|v| v.kind)
+            .collect();
+        assert!(
+            kinds.contains(&AccessViolationKind::ItemNoName),
+            "空白名字的合成项要被抓住：{kinds:?}"
+        );
+    }
+
+    #[test]
+    fn declared_overflow_covers_synthesized_items() {
+        // 与菜单同构：级联子面板画在宿主矩形之外，但控件声明了外扩 → 子项合法。
+        struct OverflowMenu;
+        impl Widget for OverflowMenu {
+            fn measure(&mut self, _: &mut MeasureCtx, _: Size) -> Size {
+                Size::new(80.0, 40.0)
+            }
+            fn paint(&mut self, _: &mut PaintCtx, _: &mut Scene) {}
+            fn paint_overflow(&self) -> Insets {
+                Insets::new(0.0, 0.0, 80.0, 0.0)
+            }
+            fn access_items(&self, rect: Rect) -> Vec<AccessItem> {
+                vec![AccessItem::new(
+                    AccessRole::MenuItem,
+                    "级联项",
+                    Rect::new(rect.right() + 4.0, rect.origin.y, 60.0, 20.0),
+                )]
+            }
+        }
+        let mut h = TestHarness::new(300.0, 200.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            OverflowMenu,
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        let snap = h.tree.access_snapshot();
+        let vs = check_items(&snap);
+        assert!(
+            vs.iter().all(|v| v.id != id),
+            "声明过外扩时，外扩区里的合成项合法：{vs:?}"
+        );
     }
 
     // ── 覆盖层弹层入快照（菜单族无障碍的地基）──────────────────────────────────

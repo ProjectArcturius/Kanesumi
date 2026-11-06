@@ -33,8 +33,8 @@ pub struct ControlStates {
 ///
 /// 角色词表只收录**已有控件在用**的项。缺角色时宁可加一项并写明消费者，也不要把菜单
 /// 塞进 `Group` / `List`：AT 读出的控件类型会直接说谎，而类型是读屏播报的第一句。
-/// `Menu` = UIA `ControlType.Menu` / AT-SPI `menu`（菜单面板；条目在快照里暂不是独立
-/// 节点，见 `access.rs` 头注）。
+/// `Menu` = UIA `ControlType.Menu` / AT-SPI `menu`（菜单面板）；
+/// `MenuItem` = UIA `ControlType.MenuItem` / AT-SPI `menu item`（菜单里的一条命令）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessRole {
     Button,
@@ -45,6 +45,7 @@ pub enum AccessRole {
     List,
     ListItem,
     Menu,
+    MenuItem,
     Group,
     Other,
 }
@@ -56,6 +57,41 @@ pub struct AccessInfo {
     pub value: Option<String>,
     /// 勾选 / 开关态（不适用为 None）。
     pub checked: Option<bool>,
+}
+
+/// **合成无障碍项**：控件自己报告的一行 AT 子元素（对应 UIA 的「项 Peer」）。
+///
+/// 为什么需要这一层：菜单、列表这类控件把几十行内容画在**一个**框架节点里，
+/// 它们不是树的子节点 —— 但读屏必须能逐条枚举、逐条读角色与勾选态。WinUI 的做法也是
+/// 给虚拟化项合成 AutomationPeer，而不是给每一行建一个框架元素。
+///
+/// 与真节点的区别（也是约束）：合成项**不参与命中、焦点与布局**，几何由控件自己算并原样
+/// 上报；框架只校验它落在控件矩形 ⊕ `paint_overflow` 之内（否则读屏点到的地方点不出东西）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccessItem {
+    pub role: AccessRole,
+    pub name: String,
+    pub value: Option<String>,
+    pub checked: Option<bool>,
+    /// 控件坐标系里的矩形（与被报告节点的 bounds 同一坐标系）。
+    pub bounds: Rect,
+    pub disabled: bool,
+    /// 子项（子菜单的条目挂在父项之下，不摊平到同一层）。
+    pub children: Vec<AccessItem>,
+}
+
+impl AccessItem {
+    pub fn new(role: AccessRole, name: impl Into<String>, bounds: Rect) -> Self {
+        Self {
+            role,
+            name: name.into(),
+            value: None,
+            checked: None,
+            bounds,
+            disabled: false,
+            children: Vec::new(),
+        }
+    }
 }
 
 /// 控件契约。
@@ -189,6 +225,14 @@ pub trait Widget: Any {
 
     fn accessibility(&self) -> Option<AccessInfo> {
         None
+    }
+
+    /// **合成无障碍项**：本控件内部的 AT 子元素（菜单条目、列表行这类画在一个节点里的内容）。
+    ///
+    /// `rect` = 本节点 arrange 后的矩形；返回的项用自己的 `bounds` 上报位置。
+    /// 默认空 —— 普通控件只实现 [`Self::accessibility`]。参 [`AccessItem`] 的「与真节点的区别」。
+    fn access_items(&self, _rect: Rect) -> Vec<AccessItem> {
+        Vec::new()
     }
 
     /// 诊断用类型名。

@@ -40,6 +40,6 @@ pub use tree::{
 };
 pub use visual_state::VisualState;
 pub use widget::{
-    AccessInfo, AccessRole, ArrangeCtx, ControlStates, EventCtx, MeasureCtx, PaintCtx, RealizeCtx,
+    AccessInfo, AccessItem, AccessRole, ArrangeCtx, ControlStates, EventCtx, MeasureCtx, PaintCtx, RealizeCtx,
     UpdateCtx, Widget,
 };
