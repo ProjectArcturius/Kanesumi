@@ -35,7 +35,9 @@ impl Grid {
         }
     }
 
-    /// 常见表单：左列固定标签宽、右列吃满剩余。
+    /// 常见表单：左列固定标签宽、右列吃满剩余。**行数不必声明** —— 子节点落在声明范围外时
+    /// 按隐式 `Auto` 轨道逐行补出（见 [`Self::effective_tracks`]），所以 `.form(140.0)` 一行写完，
+    /// 内容有多少行就是多少行。
     pub fn form(label_width: f32) -> Self {
         Self::new(
             vec![GridLength::Auto],
@@ -54,6 +56,29 @@ impl Grid {
         (self.grid.rows.len(), self.grid.cols.len())
     }
 
+    /// 有效轨道 = 声明轨道 + **隐式补出的 `Auto` 轨道**。
+    ///
+    /// 子节点落在声明范围之外时（`Grid::form(140.0)` 只声明一行，却写了五行内容），
+    /// 按 CSS 网格的隐式轨道语义补 `Auto`，而不是像 XAML 那样把越界子节点丢进最后一格
+    /// 叠在一起 —— 叠在一起是最难查的一类布局 bug，静默重叠比「明显多一行」糟得多。
+    /// 应用因此不必数行数：`form()` 写一次，行数由内容决定。
+    fn effective_tracks(&self, kids: &[(WidgetId, LayoutProps)]) -> MetroGrid {
+        let mut g = self.grid.clone();
+        let (mut rows, mut cols) = (g.rows.len(), g.cols.len());
+        for (_, p) in kids {
+            let c = p.grid_cell;
+            rows = rows.max(c.row + c.row_span.max(1));
+            cols = cols.max(c.col + c.col_span.max(1));
+        }
+        while g.rows.len() < rows {
+            g.rows.push(GridLength::Auto);
+        }
+        while g.cols.len() < cols {
+            g.cols.push(GridLength::Auto);
+        }
+        g
+    }
+
     /// 可见子节点及其布局属性。
     fn kids(ctx_children: Vec<WidgetId>, props: impl Fn(WidgetId) -> LayoutProps) -> Vec<(WidgetId, LayoutProps)> {
         ctx_children
@@ -69,22 +94,26 @@ impl Grid {
     /// 量测期据此求总尺寸；排布期 `MetroGrid::resolve` 只在 Star 轨道上覆盖这两列值。
     fn measure_tracks(
         &self,
+        tracks: &MetroGrid,
         kids: &[(WidgetId, LayoutProps)],
         available: Size,
         measure: &mut dyn FnMut(WidgetId, Size) -> Size,
     ) -> (Vec<f32>, Vec<f32>) {
-        let (rows, cols) = self.tracks();
-        let mut auto_rows = vec![0.0f32; rows];
-        let mut auto_cols = vec![0.0f32; cols];
+        let mut auto_rows = vec![0.0f32; tracks.rows.len()];
+        let mut auto_cols = vec![0.0f32; tracks.cols.len()];
         for (c, p) in kids {
             let d = measure(*c, available);
             let cell = p.grid_cell;
             // 跨轨道子节点不参与单轨道 Auto 求解（与 UWP 一样：跨轨道时 Auto 只按单跨内容算，
             // 跨轨道内容超出由夹紧兜住），避免一条内容撑大整排轨道。
-            if cell.row < rows && (cell.row_span == 1 || !matches!(self.grid.rows[cell.row], GridLength::Auto)) {
+            if cell.row < auto_rows.len()
+                && (cell.row_span == 1 || !matches!(tracks.rows[cell.row], GridLength::Auto))
+            {
                 auto_rows[cell.row] = auto_rows[cell.row].max(d.height);
             }
-            if cell.col < cols && (cell.col_span == 1 || !matches!(self.grid.cols[cell.col], GridLength::Auto)) {
+            if cell.col < auto_cols.len()
+                && (cell.col_span == 1 || !matches!(tracks.cols[cell.col], GridLength::Auto))
+            {
                 auto_cols[cell.col] = auto_cols[cell.col].max(d.width);
             }
         }
@@ -95,21 +124,23 @@ impl Grid {
 impl Widget for Grid {
     fn measure(&mut self, ctx: &mut MeasureCtx, available: Size) -> Size {
         let kids = Self::kids(ctx.children(), |c| ctx.child_props(c));
-        let (rows, cols) = self.tracks();
-        if kids.is_empty() || rows == 0 || cols == 0 {
+        if kids.is_empty() {
             return Size::ZERO;
         }
-        let (auto_rows, auto_cols) =
-            self.measure_tracks(&kids, available, &mut |c, avail| ctx.measure_child(c, avail));
+        let tracks = self.effective_tracks(&kids);
+        let (rows, cols) = (tracks.rows.len(), tracks.cols.len());
+        let (auto_rows, auto_cols) = self.measure_tracks(&tracks, &kids, available, &mut |c, avail| {
+            ctx.measure_child(c, avail)
+        });
 
         let (mut w, mut h) = (0.0f32, 0.0f32);
-        for (i, len) in self.grid.rows.iter().enumerate() {
+        for (i, len) in tracks.rows.iter().enumerate() {
             h += match len {
                 GridLength::Fixed(v) => v.max(0.0),
                 GridLength::Auto | GridLength::Star(_) => auto_rows[i],
             };
         }
-        for (i, len) in self.grid.cols.iter().enumerate() {
+        for (i, len) in tracks.cols.iter().enumerate() {
             w += match len {
                 GridLength::Fixed(v) => v.max(0.0),
                 GridLength::Auto | GridLength::Star(_) => auto_cols[i],
@@ -122,15 +153,16 @@ impl Widget for Grid {
 
     fn arrange(&mut self, ctx: &mut ArrangeCtx, rect: Rect) {
         let kids = Self::kids(ctx.children(), |c| ctx.child_props(c));
-        let (rows, cols) = self.tracks();
-        if kids.is_empty() || rows == 0 || cols == 0 {
+        if kids.is_empty() {
             return;
         }
-        let (auto_rows, auto_cols) =
-            self.measure_tracks(&kids, rect.size, &mut |c, avail| ctx.measure_child(c, avail));
-        let (heights, widths) = self.grid.resolve(rect, &auto_rows, &auto_cols);
+        let tracks = self.effective_tracks(&kids);
+        let (auto_rows, auto_cols) = self.measure_tracks(&tracks, &kids, rect.size, &mut |c, avail| {
+            ctx.measure_child(c, avail)
+        });
+        let (heights, widths) = tracks.resolve(rect, &auto_rows, &auto_cols);
         for (c, p) in &kids {
-            let slot = self.grid.child_rect(rect, &heights, &widths, p.grid_cell);
+            let slot = tracks.child_rect(rect, &heights, &widths, p.grid_cell);
             ctx.arrange_child(*c, slot);
         }
     }
@@ -198,10 +230,20 @@ mod tree_tests {
     }
 
     fn cell(row: usize, col: usize) -> LayoutProps {
-        LayoutProps {
-            grid_cell: GridChild::at(row, col),
-            ..LayoutProps::default()
-        }
+        LayoutProps::in_cell(row, col)
+    }
+
+    #[test]
+    fn props_helpers_express_cells_and_spans() {
+        // 附着属性的便捷写法与直接写 grid_cell 等价（应用侧不必自造 cell()）。
+        let p = LayoutProps::in_cell(2, 1).spanning(1, 3);
+        assert_eq!(p.grid_cell, GridChild::at(2, 1).with_span(1, 3));
+        assert_eq!(LayoutProps::in_cell(0, 0).grid_cell, GridChild::at(0, 0));
+        assert_eq!(
+            LayoutProps::in_cell(0, 0).spanning(0, 0).grid_cell,
+            GridChild::at(0, 0).with_span(1, 1),
+            "跨度下限 1，不会被写成 0"
+        );
     }
 
     #[test]
@@ -300,11 +342,29 @@ mod tree_tests {
 
     #[test]
     fn empty_tracks_layout_nothing_without_panic() {
-        // 空行/空列（审计 P0-3 的退化输入）：不 panic，且子节点拿不到轨道、保持零矩形。
+        // 声明零轨道（审计 P0-3 的退化输入）：不 panic。按隐式轨道语义，子节点各占一列
+        // 自动轨道 —— 会有布局，但绝不会静默重叠或落到零矩形。
         let (mut h, g) = grid_harness(Grid::new(Vec::new(), Vec::new()), 100.0, 50.0);
         let orphan = h.tree.insert_with(g, Probe::new(10.0, 10.0), cell(0, 0));
         h.frame();
-        assert_eq!(h.rect(orphan).size, Size::ZERO, "没有轨道 = 子节点无处安放");
+        assert!(h.rect(orphan).size.width > 0.0 && h.rect(orphan).size.height > 0.0);
+    }
+
+    #[test]
+    fn implicit_auto_rows_hold_form_rows_without_counting() {
+        // `Grid::form` 只声明一行；三行内容各自落在一行里，不叠在一起。
+        let (mut h, g) = grid_harness(Grid::form(140.0).with_gap(0.0, 16.0), 400.0, 200.0);
+        let mut rows = Vec::new();
+        for r in 0..3 {
+            let label = h.tree.insert_with(g, Probe::new(60.0, 20.0), cell(r, 0));
+            h.tree.insert_with(g, Probe::new(40.0, 20.0), cell(r, 1));
+            rows.push(label);
+        }
+        h.frame();
+        let ys: Vec<f32> = rows.iter().map(|id| h.rect(*id).origin.y).collect();
+        assert_eq!(ys, vec![0.0, 20.0, 40.0], "隐式 Auto 行逐行累加，不重叠");
+        assert_eq!(h.rect(rows[0]).origin.x, 0.0, "标签列贴左");
+        assert_eq!(h.rect(rows[0]).size.width, 140.0, "固定标签列宽");
     }
 
     #[test]
