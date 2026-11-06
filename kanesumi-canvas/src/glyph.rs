@@ -63,6 +63,38 @@ pub fn chevron_left(scene: &mut Scene, rect: Rect, color: Color) {
     scene.triangle(top, bottom, tip, color);
 }
 
+/// Check —— 菜单勾选标记（两段折线，短笔画在下、长笔画向上）。
+///
+/// 为什么自绘而不写字形：菜单勾选列要随行高缩放、要与文字基线无关地居中，
+/// 而且不能依赖字体里有 `U+2713`（参本文件头注的 codepoint 政策）。
+/// 每段折线 = 一个平行四边形 = 两个三角，整枚 4 条 Triangle 命令，与 chevron 同量级。
+pub fn check(scene: &mut Scene, rect: Rect, color: Color) {
+    // 归一化坐标（0..1）→ 实际矩形：勾的拐点在下方偏左，长笔画向右上。
+    let p = |x: f32, y: f32| {
+        Point::new(
+            rect.origin.x + x * rect.size.width,
+            rect.origin.y + y * rect.size.height,
+        )
+    };
+    let thickness = (rect.size.height * 0.16).max(1.0);
+    stroke_segment(scene, p(0.16, 0.54), p(0.42, 0.78), thickness, color);
+    stroke_segment(scene, p(0.42, 0.78), p(0.86, 0.26), thickness, color);
+}
+
+/// 把一条有宽度的线段画成平行四边形（两个三角）。
+fn stroke_segment(scene: &mut Scene, from: Point, to: Point, thickness: f32, color: Color) {
+    let (dx, dy) = (to.x - from.x, to.y - from.y);
+    let len = (dx * dx + dy * dy).sqrt().max(f32::EPSILON);
+    // 法向单位向量 × 半宽。
+    let (nx, ny) = (-dy / len * thickness / 2.0, dx / len * thickness / 2.0);
+    let a = Point::new(from.x + nx, from.y + ny);
+    let b = Point::new(to.x + nx, to.y + ny);
+    let c = Point::new(to.x - nx, to.y - ny);
+    let d = Point::new(from.x - nx, from.y - ny);
+    scene.triangle(a, b, c, color);
+    scene.triangle(a, c, d, color);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,5 +131,43 @@ mod tests {
         let center_y = 15.0;
         let min_y = p0.y.min(p1.y).min(p2.y);
         assert!(min_y < center_y, "尖端应在中心上方，min_y={min_y}");
+    }
+
+    #[test]
+    fn check_emits_four_triangles_inside_rect() {
+        let mut scene = Scene::default();
+        let rect = Rect::new(10.0, 20.0, 12.0, 12.0);
+        check(&mut scene, rect, Color::WHITE);
+        assert_eq!(scene.commands.len(), 4, "两段折线各两个三角");
+        for cmd in &scene.commands {
+            let SceneCommand::Triangle { p0, p1, p2, .. } = cmd else {
+                panic!("勾选标记只画三角");
+            };
+            for p in [p0, p1, p2] {
+                assert!(
+                    p.x >= rect.origin.x - 1.0
+                        && p.x <= rect.right() + 1.0
+                        && p.y >= rect.origin.y - 1.0
+                        && p.y <= rect.bottom() + 1.0,
+                    "笔迹越出 rect：{p:?} ⊄ {rect:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn check_thickness_scales_with_rect() {
+        // 行高翻倍时笔画也应更粗，否则 2× 下勾会细成一根发丝。
+        let mut small = Scene::default();
+        check(&mut small, Rect::new(0.0, 0.0, 12.0, 12.0), Color::WHITE);
+        let mut large = Scene::default();
+        check(&mut large, Rect::new(0.0, 0.0, 24.0, 24.0), Color::WHITE);
+        let width = |scene: &Scene| {
+            let SceneCommand::Triangle { p0, p1, .. } = &scene.commands[0] else {
+                panic!("应画三角");
+            };
+            (p1.y - p0.y).abs() + (p1.x - p0.x).abs()
+        };
+        assert!(width(&large) > width(&small), "大尺寸笔画更粗");
     }
 }
