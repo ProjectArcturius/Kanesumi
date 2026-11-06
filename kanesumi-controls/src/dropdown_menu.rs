@@ -3,12 +3,12 @@ use std::cell::Cell;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::sizes::ICON_12;
-use kanesumi_core::{MetroTheme, Point, Rect, TextStyle, TextVAlign};
+use kanesumi_core::{MetroTheme, Point, Rect, Size, TextStyle, TextVAlign};
 
 use kanesumi_element::{
     ArrangeCtx, Event, EventCtx, Insets, Key, MeasureCtx, PaintCtx, PointerButton, UpdateCtx,
     Widget,
-};)
+};
 
 use crate::popup::{PopupAnim, PopupState, place_submenu, popup_gap, render_overlay, snap_edge};
 
