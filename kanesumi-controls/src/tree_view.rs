@@ -501,6 +501,35 @@ impl kanesumi_element::Widget for MetroTreeView {
             checked: None,
         })
     }
+
+    /// 合成项：把**视口内的树节点**报成 AT 子项（UIA TreeItem 语义）。
+    ///
+    /// 与列表同一条规矩：只报可见行、bounds 裁到树矩形内（上报屏幕外的行会让读屏读到
+    /// 不存在的节点，契约 5 也会当场抓）。额外带 `expanded`（仅对有子节点的行）与 `selected`，
+    /// 读屏才能播报「已展开 / 已选中」。
+    fn access_items(
+        &self,
+        rect: Rect,
+        _theme: &kanesumi_core::MetroTheme,
+    ) -> Vec<kanesumi_element::AccessItem> {
+        self.visible_rows()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, row)| {
+                let y = rect.origin.y + i as f32 * TREE_ITEM_H - self.scroll;
+                let bounds =
+                    Rect::new(rect.origin.x, y, rect.size.width, TREE_ITEM_H).intersect(rect)?;
+                let mut item = kanesumi_element::AccessItem::new(
+                    kanesumi_element::AccessRole::TreeItem,
+                    row.label.clone(),
+                    bounds,
+                );
+                item.selected = Some(self.selected.as_deref() == Some(row.path.as_slice()));
+                item.expanded = row.has_children.then_some(row.expanded);
+                Some(item)
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -739,6 +768,79 @@ mod tree_tests {
         h.click_at(row_center(&h, id, 0));
         assert!(h.take::<TreeItemInvoked>().is_empty());
         assert_eq!(h.tree.get::<MetroTreeView>(id).unwrap().selected, None);
+    }
+
+
+    // ── 无障碍合成项（TreeItem）──────────────────────────────────────────────
+
+    #[test]
+    fn access_items_report_visible_tree_nodes() {
+        let (h, id) = harness_children();
+        let snap = h.access_snapshot();
+        let node = snap.find(id).expect("树在快照内");
+        let names: Vec<&str> = node.items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["文档", "图片"], "折叠态只报可见的两行");
+        assert_eq!(
+            node.items[0].role,
+            kanesumi_element::AccessRole::TreeItem
+        );
+        assert_eq!(node.items[0].expanded, Some(false), "有子节点的行报展开态");
+        assert_eq!(node.items[1].expanded, None, "叶子不报展开态");
+        h.assert_access_contract();
+    }
+
+    #[test]
+    fn access_items_follow_expand_and_selection() {
+        let (mut h, id) = harness_children();
+        h.tree.edit::<MetroTreeView, _>(id, |t, _| {
+            t.root.children[0].expanded = true;
+            t.selected = Some(vec![0, 1]);
+        });
+        h.frame();
+        let snap = h.access_snapshot();
+        let node = snap.find(id).expect("树在快照内");
+        let names: Vec<&str> = node.items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["文档", "项目", "报告", "图片"], "展开后子节点出现");
+        assert_eq!(node.items[0].expanded, Some(true));
+        let selected: Vec<&str> = node
+            .items
+            .iter()
+            .filter(|i| i.selected == Some(true))
+            .map(|i| i.name.as_str())
+            .collect();
+        assert_eq!(selected, vec!["报告"], "选中行带 selected");
+        h.assert_access_contract();
+    }
+
+    #[test]
+    fn access_items_clip_at_viewport_edge() {
+        // 视口 120 高、行高 28 → 5 行（最后一行只露一部分）；给 6 行，保证有行整行在视口外。
+        let (h, id) = harness(6, 120.0);
+        let snap = h.access_snapshot();
+        let node = snap.find(id).expect("树在快照内");
+        let rect_h = node.bounds.size.height;
+        let expected = (rect_h / TREE_ITEM_H).ceil() as usize + 1; // 根行 + 视口内的行
+        assert!(
+            !node.items.is_empty() && node.items.len() <= expected,
+            "只报视口内（含部分可见）的行：{} 项，上界 {expected}",
+            node.items.len()
+        );
+        for item in &node.items {
+            assert!(
+                item.bounds.origin.y >= node.bounds.origin.y - 0.5
+                    && item.bounds.bottom() <= node.bounds.bottom() + 0.5,
+                "合成项裁到树矩形内：{} {:?} ⊄ {:?}",
+                item.name,
+                item.bounds,
+                node.bounds
+            );
+            assert!(
+                item.bounds.size.height <= TREE_ITEM_H + 0.5,
+                "合成项高度不超过行高（被裁时更小）：{:?}",
+                item.bounds
+            );
+        }
+        h.assert_access_contract();
     }
 }
 

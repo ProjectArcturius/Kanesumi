@@ -34,7 +34,8 @@ pub struct ControlStates {
 /// 角色词表只收录**已有控件在用**的项。缺角色时宁可加一项并写明消费者，也不要把菜单
 /// 塞进 `Group` / `List`：AT 读出的控件类型会直接说谎，而类型是读屏播报的第一句。
 /// `Menu` = UIA `ControlType.Menu` / AT-SPI `menu`（菜单面板）；
-/// `MenuItem` = UIA `ControlType.MenuItem` / AT-SPI `menu item`（菜单里的一条命令）。
+/// `MenuItem` = UIA `ControlType.MenuItem` / AT-SPI `menu item`（菜单里的一条命令）；
+/// `TreeItem` = UIA `ControlType.TreeItem` / AT-SPI `tree item`（树的一个节点）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessRole {
     Button,
@@ -44,6 +45,7 @@ pub enum AccessRole {
     Label,
     List,
     ListItem,
+    TreeItem,
     Menu,
     MenuItem,
     Group,
@@ -75,6 +77,8 @@ pub struct AccessItem {
     pub checked: Option<bool>,
     /// 选中态（列表行这类；不适用为 None）。
     pub selected: Option<bool>,
+    /// 展开态（树节点 / 可折叠项；不适用为 None）。
+    pub expanded: Option<bool>,
     /// 键盘 / 指针的**当前项**（对话框按钮、工具栏这类自绘项用；读屏靠它播报「当前在哪个按钮」）。
     pub focused: bool,
     /// 控件坐标系里的矩形（与被报告节点的 bounds 同一坐标系）。
@@ -92,6 +96,7 @@ impl AccessItem {
             value: None,
             checked: None,
             selected: None,
+            expanded: None,
             focused: false,
             bounds,
             disabled: false,

@@ -144,6 +144,7 @@ fn role_label(role: Option<AccessRole>) -> &'static str {
         Some(AccessRole::Label) => "Label",
         Some(AccessRole::List) => "List",
         Some(AccessRole::ListItem) => "ListItem",
+        Some(AccessRole::TreeItem) => "TreeItem",
         Some(AccessRole::Menu) => "Menu",
         Some(AccessRole::MenuItem) => "MenuItem",
         Some(AccessRole::Group) => "Group",
@@ -171,6 +172,9 @@ impl AccessItem {
         }
         if let Some(v) = self.selected {
             let _ = write!(out, " selected={v}");
+        }
+        if let Some(v) = self.expanded {
+            let _ = write!(out, " expanded={v}");
         }
         if self.focused {
             out.push_str(" focused");

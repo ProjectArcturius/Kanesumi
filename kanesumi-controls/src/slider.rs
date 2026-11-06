@@ -176,7 +176,12 @@ impl MetroSlider {
         )
     }
 
-    /// 命中区（轨道全宽 × 以轨道为中线的 32 高）。
+    /// 命中区（轨道全宽 × 以轨道为中线的 32 高），**并夹进节点矩形**。
+    ///
+    /// 轨道中线按「底边 − 半行高」摆位，命中区再上下各扩半个行高；一旦宿主把滑块压得比
+    /// `SLIDER_MIN_H` 还矮（约束布局里很常见），这个扩展区就会伸到节点矩形**之外** ——
+    /// 于是「点上面那个标签的底边」会命中滑块。元素的命中区绝不能越出自身矩形
+    /// （框架不变式；无障碍契约 5 会当场报「命中越出 bounds」）。
     fn hit_rect(&self, rect: Rect) -> Rect {
         let track = self.track_rect(rect);
         let half = (SLIDER_MIN_H - SLIDER_TRACK_H) / 2.0;
@@ -186,6 +191,8 @@ impl MetroSlider {
             track.size.width,
             track.size.height + 2.0 * half,
         )
+        .intersect(rect)
+        .unwrap_or(Rect::new(rect.origin.x, rect.origin.y, rect.size.width, 0.0))
     }
 
     /// 命中区是否包含点（宿主据此路由 hit_test）。
@@ -426,6 +433,38 @@ mod tree_tests {
         let v = actions[0].1;
         assert!((v.0 - 50.0).abs() < 2.0, "中点应约 50，实际 {}", v.0);
         assert!((h.tree.get::<MetroSlider>(id).unwrap().value - v.0).abs() < 1e-9);
+    }
+
+    /// 被压得比自然高度还矮时，命中区不得越出节点矩形（否则「点上面那行的底边」命中滑块）。
+    #[test]
+    fn squeezed_slider_hit_area_stays_inside_its_rect() {
+        let mut h = TestHarness::new(320.0, 200.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroSlider::new().with_header("音量"),
+            LayoutProps {
+                width: Some(200.0),
+                // 明显小于 SLIDER_MIN_H：命中原先会向上伸出矩形。
+                height: Some(18.0),
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        h.frame();
+        let r = h.rect(id);
+        h.assert_no_hit_outside(id);
+        h.assert_access_contract();
+        // 直接盯住 1px 外圈：四边中点与四角都不能命中。
+        let slider = h.tree.get::<MetroSlider>(id).unwrap();
+        for p in [
+            Point::new(r.origin.x - 1.0, r.center().y),
+            Point::new(r.center().x, r.origin.y - 1.0),
+            Point::new(r.center().x, r.bottom() + 1.0),
+            Point::new(r.right() + 1.0, r.center().y),
+        ] {
+            assert!(!slider.hit_test(r, p), "矩形外 1px 不得命中：{p:?} vs {r:?}");
+        }
     }
 
     #[test]
