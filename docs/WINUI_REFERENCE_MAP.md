@@ -28,4 +28,8 @@
 1. **菜单族无障碍缺口**（上表 #7）：e4 把菜单族接入元素树并 `focusable`，但三文件均未实现
    `accessibility()`，e3 的 `assert_access_contract` 也未接入其 `tree_tests` —— 菜单条目对 AT
    不可见。建议队列给 e4 补一张小卡（3 文件 + tree_tests 契约接入），随 e5 之后再合。
+   **2026-11-06 已收口**（`oc/k-menu-a11y`）：三文件补 `accessibility()`（角色 `Menu` + 类型名级
+   名字 + 当前项 `value`）、弹层并入 `access_snapshot`、命中判定改按 `bounds ⊕ paint_overflow`、
+   菜单 `tree_tests` 接入契约并给夹具补无障碍。条目级节点（每个 MenuItem 一个 AT 节点）
+   仍未拆，另立卡。
 2. 宿主无容器时 e3 门的 clippy 一栏 NotRun；本卡合并后在容器补跑（见本卡 proof.json）。
