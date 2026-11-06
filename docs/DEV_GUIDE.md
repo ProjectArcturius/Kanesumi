@@ -182,8 +182,24 @@ hover/press 过渡无需各自处理。低频唤醒仍用 `ctx.request_timer(sec
   ```
 
   完整示例见 `kanesumi-gallery/examples/virtual_list.rs`（一万行）。
-- **`Grid`**：等宽几何 `UniformGrid` 在 `kanesumi-structure::grid`；元素树 `Grid` 容器属 E4，
-  接入前用 `Stack` + `LayoutProps` 组合（参 `ELEMENT_TREE.md` §Ⅹ E4）。
+- **`Grid`**（二维排布）：轨道 `Fixed` / `Auto` / `Star`，子节点的单元用**附着属性**
+  `LayoutProps::grid_cell`（XAML `Grid.Row/Column/RowSpan/ColumnSpan`），
+  应用不写任何行列坐标。设置页那种「标签一列、控件一列、说明在右侧」的表单直接这么写：
+
+  ```rust
+  use kanesumi_structure::{GridChild, GridLength};
+  use kanesumi_harness::element::widgets::Grid;
+
+  // 左列标签宽 140 固定，右列吃满剩余；行高随内容。
+  let form = tree.insert(col, Grid::form(140.0).with_gap(8.0, 16.0));
+  tree.insert_with(form, Label::new("设备名称"), cell(0, 0));   // cell(n, c) = LayoutProps { grid_cell: GridChild::at(n, c), ..default }
+  tree.insert_with(form, MetroTextBox::new(), cell(0, 1));
+  tree.insert_with(form, Label::new("蓝牙"), cell(1, 0));
+  tree.insert_with(form, MetroCheckBox::new("启用"), cell(1, 1));
+  ```
+
+  量测期 `Star` 只按内容贡献，排布期才瓜分真实空间 —— 放进 `Stack` 不会抢满整行。
+  等宽方格（键盘区 / 磁贴墙）仍用 `kanesumi-structure::UniformGrid`；参 `CONTROL_SPEC.md` §33。
 
 ### 2.4 颜色只用 `ThemeColor` 令牌
 元素树页面**禁止写颜色字面量**：`Border::background` / `Label::color` 接受 `impl Into<Brush>`，

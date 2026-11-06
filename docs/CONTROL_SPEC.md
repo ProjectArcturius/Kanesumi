@@ -1164,6 +1164,12 @@ clamp 到 [−MaxShift, +MaxShift]，MaxShift = MaxShiftRatio × 视口主轴
 4. `child_rect` 合并跨度多轨道 + 其间间距。
 
 > Kanesumi 实现：`kanesumi-structure::MetroGrid`（纯布局，不自绘、不持控件状态）。
+>
+> **元素树容器（2026-11-06 接入）**：`kanesumi_element::widgets::Grid` 把求解器包成容器，
+> 子节点的单元改用附着属性 `LayoutProps::grid_cell`（对应 XAML `Grid.Row/Column/RowSpan/ColumnSpan`）——
+> 布局信息挂在子身上，换父容器时跟着走，容器不另持旁表。量测期 `Star` 轨道按内容自然尺寸贡献，
+> 排布期再按权重瓜分真实空间（放进 `Stack` 不会抢满整行）；跨轨道子节点不参与单轨道 `Auto` 求解。
+> 用例与断言见 `kanesumi-element/src/widgets/grid.rs` 的 `tree_tests`。
 
 ---
 

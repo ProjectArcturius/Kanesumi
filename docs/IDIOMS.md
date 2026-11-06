@@ -38,6 +38,9 @@
   （common 禁区；框架三失效 `tree.rs:335/338/341`，位置由 arrange 决定）；
 - margin / 对齐 / min / max / grow / shrink / visible 全走 `LayoutProps`（`element/src/props.rs:99`），
   控件不自解释这层（§Ⅳ.2）；
+- **一维用 `Stack`，二维用 `Grid`**：行列单元写附着属性 `LayoutProps::grid_cell`
+  （`props.rs`，对应 XAML `Grid.Row/Column`），**不允许**用「固定宽 + margin」手工拼列 ——
+  那等于把行列坐标手写一遍，正是框架要替开发者做的事（`element/src/widgets/grid.rs`）；
 - **动画只动视觉**：`UpdateCtx` 不放量测失效（`widget.rs:457-460` 注释）；平移动画用
   `invalidate_arrange`（`widget.rs:459`）；
 - 滚动容器声明 `scrolls_children`（`widget.rs:140`）豁免包含断言，裁剪由 `clips_children`（`widget.rs:134`）。
