@@ -201,6 +201,8 @@ pub trait Widget {
 「可见范围 + 上下 overscan」维护「索引 → 节点」映射并按数据键回收复用。示例见
 `kanesumi-gallery/examples/virtual_list.rs`（一万行），样张 `docs/research/items_repeater/`。
 
+- **弹层内容一次写完**（2026-11-06）：`EventCtx::open_popup` 返回弹层 id 后可直接 `ctx.insert_child(id, w)` / `insert_child_with(id, w, props)` 挂内容；控件层再包一层（如 `MetroDialog::show_modal_with`）。应用不应为放一个控件回头去拿 `host.parts_mut()` —— 那是把树的可变引用漏出框架。
+
 ## §Ⅴ 绘制与损伤
 
 ### Ⅴ.1 逐节点命令缓存

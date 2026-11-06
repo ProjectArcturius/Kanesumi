@@ -258,6 +258,8 @@ tree.insert_with(row, Image::svg(icon_path).size(16.0, 16.0), LayoutProps { v_al
 tree.insert_with(row, Label::new("分享"), LayoutProps { v_align: Align::Center, ..LayoutProps::default() });
 ```
 
+弹层类内容的推荐写法是 `show_modal_with`（开 + 定位 + 填内容一次写完）；手里已有弹层 id 时用 `ctx.insert_child(id, w)` / `ctx.insert_child_with(id, w, props)` —— **不要**为放一个控件回到外壳层拿 `host.parts_mut()`，那等于把树的可变引用漏给应用代码。
+
 三条规则先知道：
 
 1. **有子节点时标签不再绘制**，但 `label` 仍是**无障碍名字**（否则图标按钮在读屏里是无名按钮）；
