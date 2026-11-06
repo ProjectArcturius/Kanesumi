@@ -134,6 +134,12 @@ pub struct MetroNavigationView {
     pub header: String,
     pub toggle_hovered: bool,
     pub footer_selected: Option<usize>,
+    /// 最近一帧算出的「路径 → 行矩形」。
+    ///
+    /// 为什么由 `paint` 缓存而不是在 `access_items` 里现算：Top 模式的项宽要量文字
+    /// （需要 `TextEngine`），而 `access_items` 只拿得到主题。绘制期刚好有引擎，
+    /// 顺手把几何存下来，无障碍快照直接用 —— 快照本来就发生在出帧之后。
+    last_geometry: Vec<(Vec<usize>, Rect)>,
 }
 
 impl Default for MetroNavigationView {
@@ -151,6 +157,7 @@ impl Default for MetroNavigationView {
             header: String::new(),
             toggle_hovered: false,
             footer_selected: None,
+            last_geometry: Vec::new(),
         }
     }
 }
@@ -304,8 +311,52 @@ impl MetroNavigationView {
         }
     }
 
-    /// Header rect（Left：**pane 推挤宽 + Header Margin**、y=44；Top：顶栏下）。
+    /// Header rect（Left：**pane 推挤宽 + Header Margin**、y=44；Top：顶栏下）。    ///
+    /// 算「路径 → 行矩形」（顶层项 + 展开时的子项），供 `access_items` 使用。
     ///
+    /// 与 `render` 的排布同源：Left 族逐行往下推；Top 模式按量测宽横排，子项不在本模式展示。
+    fn item_geometry(
+        &self,
+        engine: &TextEngine,
+        rect: Rect,
+    ) -> Vec<(Vec<usize>, Rect)> {
+        let area = self.item_area(rect);
+        if matches!(self.mode, NavigationPaneMode::Top) {
+            return self
+                .top_item_rects(engine, rect)
+                .into_iter()
+                .enumerate()
+                .map(|(i, r)| (vec![i], r))
+                .collect();
+        }
+        let mut out = Vec::new();
+        let mut y = area.origin.y;
+        for (i, item) in self.items.iter().enumerate() {
+            out.push((vec![i], Rect::new(area.origin.x, y, area.size.width, NAV_ITEM_H)));
+            y += NAV_ITEM_H;
+            if self.pane_expanded {
+                for j in 0..item.children.len() {
+                    out.push((
+                        vec![i, j],
+                        Rect::new(area.origin.x, y, area.size.width, NAV_ITEM_H),
+                    ));
+                    y += NAV_ITEM_H;
+                }
+            }
+        }
+        out
+    }
+
+    /// 按路径取导航项（一层或两层）。
+    fn item_by_path(&self, path: &[usize]) -> Option<&NavigationViewItem> {
+        let first = self.items.get(*path.first()?)?;
+        match path.get(1) {
+            None => Some(first),
+            Some(j) => first.children.get(*j),
+        }
+    }
+
+    /// Header rect（Left：**pane 推挤宽 + Header Margin**、y=44；Top：顶栏下）。    ///
     /// 2026-10-01 修正：旧实现固定从 `origin + (56,44)` 起算，pane 展开（320）时内容区压住
     /// 左侧类目、点类目被内容子节点截走。现按 WinUI `NavigationView` 语义从 pane 当前推挤宽之后起算
     /// —— `Left` 随展开/收窄动画平移（只动 arrange，不重量测），`LeftCompact` / `LeftMinimal`
@@ -585,7 +636,37 @@ impl kanesumi_element::Widget for MetroNavigationView {
     }
 
     fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
-        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+        let rect = ctx.rect();
+        // 顺手把「路径 → 行矩形」存下来给无障碍快照用（Top 模式量文字需要引擎，见字段注释）。
+        self.last_geometry = self.item_geometry(ctx.engine(), rect);
+        self.render(ctx.theme(), ctx.engine(), rect, scene);
+    }
+
+    /// 合成项：把导航项（含展开的子项）报成 AT 子项 —— 侧边栏对读屏此前只是一个 Group。
+    fn access_items(
+        &self,
+        rect: Rect,
+        _theme: &kanesumi_core::MetroTheme,
+    ) -> Vec<kanesumi_element::AccessItem> {
+        let mut out = Vec::new();
+        // 顶层项与（展开时的）子项；所选路径与项路径比较决定 selected。
+        for (path, r) in &self.last_geometry {
+            let Some(item) = self.item_by_path(path) else {
+                continue;
+            };
+            let Some(bounds) = r.intersect(rect) else {
+                continue;
+            };
+            let mut ai = kanesumi_element::AccessItem::new(
+                kanesumi_element::AccessRole::ListItem,
+                item.label.clone(),
+                bounds,
+            );
+            ai.selected = Some(self.selected.as_deref() == Some(path.as_slice()));
+            ai.expanded = (!item.children.is_empty()).then_some(self.pane_expanded);
+            out.push(ai);
+        }
+        out
     }
 
     /// 插树前 / `edit` 改过 Pane 目标（未稳态）→ 请框架登记续帧（k-switch-init）。
@@ -656,7 +737,13 @@ impl kanesumi_element::Widget for MetroNavigationView {
     fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
         Some(kanesumi_element::AccessInfo {
             role: kanesumi_element::AccessRole::Group,
-            name: self.header.clone(),
+            // 没有 Header 时退回类型名级名字：导航视图可聚焦，名字空着读屏会播报成一个无名分组
+            // （无障碍契约「可聚焦必有名字」也会当场报）。同列表的「列表」、面包屑的「面包屑」。
+            name: if self.header.trim().is_empty() {
+                String::from("导航")
+            } else {
+                self.header.clone()
+            },
             value: self
                 .selected
                 .as_ref()
@@ -830,6 +917,80 @@ mod tree_tests {
             .top_item_rects(&h.engine, r);
         h.click_at(items[1].center());
         assert!(h.take::<NavigationItemInvoked>().is_empty());
+    }
+
+    // ── 无障碍合成项（侧边栏导航项）────────────────────────────────────────
+
+    #[test]
+    fn access_items_report_nav_items() {
+        let (h, id) = harness(800.0, 600.0);
+        let snap = h.access_snapshot();
+        let node = snap.find(id).expect("导航视图在快照内");
+        let names: Vec<&str> = node.items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["设置", "外观", "关于"], "三个导航项各报一条");
+        assert!(
+            node.items
+                .iter()
+                .all(|i| i.role == kanesumi_element::AccessRole::ListItem),
+            "导航项角色 = ListItem"
+        );
+        h.assert_access_contract();
+    }
+
+    #[test]
+    fn access_items_follow_selection_and_pane_state() {
+        let (mut h, id) = harness(800.0, 600.0);
+        h.take::<NavigationItemInvoked>();
+        h.tree
+            .edit::<MetroNavigationView, _>(id, |v, _| v.selected = Some(vec![1]));
+        h.frame();
+        let snap = h.access_snapshot();
+        let node = snap.find(id).expect("导航视图在快照内");
+        let selected: Vec<&str> = node
+            .items
+            .iter()
+            .filter(|i| i.selected == Some(true))
+            .map(|i| i.name.as_str())
+            .collect();
+        assert_eq!(selected, vec!["外观"], "选中项带 selected");
+        h.assert_access_contract();
+    }
+
+    #[test]
+    fn access_items_include_children_when_pane_expanded() {
+        let mut h = TestHarness::new(800.0, 600.0);
+        let nav = h.tree.insert(
+            h.root(),
+            MetroNavigationView::new(vec![
+                NavigationViewItem {
+                    label: "文档".into(),
+                    icon: None,
+                    icon_image: None,
+                    children: vec![
+                        NavigationViewItem::new("项目"),
+                        NavigationViewItem::new("报告"),
+                    ],
+                },
+                NavigationViewItem::new("图片"),
+            ]),
+        );
+        h.frame();
+        let snap = h.access_snapshot();
+        let node = snap.find(nav).expect("导航视图在快照内");
+        let names: Vec<&str> = node.items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["文档", "项目", "报告", "图片"], "展开时子项也上报");
+        assert_eq!(node.items[0].expanded, Some(true));
+        h.assert_access_contract();
+
+        // 收起 Pane → 子项不再上报。
+        h.tree
+            .edit::<MetroNavigationView, _>(nav, |v, _| v.set_pane_expanded(false));
+        h.frame();
+        let snap = h.access_snapshot();
+        let node = snap.find(nav).expect("导航视图在快照内");
+        let names: Vec<&str> = node.items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["文档", "图片"], "收窄后子项不再上报");
+        h.assert_access_contract();
     }
 }
 
