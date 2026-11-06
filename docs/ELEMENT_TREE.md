@@ -470,7 +470,7 @@ WinUI 的做法也是给虚拟化项合成 AutomationPeer，而不是给每一�
 - 角色：`AccessRole::MenuItem`（UIA `ControlType.MenuItem`）、`ListItem`（列表行）、`Button`（对话框按钮）。
 - 已接入三处消费者：**菜单**（每条命令的角色 / 名字 / 勾选 / 禁用 / 快捷键，级联挂在父项下）、
   **`MetroList`**（只报视口内的行，与绘制 / 命中同一个虚拟化窗口；滚动后上报的行随之改变；
-  选中行带 `selected`）、**`MetroDialog`**（按钮名字 + 是否默认按钮）。
+  选中行带 `selected`）、**`MetroDialog`**（按钮名字 + 是否默认按钮 + 当前按钮 `focused`）。
   列表与对话框这两条也验证了机制不是菜单专用。
 
 仍未做：**每条命令还不是框架节点**（不能单独聚焦 / 单独参与 Tab 或命中路由；对话框按钮同理，
