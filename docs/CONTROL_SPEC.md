@@ -1302,6 +1302,13 @@ clamp 到 [−MaxShift, +MaxShift]，MaxShift = MaxShiftRatio × 视口主轴
 - 点击 → toggle。默认 **两态循环**（Unchecked ↔ Checked，UWP 语义）；
 - `allow_indeterminate` = true 时**三态循环**（Unchecked → Checked → Indeterminate → Unchecked）。
 
+### 内容槽（2026-11-06）
+
+与按钮同一套规则（参 `docs/DEV_GUIDE.md` §2.6）：节点下有子节点时，子节点占据**列 1**
+（勾选框右侧那一列，与标签同起点），标签不再绘制、但仍是无障碍名字。
+量测按子节点尺寸（下限仍为 120×32），`arrange` 把子节点排进列 1，`paint` 走 `render_chrome`
+只画选框本体 —— 复选框里放富标签（多行说明、链接）因此不需要另造控件。
+
 ---
 
 ## 37 · NumberBox（MetroNumberBox）

@@ -264,9 +264,10 @@ tree.insert_with(row, Label::new("分享"), LayoutProps { v_align: Align::Center
 2. 内容排进控件内边距之内的矩形（按钮 `8,5,8,6`），由控件自己的 `arrange` 决定 —— 应用只写布局属性；
 3. **点击内容 = 点击控件**：事件从命中节点冒泡到祖先，按钮照常发 `ButtonClicked`。
 
-内容槽目前实装在 `MetroButton`（`kanesumi-controls/src/button.rs`「内容槽」一节）；其他控件按同一
-套路推广（在 `measure` / `arrange` / `paint` 里把「自己的标签」换成「子节点」）。
-样板见 `kanesumi-gallery/examples/grid_form.rs` 的「分享」按钮。
+内容槽目前实装在 `MetroButton` 与 `MetroCheckBox`（勾选框右侧那一列吃内容）：
+`kanesumi-controls/src/button.rs` / `check_box.rs` 的「内容槽」一节。其他控件按同一套路推广
+（`measure` 按子节点量测 → `arrange` 排进内容列 → `paint` 只画 chrome、标签让位但保留为
+无障碍名字）。样板见 `kanesumi-gallery/examples/grid_form.rs` 的「分享」按钮。
 
 ### 2.7 键盘
 
