@@ -5,6 +5,12 @@ use kanesumi_core::{MetroTheme, Rect, Size};
 
 use crate::state::ControlState;
 
+/// 内边距（CONTROL_SPEC §1：`8,5,8,6`）。标签与内容槽共用同一组值 ——
+/// 两处各写一套会让「有内容 / 无内容」的按钮在同一个界面上差 1px。
+const PAD_X: f32 = 8.0;
+const PAD_TOP: f32 = 5.0;
+const PAD_BOTTOM: f32 = 6.0;
+
 /// 按钮种类：Standard（surface 底）/ Accent（强调色底）。对齐 UWP Standard/Accent。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonKind {
@@ -61,21 +67,41 @@ impl MetroButton {
 
     /// 渲染到 `rect`。顺序：底色 → 交互 tint → 焦点描边 → 居中标签。
     pub fn render(&self, theme: &MetroTheme, _engine: &TextEngine, rect: Rect, scene: &mut Scene) {
-        let colors = &theme.colors;
-        let indication = &theme.indication;
-        let style = theme.typography.body;
+        self.render_chrome(theme, rect, scene);
 
-        let (bg, fg) = match self.kind {
-            // 标准按钮底取 UWP `ButtonBackground`（BaseLow 20% 叠加色），不得取 `surface` ——
-            // 浅色下 `surface` 与页面同为白，#FFFFFF 按钮在白页上不可见
-            // （参 docs/research/2026-10-01_light_palette_audit.md）。
-            ButtonKind::Standard => (colors.control_fill, colors.on_surface),
-            ButtonKind::Accent => (colors.primary, colors.on_primary),
-        };
+        // 标签：用**按钮内边距内的可用矩形**居中，单行省略号收束。
+        //
+        // 旧实现把绘制矩形宽度设成 `engine.measure(label)` —— 量测宽度只应决定 `measure()`
+        // 的固有尺寸，一旦 App 给的 rect 比固有尺寸窄，文字就画到按钮外（参 V6）。
+        // 2026-09-22 溢出审计 P0-1：绘制矩形必须由 rect 派生，永不由量测宽度派生。
+        // 纵向交给 TextVAlign::Center（行盒中线对齐矩形中线，与手算 (h−lh)/2 逐位同值）。
+        // 参 o4 纵向对齐。
+        let label_rect = Rect::new(
+            rect.origin.x + PAD_X,
+            rect.origin.y,
+            (rect.size.width - PAD_X * 2.0).max(0.0),
+            rect.size.height,
+        );
+        scene.label(
+            self.label.clone(),
+            label_rect,
+            self.foreground(theme),
+            theme.typography.body.with_v_align(TextVAlign::Center),
+            TextAlign::Center,
+        );
+    }
+
+    /// 只画「按钮本身」：底色 → 交互 tint → 焦点描边。内容槽模式复用这里，
+    /// 于是「有内容的按钮」与普通按钮在底色与焦点视觉上不可能长得不一样。
+    pub fn render_chrome(&self, theme: &MetroTheme, rect: Rect, scene: &mut Scene) {
+        let indication = &theme.indication;
 
         let bg = match self.state {
-            ControlState::Disabled => bg.with_alpha(bg.a * indication.disabled_opacity),
-            _ => bg,
+            ControlState::Disabled => {
+                let bg = self.background(theme);
+                bg.with_alpha(bg.a * indication.disabled_opacity)
+            }
+            _ => self.background(theme),
         };
         scene.fill_rounded_rect(bg, rect, theme.tokens.corner_radius);
 
@@ -95,28 +121,44 @@ impl MetroButton {
                 theme.tokens.corner_radius,
             );
         }
+    }
 
-        // 标签：用**按钮内边距内的可用矩形**居中，单行省略号收束。
-        //
-        // 旧实现把绘制矩形宽度设成 `engine.measure(label)` —— 量测宽度只应决定 `measure()`
-        // 的固有尺寸，一旦 App 给的 rect 比固有尺寸窄，文字就画到按钮外（参 V6）。
-        // 2026-09-22 溢出审计 P0-1：绘制矩形必须由 rect 派生，永不由量测宽度派生。
-        const PAD_X: f32 = 8.0; // CONTROL_SPEC §1：Padding `8,5,8,6`
-        // 纵向交给 TextVAlign::Center（行盒中线对齐矩形中线，与手算 (h−lh)/2 逐位同值）。
-        // 参 o4 纵向对齐。
-        let label_rect = Rect::new(
+    /// 按钮底色（Standard = 控件填充，Accent = 强调色）。
+    pub fn background(&self, theme: &MetroTheme) -> kanesumi_core::Color {
+        match self.kind {
+            // 标准按钮底取 UWP `ButtonBackground`（BaseLow 20% 叠加色），不得取 `surface` ——
+            // 浅色下 `surface` 与页面同为白，#FFFFFF 按钮在白页上不可见
+            // （参 docs/research/2026-10-01_light_palette_audit.md）。
+            ButtonKind::Standard => theme.colors.control_fill,
+            ButtonKind::Accent => theme.colors.primary,
+        }
+    }
+
+    /// 前景色（标签 / 内容槽里由应用自行取色时的参照）。
+    pub fn foreground(&self, theme: &MetroTheme) -> kanesumi_core::Color {
+        match self.kind {
+            ButtonKind::Standard => theme.colors.on_surface,
+            ButtonKind::Accent => theme.colors.on_primary,
+        }
+    }
+
+    /// 元素树「内容槽」：子节点存在时它就是按钮的内容，标签不再绘制
+    /// （对应 XAML `Button.Content` 为任意元素时的语义）。
+    ///
+    /// `label` 仍然保留 —— 它在内容槽模式下是**无障碍名字**（XAML
+    /// `AutomationProperties.Name` 的角色），否则图标按钮在读屏里会是没有名字的按钮。
+    pub fn has_content(children: usize) -> bool {
+        children > 0
+    }
+
+    /// 内容槽的内边距矩形（CONTROL_SPEC §1 `8,5,8,6`）。
+    pub fn content_rect(rect: Rect) -> Rect {
+        Rect::new(
             rect.origin.x + PAD_X,
-            rect.origin.y,
+            rect.origin.y + PAD_TOP,
             (rect.size.width - PAD_X * 2.0).max(0.0),
-            rect.size.height,
-        );
-        scene.label(
-            self.label.clone(),
-            label_rect,
-            fg,
-            style.with_v_align(TextVAlign::Center),
-            TextAlign::Center,
-        );
+            (rect.size.height - PAD_TOP - PAD_BOTTOM).max(0.0),
+        )
     }
 }
 
@@ -131,14 +173,48 @@ impl MetroButton {
 pub struct ButtonClicked;
 
 impl kanesumi_element::Widget for MetroButton {
-    fn measure(&mut self, ctx: &mut kanesumi_element::MeasureCtx, _available: Size) -> Size {
-        MetroButton::measure(self, ctx.engine(), ctx.theme().typography.body)
+    fn measure(&mut self, ctx: &mut kanesumi_element::MeasureCtx, available: Size) -> Size {
+        let kids = ctx.children();
+        if !MetroButton::has_content(kids.len()) {
+            return MetroButton::measure(self, ctx.engine(), ctx.theme().typography.body);
+        }
+        // 内容槽模式：尺寸由内容决定（内边距之内），高度至少容下一行文字，
+        // 否则只有 16px 图标的按钮会比同排文字按钮矮一截。
+        let style = ctx.theme().typography.body;
+        let avail = Size::new(
+            (available.width - PAD_X * 2.0).max(0.0),
+            (available.height - PAD_TOP - PAD_BOTTOM).max(0.0),
+        );
+        let mut content = Size::ZERO;
+        for c in kids {
+            let d = ctx.measure_child(c, avail);
+            content = Size::new(content.width.max(d.width), content.height.max(d.height));
+        }
+        Size::new(
+            content.width + PAD_X * 2.0,
+            content.height.max(style.line_height) + PAD_TOP + PAD_BOTTOM,
+        )
+    }
+
+    fn arrange(&mut self, ctx: &mut kanesumi_element::ArrangeCtx, rect: Rect) {
+        // 内容排进内边距之内的矩形；没有内容时零开销（默认铺满不适用于内容槽语义，
+        // 子节点若被铺满会顶到描边上）。
+        let inner = MetroButton::content_rect(rect);
+        for c in ctx.children() {
+            ctx.arrange_child(c, inner);
+        }
     }
 
     fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
         let saved = self.state;
         self.state = crate::state::control_state(ctx.state());
-        self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+        let has_content = MetroButton::has_content(ctx.children().len());
+        if has_content {
+            // 底色 / 交互 tint / 焦点环照画，标签让位给内容（内容由框架按树序绘制）。
+            self.render_chrome(ctx.theme(), ctx.rect(), scene);
+        } else {
+            self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
+        }
         self.state = saved;
     }
 
@@ -282,6 +358,102 @@ mod tree_tests {
             h.take::<ButtonClicked>().len(),
             2,
             "指针 + 首次按下各一次；repeat=true 连发不得激活"
+        );
+    }
+
+    // ── 内容槽（Button.Content 对等物，2026-11-06）──────────────────────────────
+
+    /// 按钮里放内容：`MetroButton` 之下再挂子节点即为内容（图标 + 文字这类图标按钮）。
+    fn content_harness() -> (TestHarness, kanesumi_element::WidgetId, kanesumi_element::WidgetId) {
+        use kanesumi_element::widgets::{Label, Stack};
+        let mut h = TestHarness::new(320.0, 200.0);
+        let button = h.tree.insert_with(
+            h.root(),
+            MetroButton::new("复制到剪贴板"),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
+        );
+        let row = h.tree.insert(button, Stack::row().with_spacing(6.0));
+        let label = h.tree.insert(row, Label::new("复制"));
+        h.frame();
+        (h, button, label)
+    }
+
+    #[test]
+    fn content_slot_sizes_button_by_its_child() {
+        let (h, button, _) = content_harness();
+        let r = h.rect(button);
+        let inner = h.rect(h.tree.children(button)[0]);
+        assert!(
+            r.size.width >= inner.size.width + 16.0 - 0.5,
+            "按钮宽 = 内容宽 + 左右内边距（按钮 {r:?}，内容 {inner:?}）"
+        );
+        assert!(
+            (r.size.width - (inner.size.width + 16.0)).abs() <= 0.5,
+            "内容槽模式按内容定宽，不按标签：按钮 {} vs 内容 {}",
+            r.size.width,
+            inner.size.width
+        );
+        assert!(
+            inner.origin.x >= r.origin.x + 8.0 - 0.5 && inner.right() <= r.right() - 8.0 + 0.5,
+            "内容被内边距收进按钮内：{inner:?} ⊄ {r:?}"
+        );
+        h.assert_contained();
+    }
+
+    #[test]
+    fn content_slot_suppresses_label_painting() {
+        use kanesumi_canvas::SceneCommand;
+        let (h, button, _) = content_harness();
+        let texts: Vec<String> = h
+            .tree
+            .painted(button)
+            .iter()
+            .filter_map(|c| match c {
+                SceneCommand::Text { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !texts.iter().any(|t| t == "复制到剪贴板"),
+            "内容槽模式下按钮不再画自己的标签（实得 {texts:?}）"
+        );
+        // 但仍然画了按钮本身（底色 / 圆角）。
+        assert!(
+            h.tree
+                .painted(button)
+                .iter()
+                .any(|c| matches!(c, SceneCommand::FillRect { .. })),
+            "内容槽模式仍要画底色"
+        );
+    }
+
+    #[test]
+    fn content_slot_keeps_label_as_accessibility_name() {
+        let (h, button, _) = content_harness();
+        let snap = h.access_snapshot();
+        let node = snap.find(button).expect("按钮在快照内");
+        assert_eq!(
+            node.name.as_deref(),
+            Some("复制到剪贴板"),
+            "内容槽模式下标签是读屏名字（XAML AutomationProperties.Name）"
+        );
+        h.assert_access_contract();
+    }
+
+    #[test]
+    fn clicking_content_still_activates_button() {
+        let (mut h, button, label) = content_harness();
+        // 点在内容上：事件命中子节点后冒泡到按钮，按钮照样发出动作。
+        let p = h.center(label);
+        h.click_at(p);
+        assert_eq!(
+            h.take::<ButtonClicked>().len(),
+            1,
+            "点内容 = 点按钮（事件冒泡），实得矩形 {button:?}"
         );
     }
 }
