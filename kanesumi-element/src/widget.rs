@@ -30,6 +30,11 @@ pub struct ControlStates {
 }
 
 /// 无障碍角色（第一期只定接口，参 ELEMENT_TREE §Ⅸ）。
+///
+/// 角色词表只收录**已有控件在用**的项。缺角色时宁可加一项并写明消费者，也不要把菜单
+/// 塞进 `Group` / `List`：AT 读出的控件类型会直接说谎，而类型是读屏播报的第一句。
+/// `Menu` = UIA `ControlType.Menu` / AT-SPI `menu`（菜单面板；条目在快照里暂不是独立
+/// 节点，见 `access.rs` 头注）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessRole {
     Button,
@@ -39,6 +44,7 @@ pub enum AccessRole {
     Label,
     List,
     ListItem,
+    Menu,
     Group,
     Other,
 }
