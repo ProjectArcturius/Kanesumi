@@ -35,7 +35,8 @@ pub struct ControlStates {
 /// 塞进 `Group` / `List`：AT 读出的控件类型会直接说谎，而类型是读屏播报的第一句。
 /// `Menu` = UIA `ControlType.Menu` / AT-SPI `menu`（菜单面板）；
 /// `MenuItem` = UIA `ControlType.MenuItem` / AT-SPI `menu item`（菜单里的一条命令）；
-/// `TreeItem` = UIA `ControlType.TreeItem` / AT-SPI `tree item`（树的一个节点）。
+/// `TreeItem` = UIA `ControlType.TreeItem` / AT-SPI `tree item`（树的一个节点）；
+/// `TabItem` = UIA `ControlType.TabItem` / AT-SPI `page tab`（页签条上的一页）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessRole {
     Button,
@@ -46,6 +47,7 @@ pub enum AccessRole {
     List,
     ListItem,
     TreeItem,
+    TabItem,
     Menu,
     MenuItem,
     Group,

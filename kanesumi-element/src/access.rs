@@ -145,6 +145,7 @@ fn role_label(role: Option<AccessRole>) -> &'static str {
         Some(AccessRole::List) => "List",
         Some(AccessRole::ListItem) => "ListItem",
         Some(AccessRole::TreeItem) => "TreeItem",
+        Some(AccessRole::TabItem) => "TabItem",
         Some(AccessRole::Menu) => "Menu",
         Some(AccessRole::MenuItem) => "MenuItem",
         Some(AccessRole::Group) => "Group",

@@ -62,6 +62,11 @@ pub struct MetroTabRow {
     /// `select` 改变了选中 → 下一帧把选中页签滚入可见（滚轮 / 拖动不置位，避免被拉回）。
     needs_scroll: bool,
     drag: Option<DragState>,
+    /// 最近一帧算出的每个页签矩形（供无障碍合成项用）。
+    ///
+    /// 页签宽要量文字（需要 `TextEngine`），而 `access_items` 只拿得到主题 —— 与侧边导航
+    /// 同一个理由：绘制期顺手存下几何，快照本来就在出帧之后。
+    last_tab_rects: Vec<Rect>,
 }
 
 impl Default for MetroTabRow {
@@ -79,6 +84,7 @@ impl Default for MetroTabRow {
             select_anim: anim,
             needs_scroll: false,
             drag: None,
+            last_tab_rects: Vec::new(),
         }
     }
 }
@@ -264,6 +270,23 @@ impl MetroTabRow {
         out
     }
 
+    /// 每个页签的命中矩形（含滚动偏移；宽 = 标签宽 + 左右各 12 内边距）。
+    fn tab_rects(&self, engine: &TextEngine, rect: Rect) -> Vec<Rect> {
+        let strip = self.strip_rect(engine, rect);
+        let style = self.style();
+        let mut cursor = strip.origin.x - self.scroll;
+        self.tabs
+            .iter()
+            .map(|tab| {
+                let w = engine.measure_with_spacing(&tab.label, style.size, style.letter_spacing_em)
+                    + 24.0;
+                let r = Rect::new(cursor, rect.origin.y, w, rect.size.height);
+                cursor += w;
+                r
+            })
+            .collect()
+    }
+
     /// 渲染到 `rect`（横向排列，垂直到顶）。
     /// V17：管道从 prev tab 到 current tab 用 SpringAnim 滑行；两者的文字色按同一
     /// 进度做 crossfade（prev 淡出到 variant、current 淡入到 on_surface）。
@@ -391,6 +414,8 @@ impl kanesumi_element::Widget for MetroTabRow {
             self.ensure_selected_visible(ctx.engine(), ctx.rect());
             self.needs_scroll = false;
         }
+        // 顺手缓存每个页签的矩形给无障碍快照（宽要量文字，见字段注释）。
+        self.last_tab_rects = self.tab_rects(ctx.engine(), ctx.rect());
         // render 自己成对 PushClip/PopClip 到 rect，无需再加裁剪。
         self.render(ctx.theme(), ctx.engine(), ctx.rect(), scene);
     }
@@ -549,6 +574,42 @@ impl kanesumi_element::Widget for MetroTabRow {
             value: self.tabs.get(self.selected).map(|t| t.label.clone()),
             checked: None,
         })
+    }
+
+    /// 合成项：每个页签一条 `TabItem`（带选中态）。
+    ///
+    /// 页签条对读屏此前只是一个「页签」分组 —— 读不到有几页、也读不到当前是哪一页。
+    /// 几何来自 `paint` 缓存（宽度要量文字）；超出页签条可见区的页签裁到条内再上报。
+    fn access_items(
+        &self,
+        rect: Rect,
+        _theme: &kanesumi_core::MetroTheme,
+    ) -> Vec<kanesumi_element::AccessItem> {
+        let strip = Rect::new(
+            rect.origin.x,
+            rect.origin.y,
+            rect.size.width,
+            rect.size.height.min(self.header_height),
+        );
+        self.tabs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, tab)| {
+                let r = *self.last_tab_rects.get(i)?;
+                let bounds = r.intersect(strip)?;
+                // 完全滚出可见区的页签不报（否则读屏读到看不见的页签）。
+                if bounds.size.width < 2.0 {
+                    return None;
+                }
+                let mut item = kanesumi_element::AccessItem::new(
+                    kanesumi_element::AccessRole::TabItem,
+                    tab.label.clone(),
+                    bounds,
+                );
+                item.selected = Some(self.selected == i);
+                Some(item)
+            })
+            .collect()
     }
 }
 
@@ -1064,4 +1125,86 @@ mod tests {
         // 差异 = n_chars × letter_spacing_px = 2 × −0.6 = −1.2
         assert!((w_spaced - w_raw - (2.0 * -0.6)).abs() < 0.01);
     }
+
+    // ── 无障碍合成项（TabItem）────────────────────────────────────────────
+
+    use kanesumi_element::testing::TestHarness;
+    use kanesumi_element::{Align, LayoutProps, WidgetId};
+
+    /// 本模块独立的页签条夹具（三页签）。
+    fn tab_fixture(props: LayoutProps) -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(400.0, 300.0);
+        let id = h.tree.insert_with(
+            h.root(),
+            MetroTabRow::new(vec![
+                MetroTab::new("邮件"),
+                MetroTab::new("日历"),
+                MetroTab::new("人脉"),
+            ]),
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..props
+            },
+        );
+        h.frame();
+        (h, id)
+    }
+
+    #[test]
+    fn access_items_report_each_tab_with_selection() {
+        let (mut h, id) = tab_fixture(LayoutProps::default());
+        h.tree.edit::<MetroTabRow, _>(id, |t, _| t.selected = 1);
+        h.frame();
+
+        let snap = h.access_snapshot();
+        let node = snap.find(id).expect("页签条在快照内");
+        let names: Vec<&str> = node.items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["邮件", "日历", "人脉"], "三个页签各报一条");
+        assert!(
+            node.items
+                .iter()
+                .all(|i| i.role == kanesumi_element::AccessRole::TabItem),
+            "角色 = TabItem"
+        );
+        let selected: Vec<&str> = node
+            .items
+            .iter()
+            .filter(|i| i.selected == Some(true))
+            .map(|i| i.name.as_str())
+            .collect();
+        assert_eq!(selected, vec!["日历"], "当前页带 selected");
+        h.assert_access_contract();
+    }
+
+    #[test]
+    fn access_items_skip_tabs_scrolled_out_of_the_strip() {
+        // 窄宽度 + 大滚动：靠前的页签滚出可见区后不再上报。
+        let (mut h, id) = tab_fixture(LayoutProps {
+            width: Some(120.0),
+            ..LayoutProps::default()
+        });
+        h.tree.edit::<MetroTabRow, _>(id, |t, _| t.scroll = 400.0);
+        h.frame();
+
+        let snap = h.access_snapshot();
+        let node = snap.find(id).expect("页签条在快照内");
+        let names: Vec<&str> = node.items.iter().map(|i| i.name.as_str()).collect();
+        assert!(
+            names.len() < 3,
+            "滚出可见区的页签不再上报：{names:?}"
+        );
+        for item in &node.items {
+            assert!(
+                item.bounds.origin.x >= node.bounds.origin.x - 0.5
+                    && item.bounds.right() <= node.bounds.right() + 0.5,
+                "合成项裁到页签条内：{} {:?} ⊄ {:?}",
+                item.name,
+                item.bounds,
+                node.bounds
+            );
+        }
+        h.assert_access_contract();
+    }
 }
+
