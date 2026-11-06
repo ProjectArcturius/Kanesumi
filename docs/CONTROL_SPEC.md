@@ -292,6 +292,12 @@
 | 分隔线 | **高 1**、左右留白 12、色 `BaseMediumLow`（遗留纯值 #FF7A7A7A） |
 | 状态色 | PointerOver = 中性高亮（暗 #FF212121 / 亮 #FFE5E5E5）；Pressed = 中（暗 #FFFFFFFF / 亮 #FF000000）；**瞬时** |
 | 弹出动画 | `PopupThemeAnimation`（OS，~200ms 位移+淡入 ease-out；**未在快照**，用 `sheet_appear`/`sheet_dismiss` 对齐） |
+| 禁用项（`MenuFlyoutItem.IsEnabled=false`） | 文字与图标按 `MetroIndication::disabled_opacity`（0.38）降透明度；**不出现悬停底**；点击/回车无动作且菜单不关；键盘 ↑↓ / Home / End 跳过（2026-11-06 实装） |
+| 勾选列 | 菜单存在可勾选项（`checked` 或 `radio_group`）时，左缘固定留 **16pt 勾选列**，勾用自绘折线（非字体字形），标签起点不随勾选变化（2026-11-06 实装；旧做法是标签拼「✓」前缀，勾行文字右移一格） |
+
+> **键盘契约（本期）**：↑/↓ 在可用项间循环（跨分隔线、跳过禁用）；Home / End 跳首 / 末个可用项；
+> → 展开子菜单并在子菜单内预选首个可用项；← 收起子菜单；Enter / Space 激活（子菜单父项 = 展开）；
+> Esc 由框架关闭弹层并把焦点交还锚点。参 `docs/research/2026-11-06_menu_feel.md`。
 
 ---
 
@@ -1393,8 +1399,13 @@ clamp 到 [−MaxShift, +MaxShift]，MaxShift = MaxShiftRatio × 视口主轴
 
 | 态 | 指示 |
 |---|---|
-| 未勾选 | 无勾选标记 |
-| 已勾选 | 左侧/文本前勾选态（Kanesumi 以文本前缀表示，后续可换图标） |
+| 未勾选 | 勾选列留空 |
+| 已勾选 | 勾选列内画勾（自绘折线 `kanesumi_canvas::glyph::check`，4 个三角；不用字体 `U+2713`，参 glyph.rs 头注的 codepoint 政策） |
+
+> **勾选列对齐（2026-11-06）**：勾选列只在「菜单里存在可勾选项」时出现，且对**每一项**都预留，
+> 因此勾与不勾的文字起点一致。旧做法是应用在标签里拼「✓」前缀 —— 勾了的行文字整体右移一格，
+> 一列命令的下缘看得出错位；现在应用不该再拼前缀（`CONTROL_MATRIX` 的取图证据见
+> `kanesumi-gallery/examples/menu_states_snapshot.rs`）。
 
 ---
 
