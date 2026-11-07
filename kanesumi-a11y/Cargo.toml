@@ -26,6 +26,13 @@ accesskit_unix = { version = "0.24", optional = true }
 kanesumi-element = { path = "../kanesumi-element" }
 # 测试夹具要画一个 Scene（控件 paint 的入参），故 dev 依赖画布。
 kanesumi-canvas = { path = "../kanesumi-canvas" }
+# `examples/atspi_client.rs`：像读屏那样**消费**树的客户端（Odilia 的 atspi crate，
+# 与 Orca 的 pyatspi 走同一份 AT-SPI 协议）。只开 proxies，不拉 connection 那一层。
+atspi = { version = "0.29", default-features = false, features = ["proxies"] }
+# zbus 是 async 的，示例需要一个 block_on；async-io 已在 accesskit_unix 的依赖树里。
+async-io = "2"
+# zbus 直接依赖：atspi 的 `connection` feature 关掉后不再重导出 zbus，示例要自己连总线。
+zbus = "5"
 
 [features]
 # AT-SPI（Linux 读屏）。默认关：它只在 Linux 上有意义，而且会把一套 D-Bus 线程拉进进程 ——

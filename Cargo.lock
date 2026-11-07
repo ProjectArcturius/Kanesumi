@@ -1304,9 +1304,12 @@ version = "0.1.0"
 dependencies = [
  "accesskit",
  "accesskit_unix",
+ "async-io",
+ "atspi",
  "kanesumi-canvas",
  "kanesumi-core",
  "kanesumi-element",
+ "zbus",
 ]
 
 [[package]]
