@@ -147,6 +147,36 @@ pub const FORM_SLIDER_H: f32 = 32.0;
 /// 否则「打开」「重置」这种两字按钮只有 44 宽，点不准。故约束落在页面语法层。
 pub const FORM_BUTTON_MIN_W: f32 = 120.0;
 
+// ── 表格族（table）──────────────────────────────────────────────────────────
+//
+// 来源 `librarian/src/window/spec.rs`（文件列表的实测值，CSS 对照见该文件注释）与
+// `CONTROL_SPEC.md` §51。表格行比设置页的列表行矮一档（28 vs 48），两者**不可互换**：
+// 28 是密集列表（一屏几十行），48 是设置页的一行两列文本。
+
+/// 表格行高 28。来源：`librarian/src/window/spec.rs:50`（`ROW_H`）。
+pub const TABLE_ROW_H: f32 = 28.0;
+
+/// 表格表头高 28。来源：`librarian/src/window/spec.rs:49`（`LIST_HEADER_H`）。
+pub const TABLE_HEADER_H: f32 = 28.0;
+
+/// 表格左右内边距 12。来源：`librarian/src/window/spec.rs:51`（`ROW_PAD_H`）。
+pub const TABLE_PAD_H: f32 = 12.0;
+
+/// 行首三角 / 图标 / 文本之间的间距 8。来源：`librarian/src/window/spec.rs:55`（`ROW_GAP`）。
+pub const TABLE_GAP: f32 = 8.0;
+
+/// 展开三角框宽 12。来源：`librarian/src/window/spec.rs:56`（`TRI_W`）。
+pub const TABLE_TRI_W: f32 = 12.0;
+
+/// 行首图标档 16。来源：`librarian/src/window/spec.rs:57`（`ROW_ICON`）。
+pub const TABLE_ICON: f32 = 16.0;
+
+/// 子项每层缩进 20。来源：`librarian/src/window/spec.rs:58`（`INDENT`）。
+pub const TABLE_INDENT: f32 = 20.0;
+
+/// 表头排序小三角 10。来源：`librarian/src/window/spec.rs:72`（`SORT_TRI`）。
+pub const TABLE_SORT_TRI: f32 = 10.0;
+
 // ── 对话框族（dialog）────────────────────────────────────────────────────────
 //
 // 来源 `CONTROL_SPEC.md` §9（UWP ContentDialog）。此前散在 `kanesumi-controls/src/dialog.rs`
@@ -254,6 +284,14 @@ mod tests {
         assert_eq!(FORM_LINK_MB, 10.0);
         assert_eq!(FORM_LIST_ROW_H, 48.0);
         assert_eq!(FORM_SLIDER_H, 32.0);
+        assert_eq!(TABLE_ROW_H, 28.0);
+        assert_eq!(TABLE_HEADER_H, 28.0);
+        assert_eq!(TABLE_PAD_H, 12.0);
+        assert_eq!(TABLE_GAP, 8.0);
+        assert_eq!(TABLE_TRI_W, 12.0);
+        assert_eq!(TABLE_ICON, 16.0);
+        assert_eq!(TABLE_INDENT, 20.0);
+        assert_eq!(TABLE_SORT_TRI, 10.0);
         let s = Spacing::base4();
         assert_eq!((s.s4, s.s8, s.s12, s.s16, s.s24, s.s32), (4.0, 8.0, 12.0, 16.0, 24.0, 32.0));
     }
