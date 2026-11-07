@@ -82,11 +82,27 @@ impl Doc {
 pub fn parse(text: &str) -> Result<Doc, String> {
     let mut doc = Doc::default();
     let mut table = String::new();
+    let mut counters: BTreeMap<String, usize> = BTreeMap::new();
 
     for (i, raw) in text.lines().enumerate() {
         let line_no = i + 1;
         let line = strip_comment(raw).trim();
         if line.is_empty() {
+            continue;
+        }
+        // `[[name]]` —— 表数组（Cargo.toml 的 `[[bin]]`）。按出现次序编号成 `name.0`、`name.1`，
+        // 取值时 `name.<序号>.<键>`。不支持嵌套表数组（够用即可，遇到就退化成普通表名报错）。
+        if let Some(rest) = line.strip_prefix("[[") {
+            let name = rest
+                .strip_suffix("]]")
+                .ok_or_else(|| format!("第 {line_no} 行：表数组缺少 `]]` —— {line}"))?
+                .trim();
+            if name.is_empty() || name.contains(['[', ']']) {
+                return Err(format!("第 {line_no} 行：表数组名不合法 —— {name}"));
+            }
+            let n = counters.entry(name.to_string()).or_insert(0);
+            table = format!("{name}.{n}");
+            *n += 1;
             continue;
         }
         if let Some(rest) = line.strip_prefix('[') {
@@ -151,6 +167,11 @@ fn parse_value(s: &str) -> Result<Value, String> {
     }
     if s.starts_with('[') {
         return parse_list(s);
+    }
+    // 内联表 `{ … }`：本工具不解释其内容，原样当字符串存下 —— 这样带依赖声明的真实
+    // Cargo.toml 也能整份解析（否则 `package` 前的对账会因为一行内联表而整份读不了）。
+    if s.starts_with('{') {
+        return Ok(Value::Str(s.to_string()));
     }
     match s {
         "true" => return Ok(Value::Bool(true)),
@@ -273,7 +294,23 @@ app_id = "org.ether.demo"
         assert_eq!(d.str_or("summary", ""), "v1 #2 修正");
     }
 
+
     #[test]
+    fn parses_array_of_tables_with_indices() {
+        // Cargo.toml 的 `[[bin]]` 必须能读：`kanesumi check` 要拿它跟 [entry] binary 对账。
+        let text = r#"
+[package]
+name = "demo"
+
+[[bin]]
+name = "kanesumi-demo"
+path = "src/main.rs"
+"#;
+        let d = parse(text).unwrap();
+        assert_eq!(d.str_or("bin.0.name", ""), "kanesumi-demo");
+        assert_eq!(d.str_or("bin.0.path", ""), "src/main.rs");
+        assert_eq!(d.str_or("package.name", ""), "demo", "普通表段不受影响");
+    }    #[test]
     fn rejects_bad_input_with_line_number() {
         let err = parse("ok = 1\nbroken\n").unwrap_err();
         assert!(err.contains("第 2 行"), "错误信息应带行号：{err}");

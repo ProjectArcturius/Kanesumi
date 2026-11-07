@@ -434,6 +434,26 @@ fn cmd_check() -> Result<(), String> {
     println!("  角色      {}", p.role);
     println!("  入口      usr/bin/{}", p.binary);
     println!("  manifest  usr/share/ether/manifests/{}.toml", p.app_id);
+
+    // 与 Cargo.toml 的 `[[bin]]` 对账：两边名字不一致时 `package` 会「读不到二进制」，
+    // 那个报错发生在构建之后，代价高；在这里提前说清楚。
+    if let Ok(text) = std::fs::read_to_string("Cargo.toml")
+        && let Ok(doc) = toml_lite::parse(&text)
+    {
+        let bins: Vec<String> = doc
+            .keys()
+            .filter(|k| k.starts_with("bin.") && k.ends_with(".name"))
+            .filter_map(|k| doc.get(k).and_then(toml_lite::Value::as_str).map(str::to_string))
+            .collect();
+        if !bins.is_empty() && !bins.iter().any(|b| b == &p.binary) {
+            println!(
+                "  警告      [entry] binary = {} 不在 Cargo.toml 的 [[bin]] 里（实有 {}）",
+                p.binary,
+                bins.join(", ")
+            );
+            println!("            两边名字必须一致，否则 package 读不到产物。");
+        }
+    }
     Ok(())
 }
 
