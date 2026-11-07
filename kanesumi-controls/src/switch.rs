@@ -233,9 +233,12 @@ impl MetroSwitch {
         Rect::new(knob_x, knob_y, kw, kh)
     }
 
-    /// 命中：整个轨道范围（含 knob 周围留白），便于拖动。
-    pub fn hit_test(&self, rect: Rect, theme: &MetroTheme, pos: Point) -> bool {
-        self.track_rect(rect, theme).contains(pos)
+    /// 命中：整个控件矩形（UWP `ToggleSwitch` 语义 —— 点轨道、点状态文本都切换）。
+    ///
+    /// 只认轨道会让「点在旁边那行状态字上」变成无效点击，元素树里尤其明显：控件固有宽
+    /// 154，轨道只占左端 40，点击控件中心必然落空。参 `CONTROL_SPEC.md` §3。
+    pub fn hit_test(&self, rect: Rect, _theme: &MetroTheme, pos: Point) -> bool {
+        rect.contains(pos)
     }
 
     /// 指针按下 —— 命中轨道则记录起点，进入 Pressed 态。
