@@ -165,6 +165,17 @@ impl TestHarness {
         self.click_at(c);
     }
 
+    /// 双击一个坐标（移动 → 按下 → 双击 → 释放），随后出一帧。
+    ///
+    /// 次序照外壳：双击是**第二次按下之后**追加的一投，单击语义不丢（参 `event.rs` 的
+    /// `DoubleTapped` 注释）。测试里不必真的排两次按下，故直接投合成事件。
+    pub fn double_click_at(&mut self, pos: Point) {
+        self.press_at(pos, PointerButton::Left);
+        self.tree.pointer_double(pos, PointerButton::Left);
+        self.release_at(pos, PointerButton::Left);
+        self.frame();
+    }
+
     pub fn right_click(&mut self, id: WidgetId) {
         let c = self.center(id);
         self.press_at(c, PointerButton::Right);
