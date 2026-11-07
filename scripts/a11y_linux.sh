@@ -43,29 +43,26 @@ parse_addr() {
     printf "%s\n" "$1" | sed -n "s/^('\(.*\)',)$/\1/p"
 }
 
-say "== 起 a11y 总线（org.a11y.Bus → at-spi-bus-launcher）=="
+say "== 起 a11y 总线（at-spi-bus-launcher --a11y=1）=="
+# 顺序很要紧：**先起 launcher 再问地址**。若先问 `org.a11y.Bus`，D-Bus 会把 launcher
+# 激活成一个「无障碍关闭、不起 dbus-daemon」的桩进程，它占着服务名、只回缓存地址；
+# 之后手动再起一条就绑不上名，退出 —— 表现是地址有了、套接字却永远缺失。
+# （GNOME 系默认关无障碍，必须显式 --a11y=1。）
+/usr/libexec/at-spi-bus-launcher --a11y=1 --launch-immediately >>"$BUS_LOG" 2>&1 &
+LAUNCHER=$!
+sleep 2
+
 RAW=$(read_addr)
 A11Y_BUS=$(parse_addr "$RAW")
 bus_path=$(printf "%s" "${A11Y_BUS:-}" | sed -n "s/^unix:path=\([^,]*\).*/\1/p")
 
-# 关键坑：GNOME 系默认关无障碍，此时 launcher **只回地址、不起 dbus-daemon**，
-# 返回的 unix:path 是个不存在的套接字。所以要按套接字在不在判断，而不是看有没有地址。
-if [ -z "${A11Y_BUS:-}" ] || { [ -n "$bus_path" ] && [ ! -S "$bus_path" ]; }; then
-    say "  总线上没有活着的 a11y 服务（默认关无障碍），手动起一条：--a11y=1"
-    /usr/libexec/at-spi-bus-launcher --a11y=1 --launch-immediately >>"$BUS_LOG" 2>&1 &
-    sleep 2
-    RAW=$(read_addr)
-    A11Y_BUS=$(parse_addr "$RAW")
-    bus_path=$(printf "%s" "${A11Y_BUS:-}" | sed -n "s/^unix:path=\([^,]*\).*/\1/p")
-fi
-
-if [ -n "${A11Y_BUS:-}" ]; then
+if [ -n "${A11Y_BUS:-}" ] && { [ -z "$bus_path" ] || [ -S "$bus_path" ]; }; then
     say "  address=$A11Y_BUS"
-    say "  socket=$([ -S "$bus_path" ] && echo 就绪 || echo 缺失)"
+    say "  socket=$bus_path"
     export AT_SPI_BUS_ADDRESS="$A11Y_BUS"
 else
-    say "  !! 没拿到 a11y 总线地址（at-spi2-core 未装？），退回会话总线试"
-    say "     raw=[$RAW]"
+    say "  !! a11y 总线没起来（launcher pid=$LAUNCHER），原始返回 raw=[$RAW]"
+    say "     socket=$bus_path（$([ -S "$bus_path" ] && echo 存在 || echo 缺失)）"
     A11Y_BUS=""
 fi
 # 之后所有查询都走 a11y 总线（没有就退回会话总线，至少拿到部分信息）。
