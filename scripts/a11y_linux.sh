@@ -34,15 +34,37 @@ say() { echo "$*" | tee -a "$BUS_LOG"; }
 
 REG_PATH=/org/a11y/atspi/accessible/root
 
+# 读 a11y 总线地址。`org.a11y.Bus` 的返回是 D-Bus 元组，形如 ('unix:path=…,guid=…',)
+read_addr() {
+    gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
+        --method org.a11y.Bus.GetAddress 2>&1
+}
+parse_addr() {
+    printf "%s\n" "$1" | sed -n "s/^('\(.*\)',)$/\1/p"
+}
+
 say "== 起 a11y 总线（org.a11y.Bus → at-spi-bus-launcher）=="
-RAW=$(gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
-    --method org.a11y.Bus.GetAddress 2>&1)
-A11Y_BUS=$(printf "%s\n" "$RAW" | sed -n "s/^('\(.*\)',)$/\1/p")
+RAW=$(read_addr)
+A11Y_BUS=$(parse_addr "$RAW")
+bus_path=$(printf "%s" "${A11Y_BUS:-}" | sed -n "s/^unix:path=\([^,]*\).*/\1/p")
+
+# 关键坑：GNOME 系默认关无障碍，此时 launcher **只回地址、不起 dbus-daemon**，
+# 返回的 unix:path 是个不存在的套接字。所以要按套接字在不在判断，而不是看有没有地址。
+if [ -z "${A11Y_BUS:-}" ] || { [ -n "$bus_path" ] && [ ! -S "$bus_path" ]; }; then
+    say "  总线上没有活着的 a11y 服务（默认关无障碍），手动起一条：--a11y=1"
+    /usr/libexec/at-spi-bus-launcher --a11y=1 --launch-immediately >>"$BUS_LOG" 2>&1 &
+    sleep 2
+    RAW=$(read_addr)
+    A11Y_BUS=$(parse_addr "$RAW")
+    bus_path=$(printf "%s" "${A11Y_BUS:-}" | sed -n "s/^unix:path=\([^,]*\).*/\1/p")
+fi
+
 if [ -n "${A11Y_BUS:-}" ]; then
     say "  address=$A11Y_BUS"
+    say "  socket=$([ -S "$bus_path" ] && echo 就绪 || echo 缺失)"
     export AT_SPI_BUS_ADDRESS="$A11Y_BUS"
 else
-    say "  !! 没拿到 a11y 总线地址（at-spi2-core 未装或 launcher 起不来），退回会话总线试"
+    say "  !! 没拿到 a11y 总线地址（at-spi2-core 未装？），退回会话总线试"
     say "     raw=[$RAW]"
     A11Y_BUS=""
 fi
