@@ -102,7 +102,7 @@ git -C /path/to/Ether/target/wt/k-menu-a11y bundle create k-menu-a11y.bundle 389
 - **文件面**：`kanesumi-controls/src/dropdown_menu.rs`、`popup.rs`；
 - **门**：现有菜单测试全绿 + 新增 ≥2 条（thumb 拖动改变偏移、间距配置生效）；`examples/menu_states_snapshot.rs` 出图（2×）并亲看。
 
-### W3 · 无障碍第 5 条契约铺满剩余容器
+### W3 · 无障碍第 5 条契约铺满剩余容器（**部分完成**：自动补全建议列表已接，提交 `b576d81`）
 - `MetroCommandBar` / `MetroBreadcrumbBar` 溢出面板 / `MetroAutoSuggestBox` 建议列表 的 `access_items`（按 list/tree 的先例：可见项 + 交集裁切）；
 - **门**：每处 1~2 条测试 + `assert_access_contract`；示例 `access_snapshot.rs` 至少覆盖一处。
 
