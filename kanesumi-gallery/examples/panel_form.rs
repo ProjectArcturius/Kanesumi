@@ -13,7 +13,7 @@
 // 出图：cargo run -p kanesumi-gallery --example panel_form -- --snapshot out.png 1
 
 use kanesumi_controls::form::{self, Form};
-use kanesumi_controls::{MetroButton, MetroSurface, SwitchToggled};
+use kanesumi_controls::{MetroButton, SwitchToggled};
 use kanesumi_core::{MetroTheme, ThemeColor};
 use kanesumi_harness::element::widgets::{Border, Stack};
 use kanesumi_harness::element::{Action, Align, Insets, LayoutProps, Tree, WidgetId};
@@ -56,25 +56,18 @@ impl TreeApp for ControlCenter {
     fn build(&mut self, tree: &mut Tree) {
         let page = tree.insert(tree.root(), Border::new().background(ThemeColor::Background));
 
-        // 面板容器：底色与圆角由 MetroSurface 负责，尺寸按内容撑开（measure = 子节点的最大范围）。
-        let surface = tree.insert_with(
+        // 画布留白：面板本身由合成器摆位置，示例里给一圈边距好看清边界。
+        let pad = tree.insert_with(
             page,
-            MetroSurface::panel(self.theme),
+            Stack::column(),
             LayoutProps {
                 margin: Insets::new(20.0, 20.0, 20.0, 20.0),
                 h_align: Align::Start,
                 ..LayoutProps::default()
             },
         );
-        let col = tree.insert_with(
-            surface,
-            Stack::column(),
-            LayoutProps {
-                width: Some(PANEL_W),
-                margin: Insets::new(16.0, 16.0, 16.0, 16.0),
-                ..LayoutProps::default()
-            },
-        );
+        // 面板容器：一条 form::panel 搞定（表面 + 内边距 + 一列），尺寸按内容撑开。
+        let col = form::panel(tree, pad, self.theme, PANEL_W);
 
         let mut f = Form::new(col);
         f.section(tree, "音量", true);

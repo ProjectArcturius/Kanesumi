@@ -19,7 +19,7 @@ use std::sync::Arc;
 use kanesumi_canvas::{Icon, Scene, TextAlign};
 use kanesumi_core::sizes;
 use kanesumi_core::typography::FontWeight;
-use kanesumi_core::{Size, TextStyle, ThemeColor};
+use kanesumi_core::{MetroTheme, Size, TextStyle, ThemeColor};
 use kanesumi_element::widgets::{Label, Stack};
 use kanesumi_element::{
     Align, Event, EventCtx, Insets, LayoutProps, MeasureCtx, PaintCtx, Tree, Widget, WidgetId,
@@ -27,6 +27,7 @@ use kanesumi_element::{
 
 use crate::button::MetroButton;
 use crate::slider::MetroSlider;
+use crate::surface::MetroSurface;
 use crate::switch::MetroSwitch;
 
 // ── 语义尺寸（只引用尺寸表，不在此另立值）──────────────────────────────────
@@ -534,6 +535,38 @@ impl Form {
     }
 }
 
+/// 面板：浮层表面（`MetroSurface::panel`）+ 内边距 + 一列内容，返回**内容列 id**。
+///
+/// 顶栏的控制中心 / 音频 / 电源 / 通知中心都是这个形状：一个按内容撑开的面板底，
+/// 里面一列分区与行。用法与页面一致 —— 拿到列 id 之后照常 `let mut f = Form::new(col);`。
+///
+/// ```ignore
+/// let col = form::panel(tree, tree.root(), theme, form::COL_WIDTH);
+/// let mut f = Form::new(col);
+/// f.section(tree, "音量", true);
+/// f.slider(tree, "扬声器", "60", 0.6, 0.0, 1.0, Some(0.01), None);
+/// ```
+///
+/// 容器不自带滚动、不负责出现位置与展开动画（那些归外壳），参 `docs/CONTROL_SPEC.md` §50。
+pub fn panel(tree: &mut Tree, parent: WidgetId, theme: MetroTheme, width: f32) -> WidgetId {
+    let surface = tree.insert_with(
+        parent,
+        MetroSurface::panel(theme),
+        LayoutProps {
+            h_align: Align::Start,
+            ..LayoutProps::default()
+        },
+    );
+    tree.insert_with(
+        surface,
+        Stack::column(),
+        LayoutProps {
+            width: Some(width),
+            margin: Insets::new(16.0, 16.0, 16.0, 16.0),
+            ..LayoutProps::default()
+        },
+    )
+}
 /// 「相关设置」栏：宽 [`RELATED_WIDTH`]、上内边距 [`RELATED_TOP`]；每组 = 分区标题 + 链接
 /// 列表。`width = None` 表示随内容列宽拉伸（窄窗时整块移到内容列下方）。
 ///

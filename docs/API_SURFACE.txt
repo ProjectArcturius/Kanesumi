@@ -1008,6 +1008,7 @@ pub fn pane_progress(&self) -> f32 {
 pub fn pane_rects(&self, rect: Rect) -> (Rect, Rect) {
 pub fn pane_width(&self) -> f32 {
 pub fn panel(theme: MetroTheme) -> Self {
+pub fn panel(tree: &mut Tree, parent: WidgetId, theme: MetroTheme, width: f32) -> WidgetId {
 pub fn panel_height(&self) -> f32 {
 pub fn panel_height(&self, engine: &TextEngine) -> f32 {
 pub fn panel_items(&self) -> Vec<PagerItem> {
