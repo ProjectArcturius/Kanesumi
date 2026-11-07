@@ -21,9 +21,9 @@
 | 分区标题 | 支持（`SH_Menu_SupportsSections = true`） | `breezestyle.cpp:940` |
 | 光标跟踪 | 开（`SH_Menu_MouseTracking`）：菜单一出现，指针下的项就高亮 | `breezestyle.cpp:929` |
 
-注意两件事的区别：**「打开时预选首项」是有害的**。QMenu 只在指针真的进过菜单后才高亮
-（`hasHadMouse`），键盘打开才走预选。我们现在 `menu_flyout.rs:55`、`:76` 与 `context_menu.rs:63`
-都是打开即 `hovered = Some(0)`，这就是「菜单一弹出来就像已经被点过」的来源。
+这一条要分清「指针打开」与「键盘打开」：QMenu 只在指针真的进过菜单后才高亮（`hasHadMouse`），
+键盘打开才预选。**我们这块已经做对了**：`menu_flyout.rs:51` 与 `:72`、`context_menu.rs:62` 都是
+`if keyboard` 门控，`dropdown_menu.rs:188` 初值为 `None` —— 改造时别把它改成无条件预选。
 
 ## 二、位置：翻转 + 按行高整数倍避让
 
@@ -69,23 +69,25 @@ QMenu，说明「别人的菜单」在 KDE 里也是**换成自己的菜单控�
 
 ## 五、我们的差距清单（对照 `kanesumi-controls` 现状）
 
+先记**已经做对、别改坏**的三条：指针打开不预选（`if keyboard` 门控）、Home / End 已处理、
+Esc / Enter / Space 语义已在（`dropdown_menu.rs:1095`）。
+
 | # | 缺的东西 | 现状 | 补法 |
 |---|---|---|---|
-| 1 | 打开不预选 | `menu_flyout.rs:55`、`:76`、`context_menu.rs:63` 打开即 `hovered = Some(0)` | 指针打开 → `hovered = None`；键盘打开才预选 |
-| 2 | 子菜单 150 ms 延时 | 无（悬停即开） | 在 `dropdown_menu.rs` 加悬停计时器，常量进 `sizes`/`interaction` |
-| 3 | 安全三角 + 1 s 宽限 | 无 | 照 `QMenuSloppyState` 实现（斜率判定 + 超时 + `motions` 抑制） |
-| 4 | 长菜单滚动 | 无（超出即溢出） | 复用 `MetroScrollView` 或菜单内滚动区 + 上下箭头 |
-| 5 | 类型搜索 / Home / End / PageUp / PageDown | 只有方向键（`table_row` 一级也没有） | `menu_bar.rs` / `dropdown_menu.rs` 的 `keyPressEvent` 补齐 |
-| 6 | 分区标题 | 只有分隔线 | 加 `MenuItem::section(title)` |
-| 7 | 位置按行高整数倍避让 | `popup.rs::place_popup` 只翻转，像素级 | 垂直避让量化到行高 |
-| 8 | 右键菜单覆盖面 | dock / 应用匣 / 磁贴 / 桌面空白 均无 | 先做「应用菜单条目生成器」（`.desktop Actions=` + 窗口能力） |
+| 1 | 子菜单 150 ms 延时 | 无：悬停即开（`dropdown_menu.rs:444-447` 直接 `open_submenu`） | 加悬停计时器，常量进 `sizes` |
+| 2 | 安全三角 + 1 s 宽限 | 无 | 照 `QMenuSloppyState` 实现（斜率判定 + 超时 + `motions` 抑制） |
+| 3 | 长菜单滚动 | 无：`place_popup` 把面板高压到屏高（`popup.rs:38`），超出的条目没有滚动兜底 | 菜单内滚动区 + 上下箭头 |
+| 4 | 类型搜索 / PageUp / PageDown | 无（只有 Up/Down/Left/Right/Home/End 与 Space） | `dropdown_menu.rs` 键盘分支补齐 |
+| 5 | 分区标题 | 只有分隔线 | 加 `MenuItem::section(title)` |
+| 6 | 位置按行高整数倍避让 | `place_popup` 只翻转 + 夹紧，像素级 | 垂直避让量化到行高 |
+| 7 | 右键菜单覆盖面 | dock / 应用匣 / 磁贴 / 桌面空白 均无 | 先做「应用菜单条目生成器」（`.desktop Actions=` + 窗口能力） |
 
 ## 六、落地顺序（建议）
 
-1. 先补 1~3（纯库侧、不新增控件，是「好用」的最大杠杆）。
-2. 再补 4~6（长菜单与键盘，决定「能不能靠它干活」）。
-3. 7 归合成器（`state/popup.rs`），与 1~6 可并行。
-4. 8 归应用侧，等 1~7 稳了再铺三处入口，避免在坏地基上写六份菜单。
+1. 先补 1~2（纯库侧、不新增控件，是「好用」的最大杠杆）。
+2. 再补 3~5（长菜单与键盘，决定「能不能靠它干活」）。
+3. 6 归合成器（`state/popup.rs`），与 1~5 可并行。
+4. 7 归应用侧，等 1~6 稳了再铺三处入口，避免在坏地基上写六份菜单。
 
 数值落地时同步进 Ether 仓 `docs/INTERACTION_CANON.md` §Ⅵ（现在那一节只有四行，没写延时、
 安全三角与长菜单兜底）。
