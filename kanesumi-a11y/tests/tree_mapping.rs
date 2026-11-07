@@ -77,7 +77,16 @@ fn real_tree_maps_roles_names_and_structure() {
     let bounds = button_node.bounds().expect("必须给矩形（读屏靠它画高亮框）");
     assert!(bounds.x1 > bounds.x0 && bounds.y1 > bounds.y0, "矩形非退化：{bounds:?}");
 
-    assert!(by_label(&update, "说明文字").is_some_and(|(_, n)| n.role() == Role::Label));
+    // 静态文本（`Role::Label`）的正文按 AccessKit 约定走 `value`，不走 `label` ——
+    // 放错位置的表现是读屏拿到一个「名字为空」的文本节点（Linux 真机验收抓到的）。
+    let label_node = update
+        .nodes
+        .iter()
+        .find(|(_, n)| n.role() == Role::Label)
+        .map(|(_, n)| n)
+        .expect("静态文本节点");
+    assert_eq!(label_node.value(), Some("说明文字"));
+    assert_eq!(label_node.label(), None, "Label 不写 label，避免读屏念两遍");
     // 没有焦点的树：AccessKit 要求焦点字段恒有值，无焦点时落到根。
     assert_eq!(update.focus, node_id(h.root()), "无焦点时焦点落根");
 }

@@ -169,15 +169,30 @@ impl Builder {
             children.push(self.push_item(item));
         }
 
-        let mut node = Node::new(role_of(snapshot.role));
+        let role = role_of(snapshot.role);
+        let mut node = Node::new(role);
         // 名字为空串时不写：AccessKit 会把空 label 当成「有名字且为空」，而读屏对
         // 「有名字但空」和「没名字」的处理不同（后者会去翻子元素猜名字）。
-        if let Some(name) = &snapshot.name
-            && !name.trim().is_empty()
-        {
-            node.set_label(name.clone());
+        //
+        // `Role::Label` 是**唯一例外**：AccessKit 明确约定静态文本的内容走 `value` 而不是
+        // `label`（见 accesskit `Node::label` 的文档）。放错位置的表现是读屏拿到一个
+        // 「名字为空」的静态文本 —— Linux 真机 AT-SPI 验收时就是这么发现的（kanesumi-a11y 第一版）。
+        let name = snapshot
+            .name
+            .as_ref()
+            .filter(|n| !n.trim().is_empty())
+            .cloned();
+        if role == Role::Label {
+            if let Some(text) = name {
+                node.set_value(text);
+            }
+        } else if let Some(text) = name {
+            node.set_label(text);
         }
-        if let Some(value) = &snapshot.value {
+        // 普通节点的 value 是「控件当前值」（输入框内容 / 列表选中项），与 label 互不替代。
+        if role != Role::Label
+            && let Some(value) = &snapshot.value
+        {
             node.set_value(value.clone());
         }
         if snapshot.disabled {
