@@ -360,6 +360,66 @@ let (w, h) = kanesumi_harness::snapshot::render_png(
 
 ---
 
+## 二·五、写一个设置页（页面语法 `form`）
+
+设置页 / 偏好页 / 表单页的结构是高度重复的：**分区标题 → 一行一个设置项 → 标签在上、控件在中、
+说明在下**。这套结构不再由各应用自己画，走 `kanesumi_controls::form`（规格参 `CONTROL_SPEC.md` §49）。
+
+```rust
+use kanesumi_controls::form::{self, Form};
+use kanesumi_controls::FormLinkClicked;
+
+impl TreeApp for SettingsPage {
+    fn build(&mut self, tree: &mut Tree) {
+        // 内容列：普通 Stack，宽度策略由外层决定（设计宽 form::COL_WIDTH）。
+        let col = tree.insert_with(
+            tree.root(),
+            Stack::column(),
+            LayoutProps { width: Some(form::COL_WIDTH), ..LayoutProps::default() },
+        );
+
+        let mut f = Form::new(col);
+        f.page_title(tree, "显示");
+        f.section(tree, "亮度", true);                       // 首节：上距 4
+        f.slider(tree, "屏幕亮度", "60%", 0.6, 0.0, 1.0, Some(0.01), None);
+        f.toggle(tree, "自动亮度", self.auto, Some("随环境光调整"));
+        f.section(tree, "夜间模式", false);                   // 其后各节：上距 36
+        f.toggle(tree, "定时开启", self.schedule, None);
+        f.note(tree, "夜间模式在日落后自动生效。");
+        f.section(tree, "更多", false);
+        f.link(tree, "声音设置", "sound");                    // 投 FormLinkClicked{target:"sound"}
+        f.button(tree, "重置显示设置", Some("只影响本页，不影响其他页面。"));
+    }
+
+    fn on_action(&mut self, tree: &mut Tree, _from: WidgetId, action: Action) {
+        if let Ok(link) = action.downcast::<FormLinkClicked>() {
+            self.navigate(&link.target);                     // 跳转键 → 应用自己的路由
+            tree.invalidate();
+        }
+    }
+}
+```
+
+「相关设置」栏（右栏 / 窄窗时移到内容列下方）：
+
+```rust
+form::related(
+    tree,
+    col,
+    &[("相关设置", &[("声音", "sound"), ("电源", "power")])],
+    Some(form::RELATED_WIDTH),   // None = 随内容列宽拉伸
+);
+```
+
+必须知道的四条：
+
+1. **不要自己加下外边距**。`form` 按 CSS 外边距折叠规则为每个块落**上**外边距；自己再加下外边距
+   会得到「两倍间距」。
+2. **尺寸与颜色不要自己写**。间距来自 `kanesumi_core::sizes::FORM_*`，颜色只用 `ThemeColor` 令牌。
+3. **开关 / 按钮 / 滑杆是库控件**，`form` 只是把它们摆进页面 —— 不要另写一套自绘开关。
+4. **需要「左标题右控件」时停下**：当前语法是左对齐单列（裁定 `DECISIONS_2026-10-05.md` §110），
+   要那种排布得先加显式布局变体，不要在页面里手算几何。
+
 ## 三、核心概念
 
 ### 3.1 状态驱动渲染管线

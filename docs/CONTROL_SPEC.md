@@ -1949,3 +1949,64 @@ pub const TOOLTIP_DELAY_MS / TOOLTIP_RESHOW_MS / TOOLTIP_HIDE_MS;   // 引用 in
 - 背景高亮可在绘制期把相邻边缘吸附到同一像素网格，保持无接缝。
 - 真正不足的槽位只显示完整标题；绘制、命中和弹层锚点共用header_rects。
 - 回归包含中文/英语四项、非整数原点、自然宽与真实窄槽，以及末项点击打开。
+
+## 49 · 页面语法（form grammar · `Form` / `MetroFormLink`）
+
+来源：`settings/src/window/grammar.rs`（这套版式的原始实现 —— 36 个页面逐项照抄预览页 CSS），
+裁定 `DECISIONS_2026-10-05.md` §110。2026-11 提升到控件库：同一套结构此前由每个应用各写一遍，
+settings 36 个自绘控件、librarian 15 个、launcher 10 个，重复劳动远大于差异。
+
+### 存在理由
+
+设置页 / 偏好页 / 表单页的结构高度重复：**分区标题 → 一行一个设置项 → 标签在上、控件在中、
+说明在下**。这层结构不属于任何单个应用，属于「页面写作能力」。放在控件库里的意义是：
+应用只声明「哪个分区有哪些行」，几何、间距、字号、颜色、动作全部由框架给出。
+
+### 构件表
+
+| 构件 | 产出 | 说明 |
+|---|---|---|
+| `Form::new(parent)` | 页列游标 | 不持有树，可与另建的容器交替使用 |
+| `Form::page_title` | 标签 id | 28 Light，下距 20 |
+| `Form::section(text, first)` | 标题标签 id | 20 Regular；首节上距 4，其余 36，下距 12 |
+| `Form::toggle(label, checked, desc)` | 开关 id | 复用 `MetroSwitch`（带 On/Off 状态文本） |
+| `Form::toggle_desc(label, checked, desc)` | (开关 id, 说明 id) | 说明恒建，供运行时改写 / 隐藏 |
+| `Form::button(label, desc)` | (按钮 id, 说明 id) | 复用 `MetroButton` |
+| `Form::labeled(label, control, desc)` | 控件 id | 任意控件走这里，不再各写三行结构 |
+| `Form::info_item(label, value, desc)` | 值标签 id | 只读信息项 |
+| `Form::note(text)` | 标签 id | 整宽次级色说明；**按列宽折行、不截断** |
+| `Form::link(text, target)` | 链接 id | 强调色；投 `FormLinkClicked { target }` |
+| `Form::row_block(mb)` | 容器 id | 行内子件自排水平的全宽行 |
+| `Form::slider(label, value_text, …)` | (滑杆 id, 值 id) | 复用 `MetroSlider`，行高 32 |
+| `form::related(tree, parent, sections, width)` | 栏容器 id | 「相关设置」栏；`width=None` 时随内容列拉伸 |
+
+### 间距规则（必须照做）
+
+CSS 相邻兄弟的垂直外边距**折叠**，取两者较大者；而元素树 Stack 的 margin 不折叠。故 `Form`
+只为每个块落**上**外边距（= 与上一块折叠后的间距），并记住本块的 CSS 下外边距供下一块折叠。
+按自己的算法加下外边距会得到「两倍间距」，逐页看都不对。
+
+### 尺寸与颜色
+
+- 尺寸全部来自 `kanesumi_core::sizes` 的页面语法族（`FORM_*`），本层不另立常量。
+- 颜色只用令牌：`OnSurface`（标签 / 值）、`OnSurfaceVariant`（说明）、`Primary`（链接）、
+  `Background`/`Surface`（由页面容器负责）。**页面语法层不出现任何字面色。**
+
+### 动作
+
+- 开关 → `SwitchToggled(bool)`（库动作，非应用自定义）。
+- 按钮 → `ButtonClicked`。
+- 链接 → `FormLinkClicked { target: Arc<str> }`；`target` 是应用自定义跳转键（如 `"display"`），
+  由应用映射到自己的路由枚举 —— 控件层不依赖任何应用的路由类型。
+
+### 布局铁律
+
+左对齐单列，标签在上、控件在中、说明在下。**禁止 Win11 式「左标题右控件」**（§110）。
+将来若确需那种排布，必须作为独立布局变体显式 opt-in，不得改本默认。
+
+### 已知缺口（未实现，勿当成可用能力）
+
+1. 行内联布局（左标题右控件）——无。
+2. 行首图标槽（列表行图标）——无。
+3. 整行可点（点标签也切换开关）——无；目前只有开关自身可点，命中范围是整个控件矩形。
+4. `MetroRepeater` / `MetroTextField` 尚无元素树 `Widget` 实现，页面里暂不可用。

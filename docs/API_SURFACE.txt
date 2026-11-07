@@ -738,6 +738,7 @@ pub fn border_thickness(&self) -> f32 {
 pub fn box_rect(&self, rect: Rect) -> Rect {
 pub fn box_rect(&self, screen: Rect) -> Rect {
 pub fn bring_into_view_index(&mut self, index: usize) {
+pub fn button(
 pub fn button(label: impl Into<String>, action: DeclAction) -> Self {
 pub fn can_undo(&self) -> bool {
 pub fn cancel(&mut self) {
@@ -870,9 +871,9 @@ pub fn hit_command(&self, pos: Point) -> Option<CommandBarAction> {
 pub fn hit_header(&self, rect: Rect, pos: Point) -> bool {
 pub fn hit_item(&self, rect: Rect, pos: Point) -> Option<usize> {
 pub fn hit_spin(&self, theme: &MetroTheme, rect: Rect, pos: Point) -> Option<SpinButton> {
+pub fn hit_test(&self, rect: Rect, _theme: &MetroTheme, pos: Point) -> bool {
 pub fn hit_test(&self, rect: Rect, pos: Point) -> bool {
 pub fn hit_test(&self, rect: Rect, pos: kanesumi_core::Point) -> bool {
-pub fn hit_test(&self, rect: Rect, theme: &MetroTheme, pos: Point) -> bool {
 pub fn hits(&self) -> &[crate::decl::DeclHit] {
 pub fn hover(&mut self, engine: &TextEngine, rect: Rect, pos: Point) {
 pub fn hover(&mut self, engine: &TextEngine, rect: Rect, screen: Rect, p: Point) {
@@ -889,6 +890,7 @@ pub fn icon_glyph(self) -> &'static str {
 pub fn icon_rect(&self, rect: Rect) -> Option<Rect> {
 pub fn ime_context(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> ImeContext {
 pub fn indeterminate() -> Self {
+pub fn info_item(
 pub fn initials_from_display_name(name: &str) -> String {
 pub fn initials_style(side: f32) -> TextStyle {
 pub fn insert_char(&mut self, c: char) -> bool {
@@ -921,12 +923,14 @@ pub fn item_width(&self, i: usize) -> f32 {
 pub fn items_changed(&mut self) {
 pub fn key(&mut self, key: kanesumi_element::Key) -> CalendarResponse {
 pub fn knob_rect(&self, rect: Rect, theme: &MetroTheme) -> Rect {
+pub fn labeled(
 pub fn layout(&self, engine: &TextEngine, rect: Rect) -> (Size, Vec<Rect>) {
 pub fn layout(&self, engine: &TextEngine, rect: Rect) -> BreadcrumbLayout {
 pub fn layout(&self, rect: Rect) -> (Size, Vec<Rect>) {
 pub fn left_width(&self) -> f32 {
 pub fn len(&self) -> usize {
 pub fn line_rect(&self, theme: &MetroTheme, body: Rect) -> Rect {
+pub fn link(&mut self, tree: &mut Tree, text: &str, target: &str) -> WidgetId {
 pub fn mask(&self) -> Option<char> {
 pub fn max_offset(&self) -> f32 {
 pub fn max_scroll(&self) -> f32 {
@@ -951,6 +955,7 @@ pub fn move_home(&mut self, select: bool) {
 pub fn move_left(&mut self, select: bool) {
 pub fn move_right(&mut self, select: bool) {
 pub fn nav_rects(&self, rect: Rect) -> (Rect, Rect, Rect) {
+pub fn nested(&self, parent: WidgetId) -> Self {
 pub fn new() -> Self {
 pub fn new(commands: Vec<CommandButton>) -> Self {
 pub fn new(content: Size, viewport: Size) -> Self {
@@ -967,16 +972,19 @@ pub fn new(label: impl Into<String>, items: Vec<MenuItem>) -> Self {
 pub fn new(label: impl Into<String>, size: TileSize, base_color: Color) -> Self {
 pub fn new(layout: ItemLayout, factory: impl ItemFactory) -> Self {
 pub fn new(owner: WidgetId, items: Vec<MenuItem>) -> Self {
+pub fn new(parent: WidgetId) -> Self {
 pub fn new(root: TreeViewNode) -> Self {
 pub fn new(rows: Vec<String>) -> Self {
 pub fn new(slot: DialogButton, label: impl Into<String>) -> Self {
 pub fn new(tabs: Vec<MetroTab>) -> Self {
 pub fn new(tabs: Vec<String>) -> Self {
+pub fn new(text: &str, target: &str) -> Self {
 pub fn new(title: impl Into<String>, content: impl Into<String>) -> Self {
 pub fn new(today: Date) -> Self {
 pub fn next(self) -> Self {
 pub fn next_cluster_boundary(&self, cursor: usize) -> usize {
 pub fn next_rect(&self, rect: Rect) -> Option<Rect> {
+pub fn note(&mut self, tree: &mut Tree, text: &str) -> WidgetId {
 pub fn offset(&self) -> f32 {
 pub fn open(&mut self) {
 pub fn open(&mut self, anchor: Rect, screen: Rect) {
@@ -992,6 +1000,7 @@ pub fn open_submenu(&mut self, engine: &TextEngine, screen: Rect, idx: usize) {
 pub fn overflow_buttons(&self, engine: &TextEngine, rect: Rect) -> Option<(Rect, Rect)> {
 pub fn overflowing(&self, engine: &TextEngine, rect: Rect) -> bool {
 pub fn overlay_alpha(&self) -> f32 {
+pub fn page_title(&mut self, tree: &mut Tree, text: &str) -> WidgetId {
 pub fn paint_at(
 pub fn pane_progress(&self) -> f32 {
 pub fn pane_rects(&self, rect: Rect) -> (Rect, Rect) {
@@ -1035,6 +1044,7 @@ pub fn radio(mut self, group: impl Into<String>) -> Self {
 pub fn realized_count(&self) -> usize {
 pub fn realized_node(&self, index: usize) -> Option<WidgetId> {
 pub fn register(&mut self, id: FocusId, tab_stop: bool, enabled: bool) {
+pub fn related(
 pub fn release(
 pub fn release(&mut self) -> bool {
 pub fn release(&mut self) {
@@ -1059,7 +1069,11 @@ pub fn render_panel_base(theme: &MetroTheme, rect: Rect, progress: f64, scene: &
 pub fn render_submenu(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
 pub fn right_width(&self) -> f32 {
 pub fn row(children: Vec<Decl>) -> Self {
+pub fn row_block(&mut self, tree: &mut Tree, mb: f32) -> WidgetId {
 pub fn row_height(&self, theme: &MetroTheme) -> f32 {
+pub fn s_label() -> TextStyle {
+pub fn s_page_title() -> TextStyle {
+pub fn s_section() -> TextStyle {
 pub fn scale_value(&self) -> f64 {
 pub fn scroll(&mut self, dy: f32) -> CalendarResponse {
 pub fn scroll_by(&mut self, delta: f32) {
@@ -1083,6 +1097,7 @@ pub fn scrollbar_thumb_rect(&self) -> Rect {
 pub fn scrollbar_track_rect(&self) -> Rect {
 pub fn scrollbar_visible(&self) -> bool {
 pub fn secondary_rect(&self, rect: Rect) -> Rect {
+pub fn section(&mut self, tree: &mut Tree, text: &str, first: bool) -> WidgetId {
 pub fn select(&mut self, idx: usize) -> bool {
 pub fn select(&mut self, index: Option<usize>) {
 pub fn select(&mut self, index: usize) -> bool {
@@ -1128,6 +1143,7 @@ pub fn show_modal_with(
 pub fn side(rect: Rect) -> f32 {
 pub fn single_line(mut self) -> Self {
 pub fn size() -> Size {
+pub fn slider(
 pub fn slider_rect(&self, rect: Rect, k: usize) -> Rect {
 pub fn snap_edge(v: f32) -> f32 {
 pub fn spacer(grow: f32) -> Self {
@@ -1164,10 +1180,12 @@ pub fn text_input_line_rect(content: Rect, inner: Rect, line_height: f32) -> Rec
 pub fn text_rect(&self, theme: &MetroTheme, rect: Rect) -> Rect {
 pub fn title_rect(&self, rect: Rect) -> Rect {
 pub fn title_style() -> TextStyle {
+pub fn toggle(
 pub fn toggle(&mut self) -> CheckState {
 pub fn toggle(&mut self) {
 pub fn toggle(&mut self, at: Rect) {
 pub fn toggle(&mut self, engine: &TextEngine, rect: Rect, screen: Rect) {
+pub fn toggle_desc(
 pub fn toggle_ellipsis(&mut self, engine: &TextEngine, rect: Rect, screen: Rect) {
 pub fn toggle_flyout(&mut self, engine: &TextEngine, rect: Rect, screen: Rect) {
 pub fn toggle_rect(&self, rect: Rect) -> Rect {
@@ -1248,6 +1266,8 @@ pub struct DialogResult(pub DialogButton);
 pub struct ExpanderToggled(pub bool);
 pub struct FocusId(pub u64);
 pub struct FocusRing {
+pub struct Form {
+pub struct FormLinkClicked {
 pub struct IconButtonClicked;
 pub struct InfoBarClosed;
 pub struct ItemsRepeater {
@@ -1273,6 +1293,7 @@ pub struct MetroDialogButton {
 pub struct MetroDropDownButton {
 pub struct MetroDropdownMenu {
 pub struct MetroExpander {
+pub struct MetroFormLink {
 pub struct MetroIconButton {
 pub struct MetroInfoBadge {
 pub struct MetroInfoBar {
