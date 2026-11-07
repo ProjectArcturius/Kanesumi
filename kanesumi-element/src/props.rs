@@ -204,7 +204,11 @@ fn clamp_axis(v: f32, min: f32, max: f32) -> f32 {
 /// 应用只管把按钮插进来，不必让对话框自己画按钮（那样按钮就不是框架节点，Tab 到不了）。
 ///
 /// 与 `grid_cell` 同一套思路：布局信息跟着子节点走，容器不维护旁表。
+///
+/// `#[non_exhaustive]`：分区容器将来可能要多一类角色（页脚 / 侧栏），届时加变体不该让
+/// 下游的 match 编译失败。参 `docs/API_STABILITY.md` §三。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum LayoutRole {
     /// 普通子节点（容器自定：Stack 走主轴、Grid 走格子）。
     #[default]

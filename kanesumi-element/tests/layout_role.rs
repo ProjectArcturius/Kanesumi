@@ -45,7 +45,9 @@ impl Widget for SplitPane {
             let slot = match role {
                 LayoutRole::Content => top,
                 LayoutRole::Commands => bottom,
-                LayoutRole::Normal => Rect::new(rect.origin.x, rect.origin.y, 0.0, 0.0),
+                // 未知角色（`#[non_exhaustive]` 的代价）按普通处理：宁可排普通区，
+                // 也不要 panic —— 下游不该因为框架加了角色就崩。
+                _ => Rect::new(rect.origin.x, rect.origin.y, 0.0, 0.0),
             };
             ctx.arrange_child(c, slot);
         }

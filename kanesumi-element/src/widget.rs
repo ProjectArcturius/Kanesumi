@@ -37,7 +37,12 @@ pub struct ControlStates {
 /// `MenuItem` = UIA `ControlType.MenuItem` / AT-SPI `menu item`（菜单里的一条命令）；
 /// `TreeItem` = UIA `ControlType.TreeItem` / AT-SPI `tree item`（树的一个节点）；
 /// `TabItem` = UIA `ControlType.TabItem` / AT-SPI `page tab`（页签条上的一页）。
+///
+/// `#[non_exhaustive]`：角色表会随控件移植继续增长（已从 5 个长到 12 个）。不加的话，
+/// 下游一个 exhaustive match 在下次加角色时就会编译失败 —— 接口稳定性优先，参
+/// `docs/API_STABILITY.md` §三。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AccessRole {
     Button,
     CheckBox,
