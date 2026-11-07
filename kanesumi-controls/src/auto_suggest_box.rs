@@ -601,6 +601,32 @@ impl kanesumi_element::Widget for SuggestionList {
     fn focusable(&self) -> bool {
         false
     }
+
+    /// 合成项：建议列表的每一项报成 AT 子项（`ListItem` + 高亮态）。
+    ///
+    /// 建议弹层是树上的独立节点，但它把整张列表画在自己矩形里 —— 读屏此前只看到
+    /// 「一个列表」，读不到具体建议，键盘用户也说不出「现在停在第几条」。
+    /// 高亮项放 `focused`（它是键盘 ↑↓ 的当前项，不是勾选态）。
+    fn access_items(
+        &self,
+        rect: Rect,
+        _theme: &kanesumi_core::MetroTheme,
+    ) -> Vec<kanesumi_element::AccessItem> {
+        self.shown
+            .iter()
+            .enumerate()
+            .filter_map(|(i, text)| {
+                let r = Self::item_rect(rect, i).intersect(rect)?;
+                let mut item = kanesumi_element::AccessItem::new(
+                    kanesumi_element::AccessRole::ListItem,
+                    text.clone(),
+                    r,
+                );
+                item.focused = self.highlighted == Some(i);
+                Some(item)
+            })
+            .collect()
+    }
 }
 
 /// 元素树 `Key` → 编辑核心 `TextInputKey`（与 text_box.rs 同表；控件层不能依赖 harness，
@@ -1005,10 +1031,15 @@ impl kanesumi_element::Widget for MetroAutoSuggestBox {
     fn accessibility(&self) -> Option<kanesumi_element::AccessInfo> {
         Some(kanesumi_element::AccessInfo {
             role: kanesumi_element::AccessRole::TextInput,
-            name: if self.header.is_empty() {
+            // 名字顺序：Header → 占位文本 → 类型名级「搜索」。
+            // 前两者都空时不能留空串：可聚焦元素无名会让读屏播报成一个无名输入框
+            // （无障碍契约也会当场报）。同列表的「列表」、导航的「导航」。
+            name: if !self.header.is_empty() {
+                self.header.clone()
+            } else if !self.placeholder.is_empty() {
                 self.placeholder.clone()
             } else {
-                self.header.clone()
+                String::from("搜索")
             },
             value: Some(self.field.text()),
             checked: None,
@@ -1068,6 +1099,42 @@ mod tree_tests {
             h.rect(p).origin.y >= h.rect(id).bottom(),
             "弹层贴在输入框下方"
         );
+    }
+
+    /// 无障碍：建议列表的每一项都是合成项，高亮项带 focused。
+    #[test]
+    fn access_items_report_suggestions_with_highlight() {
+        let (mut h, _id) = harness();
+        h.tab();
+        h.type_text("果");
+        let p = popup(&h);
+        h.frame();
+
+        let snap = h.access_snapshot();
+        let node = snap.find(p).expect("弹层在快照内");
+        assert!(!node.items.is_empty(), "建议项已上报");
+        assert!(
+            node.items
+                .iter()
+                .all(|i| i.role == kanesumi_element::AccessRole::ListItem),
+            "角色 = ListItem"
+        );
+        let names: Vec<&str> = node.items.iter().map(|i| i.name.as_str()).collect();
+        assert!(names.contains(&"苹果"), "含过滤后的建议：{names:?}");
+
+        // 键盘 ↓ 一次 → 第一项高亮，读屏要能播报「当前在第一条」。
+        h.key(Key::Down);
+        h.frame();
+        let snap = h.access_snapshot();
+        let node = snap.find(p).expect("弹层在快照内");
+        let focused: Vec<&str> = node
+            .items
+            .iter()
+            .filter(|i| i.focused)
+            .map(|i| i.name.as_str())
+            .collect();
+        assert_eq!(focused.len(), 1, "恰有一个高亮项：{focused:?}");
+        h.assert_access_contract();
     }
 
     #[test]
