@@ -121,10 +121,12 @@ async fn walk(conn: &zbus::Connection, dest: &str, path: &str) {
         };
         let Ok(proxy) = builder.build().await else { continue };
         let name = proxy.name().await.unwrap_or_default();
-        let role = proxy
-            .get_role_name()
-            .await
-            .unwrap_or_else(|_| "?".to_string());
+        // 用数值角色（`GetRole`）而不是名字（`GetRoleName`）：AccessKit 的 Unix 适配器只实现前者，
+        // 而读屏客户端（pyatspi / Orca）本来就是拿数值角色在本地映射名字的。
+        let role = match proxy.get_role().await {
+            Ok(id) => format!("#{id}"),
+            Err(_) => "?".to_string(),
+        };
         let kids = proxy.get_children().await.unwrap_or_default();
         println!(
             "  {}{:<10} {:?}  子节点 {}",
