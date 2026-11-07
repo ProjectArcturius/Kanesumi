@@ -91,6 +91,8 @@ pub fn command_summary(scene: &Scene) -> (usize, usize, usize, usize, usize) {
             SceneCommand::PushClip { .. }
             | SceneCommand::PopClip
             | SceneCommand::Triangle { .. } => {}
+            // `SceneCommand` 是 `#[non_exhaustive]`：新图元不计入这五类统计。
+            _ => {}
         }
     }
     (fill, stroke, text, arc, image)

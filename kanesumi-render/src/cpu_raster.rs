@@ -439,6 +439,17 @@ impl CpuRenderer {
                     };
                     self.emit_image(rgba.as_ref(), *width, *height, *rect, *tint, *opacity, clip);
                 }
+                // `SceneCommand` 是 `#[non_exhaustive]`（画布还会加图元，参 docs/CANVAS_PLAN.md）：
+                // 本后端的显式兜底。新图元上线时这里**必须**补实现，否则画面缺一块——
+                // 所以不静默跳过，而是每帧最多记一次警告。
+                _ => {
+                    static WARNED: std::sync::Once = std::sync::Once::new();
+                    WARNED.call_once(|| {
+                        log::warn!(
+                            "Kanesumi CPU 光栅：遇到未实现的场景命令（画布图元新增后需补 cpu_raster）"
+                        );
+                    });
+                }
             }
         }
         self.opaque_image_hint = None;

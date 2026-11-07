@@ -1371,6 +1371,9 @@ fn command_rect(c: &SceneCommand) -> Option<Rect> {
         }
         PushClip { rect } => Some(*rect),
         PopClip => None,
+        // `SceneCommand` 是 `#[non_exhaustive]`：未知图元按「无范围」处理 —— 宁可少算
+        // 一块损伤（下一帧全量重绘兜底），也不要瞎猜一个矩形把损伤算成假的精确。
+        _ => None,
     }
 }
 

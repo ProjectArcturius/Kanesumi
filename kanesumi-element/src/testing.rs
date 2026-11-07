@@ -305,6 +305,9 @@ impl TestHarness {
                     let y1 = p0.y.max(p1.y).max(p2.y);
                     Rect::new(x0, y0, x1 - x0, y1 - y0)
                 }
+                // `SceneCommand` 是 `#[non_exhaustive]`：新图元在这里没有矩形可判，
+                // 直接跳过——它们自己的越界约束应由新增图元时补的用例覆盖。
+                _ => continue,
             };
             let r = match clips.last() {
                 None => r,

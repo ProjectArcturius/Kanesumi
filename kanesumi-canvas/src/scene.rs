@@ -16,7 +16,14 @@ pub enum TextAlign {
 
 /// 场景绘制命令 —— 状态驱动渲染的产物（参 PLAN.md §4-1）。
 /// 外壳（Linux Wayland+wgpu）按序光栅化：后画的命令叠在前者之上（painter's algorithm）。
+///
+/// `#[non_exhaustive]`：**这个枚举一定会长**（已排队的 `fill_path`：任意路径填充，对标
+/// tiny-skia `edge_builder` + `scan`，参 `docs/CANVAS_PLAN.md`）。不加的话，下游任何一处
+/// 穷举 `match` 都会在下次加图元时编译失败 —— 而那时 Kanesumi 已在 settings / librarian /
+/// launcher 里落地，一次加图元就变成三处应用返工。下游写法：`match` 末尾加
+/// `_ => {}`（或直接用 `matches!` / `if let`），参 `docs/API_STABILITY.md` §三。
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum SceneCommand {
     /// 纯色填充矩形。纯色、无渐变 —— 出处是 `KANESUMI_DESIGN.md` §Ⅲ.1 铁律 6
     /// （「无 ripple、无渐变、无阴影」，L102）与 L77（「颜色一律纯色无渐变；状态色硬切换」）。

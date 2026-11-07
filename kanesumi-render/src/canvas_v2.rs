@@ -439,6 +439,13 @@ fn encode_scene(
                 let Some(clip) = clips.current() else { continue };
                 self.encode_image(cmd, clip, cull, insts, own);
             }
+            // `SceneCommand` 是 `#[non_exhaustive]`：显式兜底，新图元上线时必须在此补编码。
+            _ => {
+                static WARNED: std::sync::Once = std::sync::Once::new();
+                WARNED.call_once(|| {
+                    log::warn!("Kanesumi GPU 画布：遇到未实现的场景命令（画布图元新增后需补 canvas_v2）");
+                });
+            }
         }
     }
 }
