@@ -12,6 +12,7 @@ members = [
     "kanesumi-harness",
     "kanesumi-appmenu",
     "kanesumi-gallery",
+    "kanesumi-cli",
 ]
 resolver = "2"
 

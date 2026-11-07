@@ -1,0 +1,16 @@
+[package]
+name = "kanesumi-cli"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["Takahashi Rinta <1586182829@qq.com>"]
+description = "Kanesumi 应用工具链：new / run / build / package（deb + ether-manifest）。"
+
+[[bin]]
+name = "kanesumi"
+path = "src/main.rs"
+
+[dependencies]
+# 只为一件事：control.tar.gz 与 data.tar.gz 的 gzip 压缩。
+# 依赖树里已有（resvg 的 PNG 用同一份 miniz_oxide），不引入新的传递依赖。
+flate2 = "1"

@@ -360,6 +360,41 @@ let (w, h) = kanesumi_harness::snapshot::render_png(
 
 ---
 
+## 二·四、`kanesumi` 工具链：从空目录到 deb
+
+```bash
+cargo run -p kanesumi-cli -- new myapp      # 或安装后直接 kanesumi new myapp
+cd myapp
+kanesumi run                                # 开发循环（cargo run）
+kanesumi package                            # 出 deb 到 dist/
+```
+
+| 子命令 | 作用 |
+|---|---|
+| `new <名字> [--app-id <反域名>] [--dir <目录>]` | 建项目：`Kanesumi.toml` + `Cargo.toml` + `src/main.rs`（页面语法示例，直接可跑） |
+| `check` | 只校验项目文件并打印解析结果 |
+| `build [--release]` | `cargo build` |
+| `run` | `cargo run` |
+| `package [--no-build] [--out <目录>]` | 构建 + 打 deb |
+
+**`Kanesumi.toml` 一个文件两头用**：`[package]` 段管 deb（包名 / 版本 / 修订号 / 架构 / 维护者 /
+apt 依赖），其余段（`[identity]` `[role]` `[entry]` `[capabilities]` `[presentation]`）原样成为
+安装后的 `/usr/share/ether/manifests/<app_id>.toml`（schema 参 `docs/PACKAGING_PLAN.md` §三）。
+
+产物布局（`dist/<app_id>_<版本>-<修订>_<架构>.deb`）：
+
+```
+usr/bin/<entry.binary>
+usr/share/ether/manifests/<app_id>.toml
+usr/share/applications/<app_id>.desktop
+usr/share/icons/hicolor/scalable/apps/<图标>.svg    # 有 assets/<图标>.svg 才带
+```
+
+**打包不需要 `dpkg-deb`**：deb 就是 ar + tar + gzip，工具链自己写（`kanesumi-cli/src/deb.rs`），
+所以 Windows 开发机也能出包；已用真机 `dpkg-deb -I/-c` 验证过 control 与数据树。
+
+当前限制：组件只发了 git 依赖（无 crates.io 版本），`new` 生成的 `Cargo.toml` 用
+`git = "https://github.com/ProjectArcturius/Kanesumi"`；本仓内开发时改成 `path = "../../..."` 即可。
 ## 二·五、写一个设置页（页面语法 `form`）
 
 设置页 / 偏好页 / 表单页的结构是高度重复的：**分区标题 → 一行一个设置项 → 标签在上、控件在中、

@@ -1346,6 +1346,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kanesumi-cli"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+]
+
+[[package]]
 name = "kanesumi-controls"
 version = "0.1.0"
 dependencies = [
