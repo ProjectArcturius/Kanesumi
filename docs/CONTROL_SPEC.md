@@ -2066,18 +2066,48 @@ pub struct RowToggleRequested(usize);                             // 展开三�
 即：**选择态 / 拖拽阈值（4pt）/ 展开三角 / 逐列命中 / 修饰键**。`Form::list_item` 是静态的
 「图标 + 标题 + 右侧次要文本」，套不上——硬套会把可交互性丢掉。
 
-### 规格要点（待实现）
+### 规格要点（已落地）
 
-- 列定义：`&[Column { width: ColumnWidth::Px(f32) | Star | Fit, align, header }]`。
+- 列定义：`ColumnSet` + `Column { header, width, align }`，`ColumnWidth::Px(f32) | Star`。
 - 行状态：`Normal / Hover / Selected / Focused`，选中高亮取 `ThemeColor::SelectionTint`。
 - 行首可选项：展开三角（有子项时才出现）、图标（16 档）。
 - 命中：整行点击 = 选择；三角区域单独命中 = 展开；拖拽超过 4pt 转拖拽而非选择（参
   `docs/INTERACTION_CANON.md`）。
-- 键盘：上下移动选中、左右折叠/展开、Enter 打开（与 `MetroList` 一致）。
 - 排序头：点击列头切换升/降序，箭头 12 档。
 
-**状态：未实现。** 在 `MetroTableRow` 落地前，librarian 的列表应继续用现有自绘实现，不要
-改成 `Form::list_item`（会丢交互）。
+### 实装（`kanesumi-controls/src/table.rs`）
+
+| 名字 | 作用 |
+|---|---|
+| `ColumnSet` / `Column` / `ColumnWidth` / `ColumnAlign` | 列定义，行与表头共享一份（`Arc`，逐行克隆只加计数） |
+| `column_rects(columns, area)` | **唯一**列几何来源：绘制、命中、表头箭头都消费它 |
+| `MetroTableRow` | 一行：三角槽 + 图标槽 + 多列文本 + 选中 / 悬停底 |
+| `MetroTableHeader` | 列标题 + 排序箭头，点列头投意图 |
+| `TableRowClicked { index, column }` | 点行身，带回行号与列号 |
+| `TableRowActivated(usize)` | 双击 / Enter：打开 |
+| `TableRowContextRequested { index, pos }` | 右键，`pos` 直接当菜单锚点 |
+| `TableRowToggled(usize)` | 点展开三角（**不**同时触发选择） |
+| `TableRowDragged { index, pos }` | 位移超 4pt 后松开：拖动，**不**触发选择 |
+| `SortRequested { column, ascending }` | 点列头；同一列再点反序，换列从升序起步 |
+
+槽位恒占：不可展开的行也留 12 宽的三角槽、无图标的行也留 16 宽的图标槽，否则树里「有子项 /
+无子项」两种行的名称左缘会错开（照抄 `librarian/src/window/views/list.rs` 的 `name_parts`）。
+
+### 未实现与归容器的部分
+
+1. **`ColumnWidth::Fit` 未实现**：`Fit` 要「行与表头同宽」，而这只有容器先把各列内容量测一遍
+   再下发给行才能做到 —— 行自己量自己的内容、表头量表头文字，两边必然对不上。等「列宽表」
+   接口（容器前置量测 → 一份已解析宽度）落地再补；当前请用 `Px` 与 `Star`。
+2. 键盘上下移动选中、左右折叠 / 展开、Home / End 归**容器**（行不知道自己的兄弟）。
+3. 隔行底色（librarian 现状的 `nth-child(even)` 条纹）、列宽拖拽、虚拟化滚动都不在行内。
+4. 行内重命名编辑框（列表行原地变输入框）未抽：它要持文本输入状态与 IME，属另一个控件。
+
+### 与 librarian 现状的差异（迁移时会看到）
+
+- 选中底：librarian 用强调色实底，本层用 `SelectionTint`（与 `MetroList` 统一）；选中行整行
+  文本切主前景色，次级色不上强调底（否则糊掉）。
+- 列间留 8pt 右内缩：否则「12 KB」与「Markdown 文档」会读成一串（本层实测发现）。
+
 
 ## 52 · 通知卡片（notification card）
 

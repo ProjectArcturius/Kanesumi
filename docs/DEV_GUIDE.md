@@ -500,6 +500,53 @@ tree.get::<grammar::GrammarButton>(*id)                                   // 命
 4. **需要「左标题右控件」时停下**：当前语法是左对齐单列（裁定 `DECISIONS_2026-10-05.md` §110），
    要那种排布得先加显式布局变体，不要在页面里手算几何。
 
+### 密集列表（文件 / 连接 / 任务表）用 `table`，不要用 `list_item`
+
+一屏几十行、横向多列、可选中可拖动的列表（librarian 的文件列表就是样板）与设置页的一行
+不同形：设置页是「标签在上、控件在下」，密集列表是**横向多列 + 行内交互**。硬套
+`Form::list_item` 会丢掉逐列命中、展开三角与拖拽判定，故单列一层
+（规格参 `CONTROL_SPEC.md` §51）：
+
+```rust
+use kanesumi_controls::table::{Column, ColumnAlign, ColumnSet, ColumnWidth};
+use kanesumi_controls::{MetroTableHeader, MetroTableRow, TableRowClicked};
+
+fn columns() -> ColumnSet {
+    ColumnSet::new([
+        Column::new("名称", ColumnWidth::Star),
+        Column::new("修改日期", ColumnWidth::Px(180.0)),
+        Column::new("大小", ColumnWidth::Px(90.0)).align(ColumnAlign::End),
+        Column::new("类型", ColumnWidth::Px(140.0)),
+    ])
+}
+
+fn build(&mut self, tree: &mut Tree) {
+    let list = tree.insert(root, Stack::column());
+    tree.insert(list, MetroTableHeader::new(columns()).with_sort(self.sort.0, self.sort.1));
+    for (i, e) in self.entries.iter().enumerate() {
+        let row = MetroTableRow::new(i, columns(), [&e.name, &e.modified, &e.size, &e.kind])
+            .with_indent(e.depth)                 // 树形缩进，每层 20
+            .with_selected(self.selection == i);
+        let row = match &e.icon { Some(icon) => row.with_icon(icon.clone()), None => row };
+        tree.insert(list, row);
+    }
+}
+
+// 动作带回行号与列号，按身份路由；三角 / 拖动 / 右键各自独立，不会顺带改选择。
+fn on_action(&mut self, .., action: Action) {
+    if let Some(c) = action.downcast_ref::<TableRowClicked>() { self.select(c.index); }
+}
+```
+
+三条硬规矩：
+
+1. **列几何只从 `column_rects` 来**。表头与行共用同一份 `ColumnSet`，所以列边界永远一致；
+   应用不要再自己算一份 `Cols`（librarian 现状就是算两遍，列宽一改得两处同改）。
+2. **容器的事归容器**：键盘上下移动选中、左右展开、隔行条纹、列宽拖拽、滚动虚拟化都不在行内。
+3. **`ColumnWidth::Fit` 还没实现**（要容器前置量测后统一下发宽度），当前用 `Px` 与 `Star`。
+
+参照页：`cargo run -p kanesumi-gallery --example table_rows -- --snapshot out.png 2`（`--light` 出浅色）。
+
 ## 三、核心概念
 
 ### 3.1 状态驱动渲染管线
