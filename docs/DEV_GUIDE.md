@@ -545,6 +545,10 @@ fn on_action(&mut self, .., action: Action) {
 2. **容器的事归容器**：键盘上下移动选中、左右展开、隔行条纹、列宽拖拽、滚动虚拟化都不在行内。
 3. **`ColumnWidth::Fit` 还没实现**（要容器前置量测后统一下发宽度），当前用 `Px` 与 `Star`。
 
+已经自绘的虚拟化列表（如 librarian）**不要**为了用控件把行改成子节点：行内还有原地改名、条纹、
+框选，改成节点会与虚拟化打架。这类容器调 `paint_row(scene, theme, rect, &RowLook { … })` 拿同一套
+行外观、`column_at(columns, rect, x)` 判列号，其余交互照旧（规格 `CONTROL_SPEC.md` §51）。
+
 参照页：`cargo run -p kanesumi-gallery --example table_rows -- --snapshot out.png 2`（`--light` 出浅色）。
 
 ## 三、核心概念

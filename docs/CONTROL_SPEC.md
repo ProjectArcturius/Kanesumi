@@ -2089,9 +2089,36 @@ pub struct RowToggleRequested(usize);                             // 展开三�
 | `TableRowToggled(usize)` | 点展开三角（**不**同时触发选择） |
 | `TableRowDragged { index, pos }` | 位移超 4pt 后松开：拖动，**不**触发选择 |
 | `SortRequested { column, ascending }` | 点列头；同一列再点反序，换列从升序起步 |
+| `paint_row(scene, theme, rect, &RowLook)` | **自绘容器复用**：不把行做成独立节点也能得到同一套行外观 |
+| `column_at(columns, rect, x)` | 自绘容器判「点在第几列」，与行内命中同源 |
 
 槽位恒占：不可展开的行也留 12 宽的三角槽、无图标的行也留 16 宽的图标槽，否则树里「有子项 /
 无子项」两种行的名称左缘会错开（照抄 `librarian/src/window/views/list.rs` 的 `name_parts`）。
+
+### 自绘容器怎么复用（虚拟化列表）
+
+librarian 的列表是 `ItemsRepeater` + 自己按数据画行：一行不是独立控件，行内还有 rename 输入框、
+条纹与框选。这类容器**不要**为了用控件把行改成子节点（会与虚拟化、原地改名打架），走
+`paint_row` + `column_at`：
+
+```rust
+fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
+    // 自己的容器语义（条纹 / rename 输入框）照旧先画，再调库里的行外观。
+    paint_row(scene, ctx.theme(), ctx.rect(), &RowLook {
+        columns: &self.columns,
+        cells: &self.cells,
+        indent: self.depth,
+        expandable: self.is_dir,
+        expanded: self.expanded,
+        selected: self.selected,
+        hovered: ctx.state().hovered,
+        icon: self.icon.as_ref(),
+    });
+}
+// 命中：column_at(&self.columns, rect, pos.x)
+```
+
+这样「控件版」与「自绘版」只有一份几何与一份视觉，不会随时间漂成两种长相。
 
 ### 未实现与归容器的部分
 
