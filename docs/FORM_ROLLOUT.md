@@ -61,3 +61,27 @@ cargo test -p kanesumi-element --test api_surface   # 改公开 API 后先重出
 cargo run -p kanesumi-gallery --example form_page -- --snapshot out.png 1
 cargo run -p kanesumi-gallery --example panel_form -- --snapshot out.png 1
 ```
+## 重做计划（2026-11-07 用户裁定：清障完成，重做系统应用，全部完成后再部署）
+
+清障阶段已结束，`form` 侧不再缺构件。重做顺序按「一次能完整验证」排列：
+
+| # | 目标 | 量 | 前置（都已就绪） |
+|---|---|---|---|
+| 1 | 顶栏任务面板 `TaskStackPanel` | ~150 行 | `form::panel_in`（弹层由应用层开）+ `Form::row_button`（带行号） |
+| 2 | 顶栏控制中心 `ControlPanel` | ~450 行 | 同上 + `Form::slider` / `Form::labeled` / `Form::actions` |
+| 3 | 音频 `AudioPanel` / 电源 `PowerPanel` | 各 ~500–600 行 | 同 2，照抄 |
+| 4 | 网络 `NetPanel`（连接列表） | ~800 行 | 同 1（行按钮） |
+| 5 | 通知中心 `ActionCenter` | ~700 行 | 需通知卡片构件（尚无规格，先补 §52） |
+| 6 | librarian 窗口列表 / 桌面格 | 大 | 需 `MetroTableRow`（规格 §51） |
+
+第 1 项的四步（下一轮直接照做）：`TaskStackButton::event` 从「自己 `open_popup`」改为
+`ctx.emit(TaskStackOpenRequested(tasks.clone()))`；TopBar `on_action` 里接住它，用
+`tree.open_popup(MetroSurface::panel(theme), spec)` + `form::panel_in` + 逐行 `Form::row_button(index, 标题, 应用名)`；
+接住 `RowButtonClicked(index)` 做激活；删掉 `TaskStackPanel` 与其单测。
+
+## 部署（用户裁定：全部完成后一次性部署）
+
+现阶段一律不装。等上面 1~5 完成、`cargo check -p ether-settings` 与出图对照通过后，
+再把 `ether` / `ether-settings` / `ether-librarian` 一起部署到 e495。
+已编好但**未部署**的旧候选：`e495:~/verify/backup/ether-librarian.new-20261107`（该版只含 librarian 两修复，
+重做完成后会重新构建覆盖它）。
