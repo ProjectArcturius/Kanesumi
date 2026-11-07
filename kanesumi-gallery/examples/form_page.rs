@@ -19,7 +19,7 @@ use kanesumi_harness::{AppConfig, EtherRole, TreeApp};
 /// 页宽（内容列 600 + 左右各 24 内边距 + 一点余量，好看清边界）。
 const PAGE_W: f32 = 660.0;
 /// 页高。
-const PAGE_H: f32 = 780.0;
+const PAGE_H: f32 = 1000.0;
 
 struct SettingsPage {
     config: AppConfig,
@@ -93,6 +93,17 @@ impl TreeApp for SettingsPage {
         radios.max_columns = 2;
         f.labeled(tree, "应用模式", radios, Some("跟随系统时由 Chorus 决定。"));
 
+        f.section(tree, "网络", false);
+        // 列表行：行首图标 + 标题 + 右侧次要信息。图标给了就画，没给留 24 宽空槽，
+        // 两种行的左缘因此对齐（这也是 settings / librarian / launcher 列表行的同一形状）。
+        // 手搓一张 16×16 的满色位图当图标：这里要验的是「列表行图标槽会画」，不是 SVG 解码。
+        let icon = Some(kanesumi_canvas::Icon {
+            rgba: std::sync::Arc::from(vec![255u8; 16 * 16 * 4]),
+            width: 16,
+            height: 16,
+        });
+        f.list_item(tree, icon, "家庭 Wi-Fi", "已连接", form::ITEM_MB);
+        f.list_item(tree, None, "访客网络", "未连接", form::ITEM_MB);
         f.info_item(tree, "当前缩放", "100%（跟随显示设置）", Some("由 Chorus 统一管理，本页只读。"));
         // 行内自排：row_block 给一个全宽块，里面放一行 Label + 按钮。
         let row = f.row_block(tree, form::ITEM_MB);

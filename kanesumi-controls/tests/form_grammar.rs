@@ -87,3 +87,28 @@ fn link_emits_target_key() {
     assert_eq!(clicked.len(), 1, "点链接应投出一次 FormLinkClicked");
     assert_eq!(&*clicked[0].target, "display");
 }
+
+#[test]
+fn list_item_has_fixed_row_height_and_right_aligned_secondary() {
+    let mut h = TestHarness::new(600.0, 400.0);
+    let mut ids: Vec<WidgetId> = Vec::new();
+    h.frame_with_layout(|tree| {
+        let col = tree.insert_with(tree.root(), Stack::column(), LayoutProps::default());
+        let mut f = Form::new(col);
+        let (title, secondary) = f.list_item(tree, None, "家庭 Wi-Fi", "已连接", form::ITEM_MB);
+        ids.push(title);
+        ids.push(secondary);
+    });
+    h.settle();
+    let title = h.rect(ids[0]);
+    let secondary = h.rect(ids[1]);
+    // 行高取尺寸表的列表档（48），标题与次要信息同排、次要信息在右。
+    let row_h = title.size.height.max(secondary.size.height);
+    assert!(row_h <= form::LIST_ROW_H, "行内容高度不应超过行高：{row_h}");
+    assert!(
+        secondary.origin.x >= title.right() - 0.01,
+        "次要信息应排在标题右侧：title.right={}, secondary.x={}",
+        title.right(),
+        secondary.origin.x
+    );
+}

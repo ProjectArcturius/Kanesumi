@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_canvas::{Icon, Scene, TextAlign};
 use kanesumi_core::sizes;
 use kanesumi_core::typography::FontWeight;
 use kanesumi_core::{Size, TextStyle, ThemeColor};
@@ -59,6 +59,10 @@ pub const LINK_MB: f32 = sizes::FORM_LINK_MB;
 pub const SLIDER_H: f32 = sizes::FORM_SLIDER_H;
 /// 表单内按钮最小宽。
 pub const BUTTON_MIN_W: f32 = sizes::FORM_BUTTON_MIN_W;
+/// 全宽列表行高。
+pub const LIST_ROW_H: f32 = sizes::FORM_LIST_ROW_H;
+/// 列表行行首图标槽宽（无图标时留空，保证两种行左缘对齐）。
+pub const LIST_ICON_SLOT: f32 = sizes::ICON_24;
 
 // ── 文本样式（页面语法三档：页标题 / 分区标题 / 行文本）──────────────────────
 
@@ -189,10 +193,40 @@ impl Widget for MetroFormLink {
 // CSS 里相邻兄弟的垂直外边距会折叠（取较大者），而元素树 Stack 的 margin 不折叠。
 // 故用本结构记录上一块的 CSS 下外边距，为下一块算出「折叠后」的上外边距，逐像素对齐预览。
 
+/// 列表行的行首图标槽：只画一张位图，不参与命中与焦点。
+///
+/// 不直接用 `widgets::Image`：那条路径依赖图片源在帧内解码，元素树里插入位图后
+/// 首帧可能还没就绪；列表图标是**已经光栅好的** `Icon`，直接进 `Scene::image` 最稳。
+struct FormIcon {
+    icon: Icon,
+}
+
+impl Widget for FormIcon {
+    fn measure(&mut self, _ctx: &mut MeasureCtx, available: Size) -> Size {
+        Size::new(
+            LIST_ICON_SLOT.min(available.width.max(0.0)),
+            sizes::ICON_16.min(available.height.max(0.0)),
+        )
+    }
+
+    fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
+        let r = ctx.rect();
+        let icon_rect = kanesumi_core::Rect::new(
+            r.origin.x,
+            r.origin.y + (r.size.height - sizes::ICON_16) / 2.0,
+            sizes::ICON_16,
+            sizes::ICON_16,
+        );
+        scene.image(&self.icon, icon_rect, Some(ThemeColor::OnSurface.resolve(ctx.theme())));
+    }
+}
 /// 页列游标：按 CSS 外边距折叠规则逐个追加语义块。
 ///
 /// 用法：`let mut form = Form::new(content_id);` 然后 `form.section(tree, "显示", true);`
 /// 等。游标不持有树，故可与同一页里另建的容器交替使用。
+///
+/// **本层不自带滚动**：内容高于窗口时由调用方把列放进 `MetroScrollView`（settings 的窗口
+/// 外壳就是这么做的）。直接把长页面塞进定高 Stack 会被布局压缩，表现为每行文字被裁掉下半。
 pub struct Form {
     parent: WidgetId,
     prev_mb: f32,
@@ -389,6 +423,72 @@ impl Form {
                 ..LayoutProps::default()
             },
         )
+    }
+
+    /// 全宽列表行：可选行首图标 + 标题 + 右侧次要信息（同排、次级色）。
+    ///
+    /// 行高 [`LIST_ROW_H`]、图标档 [`sizes::ICON_16`]，图标占 24 宽的槽（无图标时留空，
+    /// 保证有图标与无图标两种行左缘对齐）。返回 `(标题 id, 次要信息 id)`，供运行时改写。
+    ///
+    /// 这是「列表」与「设置页」共用的那一层：settings 的 Wi-Fi / 蓝牙行、librarian 的文件行、
+    /// launcher 的应用行此前各写一遍三件套（图标 + 主文本 + 右侧文本），形状其实一样。
+    pub fn list_item(
+        &mut self,
+        tree: &mut Tree,
+        leading: Option<Icon>,
+        title: &str,
+        secondary: &str,
+        mb: f32,
+    ) -> (WidgetId, WidgetId) {
+        let block = self.block(tree, 0.0, mb);
+        let row = tree.insert_with(
+            block,
+            Stack::row().with_spacing(12.0),
+            LayoutProps {
+                min: Size::new(0.0, LIST_ROW_H),
+                ..LayoutProps::default()
+            },
+        );
+        match leading {
+            Some(icon) => {
+                tree.insert_with(
+                    row,
+                    FormIcon { icon },
+                    LayoutProps {
+                        v_align: Align::Center,
+                        ..LayoutProps::default()
+                    },
+                );
+            }
+            None => {
+                tree.insert_with(
+                    row,
+                    Stack::row(),
+                    LayoutProps {
+                        width: Some(LIST_ICON_SLOT),
+                        ..LayoutProps::default()
+                    },
+                );
+            }
+        }
+        let title_id = tree.insert_with(
+            row,
+            Label::new(title).style(s_label()).color(ThemeColor::OnSurface),
+            LayoutProps {
+                grow: 1.0,
+                v_align: Align::Center,
+                ..LayoutProps::default()
+            },
+        );
+        let secondary_id = tree.insert_with(
+            row,
+            Label::new(secondary).style(s_label()).color(ThemeColor::OnSurfaceVariant),
+            LayoutProps {
+                v_align: Align::Center,
+                ..LayoutProps::default()
+            },
+        );
+        (title_id, secondary_id)
     }
 
     /// 行容器（全宽块，行内子件自排水平；`mb` = 与下一块的 CSS 下外边距）。
