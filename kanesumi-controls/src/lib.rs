@@ -77,6 +77,7 @@ pub mod swipe_control;
 pub mod switch;
 pub mod tab_row;
 pub mod tab_view;
+pub mod table;
 pub mod teaching_tip;
 pub mod text;
 pub mod text_box;
@@ -163,6 +164,11 @@ pub use switch::{MetroSwitch, SwitchToggled};
 pub use tab_row::{MetroTab, MetroTabRow, TabSelectionChanged};
 pub use tab_view::{
     MetroTabView, TabAddRequested, TabCloseRequested, TabHover, TabSelected, TabViewAction,
+};
+pub use table::{
+    Column, ColumnAlign, ColumnSet, ColumnWidth, DRAG_THRESHOLD, MetroTableHeader, MetroTableRow,
+    SortRequested, TableRowActivated, TableRowClicked, TableRowContextRequested, TableRowDragged,
+    TableRowToggled, column_rects,
 };
 pub use teaching_tip::{
     MetroTeachingTip, TeachingTipAction, TeachingTipClick, TeachingTipClosed, TeachingTipPlacement,

@@ -401,6 +401,7 @@ pub fn deliver_scroller_state(&mut self, id: WidgetId, phase: u32, serial: u32) 
 pub fn detached_popups(&self) -> bool {
 pub fn disable_all_scrollers(&mut self) {
 pub fn dismiss_popups(&mut self) {
+pub fn double_click_at(&mut self, pos: Point) {
 pub fn drive(&mut self, on: bool, ctx: &mut PaintCtx) -> f32 {
 pub fn edit<T: Widget, R>(
 pub fn emit<A: Any>(&mut self, action: A) {
@@ -665,6 +666,8 @@ pub enum CalendarDisplayMode {
 pub enum CalendarResponse {
 pub enum CheckState {
 pub enum ColorChannel {
+pub enum ColumnAlign {
+pub enum ColumnWidth {
 pub enum CommandBarAction {
 pub enum ControlState {
 pub enum Decl {
@@ -725,6 +728,7 @@ pub fn actual_initials(&self) -> String {
 pub fn add_days(self, delta: i64) -> Self {
 pub fn add_months(self, delta: i32) -> Self {
 pub fn add_rect(&self, rect: Rect) -> Option<Rect> {
+pub fn align(mut self, align: ColumnAlign) -> Self {
 pub fn alpha(&self) -> f32 {
 pub fn anchor(&self) -> Option<usize> {
 pub fn back_rect(&self, rect: Rect) -> Option<Rect> {
@@ -766,6 +770,7 @@ pub fn close_submenu(&mut self) {
 pub fn cluster_boundaries(&self) -> Vec<usize> {
 pub fn collect_hits(
 pub fn column(children: Vec<Decl>) -> Self {
+pub fn column_rects(columns: &ColumnSet, area: Rect) -> Vec<Rect> {
 pub fn commands(&self) -> &[SceneCommand] {
 pub fn commit_ime(&mut self, s: &str) -> bool {
 pub fn compute_visible_rows(&self) -> Vec<TreeRow> {
@@ -828,6 +833,7 @@ pub fn fraction(&self) -> f32 {
 pub fn from_epoch_days(days: i64) -> Self {
 pub fn from_text(text: impl Into<String>) -> Self {
 pub fn gap(mut self) -> Self {
+pub fn get(&self, index: usize) -> Option<&Column> {
 pub fn grid(cell: Size, spacing: f32) -> Self {
 pub fn grid(cell: Size, spacing: f32, factory: impl ItemFactory) -> Self {
 pub fn grid(count: usize, cell: f32, columns: usize, spacing: f32) -> Self {
@@ -892,6 +898,7 @@ pub fn icon_glyph(self) -> &'static str {
 pub fn icon_rect(&self, rect: Rect) -> Option<Rect> {
 pub fn ime_context(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> ImeContext {
 pub fn indeterminate() -> Self {
+pub fn index(&self) -> usize {
 pub fn info_item(
 pub fn initials_from_display_name(name: &str) -> String {
 pub fn initials_style(side: f32) -> TextStyle {
@@ -923,6 +930,7 @@ pub fn item_rect(&self, rect: Rect, i: usize) -> Rect {
 pub fn item_style() -> TextStyle {
 pub fn item_width(&self, i: usize) -> f32 {
 pub fn items_changed(&mut self) {
+pub fn iter(&self) -> std::slice::Iter<'_, Column> {
 pub fn key(&mut self, key: kanesumi_element::Key) -> CalendarResponse {
 pub fn knob_rect(&self, rect: Rect, theme: &MetroTheme) -> Rect {
 pub fn labeled(
@@ -959,11 +967,15 @@ pub fn move_left(&mut self, select: bool) {
 pub fn move_right(&mut self, select: bool) {
 pub fn nav_rects(&self, rect: Rect) -> (Rect, Rect, Rect) {
 pub fn nested(&self, parent: WidgetId) -> Self {
+pub fn new(
 pub fn new() -> Self {
+pub fn new(columns: ColumnSet) -> Self {
+pub fn new(columns: impl IntoIterator<Item = Column>) -> Self {
 pub fn new(commands: Vec<CommandButton>) -> Self {
 pub fn new(content: Size, viewport: Size) -> Self {
 pub fn new(content: impl Into<String>, style: TextStyle, color: Color) -> Self {
 pub fn new(glyph: impl Into<String>, name: impl Into<String>, action: CommandBarAction) -> Self {
+pub fn new(header: &str, width: ColumnWidth) -> Self {
 pub fn new(header: impl Into<String>) -> Self {
 pub fn new(icon: impl Into<String>) -> Self {
 pub fn new(items: Vec<MenuBarItem>) -> Self {
@@ -1135,6 +1147,8 @@ pub fn set_pane_progress(&mut self, progress: f32) {
 pub fn set_preedit(&mut self, text: &str, cursor_byte: Option<usize>) {
 pub fn set_scroll_offset(&mut self, v: f32) {
 pub fn set_selected(&mut self, date: Date) {
+pub fn set_selected(&mut self, selected: bool) {
+pub fn set_sort(&mut self, column: usize, ascending: bool) {
 pub fn set_state(&mut self, on: bool) {
 pub fn set_state(&mut self, s: CheckState) {
 pub fn set_state(&mut self, state: ControlState) {
@@ -1224,11 +1238,14 @@ pub fn with_children(label: impl Into<String>, children: Vec<TreeViewNode>) -> S
 pub fn with_compact(mut self, compact: bool) -> Self {
 pub fn with_delete_icon(mut self, icon: Option<Icon>) -> Self {
 pub fn with_delete_icon(mut self, icon: Option<kanesumi_canvas::Icon>) -> Self {
+pub fn with_expandable(mut self, expanded: bool) -> Self {
 pub fn with_header(header: impl Into<String>) -> Self {
 pub fn with_header(mut self, header: impl Into<String>) -> Self {
 pub fn with_header(text: impl Into<String>) -> Self {
 pub fn with_icon(label: impl Into<String>, icon: impl Into<String>) -> Self {
+pub fn with_icon(mut self, icon: Icon) -> Self {
 pub fn with_image_icon(label: impl Into<String>, icon: Icon) -> Self {
+pub fn with_indent(mut self, indent: u8) -> Self {
 pub fn with_label(icon: impl Into<String>, label: impl Into<String>) -> Self {
 pub fn with_label(label: impl Into<String>) -> Self {
 pub fn with_max(mut self, max: f64) -> Self {
@@ -1240,10 +1257,12 @@ pub fn with_overscan(mut self, ratio: f32) -> Self {
 pub fn with_placeholder(text: impl Into<String>) -> Self {
 pub fn with_range(mut self, min: f64, max: f64) -> Self {
 pub fn with_selected(mut self, date: Date) -> Self {
+pub fn with_selected(mut self, selected: bool) -> Self {
 pub fn with_shape(mut self, shape: SwitchShape) -> Self {
 pub fn with_shortcut(mut self, text: impl Into<String>) -> Self {
 pub fn with_size(mut self, size: IconButtonSize) -> Self {
 pub fn with_smooth_scroll(mut self, on: bool) -> Self {
+pub fn with_sort(mut self, column: usize, ascending: bool) -> Self {
 pub fn with_state_text(mut self, on: impl Into<String>, off: impl Into<String>) -> Self {
 pub fn with_step(mut self, step: f64) -> Self {
 pub fn with_submenu(mut self, items: Vec<MenuItem>) -> Self {
@@ -1260,6 +1279,8 @@ pub struct ButtonClicked;
 pub struct CandidateChosen(pub usize);
 pub struct CheckToggled(pub CheckState);
 pub struct ColorChanged(pub Color);
+pub struct Column {
+pub struct ColumnSet(Arc<[Column]>);
 pub struct CommandButton {
 pub struct CommandInvoked {
 pub struct ControlShape {
@@ -1329,6 +1350,8 @@ pub struct MetroSwitch {
 pub struct MetroTab {
 pub struct MetroTabRow {
 pub struct MetroTabView {
+pub struct MetroTableHeader {
+pub struct MetroTableRow {
 pub struct MetroTeachingTip {
 pub struct MetroText {
 pub struct MetroTextBox {
@@ -1351,6 +1374,7 @@ pub struct RowButtonClicked(pub usize);
 pub struct ScrollOffsetChanged(pub f32);
 pub struct SelectorSelectionChanged(pub usize);
 pub struct SliderValueChanged(pub f64);
+pub struct SortRequested {
 pub struct SplitButtonInvoked;
 pub struct SubmenuState {
 pub struct SuggestionChosen(pub String);
@@ -1362,6 +1386,11 @@ pub struct TabAddRequested;
 pub struct TabCloseRequested(pub usize);
 pub struct TabSelected(pub usize);
 pub struct TabSelectionChanged(pub usize);
+pub struct TableRowActivated(pub usize);
+pub struct TableRowClicked {
+pub struct TableRowContextRequested {
+pub struct TableRowDragged {
+pub struct TableRowToggled(pub usize);
 pub struct TeachingTipAction;
 pub struct TeachingTipClosed;
 pub struct TeachingTipPlacement {
