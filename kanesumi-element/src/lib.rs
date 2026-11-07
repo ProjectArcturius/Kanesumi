@@ -29,7 +29,7 @@ pub use id::WidgetId;
 pub use ime::{ImeContentHint, ImeContext};
 pub use layer::{LayerAnimSpec, LayerClipSpec, LayerInsets, LayerOp, ScrollerRequest, ScrollerSnapshot};
 pub use tree::{composed_scroll_enabled, set_composed_scroll_enabled};
-pub use props::{Align, FocusGroupAxis, FocusGroupSpec, Insets, LayoutProps};
+pub use props::{Align, FocusGroupAxis, FocusGroupSpec, Insets, LayoutProps, LayoutRole};
 pub use transitions::{
     Edge, LayerOutcome, STAGGER_MAX_ITEMS, Transition, TransitionHandle, TransitionParams,
     VisualAnim, visual_at_ms,

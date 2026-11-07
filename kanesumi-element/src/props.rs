@@ -120,6 +120,8 @@ pub struct LayoutProps {
     /// 与 XAML 一样挂在**子**身上而不是写在 `Grid` 里：同一个子节点换个父容器时，
     /// 布局信息跟着它走，容器不必维护「谁在哪一格」的旁表。非 `Grid` 父忽略此属性。
     pub grid_cell: GridChild,
+    /// **附着属性**：布局角色（内容区 / 命令区）。非分区容器忽略。参 [`LayoutRole`]。
+    pub role: LayoutRole,
 }
 
 impl Default for LayoutProps {
@@ -137,6 +139,7 @@ impl Default for LayoutProps {
             min_main: 0.0,
             visible: true,
             grid_cell: GridChild::at(0, 0),
+            role: LayoutRole::Normal,
         }
     }
 }
@@ -180,6 +183,12 @@ impl LayoutProps {
         self.grid_cell = self.grid_cell.with_span(row_span.max(1), col_span.max(1));
         self
     }
+
+    /// 声明布局角色（`Content` / `Commands`）；与 [`LayoutRole`] 配套，链式搭配。
+    pub fn in_role(mut self, role: LayoutRole) -> Self {
+        self.role = role;
+        self
+    }
 }
 
 /// min 优先于 max（XAML 语义：MinWidth > MaxWidth 时取 MinWidth）；NaN / 负 → 0。
@@ -188,6 +197,24 @@ fn clamp_axis(v: f32, min: f32, max: f32) -> f32 {
     v.min(max).max(min.max(0.0))
 }
 
+/// 布局角色（附着属性，挂**子**身上）：告诉容器「把我放在哪一区」。
+///
+/// 为什么需要它：对话框要同时容纳两类子节点 —— 正文（内容槽）与按钮行。两者都在
+/// 同一个父节点下，容器只看 `LayoutProps` 无法区分。有了角色，容器按角色分区排布，
+/// 应用只管把按钮插进来，不必让对话框自己画按钮（那样按钮就不是框架节点，Tab 到不了）。
+///
+/// 与 `grid_cell` 同一套思路：布局信息跟着子节点走，容器不维护旁表。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LayoutRole {
+    /// 普通子节点（容器自定：Stack 走主轴、Grid 走格子）。
+    #[default]
+    Normal,
+    /// 内容区（对话框正文、Expander 内容）：容器把它排进自己预留的内容矩形。
+    Content,
+    /// 命令区（对话框按钮行、卡片底部操作条）：容器把它排进预留的命令矩形，
+    /// 通常右对齐、等高。
+    Commands,
+}
 /// 焦点组的移动轴（正典 §Ⅳ：方向键在组内移动，UWP XYFocus）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FocusGroupAxis {
