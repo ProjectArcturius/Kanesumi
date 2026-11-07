@@ -477,6 +477,20 @@ form::related(
 迁移演练见 `kanesumi-gallery/examples/form_theme_page.rs`——它把 settings 的「个性化 · 主题」页
 按上表原样搬了一遍，页面逻辑（读写 `theme.toml` 的 `dock_autohide`、深浅单选、两枚相关设置链接）
 一字未改。
+### 迁移注意：控件身份也被按类型查
+
+settings 除了调 `grammar::` 的辅助函数，还会**按类型**取回它自绘的控件：
+
+```rust
+tree.edit::<grammar::ToggleSwitch, _>(sw, |s, _| s.checked = enabled);   // 刷新路径
+tree.get::<grammar::GrammarButton>(*id)                                   // 命中/动作分派
+```
+
+所以这几个辅助函数的迁移不能只改调用点——`toggle_item` 一旦改成库里的 `MetroSwitch`，
+上面这些 `get::<…ToggleSwitch>()` 会静默返回 `None`，表现为「开关状态不再跟随服务变化」。
+正确顺序是：先把刷新路径改成 `SwitchToggled` 动作驱动（不再按类型查），再换控件。
+`section` / `note` / `info_item` / `labeled` / `slider_item` / `row_block` 不产出被查回的控件，
+可以安全机械替换。
 必须知道的四条：
 
 1. **不要自己加下外边距**。`form` 按 CSS 外边距折叠规则为每个块落**上**外边距；自己再加下外边距

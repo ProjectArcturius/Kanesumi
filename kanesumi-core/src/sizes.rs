@@ -141,6 +141,12 @@ pub const FORM_LIST_ROW_H: f32 = 48.0;
 /// 表单内滑杆行高 32。来源：`settings/src/window/grammar.rs:800`（`height: Some(32.0)`）。
 pub const FORM_SLIDER_H: f32 = 32.0;
 
+/// 表单内按钮最小宽 120。来源：`settings/src/window/grammar.rs:88`（`BTN_MIN_W`，页面语法
+/// 自定的最小可点宽度）。这是**页面级**约束而非控件规格 —— `CONTROL_SPEC.md` §1 明确
+/// `MetroButton` 无 MinWidth，尺寸 = 内容 + 内边距；设置页的按钮行另需一个最小宽，
+/// 否则「打开」「重置」这种两字按钮只有 44 宽，点不准。故约束落在页面语法层。
+pub const FORM_BUTTON_MIN_W: f32 = 120.0;
+
 // ── 对话框族（dialog）────────────────────────────────────────────────────────
 //
 // 来源 `CONTROL_SPEC.md` §9（UWP ContentDialog）。此前散在 `kanesumi-controls/src/dialog.rs`

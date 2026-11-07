@@ -57,6 +57,8 @@ pub const ITEM_MB: f32 = sizes::FORM_ITEM_MB;
 pub const LINK_MB: f32 = sizes::FORM_LINK_MB;
 /// 表单内滑杆行高。
 pub const SLIDER_H: f32 = sizes::FORM_SLIDER_H;
+/// 表单内按钮最小宽。
+pub const BUTTON_MIN_W: f32 = sizes::FORM_BUTTON_MIN_W;
 
 // ── 文本样式（页面语法三档：页标题 / 分区标题 / 行文本）──────────────────────
 
@@ -304,6 +306,9 @@ impl Form {
             block,
             MetroButton::new(label),
             LayoutProps {
+                // 页面级最小宽：控件本身按 UWP 无 MinWidth（内容 + 内边距），两字按钮会窄到
+                // 44 宽、点不准；设置页的按钮行由页面语法给出 120 的下限。
+                min: Size::new(BUTTON_MIN_W, 0.0),
                 h_align: Align::Start,
                 ..LayoutProps::default()
             },

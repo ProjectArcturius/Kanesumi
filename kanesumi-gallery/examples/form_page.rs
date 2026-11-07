@@ -10,10 +10,10 @@
 //   cargo run -p kanesumi-gallery --example form_page -- --snapshot out.png 1
 
 use kanesumi_controls::form::{self, Form};
-use kanesumi_controls::{FormLinkClicked, MetroRadioButtons, SwitchToggled};
+use kanesumi_controls::{FormLinkClicked, MetroButton, MetroRadioButtons, SwitchToggled};
 use kanesumi_core::{MetroTheme, ThemeColor};
-use kanesumi_harness::element::widgets::{Border, Stack};
-use kanesumi_harness::element::{Action, Insets, LayoutProps, Tree, WidgetId};
+use kanesumi_harness::element::widgets::{Border, Label, Stack};
+use kanesumi_harness::element::{Action, Align, Insets, LayoutProps, Tree, WidgetId};
 use kanesumi_harness::{AppConfig, EtherRole, TreeApp};
 
 /// 页宽（内容列 600 + 左右各 24 内边距 + 一点余量，好看清边界）。
@@ -92,6 +92,17 @@ impl TreeApp for SettingsPage {
         let mut radios = MetroRadioButtons::new(vec!["深色".to_string(), "浅色".to_string()]);
         radios.max_columns = 2;
         f.labeled(tree, "应用模式", radios, Some("跟随系统时由 Chorus 决定。"));
+
+        f.info_item(tree, "当前缩放", "100%（跟随显示设置）", Some("由 Chorus 统一管理，本页只读。"));
+        // 行内自排：row_block 给一个全宽块，里面放一行 Label + 按钮。
+        let row = f.row_block(tree, form::ITEM_MB);
+        let line = tree.insert_with(
+            row,
+            Stack::row().with_spacing(12.0),
+            LayoutProps { h_align: Align::Start, ..LayoutProps::default() },
+        );
+        tree.insert_with(line, Label::new("导出当前显示设置"), LayoutProps { v_align: Align::Center, ..LayoutProps::default() });
+        tree.insert_with(line, MetroButton::new("导出"), LayoutProps { v_align: Align::Center, ..LayoutProps::default() });
 
         f.section(tree, "相关设置", false);
         f.link(tree, "声音设置", "sound");
