@@ -35,6 +35,14 @@ pub struct MetroSurface {
 }
 
 impl MetroSurface {
+    /// 面板底：取主题的圆角档与 `surface` 底色。
+    ///
+    /// 顶栏的浮层面板（控制中心 / 音频 / 电源 / 通知中心）都是这个底，应用不必自己拼
+    /// `ControlShape::from(theme)`。参 `docs/CONTROL_SPEC.md` §50。
+    pub fn panel(theme: MetroTheme) -> Self {
+        Self::new(ControlShape::from(theme))
+    }
+
     pub const fn new(shape: ControlShape) -> Self {
         Self { shape, tint: None }
     }

@@ -732,6 +732,7 @@ pub fn backspace(&mut self) -> bool {
 pub fn badge_rect(rect: Rect) -> Option<Rect> {
 pub fn badge_text(&self) -> Option<String> {
 pub fn begin_frame(&mut self) {
+pub fn block(&mut self, tree: &mut Tree, my_mt: f32, my_mb: f32) -> WidgetId {
 pub fn blur(&mut self) {
 pub fn body(content: impl Into<String>, color: Color) -> Self {
 pub fn border_thickness(&self) -> f32 {
@@ -931,6 +932,7 @@ pub fn left_width(&self) -> f32 {
 pub fn len(&self) -> usize {
 pub fn line_rect(&self, theme: &MetroTheme, body: Rect) -> Rect {
 pub fn link(&mut self, tree: &mut Tree, text: &str, target: &str) -> WidgetId {
+pub fn list_item(
 pub fn mask(&self) -> Option<char> {
 pub fn max_offset(&self) -> f32 {
 pub fn max_scroll(&self) -> f32 {
@@ -1005,6 +1007,7 @@ pub fn paint_at(
 pub fn pane_progress(&self) -> f32 {
 pub fn pane_rects(&self, rect: Rect) -> (Rect, Rect) {
 pub fn pane_width(&self) -> f32 {
+pub fn panel(theme: MetroTheme) -> Self {
 pub fn panel_height(&self) -> f32 {
 pub fn panel_height(&self, engine: &TextEngine) -> f32 {
 pub fn panel_items(&self) -> Vec<PagerItem> {

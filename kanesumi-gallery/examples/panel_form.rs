@@ -13,7 +13,6 @@
 // 出图：cargo run -p kanesumi-gallery --example panel_form -- --snapshot out.png 1
 
 use kanesumi_controls::form::{self, Form};
-use kanesumi_controls::surface::ControlShape;
 use kanesumi_controls::{MetroButton, MetroSurface, SwitchToggled};
 use kanesumi_core::{MetroTheme, ThemeColor};
 use kanesumi_harness::element::widgets::{Border, Stack};
@@ -60,7 +59,7 @@ impl TreeApp for ControlCenter {
         // 面板容器：底色与圆角由 MetroSurface 负责，尺寸按内容撑开（measure = 子节点的最大范围）。
         let surface = tree.insert_with(
             page,
-            MetroSurface::new(ControlShape::from(self.theme)),
+            MetroSurface::panel(self.theme),
             LayoutProps {
                 margin: Insets::new(20.0, 20.0, 20.0, 20.0),
                 h_align: Align::Start,
