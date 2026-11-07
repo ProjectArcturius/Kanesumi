@@ -85,3 +85,27 @@ cargo run -p kanesumi-gallery --example panel_form -- --snapshot out.png 1
 再把 `ether` / `ether-settings` / `ether-librarian` 一起部署到 e495。
 已编好但**未部署**的旧候选：`e495:~/verify/backup/ether-librarian.new-20261107`（该版只含 librarian 两修复，
 重做完成后会重新构建覆盖它）。
+
+## 进度更新（2026-11-07，顶栏第一个面板已迁完）
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| 顶栏任务面板（`TaskStackPanel` ~150 行） | ✅ 已迁，整块自绘删除 | `settings` 分支 `d190a9c6`；`cargo check/test` 通过 |
+| 顶栏控制中心（~450 行） | ⬜ 未开始 | 清单见 `settings/docs/PANEL_FORM_MIGRATION.md` |
+| 音频 / 电源 / 网络 / 通知中心 | ⬜ 未开始 | 同上 |
+| librarian | ⬜ 未开始 | 需 `MetroTableRow`（§51） |
+
+**迁移范式（已被真实代码验证一遍，照抄即可）**：
+
+1. 控件只发请求动作（`Widget::event` 里拿不到 `Tree`，不能自己开弹层）；
+2. 应用层 `on_action` 里 `tree.open_popup(MetroSurface::panel(theme), spec)`；
+3. `form::panel_in(tree, panel, 宽度)` 铺内容列；
+4. `Form::section / slider / toggle / labeled / row_button` 建行；行按钮带回行号；
+5. 删除原面板的 `impl Widget`、手算矩形函数与命中枚举。
+
+**验证基线与纪律**（血的教训，务必遵守）：
+
+- Linux 侧 `cargo test -p ether-settings` 基线：lib **132 passed**；main **464 passed / 4 failed**
+  （4 项是既有的对话框确认类失败，已用「回退 topbar 后重跑」A/B 证明与迁移无关）；
+- **Windows 侧 `cargo check -p ether-settings` 的 exit=0 不可作为验收证据**：批量替换后它曾长时间
+  复用陈旧产物，把一个编译不过的分支报成绿。一律以 T14p 全量编译为准。
