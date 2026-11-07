@@ -96,23 +96,36 @@ say "  $APPS"
 
 FOUND="$OUT/a11y-atspi-names.txt"
 : >"$FOUND"
+
+# 有界广度优先走一遍：从应用根出发，最多 4 层 / 80 个节点。
+# 为什么要走这么深：对话框那三个按钮挂在对话框节点之下（第 3 层），只看两层会以为「缺按钮」。
+walk() {
+    local svc="$1"
+    local queue=("$REG_PATH")
+    local depth=0
+    local seen=0
+    while [ ${#queue[@]} -gt 0 ] && [ "$depth" -lt 4 ] && [ "$seen" -lt 80 ]; do
+        local next=()
+        for node in "${queue[@]}"; do
+            seen=$((seen + 1))
+            local name role
+            name=$(prop "$svc" "$node" Name)
+            role=$(q "$svc" "$node" org.a11y.atspi.Accessible.GetRole)
+            say "  $(printf '%*s' $((depth * 2)) '')$node name=$name role=$role"
+            printf "%s\n" "$name" >>"$FOUND"
+            local kids
+            kids=$(q "$svc" "$node" org.a11y.atspi.Accessible.GetChildren \
+                | grep -oE "'/[^']+'" | tr -d "'" | sort -u)
+            for k in $kids; do next+=("$k"); done
+        done
+        queue=("${next[@]}")
+        depth=$((depth + 1))
+    done
+}
+
 for svc in $(echo "$APPS" | grep -oE "':[0-9]+\.[0-9]+'" | tr -d "'" | sort -u); do
     say "== 应用 $svc =="
-    say "  root children=$(q "$svc" "$REG_PATH" org.a11y.atspi.Accessible.GetChildren)"
-    # 广度优先走两三层就够：本界面的标签都在前两层。
-    L1=$(q "$svc" "$REG_PATH" org.a11y.atspi.Accessible.GetChildren | grep -oE "'/[^']+'" | tr -d "'" | sort -u)
-    for n1 in $L1; do
-        name=$(prop "$svc" "$n1" Name)
-        role=$(q "$svc" "$n1" org.a11y.atspi.Accessible.GetRole)
-        say "    $n1 name=$name role=$role"
-        echo "$name" >>"$FOUND"
-        for n2 in $(q "$svc" "$n1" org.a11y.atspi.Accessible.GetChildren | grep -oE "'/[^']+'" | tr -d "'" | sort -u); do
-            nm2=$(prop "$svc" "$n2" Name)
-            rl2=$(q "$svc" "$n2" org.a11y.atspi.Accessible.GetRole)
-            say "      $n2 name=$nm2 role=$rl2"
-            echo "$nm2" >>"$FOUND"
-        done
-    done
+    walk "$svc"
 done
 
 say "== 判定 =="
