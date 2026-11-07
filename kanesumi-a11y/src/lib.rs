@@ -23,6 +23,12 @@ use accesskit::{Node, NodeId, Role, Toggled, TreeInfo, TreeUpdate};
 use kanesumi_core::Rect as KRect;
 use kanesumi_element::{AccessNode, AccessRole, Tree as ElementTree, WidgetId};
 
+/// 重导出树更新类型与角色表：调用方（外壳 / 测试）不必自己再声明一次 `accesskit` 依赖，
+/// 也就不会出现「两个 crate 的 `TreeUpdate` 类型对不上」这种只能靠链接期发现的问题。
+pub use accesskit::{
+    Node as A11yNode, NodeId as A11yNodeId, Role as A11yRole, TreeUpdate as A11yUpdate,
+};
+
 /// Linux 读屏（AT-SPI）适配器。**默认关**：feature `at-spi` 同时用于「接线」与「编译
 /// 验证」—— 在任意平台跑 `cargo check -p kanesumi-a11y --features at-spi` 都能把这份
 /// 代码编一遍（`accesskit_unix` 本身是纯 Rust），于是 Linux 适配器不必等 Linux 机器才能

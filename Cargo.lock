@@ -1390,6 +1390,7 @@ dependencies = [
  "bytemuck",
  "env_logger",
  "gbm",
+ "kanesumi-a11y",
  "kanesumi-anim",
  "kanesumi-appmenu",
  "kanesumi-canvas",

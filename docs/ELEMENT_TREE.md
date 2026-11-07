@@ -518,15 +518,19 @@ AccessKit 平台适配器（accesskit_unix 的 AT-SPI / accesskit_windows 的 UI
 一堆按了没反应的按钮 —— 比不声明更糟（`tests/tree_mapping.rs::no_actions_are_advertised_yet`
 钉住这一点）。动作回灌与 `Action::Focus/Click` 一起在下一步做，届时不改现有签名。
 
-接线与验证状态：外壳持 `SnapshotSlot`，每帧 `Tree::frame()` 之后
-`slot.publish(kanesumi_a11y::update_for_tree(&tree))`；Linux 上再 `kanesumi_a11y::atspi::install()`
-（feature `at-spi`，默认关）。
+接线（已落地）：外壳开一次 `TreeHost::enable_a11y()`，此后 `render_into` 每帧在
+`report_content_committed` 之后就 `slot.publish(update_for_tree(&tree))` —— **出帧之后**发布，
+读屏拿到的矩形与用户看到的、鼠标点得到的完全一致（快照契约 2）。Linux 上 `enable_a11y()`
+还会把同一个槽挂给 AT-SPI 适配器并在每帧 `flush()`；未装时每帧只多一次 `is_none` 判断。
+整套由 feature `a11y` 门控（默认关：不接读屏的客户端不该为一条 D-Bus 线程付代价）。
 
-- **已验（任意平台）**：映射 8 条测试；`cargo check -p kanesumi-a11y --features at-spi` ——
-  `accesskit_unix` 是纯 Rust，所以在 Windows 上就能把 AT-SPI 适配器编一遍，类型与 API 用法
-  不是「写着看看」。
-- **未验（要 Linux 真机）**：真的连上 AT-SPI 总线、Orca 能读出界面；以及外壳接线那两行。
-  这两件事属于 E6 的验收门（「Orca 能读出 Settings」），不是设计缺口。
+验证状态：
+
+- **已验（任意平台）**：映射 8 条测试；外壳接线 1 条（`tree_host::tests::frame_publishes_a11y_tree`，
+  断言出帧后树里有按钮 / 输入框、矩形非退化、焦点字段有值）；`cargo check -p kanesumi-a11y
+  --features at-spi` —— `accesskit_unix` 是纯 Rust，Windows 上就能把 AT-SPI 适配器编一遍。
+- **未验（要 Linux 真机）**：真的连上 AT-SPI 总线、Orca 能读出界面。属 E6 的验收门
+  （「Orca 能读出 Settings」），不是设计缺口。
 
 ## §Ⅹ 实施分期与分工
 

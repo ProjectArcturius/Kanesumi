@@ -16,6 +16,8 @@ kanesumi-controls = { path = "../kanesumi-controls" }
 kanesumi-element = { path = "../kanesumi-element" }
 # 全局应用菜单独立 crate（dbusmenu 服务 + Wayland 绑定 + Registrar），此处重导出。
 kanesumi-appmenu = { path = "../kanesumi-appmenu" }
+# 无障碍平台桥（快照 → AccessKit 树）。可选：不接读屏的客户端不该为它付 D-Bus 线程的代价。
+kanesumi-a11y = { path = "../kanesumi-a11y", optional = true }
 log = "0.4"
 # 无窗口快照写 PNG（snapshot.rs）；与 kanesumi-canvas 同版本，不引入新依赖树。
 resvg = "0.44"
@@ -50,3 +52,8 @@ gbm = "0.18"
 # dev_t（按合成器 feedback 主设备选 DRM 节点）+ RLIMIT_CORE=0（gbm 崩溃安全探测
 # 子进程不得往 /var/crash 灌 core —— Debian 2026-08-19 黑屏根因即 gbm 打开段错误）。
 libc = "0.2"
+
+[features]
+# 无障碍（AT-SPI / 读屏）。默认关：开启后 `TreeHost::enable_a11y()` 可用，每帧把元素树
+# 快照发布给 AccessKit，再由 accesskit_unix 交给 AT-SPI。
+a11y = ["dep:kanesumi-a11y", "kanesumi-a11y/at-spi"]

@@ -25,7 +25,13 @@ impl AtspiBridge {
     /// 装上 AT-SPI。读屏在**别的线程**上被唤醒时才回来要树（惰性激活），所以这里不必
     /// 预先算好树：没有读屏的会话里这行代码只登记一对回调。
     pub fn install() -> Self {
-        let slot = SnapshotSlot::new();
+        Self::with_slot(SnapshotSlot::new())
+    }
+
+    /// 挂到**已有的**快照槽上：外壳自己每帧发布到那个槽（跨平台、可单测），
+    /// 适配器只负责把槽里的树转给 AT-SPI。分成「发布」与「转交」两件事，是为了让
+    /// 发布路径能在任意平台测试，而这条适配器路径只在 Linux 上真的跑起来。
+    pub fn with_slot(slot: SnapshotSlot) -> Self {
         let adapter = Adapter::new(
             Activation { slot: slot.clone() },
             IgnoreActions,
@@ -34,13 +40,21 @@ impl AtspiBridge {
         Self { adapter, slot }
     }
 
-    /// 把本帧的树交给桥（无读屏时是纯内存操作：一次覆盖 + 一次惰性检查）。
+    /// 把槽里最新的树推给 AT-SPI。
+    ///
+    /// 只有读屏已激活时才会真的发出去（这个调用在未激活时什么也不做）—— 所以每帧调它
+    /// 对「没人在听」的会话没有代价。
+    pub fn flush(&mut self) {
+        let slot = self.slot.clone();
+        self.adapter.update_if_active(|| {
+            slot.current().expect("flush 之前槽里必须有树")
+        });
+    }
+
+    /// 发布 + 转交（不关心槽的持有者时用这个）。
     pub fn publish(&mut self, update: TreeUpdate) {
         self.slot.publish(update);
-        let slot = self.slot.clone();
-        // 只有读屏已经激活时才会真的把更新推出去；未激活时这个调用什么都不做。
-        self.adapter
-            .update_if_active(|| slot.current().expect("刚发布的树不应该丢了"));
+        self.flush();
     }
 
     /// 所在窗口的焦点状态（Wayland 下拿不到窗口位置，故不设 root window bounds）。

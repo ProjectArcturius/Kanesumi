@@ -1347,6 +1347,7 @@ pub trait ItemFactory: 'static {
 
 ## kanesumi-a11y
 pub fn current(&self) -> Option<TreeUpdate> {
+pub fn flush(&mut self) {
 pub fn install() -> Self {
 pub fn is_ready(&self) -> bool {
 pub fn new() -> Self {
@@ -1357,5 +1358,6 @@ pub fn set_window_focused(&mut self, focused: bool) {
 pub fn slot(&self) -> &SnapshotSlot {
 pub fn update(snapshot: &AccessNode, focus: Option<WidgetId>) -> TreeUpdate {
 pub fn update_for_tree(tree: &ElementTree) -> TreeUpdate {
+pub fn with_slot(slot: SnapshotSlot) -> Self {
 pub struct AtspiBridge {
 pub struct SnapshotSlot(std::sync::Arc<std::sync::Mutex<Option<TreeUpdate>>>);

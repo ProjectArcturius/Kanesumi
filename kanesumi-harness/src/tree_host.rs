@@ -348,6 +348,19 @@ pub struct TreeHost<A: TreeApp> {
     last_tick_ms: f32,
     /// dk3-perf：最近一次 `update` 里各浮层 tick 的墙钟（毫秒，与 `floating` 同序）。
     last_floating_tick_ms: Vec<f32>,
+    /// 无障碍快照槽（feature `a11y`）。`Some` = 每帧把元素树快照发布进去。
+    ///
+    /// 为什么不直接持有 `AtspiBridge`：发布（快照 → `TreeUpdate`）是跨平台且可单测的一步，
+    /// 而 AT-SPI 适配器只在 Linux 上有意义。拆成「槽」+「适配器」后，发布路径在任意平台
+    /// 都有测试，适配器那边只剩「把槽里的树转出去」。
+    #[cfg(feature = "a11y")]
+    a11y_slot: Option<kanesumi_a11y::SnapshotSlot>,
+    /// AT-SPI 适配器（feature `a11y` 且 Linux）。`None` = 没接读屏。
+    ///
+    /// 为什么不在 `new()` 里默认装：装上它就把一条 D-Bus 线程与一套 AT-SPI 对象树拉进
+    /// 进程，不接读屏的客户端不该为此付代价（同 KANESUMI_NO_SCROLLER 的思路）。
+    #[cfg(all(feature = "a11y", target_os = "linux"))]
+    a11y_bridge: Option<kanesumi_a11y::atspi::AtspiBridge>,
 }
 
 /// 树图层的外壳 id 从高位段分配，避免与 App 自建图层（`TreeApp::take_layer_commands`）冲突。
@@ -390,6 +403,10 @@ impl<A: TreeApp> TreeHost<A> {
             next_layer: TREE_LAYER_BASE,
             last_tick_ms: 0.0,
             last_floating_tick_ms: Vec::new(),
+            #[cfg(feature = "a11y")]
+            a11y_slot: None,
+            #[cfg(all(feature = "a11y", target_os = "linux"))]
+            a11y_bridge: None,
         }
     }
 
@@ -665,6 +682,43 @@ impl<A: TreeApp> TreeHost<A> {
     fn frame_main(&mut self, engine: &TextEngine, size: Size, dt: f64) -> kanesumi_element::FrameOutput {
         let app = &mut self.app;
         self.tree.frame_with_layout(engine, size, dt, |tree| app.after_layout(tree))
+    }
+
+    /// 装上无障碍（feature `a11y`）。外壳启动时调一次；此后每帧自动把元素树快照发布出去，
+    /// Linux 上同时转交给 AT-SPI（读屏没在跑时这一步只是一次内存覆盖）。
+    ///
+    /// 为什么由外壳显式打开而不是 `new()` 默认装：接上 AT-SPI 会把一条 D-Bus 线程与一套
+    /// AT-SPI 对象树拉进进程，不接读屏的客户端不该为此付代价。
+    #[cfg(feature = "a11y")]
+    pub fn enable_a11y(&mut self) {
+        if self.a11y_slot.is_none() {
+            self.a11y_slot = Some(kanesumi_a11y::SnapshotSlot::new());
+        }
+        #[cfg(target_os = "linux")]
+        if self.a11y_bridge.is_none() {
+            let slot = self.a11y_slot.clone().expect("刚建好");
+            self.a11y_bridge = Some(kanesumi_a11y::atspi::AtspiBridge::with_slot(slot));
+        }
+    }
+
+    /// 无障碍是否已装上。
+    #[cfg(feature = "a11y")]
+    pub fn a11y_enabled(&self) -> bool {
+        self.a11y_slot.is_some()
+    }
+
+    /// 最近一帧发布出去的无障碍树（诊断 / 测试用；未装或还没出帧 → `None`）。
+    #[cfg(feature = "a11y")]
+    pub fn a11y_update(&self) -> Option<kanesumi_a11y::A11yUpdate> {
+        self.a11y_slot.as_ref().and_then(|s| s.current())
+    }
+
+    /// 窗口焦点变化（外壳在 focus in/out 时调）。AT 用它决定要不要播报。
+    #[cfg(all(feature = "a11y", target_os = "linux"))]
+    pub fn set_a11y_window_focused(&mut self, focused: bool) {
+        if let Some(b) = self.a11y_bridge.as_mut() {
+            b.set_window_focused(focused);
+        }
     }
 
     /// 给进行中的弹层表面动画记一帧（帧节拍日志）。参 `Tree::popup_motion`。
@@ -1213,6 +1267,17 @@ impl<A: TreeApp> App for TreeHost<A> {
         // 本帧产物即将由外壳提交：汇报进入提交的节点（内容就绪门控就绪信号）。
         // 平台提交点紧随本调用（platform.rs 主循环），故就绪与解挂同帧生效。
         self.tree.report_content_committed(&frame.painted);
+        // 无障碍：把本帧的元素树快照交给读屏。**必须在出帧之后**——布局与命中都已是本帧
+        // 的结果，读屏拿到的矩形与用户看到的、鼠标点得到的完全一致（快照契约 2）。
+        // 未装时只多一次 `is_none` 判断。
+        #[cfg(feature = "a11y")]
+        if let Some(slot) = self.a11y_slot.as_ref() {
+            slot.publish(kanesumi_a11y::update_for_tree(&self.tree));
+        }
+        #[cfg(all(feature = "a11y", target_os = "linux"))]
+        if let Some(bridge) = self.a11y_bridge.as_mut() {
+            bridge.flush();
+        }
         // 弹层分离：判定本帧哪些弹层**参与**重画；画什么由 `render_popup` 的 Scene 差异定
         //（参 `scene_damage`）。弹层节点与主表面同树，但画在**自己的表面**上：主表面为什么
         // 重画，不代表弹层内容变了。旧实现把 `frame.damage == None` 当整幅（它同时表示
@@ -1679,6 +1744,45 @@ mod tests {
             accelerators: 0,
         });
         (host, test_engine())
+    }
+
+    /// 无障碍：外壳出帧后必须把**这一帧**的元素树发布出去（读屏拿到的矩形就是本帧布局）。
+    ///
+    /// 只测发布路径（快照 → 槽），不测 AT-SPI 适配器：适配器只在 Linux 连得上总线，
+    /// 而发布这一步是跨平台的，正好在 Windows 上钉死。
+    #[cfg(feature = "a11y")]
+    #[test]
+    fn frame_publishes_a11y_tree() {
+        let (mut host, engine) = host();
+        assert!(!host.a11y_enabled(), "默认不接无障碍");
+        assert!(host.a11y_update().is_none());
+
+        host.enable_a11y();
+        assert!(host.a11y_enabled());
+        assert!(host.a11y_update().is_none(), "还没出帧就没有树");
+
+        frame(&mut host, &engine);
+
+        let update = host.a11y_update().expect("出帧后必须有树");
+        let tree = update.tree.as_ref().expect("首帧带树信息");
+        assert_eq!(tree.toolkit_name.as_deref(), Some("Kanesumi"));
+
+        // 按钮与输入框都以**本帧的真实矩形**报出去（不是零矩形）。
+        let button = update
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some("确定"))
+            .map(|(_, n)| n)
+            .expect("按钮在无障碍树里");
+        assert_eq!(button.role(), kanesumi_a11y::A11yRole::Button);
+        let b = button.bounds().expect("按钮必须有矩形");
+        assert!(b.x1 > b.x0 && b.y1 > b.y0, "矩形非退化：{b:?}");
+        assert!(
+            update.nodes.iter().any(|(_, n)| n.role() == kanesumi_a11y::A11yRole::TextInput),
+            "输入框也在树里"
+        );
+        // 焦点恒有值（AccessKit 强制）：本帧没有焦点控件时落到根。
+        assert_eq!(update.focus.0, host.tree().root().to_u64());
     }
 
     struct BackdropDemo {
