@@ -35,13 +35,15 @@ say() { echo "$*" | tee -a "$BUS_LOG"; }
 REG_PATH=/org/a11y/atspi/accessible/root
 
 say "== 起 a11y 总线（org.a11y.Bus → at-spi-bus-launcher）=="
-A11Y_BUS=$(gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
-    --method org.a11y.Bus.GetAddress 2>&1 | sed -n "s/^('\(.*\)',$/\1/p")
+RAW=$(gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
+    --method org.a11y.Bus.GetAddress 2>&1)
+A11Y_BUS=$(printf "%s\n" "$RAW" | sed -n "s/^('\(.*\)',$/\1/p")
 if [ -n "${A11Y_BUS:-}" ]; then
     say "  address=$A11Y_BUS"
     export AT_SPI_BUS_ADDRESS="$A11Y_BUS"
 else
     say "  !! 没拿到 a11y 总线地址（at-spi2-core 未装或 launcher 起不来），退回会话总线试"
+    say "     raw=[$RAW]"
     A11Y_BUS=""
 fi
 # 之后所有查询都走 a11y 总线（没有就退回会话总线，至少拿到部分信息）。
