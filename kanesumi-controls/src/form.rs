@@ -529,7 +529,7 @@ impl Form {
         let block = self.block(tree, 0.0, mb);
         let button = tree.insert_with(
             block,
-            MetroRowButton { index, label: label.to_string() },
+            MetroRowButton { index, label: label.to_string(), selected: false },
             LayoutProps {
                 min: Size::new(0.0, LIST_ROW_H),
                 ..LayoutProps::default()
@@ -657,6 +657,9 @@ pub struct MetroRowButton {
     pub index: usize,
     /// 无障碍名字（也是按钮的语义标签）。
     pub label: String,
+    /// 是否为「当前项」：绘制选中底（`ThemeColor::SelectionTint`）。可在运行时用
+    /// `tree.edit::<MetroRowButton, _>(id, …)` 改，弹层里标出「当前窗口 / 当前连接」用。
+    pub selected: bool,
 }
 
 /// 列表行被点击：`0` 是 [`Form::row_button`] 传入的行号。
@@ -676,8 +679,14 @@ impl Widget for MetroRowButton {
     }
 
     fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
-        MetroButton::new(self.label.as_str())
-            .render_chrome(ctx.theme(), ctx.rect(), scene);
+        MetroButton::new(self.label.as_str()).render_chrome(ctx.theme(), ctx.rect(), scene);
+        // 当前项：叠一层选中底，与列表的选中语义一致（`SelectionTint` 令牌，随主题深浅）。
+        if self.selected {
+            scene.fill_rect(
+                ThemeColor::SelectionTint.resolve(ctx.theme()),
+                ctx.rect(),
+            );
+        }
     }
 
     fn event(&mut self, ctx: &mut EventCtx, event: &Event) {

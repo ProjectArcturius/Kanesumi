@@ -133,3 +133,26 @@ fn row_button_is_clickable_and_has_list_height() {
     assert_eq!(hit.first().map(|c| c.0), Some(7), "点击应带回行号");
     assert!(h.rect(ids[2]).origin.x >= h.rect(ids[1]).right() - 0.01, "次要信息在右");
 }
+
+#[test]
+fn row_button_selected_flag_marks_current_item() {
+    let mut h = TestHarness::new(600.0, 400.0);
+    let mut ids: Vec<WidgetId> = Vec::new();
+    h.frame_with_layout(|tree| {
+        let col = tree.insert_with(tree.root(), Stack::column(), LayoutProps::default());
+        let mut f = Form::new(col);
+        let (a, _, _) = f.row_button(tree, 0, "第一个", "Librarian", form::ITEM_MB);
+        let (b, _, _) = f.row_button(tree, 1, "第二个", "Settings", form::ITEM_MB);
+        // 标出当前项：弹层里「当前窗口」就是这条路径。
+        tree.edit::<kanesumi_controls::MetroRowButton, _>(b, |r, ec| {
+            r.selected = true;
+            ec.invalidate_paint();
+        });
+        ids.extend([a, b]);
+    });
+    h.settle();
+    let a = h.tree.get::<kanesumi_controls::MetroRowButton>(ids[0]).unwrap();
+    let b = h.tree.get::<kanesumi_controls::MetroRowButton>(ids[1]).unwrap();
+    assert!(!a.selected && b.selected, "选中标记应只落在被点的那一行");
+    assert_eq!(b.index, 1, "行号不应被改动");
+}
