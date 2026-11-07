@@ -1318,6 +1318,7 @@ pub struct MetroProgressRing {
 pub struct MetroRadioButtons {
 pub struct MetroRatingControl {
 pub struct MetroRepeater {
+pub struct MetroRowButton {
 pub struct MetroScrollView {
 pub struct MetroSelectorFlyout {
 pub struct MetroSlider {
@@ -1346,6 +1347,7 @@ pub struct QuerySubmitted(pub String);
 pub struct RadioSelectionChanged(pub usize);
 pub struct RatingValueChanged(pub f64);
 pub struct RetainedScene {
+pub struct RowButtonClicked(pub usize);
 pub struct ScrollOffsetChanged(pub f32);
 pub struct SelectorSelectionChanged(pub usize);
 pub struct SliderValueChanged(pub f64);

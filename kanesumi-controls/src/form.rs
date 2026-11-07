@@ -521,6 +521,7 @@ impl Form {
     pub fn row_button(
         &mut self,
         tree: &mut Tree,
+        index: usize,
         label: &str,
         secondary: &str,
         mb: f32,
@@ -528,10 +529,9 @@ impl Form {
         let block = self.block(tree, 0.0, mb);
         let button = tree.insert_with(
             block,
-            MetroButton::new(label),
+            MetroRowButton { index, label: label.to_string() },
             LayoutProps {
                 min: Size::new(0.0, LIST_ROW_H),
-                h_align: Align::Stretch,
                 ..LayoutProps::default()
             },
         );
@@ -646,6 +646,53 @@ pub fn panel_in(tree: &mut Tree, node: WidgetId, width: f32) -> WidgetId {
             ..LayoutProps::default()
         },
     )
+}
+/// 整行可点的列表行：按钮外观 + 行内两列文本，点击投 [`RowButtonClicked`]（带行号）。
+///
+/// 为什么不用 `MetroButton`：按钮没有载荷，点哪一行都只能收到同一个 `ButtonClicked`，
+/// 分不出是哪一行；列表行必须带回行号（或身份键）才能路由。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetroRowButton {
+    /// 行号（调用方按自己的列表顺序给）。
+    pub index: usize,
+    /// 无障碍名字（也是按钮的语义标签）。
+    pub label: String,
+}
+
+/// 列表行被点击：`0` 是 [`Form::row_button`] 传入的行号。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowButtonClicked(pub usize);
+
+impl Widget for MetroRowButton {
+    fn measure(&mut self, _ctx: &mut MeasureCtx, available: Size) -> Size {
+        Size::new(available.width.max(0.0), LIST_ROW_H)
+    }
+
+    fn arrange(&mut self, ctx: &mut kanesumi_element::ArrangeCtx, rect: kanesumi_core::Rect) {
+        // 子节点（一列横幅：Stack::row）铺满行矩形，内部再自排。
+        for c in ctx.children() {
+            ctx.arrange_child(c, rect);
+        }
+    }
+
+    fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
+        MetroButton::new(self.label.as_str())
+            .render_chrome(ctx.theme(), ctx.rect(), scene);
+    }
+
+    fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
+        if let Event::Click = event {
+            ctx.emit(RowButtonClicked(self.index));
+            ctx.set_handled();
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+    fn has_visual_states(&self) -> bool {
+        true
+    }
 }
 /// 「相关设置」栏：宽 [`RELATED_WIDTH`]、上内边距 [`RELATED_TOP`]；每组 = 分区标题 + 链接
 /// 列表。`width = None` 表示随内容列宽拉伸（窄窗时整块移到内容列下方）。

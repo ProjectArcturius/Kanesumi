@@ -118,7 +118,7 @@ pub use dialog_button::{
     DIALOG_BUTTON_H, DIALOG_BUTTON_W, MetroDialogButton,
 };
 pub use drop_down_button::MetroDropDownButton;
-pub use form::{Form, FormLinkClicked, MetroFormLink};
+pub use form::{Form, FormLinkClicked, MetroFormLink, MetroRowButton, RowButtonClicked};
 pub use dropdown_menu::{MenuItem, MenuPath, MenuInteractionSignature, MetroDropdownMenu, SubmenuState};
 pub use expander::{ExpandDirection, ExpanderToggled, MetroExpander};
 pub use icon_button::{IconButtonClicked, MetroIconButton};
