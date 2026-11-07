@@ -414,6 +414,7 @@ pub fn fits_in_row(min_widths: &[f32], spacing: f32, available: f32) -> bool {
 pub fn fitted_rect(source: Size, dest: Rect, stretch: Stretch) -> Rect {
 pub fn focus(&mut self, id: WidgetId, keyboard: bool) -> bool {
 pub fn focus_group(&self, id: WidgetId) -> Option<FocusGroupSpec> {
+pub fn focus_id(&self) -> Option<WidgetId> {
 pub fn focus_is_keyboard(&self) -> bool {
 pub fn focus_next(&mut self, backward: bool) -> bool {
 pub fn focus_order(&self) -> Vec<WidgetId> {
@@ -493,6 +494,7 @@ pub fn open_popup(&mut self, widget: impl Widget, mut spec: PopupSpec) -> Widget
 pub fn open_popup(&mut self, widget: impl Widget, spec: PopupSpec) -> WidgetId {
 pub fn padding(mut self, p: Insets) -> Self {
 pub fn painted(&self, id: WidgetId) -> &[SceneCommand] {
+pub fn parent(&self) -> Option<WidgetId> {
 pub fn parent(&self, id: WidgetId) -> Option<WidgetId> {
 pub fn play_transition(
 pub fn play_transition_gated_on(
@@ -783,6 +785,7 @@ pub fn cursor_byte(&self) -> usize {
 pub fn day_at(&self, rect: Rect, pos: Point) -> Option<Date> {
 pub fn day_rect(&self, rect: Rect, date: Date) -> Option<Rect> {
 pub fn decade_base(&self) -> i32 {
+pub fn default_button(mut self, is_default: bool) -> Self {
 pub fn delete(&mut self) -> bool {
 pub fn delete_button_rect(&self, _theme: &MetroTheme, body: Rect) -> Rect {
 pub fn delete_surrounding(&mut self, before_bytes: u32, after_bytes: u32) -> bool {
@@ -964,6 +967,7 @@ pub fn new(layout: ItemLayout, factory: impl ItemFactory) -> Self {
 pub fn new(owner: WidgetId, items: Vec<MenuItem>) -> Self {
 pub fn new(root: TreeViewNode) -> Self {
 pub fn new(rows: Vec<String>) -> Self {
+pub fn new(slot: DialogButton, label: impl Into<String>) -> Self {
 pub fn new(tabs: Vec<MetroTab>) -> Self {
 pub fn new(tabs: Vec<String>) -> Self {
 pub fn new(title: impl Into<String>, content: impl Into<String>) -> Self {
@@ -986,6 +990,7 @@ pub fn open_submenu(&mut self, engine: &TextEngine, screen: Rect, idx: usize) {
 pub fn overflow_buttons(&self, engine: &TextEngine, rect: Rect) -> Option<(Rect, Rect)> {
 pub fn overflowing(&self, engine: &TextEngine, rect: Rect) -> bool {
 pub fn overlay_alpha(&self) -> f32 {
+pub fn paint_at(
 pub fn pane_progress(&self) -> f32 {
 pub fn pane_rects(&self, rect: Rect) -> (Rect, Rect) {
 pub fn pane_width(&self) -> f32 {
@@ -1120,6 +1125,7 @@ pub fn show_modal(&mut self, ctx: &mut EventCtx) -> WidgetId {
 pub fn show_modal_with(
 pub fn side(rect: Rect) -> f32 {
 pub fn single_line(mut self) -> Self {
+pub fn size() -> Size {
 pub fn slider_rect(&self, rect: Rect, k: usize) -> Rect {
 pub fn snap_edge(v: f32) -> f32 {
 pub fn spacer(grow: f32) -> Self {
@@ -1260,6 +1266,7 @@ pub struct MetroColorPicker {
 pub struct MetroCommandBarFlyout {
 pub struct MetroContextMenu {
 pub struct MetroDialog {
+pub struct MetroDialogButton {
 pub struct MetroDropDownButton {
 pub struct MetroDropdownMenu {
 pub struct MetroExpander {

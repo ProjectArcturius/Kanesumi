@@ -469,17 +469,21 @@ WinUI 的做法也是给虚拟化项合成 AutomationPeer，而不是给每一�
 - 快照里落在宿主节点的 `items` 上，`AccessNode::to_text()` 以 `#序号` 打印；
   `AccessNode::find_item(name)` 供测试与诊断。
 - 合成项**不参与**命中 / 焦点 / 布局（几何由控件自己算并原样上报），框架只校验契约 5。
-- 角色：`AccessRole::MenuItem`（UIA `ControlType.MenuItem`）、`ListItem`（列表行）、`TreeItem`（树节点）、`TabItem`（页签）、`Button`（对话框按钮 / 自绘命令）。
-- 已接入七处消费者：**菜单**（每条命令的角色 / 名字 / 勾选 / 禁用 / 快捷键，级联挂在父项下）、
+- 角色：`AccessRole::MenuItem`（UIA `ControlType.MenuItem`）、`ListItem`（列表行）、`TreeItem`（树节点）、`TabItem`（页签）、`Button`（自绘命令）。
+- 已接入**六处**消费者：**菜单**（每条命令的角色 / 名字 / 勾选 / 禁用 / 快捷键，级联挂在父项下）、
   **`MetroList`**（只报视口内的行，与绘制 / 命中同一个虚拟化窗口；滚动后上报的行随之改变；
-  选中行带 `selected`）、**`MetroDialog`**（按钮名字 + 是否默认按钮 + 当前按钮 `focused`）、
-  **`MetroTreeView`**（视口内的节点 + `selected` + `expanded`）、**`MetroNavigationView`**（导航项 + `selected` + `expanded`）、
+  选中行带 `selected`）、**`MetroTreeView`**（视口内的节点 + `selected` + `expanded`）、
+  **`MetroNavigationView`**（导航项 + `selected` + `expanded`）、
   **`MetroTabRow`**（每个页签 + `selected`，滚出可见区的不报）、**`SuggestionList`**（自动补全的建议项 + 高亮项 `focused`）。
-  列表 / 对话框 / 树 / 侧边导航 / 页签 / 建议列表这六条也验证了机制不是菜单专用。
+  列表 / 树 / 侧边导航 / 页签 / 建议列表这几条也验证了机制不是菜单专用。
 
-仍未做：**每条命令还不是框架节点**（不能单独聚焦 / 单独参与 Tab 或命中路由；对话框按钮同理，
-Tab 到不了它们）；AT-SPI 桥（需新依赖，未授权）。两者都不影响读屏枚举，只影响
-「把菜单 / 对话框按钮当普通控件树操作」的场景。
+**对话框按钮已退出本机制**（2026-11-07）：`show_modal*` 把按钮插成真节点（`MetroDialogButton`，
+`LayoutProps::role = Commands`），因此 Tab 到得了、命中路由认它、读屏从 `children` 读到它；
+`MetroDialog` 不再 `access_items` 合成按钮（否则读屏里出现两遍）。默认按钮的「（默认）」标记
+写在按钮节点的 `AccessInfo::name` 里，替 UIA 的 `IsDefault` 属性占位。
+
+仍未做：**每条命令还不是框架节点**（不能单独聚焦 / 单独参与 Tab 或命中路由）；AT-SPI 桥
+（需新依赖，未授权）。菜单仍靠合成项——读屏能枚举，但「把菜单命令当普通控件树操作」还不行。
 
 ## §Ⅹ 实施分期与分工
 

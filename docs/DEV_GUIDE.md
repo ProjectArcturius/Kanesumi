@@ -271,6 +271,34 @@ tree.insert_with(row, Label::new("分享"), LayoutProps { v_align: Align::Center
 （`measure` 按子节点量测 → `arrange` 排进内容列 → `paint` 只画 chrome、标签让位但保留为
 无障碍名字）。样板见 `kanesumi-gallery/examples/grid_form.rs` 的「分享」按钮。
 
+#### 对话框的两区：内容区与命令区
+
+对话框按子节点的**布局角色**分区，应用只填 `DialogButtons`，按钮由框架插成真节点：
+
+```rust
+let mut dlg = MetroDialog::new("重命名", "");
+dlg.buttons.primary = Some("确定".into());
+dlg.buttons.close = Some("取消".into());
+dlg.buttons.default_button = DialogDefaultButton::Primary;
+dlg.show_modal_with(ctx, |ctx, popup| {
+    // 归位到内容区（role 默认 Normal，与 Content 同义；分区只看 Commands）
+    ctx.insert_child(popup, MetroTextBox::with_placeholder("新名称"));
+});
+```
+
+| 角色 | 谁排 | 排到哪 |
+|---|---|---|
+| `Normal` / `Content` | 对话框 | 标题之下、按钮行之上的内容区（宽度 = 盒宽 − 48，高度随内容） |
+| `Commands` | 对话框 | 右下按钮行：从右缘往左紧排，每个 130×32、间距 2（`Close` 恒最右） |
+
+- 按钮**不要自己插**：`show_modal*` 已按 `DialogButtons` 插好（`MetroDialogButton`，槽位身份随
+  action `DialogResult(slot)` 报回来）。自己再插一份就会多出按钮。
+- 要在命令区放**自定义**控件（例如「记住我的选择」勾选框），插入时写
+  `LayoutProps::default().in_role(LayoutRole::Commands)`；命令区按声明序**左→右**排、也按这个序进 Tab。
+- 激活（点击 / Enter / Space）由按钮自己发 `DialogResult` 并关闭弹层；`Esc` 由对话框本体发
+  `DialogResult(Close)`。应用只需在 `on_action` 里按 `DialogButton` 分支。
+- 键盘：打开即聚焦默认按钮，`←/→` 在命令区里循环移动（挪的是框架焦点，不另记「当前按钮」）。
+
 ### 2.7 键盘
 
 外壳把 wl_keyboard 经 xkbcommon 语义化后的 keysym 映射为 `Key`（`platform::map_key`）。

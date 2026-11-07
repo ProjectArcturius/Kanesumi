@@ -59,10 +59,11 @@ git diff --stat docs/API_SURFACE.txt
 
 | 区域 | 现状 | 结论 |
 |---|---|---|
-| 对话框按钮 | 控件自绘 + 合成项上报；`LayoutRole` 已就位 | **落地前改为真节点**（`MetroDialogButton` + 分区排布），届时 `MetroDialog` 的 `measure`/`arrange`/`button_layout` 语义会变，**这次变化必须发生在落地前** |
+| 对话框按钮 | ✅ **已真节点化**（`MetroDialogButton` + `LayoutRole::Commands` 分区排布，2026-11-07） | 现存语义已按此定稿：`show_modal*` 自动插按钮、焦点落默认按钮、←/→ 挪框架焦点、`access_items` 不再合成按钮。此后只能**增**（如自定义命令区控件），不能再改回自绘 |
 | 无障碍平台桥（AT-SPI） | 只有数据层（`access_nodes` / `AccessItem`） | 桥接会把 `AccessSnapshot` 变成平台树的输入；预期只**新增**（`kanesumi-a11y` 桥 crate + harness 接线），不改现有签名 |
 | 画布路径能力 | 闭集图元（无任意路径） | 若加 `Scene::fill_path`，属**新增**；但 `SceneCommand` 若加变体会破坏下游 match —— 届时该枚举标 `#[non_exhaustive]` |
 | 命名遗留 | `visible_rows`（名像属性、代价像方法）、`try_*` 缺失 | **落地前改**（现在改只动我们自己；落地后改是破坏）。清单见 `docs/research/2026-11-07_library_and_dotnet_style.md` §Ⅲ |
+| `EventCtx` 的读查询 | `children` / `child_props` / `parent` / `focus_id`（2026-11-07 补齐） | 只读、纯新增。组合型控件要按角色分区、在子节点间挪焦点就必须能读结构；不加则会各自另存一份「当前项」与框架焦点打架 |
 
 ## §六 判定流程（每次想动接口时照走）
 

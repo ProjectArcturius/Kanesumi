@@ -519,6 +519,36 @@ impl EventCtx<'_> {
         self.tree.edit(id, f)
     }
 
+    // ── 树查询（只读）──────────────────────────────────────────────────────
+    //
+    // 事件上下文此前只能「写」（失效 / 聚焦 / 增删子节点），不能「读」结构 —— 于是
+    // 组合型控件（对话框按角色分区排布子节点、在命令区里挪焦点）在事件期拿不到自己要
+    // 处理的子节点清单，只能把状态另存一份，与框架焦点形成两套真相。以下四项补齐读的一侧，
+    // 与 `MeasureCtx` / `ArrangeCtx` / `PaintCtx` 的同名方法是同一份语义。
+
+    /// 本节点的直接子节点（树序 = 声明序）。
+    pub fn children(&self) -> Vec<WidgetId> {
+        self.tree.children(self.id).to_vec()
+    }
+
+    /// 某子节点的框架布局属性（附着属性：布局角色 / 网格格位 / 对齐）。
+    pub fn child_props(&self, child: WidgetId) -> LayoutProps {
+        self.tree.props(child).unwrap_or_default()
+    }
+
+    /// 父节点（根节点返回 `None`）。子节点要关闭「包住自己的弹层」时用它取父 id。
+    pub fn parent(&self) -> Option<WidgetId> {
+        self.tree.parent(self.id)
+    }
+
+    /// 当前持有键盘焦点的节点（无焦点为 `None`）。
+    ///
+    /// 组合型控件据此判断「焦点在我这个子节点上吗」——判断依据只有框架焦点一处，
+    /// 不再另存一份「当前项」字段。
+    pub fn focus_id(&self) -> Option<WidgetId> {
+        self.tree.focused()
+    }
+
     /// 请求最近的滚动器图层做增量 / 绝对滚动（合成模式的键盘路径：Page 键、Home/End、
     /// `bring_into_view`）。滚动由合成器跟踪器动画完成，控件本地不动。
     /// 本节点不在任何滚动器图层内时返回 false（调用方走自绘路径）。

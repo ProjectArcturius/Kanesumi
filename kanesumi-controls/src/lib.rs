@@ -21,6 +21,7 @@ pub mod command_bar_flyout;
 pub mod context_menu;
 pub mod decl;
 pub mod dialog;
+pub mod dialog_button;
 pub mod drop_down_button;
 pub mod dropdown_menu;
 pub mod expander;
@@ -111,6 +112,9 @@ pub use decl::{
 };
 pub use dialog::{
     DialogButton, DialogButtons, DialogDefaultButton, DialogResult, DialogState, MetroDialog,
+};
+pub use dialog_button::{
+    DIALOG_BUTTON_H, DIALOG_BUTTON_W, MetroDialogButton,
 };
 pub use drop_down_button::MetroDropDownButton;
 pub use dropdown_menu::{MenuItem, MenuPath, MenuInteractionSignature, MetroDropdownMenu, SubmenuState};
