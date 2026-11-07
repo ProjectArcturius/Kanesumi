@@ -106,6 +106,25 @@ pub struct FormLinkClicked {
     pub target: Arc<str>,
 }
 
+/// 说明块（次级色、按列宽折行）。
+///
+/// 说明文字常常是一条完整句子（「Dock 在不用时收起；指针贴到屏幕最底一行停留或下推时再
+/// 出现。」），单行省略号会把后半句吞掉。按 `COMPOSITION.md` 的强制契约，文本必须显式声明
+/// 换行策略，这里的策略是**折行不截断**。
+fn desc_block(tree: &mut Tree, parent: WidgetId, text: &str, mt: f32) -> WidgetId {
+    tree.insert_with(
+        parent,
+        Label::new(text)
+            .style(s_label())
+            .color(ThemeColor::OnSurfaceVariant)
+            .wrap(None),
+        LayoutProps {
+            margin: Insets::new(0.0, mt, 0.0, 0.0),
+            ..LayoutProps::default()
+        },
+    )
+}
+
 /// 强调色链接（14）：点击投 [`FormLinkClicked`]。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetroFormLink {
@@ -243,14 +262,7 @@ impl Form {
             },
         );
         if let Some(d) = desc {
-            tree.insert_with(
-                block,
-                Label::new(d).style(s_label()).color(ThemeColor::OnSurfaceVariant),
-                LayoutProps {
-                    margin: Insets::new(0.0, DESC_MT, 0.0, 0.0),
-                    ..LayoutProps::default()
-                },
-            );
+            desc_block(tree, block, d, DESC_MT);
         }
         sw
     }
@@ -274,14 +286,7 @@ impl Form {
                 ..LayoutProps::default()
             },
         );
-        let desc_id = tree.insert_with(
-            block,
-            Label::new(desc).style(s_label()).color(ThemeColor::OnSurfaceVariant),
-            LayoutProps {
-                margin: Insets::new(0.0, DESC_MT, 0.0, 0.0),
-                ..LayoutProps::default()
-            },
-        );
+        let desc_id = desc_block(tree, block, desc, DESC_MT);
         (sw, desc_id)
     }
 
@@ -328,14 +333,7 @@ impl Form {
             },
         );
         if let Some(d) = desc {
-            tree.insert_with(
-                block,
-                Label::new(d).style(s_label()).color(ThemeColor::OnSurfaceVariant),
-                LayoutProps {
-                    margin: Insets::new(0.0, DESC_MT, 0.0, 0.0),
-                    ..LayoutProps::default()
-                },
-            );
+            desc_block(tree, block, d, DESC_MT);
         }
         id
     }

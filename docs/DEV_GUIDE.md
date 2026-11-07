@@ -446,6 +446,37 @@ form::related(
 );
 ```
 
+### 从 settings 的私有 `grammar` 迁过来（逐项对照）
+
+| 旧（`settings/src/window/grammar.rs`） | 新（`kanesumi_controls::form`） |
+|---|---|
+| `grammar::Col::new(parent)` | `Form::new(parent)` |
+| `col.nested(parent)` | `form.nested(parent)` |
+| `grammar::page_title(tree, &mut col, t)` | `form.page_title(tree, t)` |
+| `grammar::section(tree, &mut col, t, first)` | `form.section(tree, t, first)` |
+| `grammar::toggle_item(tree, &mut col, l, on, desc)` | `form.toggle(tree, l, on, desc)` |
+| `grammar::toggle_item_desc(…)` | `form.toggle_desc(…)` |
+| `grammar::button_item(tree, &mut col, desc, l)` | `form.button(tree, l, desc)` |
+| `grammar::labeled(tree, &mut col, l, ctrl, desc)` | `form.labeled(tree, l, ctrl, desc)` |
+| `grammar::info_item(…)` | `form.info_item(…)` |
+| `grammar::note(tree, &mut col, t)` | `form.note(tree, t)` |
+| `grammar::link(tree, &mut col, t, NavTarget)` | `form.link(tree, t, "键")` → `FormLinkClicked` |
+| `grammar::slider_item(…)` | `form.slider(…)` |
+| `grammar::row_block(tree, &mut col, mb)` | `form.row_block(tree, mb)` |
+| `grammar::related(tree, parent, sections, w)` | `form::related(tree, parent, sections, w)` |
+| `grammar::ToggleSwitch`（自绘开关，142 行） | 删除 → `MetroSwitch`（`form::toggle` 内部就是它） |
+| `grammar::GrammarButton`（自绘按钮，60 行） | 删除 → `MetroButton` |
+| `grammar::GrammarLink`（自绘链接，48 行） | 删除 → `MetroFormLink` |
+| `s_ptitle / s_section / s_label` | `form::s_page_title / s_section / s_label` |
+| `c_btn / c_stroke`（字面色） | `ThemeColor::{ControlFill, ControlStroke}` |
+| `c_ink / c_accent` | `ThemeColor::{OnSurface, Primary}` |
+| `Col` 的 CSS 外边距折叠 | 内建，页面不用管 |
+| `NavTarget` 枚举 | 应用侧把字符串键映射到自己的枚举（`FormLinkClicked{target}`） |
+| `raster_icon`（图标光栅） | 仍留应用侧（`ether-assets`），`form` 不收图标 |
+
+迁移演练见 `kanesumi-gallery/examples/form_theme_page.rs`——它把 settings 的「个性化 · 主题」页
+按上表原样搬了一遍，页面逻辑（读写 `theme.toml` 的 `dock_autohide`、深浅单选、两枚相关设置链接）
+一字未改。
 必须知道的四条：
 
 1. **不要自己加下外边距**。`form` 按 CSS 外边距折叠规则为每个块落**上**外边距；自己再加下外边距
