@@ -447,17 +447,17 @@ pub struct DialogResult(pub DialogButton);
 const DIALOG_BOX_H: f32 = 240.0;
 
 // 盒体内边距与行高（CONTROL_SPEC §9：Padding `24,18,24,24`、按钮高 32）。
-const DIALOG_PAD_X: f32 = 24.0;
-const DIALOG_PAD_TOP: f32 = 18.0;
-const DIALOG_PAD_BOTTOM: f32 = 24.0;
-const DIALOG_TITLE_GAP: f32 = 12.0;
-const DIALOG_CONTENT_GAP: f32 = 8.0;
-const DIALOG_BUTTON_ROW: f32 = 32.0;
+const DIALOG_PAD_X: f32 = kanesumi_core::sizes::DIALOG_PAD_X;
+const DIALOG_PAD_TOP: f32 = kanesumi_core::sizes::DIALOG_PAD_TOP;
+const DIALOG_PAD_BOTTOM: f32 = kanesumi_core::sizes::DIALOG_PAD_BOTTOM;
+const DIALOG_TITLE_GAP: f32 = kanesumi_core::sizes::DIALOG_TITLE_GAP;
+const DIALOG_CONTENT_GAP: f32 = kanesumi_core::sizes::DIALOG_CONTENT_GAP;
+const DIALOG_BUTTON_ROW: f32 = kanesumi_core::sizes::DIALOG_BUTTON_HEIGHT;
 /// 高度范围（CONTROL_SPEC §9 Min/Max 184/756）。
-const DIALOG_MIN_H: f32 = 184.0;
-const DIALOG_MAX_H: f32 = 756.0;
+const DIALOG_MIN_H: f32 = kanesumi_core::sizes::DIALOG_MIN_HEIGHT;
+const DIALOG_MAX_H: f32 = kanesumi_core::sizes::DIALOG_MAX_HEIGHT;
 /// 命令区相邻按钮的水平间距（CONTROL_SPEC §9）。
-const DIALOG_BUTTON_GAP: f32 = 2.0;
+const DIALOG_BUTTON_GAP: f32 = kanesumi_core::sizes::DIALOG_BUTTON_GAP;
 
 /// 命令区矩形：从**右缘往左**紧挨着排，第 `i` 个矩形 = 从右数第 `i` 个命令子节点。
 ///

@@ -8,8 +8,8 @@ use crate::state::ControlState;
 /// 内边距（CONTROL_SPEC §1：`8,5,8,6`）。标签与内容槽共用同一组值 ——
 /// 两处各写一套会让「有内容 / 无内容」的按钮在同一个界面上差 1px。
 const PAD_X: f32 = 8.0;
-const PAD_TOP: f32 = 5.0;
-const PAD_BOTTOM: f32 = 6.0;
+const PAD_TOP: f32 = kanesumi_core::sizes::BUTTON_PAD_TOP;
+const PAD_BOTTOM: f32 = kanesumi_core::sizes::BUTTON_PAD_BOTTOM;
 
 /// 按钮种类：Standard（surface 底）/ Accent（强调色底）。对齐 UWP Standard/Accent。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

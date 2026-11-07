@@ -25,7 +25,7 @@ pub const MENU_GROUP_GAP: f32 = 8.0;
 /// 勾选列宽（逻辑 pt）：菜单有可勾选项时，左缘固定留出这一列画勾，标签统一右移 ——
 /// 勾选与否**不改变文字起点**（旧做法是在标签里拼「✓」前缀，勾了的行文字整体右移一格，
 /// 一列命令的下缘看得出来错位）。参 CONTROL_SPEC §39「视觉」。
-pub const MENU_CHECK_GUTTER: f32 = 16.0;
+pub const MENU_CHECK_GUTTER: f32 = kanesumi_core::sizes::MENU_CHECK_GUTTER;
 
 /// 面板最大高度（逻辑 pt）。超过则面板封顶、内容内部滚动。
 ///
@@ -33,7 +33,7 @@ pub const MENU_CHECK_GUTTER: f32 = 16.0;
 /// ComboBox 下拉 `MaxDropDownHeight`（CONTROL_SPEC §8 一手源），**属推断值**、登记在
 /// `CANON_VS_TEMPORARY` 待真机对照。不封顶的后果是长菜单直接长到屏幕外，
 /// `place_popup` 只会平移，用户看到的是一个被裁掉一半、又没有滚动条的菜单。
-pub const MENU_MAX_HEIGHT: f32 = 504.0;
+pub const MENU_MAX_HEIGHT: f32 = kanesumi_core::sizes::MENU_MAX_HEIGHT;
 
 /// 菜单项。参 CONTROL_SPEC §8（MenuFlyout）：
 /// - 项高 ≈32（Padding `11,9,11,10` + 14px 字）；图标 16px；快捷键右侧；
@@ -693,8 +693,8 @@ impl MetroDropdownMenu {
         if max <= 0.0 {
             return None;
         }
-        const BAR_W: f32 = 3.0;
-        const INSET: f32 = 4.0;
+        const BAR_W: f32 = kanesumi_core::sizes::MENU_SCROLLBAR_WIDTH;
+        const INSET: f32 = kanesumi_core::sizes::MENU_SCROLLBAR_INSET;
         let panel = self.panel_rect;
         let track_h = (panel.size.height - INSET * 2.0).max(0.0);
         let visible_ratio = (panel.size.height / self.content_height()).clamp(0.08, 1.0);
@@ -726,7 +726,7 @@ impl MetroDropdownMenu {
         if max <= 0.0 {
             return false;
         }
-        const INSET: f32 = 4.0;
+        const INSET: f32 = kanesumi_core::sizes::MENU_SCROLLBAR_INSET;
         let Some(thumb) = self.scroll_hint_rect() else {
             return false;
         };

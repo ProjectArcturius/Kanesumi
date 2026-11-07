@@ -17,9 +17,9 @@ use crate::dialog::{DialogButton, DialogResult};
 use crate::state::control_state;
 
 /// 命令区按钮宽（CONTROL_SPEC §9）。
-pub const DIALOG_BUTTON_W: f32 = 130.0;
+pub const DIALOG_BUTTON_W: f32 = kanesumi_core::sizes::DIALOG_BUTTON_WIDTH;
 /// 命令区按钮高（CONTROL_SPEC §9）。
-pub const DIALOG_BUTTON_H: f32 = 32.0;
+pub const DIALOG_BUTTON_H: f32 = kanesumi_core::sizes::DIALOG_BUTTON_HEIGHT;
 
 /// 对话框命令区按钮。
 ///
