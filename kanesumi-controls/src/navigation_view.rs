@@ -348,7 +348,7 @@ impl MetroNavigationView {
     }
 
     /// 按路径取导航项（一层或两层）。
-    fn item_by_path(&self, path: &[usize]) -> Option<&NavigationViewItem> {
+    fn try_item(&self, path: &[usize]) -> Option<&NavigationViewItem> {
         let first = self.items.get(*path.first()?)?;
         match path.get(1) {
             None => Some(first),
@@ -651,7 +651,7 @@ impl kanesumi_element::Widget for MetroNavigationView {
         let mut out = Vec::new();
         // 顶层项与（展开时的）子项；所选路径与项路径比较决定 selected。
         for (path, r) in &self.last_geometry {
-            let Some(item) = self.item_by_path(path) else {
+            let Some(item) = self.try_item(path) else {
                 continue;
             };
             let Some(bounds) = r.intersect(rect) else {

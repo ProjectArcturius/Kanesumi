@@ -765,6 +765,7 @@ pub fn collect_hits(
 pub fn column(children: Vec<Decl>) -> Self {
 pub fn commands(&self) -> &[SceneCommand] {
 pub fn commit_ime(&mut self, s: &str) -> bool {
+pub fn compute_visible_rows(&self) -> Vec<TreeRow> {
 pub fn content_area(&self, box_rect: Rect) -> Rect {
 pub fn content_clip(&self, rect: Rect) -> Option<Rect> {
 pub fn content_cross(&self) -> f32 {
@@ -841,6 +842,7 @@ pub fn handle_click(&mut self, rect: Rect, pos: Point) -> TreeAction {
 pub fn handle_key(&mut self, key: TextInputKey) -> Option<AutoSuggestAction> {
 pub fn handle_key(&mut self, key: TextInputKey) -> bool {
 pub fn has_content(children: usize) -> bool {
+pub fn has_overflow(&self, engine: &TextEngine, rect: Rect) -> bool {
 pub fn has_preedit(&self) -> bool {
 pub fn header_at(&self, engine: &TextEngine, rect: Rect, p: Point) -> Option<usize> {
 pub fn header_rect(&self, rect: Rect) -> Rect {
@@ -1173,6 +1175,7 @@ pub fn top_item_rects(&self, engine: &TextEngine, rect: Rect) -> Vec<Rect> {
 pub fn total_width(&self, avail_w: f32) -> f32 {
 pub fn total_width(&self, engine: &TextEngine) -> f32 {
 pub fn track_rect(&self, rect: Rect, theme: &MetroTheme) -> Rect {
+pub fn try_path_at(&self, pos: Point) -> Option<MenuPath> {
 pub fn undo(&mut self) -> bool {
 pub fn up_button_rect(&self, theme: &MetroTheme, rect: Rect) -> Rect {
 pub fn update(

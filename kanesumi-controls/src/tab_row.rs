@@ -175,13 +175,21 @@ impl MetroTabRow {
     }
 
     /// 页签总宽超出可用宽 → 需要横向滚动与翻页按钮（UWP Pivot 溢出行为）。
-    pub fn overflowing(&self, engine: &TextEngine, rect: Rect) -> bool {
+    ///
+    /// 名字用 `has_*`：布尔查询的肯定式（.NET 命名规则），参 docs/DEV_GUIDE.md §八·五。
+    pub fn has_overflow(&self, engine: &TextEngine, rect: Rect) -> bool {
         self.total_width(engine) > rect.size.width + 0.5
+    }
+
+    /// 旧名（`has_*` 约定之前）。保留一个周期供下游迁移，之后删除。
+    #[deprecated(note = "改用 has_overflow：布尔查询统一 is_/has_/can_ 前缀")]
+    pub fn overflowing(&self, engine: &TextEngine, rect: Rect) -> bool {
+        self.has_overflow(engine, rect)
     }
 
     /// 页签条的矩形：溢出时左右各让出翻页按钮宽；否则就是自身矩形。
     fn strip_rect(&self, engine: &TextEngine, rect: Rect) -> Rect {
-        if self.overflowing(engine, rect) {
+        if self.has_overflow(engine, rect) {
             let w = (rect.size.width - 2.0 * OVERFLOW_BTN_W).max(0.0);
             Rect::new(rect.origin.x + OVERFLOW_BTN_W, rect.origin.y, w, rect.size.height)
         } else {
@@ -191,7 +199,7 @@ impl MetroTabRow {
 
     /// 溢出时左右翻页按钮 `(left, right)`；不溢出返回 None。
     pub fn overflow_buttons(&self, engine: &TextEngine, rect: Rect) -> Option<(Rect, Rect)> {
-        if !self.overflowing(engine, rect) {
+        if !self.has_overflow(engine, rect) {
             return None;
         }
         let d = OVERFLOW_BTN_W.min(rect.size.height.max(0.0));
@@ -527,7 +535,7 @@ impl kanesumi_element::Widget for MetroTabRow {
             Event::Scroll { dx, dy, .. } => {
                 let (overflow, max) = match ctx.engine() {
                     Some(engine) => (
-                        self.overflowing(engine, ctx.rect()),
+                        self.has_overflow(engine, ctx.rect()),
                         self.max_scroll(engine, ctx.rect()),
                     ),
                     None => (false, 0.0),
@@ -795,7 +803,7 @@ mod tree_tests {
     fn no_pager_when_not_overflowing() {
         let (h, id) = harness(LayoutProps::default());
         let row = h.tree.get::<MetroTabRow>(id).unwrap();
-        assert!(!row.overflowing(&h.engine, h.rect(id)));
+        assert!(!row.has_overflow(&h.engine, h.rect(id)));
         assert!(row.overflow_buttons(&h.engine, h.rect(id)).is_none());
     }
 
@@ -804,7 +812,7 @@ mod tree_tests {
         let (mut h, id) = wide_harness(160.0);
         let right = {
             let row = h.tree.get::<MetroTabRow>(id).unwrap();
-            assert!(row.overflowing(&h.engine, h.rect(id)), "总宽应超可用宽");
+            assert!(row.has_overflow(&h.engine, h.rect(id)), "总宽应超可用宽");
             row.overflow_buttons(&h.engine, h.rect(id))
                 .expect("溢出应有翻页键")
                 .1

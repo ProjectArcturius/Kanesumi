@@ -1208,7 +1208,7 @@ impl GalleryApp {
             return;
         }
         if self.dropdown.anim.is_visible() {
-            if let Some(path) = self.dropdown.path_at(p) {
+            if let Some(path) = self.dropdown.try_path_at(p) {
                 // 选中（RadioMenuFlyoutItem 单选组互斥）；普通项无副作用
                 if path.parent.is_some() {
                     self.dropdown.select_submenu(path);

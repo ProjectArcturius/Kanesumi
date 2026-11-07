@@ -185,7 +185,7 @@ impl ContextMenuState {
                 ..
             } => {
                 let pos = Point::new(*x, *y);
-                if let Some(path) = self.menu.path_at(pos) {
+                if let Some(path) = self.menu.try_path_at(pos) {
                     let path = match path.parent {
                         None => vec![path.index],
                         Some(p) => vec![p, path.index],

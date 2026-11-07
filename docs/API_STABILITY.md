@@ -62,7 +62,7 @@ git diff --stat docs/API_SURFACE.txt
 | 对话框按钮 | ✅ **已真节点化**（`MetroDialogButton` + `LayoutRole::Commands` 分区排布，2026-11-07） | 现存语义已按此定稿：`show_modal*` 自动插按钮、焦点落默认按钮、←/→ 挪框架焦点、`access_items` 不再合成按钮。此后只能**增**（如自定义命令区控件），不能再改回自绘 |
 | 无障碍平台桥（AT-SPI） | 只有数据层（`access_nodes` / `AccessItem`） | 桥接会把 `AccessSnapshot` 变成平台树的输入；预期只**新增**（`kanesumi-a11y` 桥 crate + harness 接线），不改现有签名 |
 | 画布路径能力 | 闭集图元（无任意路径） | 若加 `Scene::fill_path`，属**新增**；但 `SceneCommand` 若加变体会破坏下游 match —— 届时该枚举标 `#[non_exhaustive]` |
-| 命名遗留 | `visible_rows`（名像属性、代价像方法）、`try_*` 缺失 | **落地前改**（现在改只动我们自己；落地后改是破坏）。清单见 `docs/research/2026-11-07_library_and_dotnet_style.md` §Ⅲ |
+| 命名遗留 | ✅ **三条已收敛**（2026-11-07）：`overflowing` → `has_overflow`、`visible_rows` → `compute_visible_rows`、`path_at` → `try_path_at`；旧名一律 `#[deprecated]` 转发，`tests/deprecated_names.rs` 挡着「旧名坏了没人知道」 | 剩下的只有 `visible_rows` **要不要缓存**（纯性能，不动签名，可落地后再做）。`try_*` 约定成为新代码硬规矩，见 `docs/DEV_GUIDE.md` §八·五 |
 | `EventCtx` 的读查询 | `children` / `child_props` / `parent` / `focus_id`（2026-11-07 补齐） | 只读、纯新增。组合型控件要按角色分区、在子节点间挪焦点就必须能读结构；不加则会各自另存一份「当前项」与框架焦点打架 |
 
 ## §六 判定流程（每次想动接口时照走）

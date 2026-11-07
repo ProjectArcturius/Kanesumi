@@ -111,15 +111,25 @@ impl MetroTreeView {
 
     /// 展平可见行（深度优先，折叠节点不展开子项）。
     ///
+    /// 名字带 `compute_`：它**每次重新展平并分配**（见下方性能取舍），不是廉价属性 ——
+    /// 旧名 `visible_rows` 读起来像字段访问，调用方会误以为可以随手放循环条件里。
+    /// 参 docs/DEV_GUIDE.md §八·五「属性必须廉价」。
+    ///
     /// **性能取舍**：`collect_rows` 每行 `path.clone()`（`Vec<usize>` 深拷贝）——
     /// 深度 D、可见行 R 时总代价 `O(R · D)` 分配。典型 UWP TreeView 深度 ≤ 20，
     /// 可见行 ≤ 100 → 微不足道。深度 > 100 的极端场景应考虑 `Rc<[usize]>` 共享
     /// 或改为「借用 &[usize] + 索引对」以省去克隆。当前 API 直接返回 `Vec<TreeRow>`
     /// 对调用方最友好（无生命周期束缚），故保留此权衡。
-    pub fn visible_rows(&self) -> Vec<TreeRow> {
+    pub fn compute_visible_rows(&self) -> Vec<TreeRow> {
         let mut rows = Vec::new();
         self.collect_rows(&self.root, &mut Vec::new(), 0, &mut rows);
         rows
+    }
+
+    /// 旧名（`compute_*` 约定之前）。保留一个周期供下游迁移，之后删除。
+    #[deprecated(note = "改用 compute_visible_rows：它会分配重算，名字要说明代价")]
+    pub fn visible_rows(&self) -> Vec<TreeRow> {
+        self.compute_visible_rows()
     }
 
     fn collect_rows(
@@ -157,7 +167,7 @@ impl MetroTreeView {
 
     /// 行几何：总尺寸 + 每行 rect。
     pub fn layout(&self, rect: Rect) -> (Size, Vec<Rect>) {
-        let rows = self.visible_rows();
+        let rows = self.compute_visible_rows();
         let rects = rows
             .iter()
             .enumerate()
@@ -192,7 +202,7 @@ impl MetroTreeView {
 
     /// 命中：先 chevron（toggle），再行（select）。
     pub fn hit(&self, rect: Rect, pos: Point) -> TreeAction {
-        let rows = self.visible_rows();
+        let rows = self.compute_visible_rows();
         let (_, rects) = self.layout(rect);
         for (i, row) in rows.iter().enumerate() {
             let r = rects[i];
@@ -251,7 +261,7 @@ impl MetroTreeView {
     /// 渲染全部可见行。
     pub fn render(&self, theme: &MetroTheme, _engine: &TextEngine, rect: Rect, scene: &mut Scene) {
         let colors = &theme.colors;
-        let rows = self.visible_rows();
+        let rows = self.compute_visible_rows();
         let (_, rects) = self.layout(rect);
         let style = MetroTypography::metro().body_medium;
 
@@ -328,7 +338,7 @@ pub struct TreeItemInvoked(pub Vec<usize>);
 impl MetroTreeView {
     /// 可见行内容总高。
     fn content_height(&self) -> f32 {
-        self.visible_rows().len() as f32 * TREE_ITEM_H
+        self.compute_visible_rows().len() as f32 * TREE_ITEM_H
     }
 
     /// 最大滚动偏移（内容高 − 视口高，下限 0）。
@@ -339,7 +349,7 @@ impl MetroTreeView {
     /// 选中行在展平可见行中的序号。
     fn selected_row_index(&self) -> Option<usize> {
         let sel = self.selected.as_deref()?;
-        self.visible_rows()
+        self.compute_visible_rows()
             .iter()
             .position(|r| r.path.as_slice() == sel)
     }
@@ -363,7 +373,7 @@ impl MetroTreeView {
     /// 选中行（若可展开收起）翻转展开态；返回是否变化。
     fn toggle_selected(&mut self, expand: bool) -> bool {
         let Some(path) = self.selected.clone() else { return false };
-        let Some(row) = self.visible_rows().into_iter().find(|r| r.path == path) else {
+        let Some(row) = self.compute_visible_rows().into_iter().find(|r| r.path == path) else {
             return false;
         };
         if !row.has_children || row.expanded == expand {
@@ -447,7 +457,7 @@ impl kanesumi_element::Widget for MetroTreeView {
             }
             Event::KeyDown { key, .. } => match key {
                 Key::Down | Key::Up => {
-                    let rows = self.visible_rows();
+                    let rows = self.compute_visible_rows();
                     if rows.is_empty() {
                         return;
                     }
@@ -496,7 +506,7 @@ impl kanesumi_element::Widget for MetroTreeView {
             value: self
                 .selected
                 .as_ref()
-                .and_then(|p| self.visible_rows().into_iter().find(|r| &r.path == p))
+                .and_then(|p| self.compute_visible_rows().into_iter().find(|r| &r.path == p))
                 .map(|r| r.label),
             checked: None,
         })
@@ -512,7 +522,7 @@ impl kanesumi_element::Widget for MetroTreeView {
         rect: Rect,
         _theme: &kanesumi_core::MetroTheme,
     ) -> Vec<kanesumi_element::AccessItem> {
-        self.visible_rows()
+        self.compute_visible_rows()
             .iter()
             .enumerate()
             .filter_map(|(i, row)| {
@@ -625,12 +635,12 @@ mod tree_tests {
         h.click_at(chev.center());
         let t = h.tree.get::<MetroTreeView>(id).unwrap();
         assert!(t.root.children[0].expanded, "点箭头应展开");
-        assert_eq!(t.visible_rows().len(), 4);
+        assert_eq!(t.compute_visible_rows().len(), 4);
         // 再点一次收起。
         h.click_at(chev.center());
         let t = h.tree.get::<MetroTreeView>(id).unwrap();
         assert!(!t.root.children[0].expanded, "再点箭头应收起");
-        assert_eq!(t.visible_rows().len(), 2);
+        assert_eq!(t.compute_visible_rows().len(), 2);
     }
 
     #[test]
@@ -887,7 +897,7 @@ mod tests {
     #[test]
     fn flattened_rows_collapsed() {
         let t = tree();
-        let rows = t.visible_rows();
+        let rows = t.compute_visible_rows();
         // 根空 label → 直接子项：文档(折叠) + 图片，顶级 depth=0
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].label, "文档");
@@ -900,7 +910,7 @@ mod tests {
     fn expand_reveals_children() {
         let mut t = tree();
         t.toggle_node(&[0]);
-        let rows = t.visible_rows();
+        let rows = t.compute_visible_rows();
         assert_eq!(rows.len(), 4, "展开后 +2 子项");
         assert_eq!(rows[1].label, "项目");
         assert_eq!(rows[1].depth, 1);
@@ -930,7 +940,7 @@ mod tests {
             TreeAction::Toggle(vec![0])
         );
         assert!(t.root.children[0].expanded, "点箭头应展开");
-        assert_eq!(t.visible_rows().len(), 4);
+        assert_eq!(t.compute_visible_rows().len(), 4);
     }
 
     #[test]

@@ -493,7 +493,10 @@ impl MetroDropdownMenu {
 
     /// 命中测试（含子菜单）：先查子菜单项，再查顶层项。
     /// 返回 `MenuPath { parent: Option<usize>, index: usize }` —— `parent=None` 为顶层项。
-    pub fn path_at(&self, pos: Point) -> Option<MenuPath> {
+    ///
+    /// 名字用 `try_*`：这是「可能查不到」的查询（空白处 / 已关闭 → `None`），
+    /// 调用方从名字就该知道要处理失败。参 docs/DEV_GUIDE.md §八·五。
+    pub fn try_path_at(&self, pos: Point) -> Option<MenuPath> {
         let sub_hit = self
             .submenu
             .as_ref()
@@ -510,6 +513,13 @@ impl MetroDropdownMenu {
             index: i,
         })
     }
+
+    /// 旧名（`try_*` 约定之前）。保留一个周期供下游迁移，之后删除。
+    #[deprecated(note = "改用 try_path_at：可能查不到的查询统一 try_* 前缀")]
+    pub fn path_at(&self, pos: Point) -> Option<MenuPath> {
+        self.try_path_at(pos)
+    }
+
     /// 子菜单悬停项（渲染用）。
     pub fn submenu_hovered(&self) -> Option<usize> {
         self.submenu.as_ref().and_then(|s| s.menu.hovered)
@@ -1058,7 +1068,7 @@ impl Widget for MetroDropdownMenu {
                     ctx.set_handled();
                     return;
                 }
-                if let Some(path) = self.path_at(*pos) {
+                if let Some(path) = self.try_path_at(*pos) {
                     self.activate_at(ctx, path);
                 }
                 ctx.set_handled();
@@ -1433,13 +1443,13 @@ mod tests {
             sub.panel.origin.y + 10.0,
         );
         assert_eq!(
-            menu.path_at(child_center),
+            menu.try_path_at(child_center),
             Some(MenuPath { parent: Some(1), index: 0 })
         );
         // 顶层项 → parent=None
         let r0 = menu.item_rect(0);
         assert_eq!(
-            menu.path_at(Point::new(r0.origin.x + 10.0, r0.origin.y + 10.0)),
+            menu.try_path_at(Point::new(r0.origin.x + 10.0, r0.origin.y + 10.0)),
             Some(MenuPath { parent: None, index: 0 })
         );
     }

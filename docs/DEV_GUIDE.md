@@ -595,12 +595,39 @@ set_address + 点击路由（`on_menu_command`）。独立 crate `kanesumi-appme
 | 取值型查询（可能查不到） | `try_item(path) -> Option<&Item>` | `item_by_path` | `Try*` 模式 |
 | 取值型查询（必成功） | 名词短语，且**廉价无副作用**：`content_height()` | 名词短语但每次分配（名字像属性、代价像方法） | 属性须廉价 |
 | 布尔查询 | `is_open` / `has_children` / `can_go_back` | `overflowing()` | 肯定式 + `Is/Has/Can` |
-| 集合属性 | 复数名词：`visible_rows` / `items` | `row_list` | 集合用复数 |
+| 集合属性 | 复数名词：`items` / `rows()`（返回借用或迭代器） | 每次 `Vec` 分配却叫 `visible_rows` | 集合用复数，重活叫 `compute_*` |
 | 事件 / 结果 | 动词过去式表示已发生：`ExpanderToggled` / `SliderValueChanged` | `ToggleExpander` | 事件用时态 |
 | 缩写 | 不用：`message` / `pane_width` | `msg` / `pw`（公共 API） | 不用缩写 |
 
 两条硬规矩：**属性名必须保证调用廉价**（重活就叫 `compute_*` 或返回迭代器）；
-**布尔量用肯定式**（`is_empty` 而不是 `not_empty`）。## 九、设计铁律速查
+**布尔量用肯定式**（`is_empty` 而不是 `not_empty`）。
+
+### 既有 API 的改名流程（不许就地改名）
+
+改名 = 破坏下游。统一走「**新增 → 标废弃 → 下一个周期删**」：
+
+```rust
+/// 页签总宽超出可用宽 → 需要横向滚动与翻页按钮。
+pub fn has_overflow(&self, engine: &TextEngine, rect: Rect) -> bool { /* 真实实现 */ }
+
+/// 旧名（`has_*` 约定之前）。保留一个周期供下游迁移，之后删除。
+#[deprecated(note = "改用 has_overflow：布尔查询统一 is_/has_/can_ 前缀")]
+pub fn overflowing(&self, engine: &TextEngine, rect: Rect) -> bool {
+    self.has_overflow(engine, rect)
+}
+```
+
+三条配套要求：
+
+1. **旧名转发到新名**，不复制实现 —— 两份实现迟早不一致。
+2. **本仓内的调用点全部改到新名**，否则 `cargo build` 天天飘 deprecation 警告，人就会
+   学会忽略警告（真警告也就失效了）。
+3. **加一条兼容层测试**（`kanesumi-controls/tests/deprecated_names.rs`）：断言旧名与新名
+   同一结果。`#[deprecated]` 只发警告不改行为，没有测试挡着，「留一个周期」就会悄悄变成
+   「旧名坏了没人知道」。
+
+已收敛的旧名（2026-11-07）：`overflowing` → `has_overflow`、`visible_rows` →
+`compute_visible_rows`、`path_at` → `try_path_at`（`MetroDropdownMenu` / `MetroContextMenu`）。## 九、设计铁律速查
 1. **Kanesumi Design，而非 Fluent**——轻盈短促 0.25s、Quadratic/EaseOut；Win11
    Fluent 仅作反面教材。
 2. **Sokuou 动画唯一真源**——禁止自造动画原语。

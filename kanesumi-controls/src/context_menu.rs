@@ -138,9 +138,15 @@ impl MetroContextMenu {
         self.menu.hovered_rects()
     }
 
-    /// 命中测试（含级联）：返回 `(parent, child)` 路径或顶层索引。
+    /// 命中测试（含级联）：返回 `(parent, child)` 路径或顶层索引；空白处 → `None`。
+    pub fn try_path_at(&self, pos: Point) -> Option<MenuPath> {
+        self.menu.try_path_at(pos)
+    }
+
+    /// 旧名（`try_*` 约定之前）。保留一个周期供下游迁移，之后删除。
+    #[deprecated(note = "改用 try_path_at：可能查不到的查询统一 try_* 前缀")]
     pub fn path_at(&self, pos: Point) -> Option<MenuPath> {
-        self.menu.path_at(pos)
+        self.try_path_at(pos)
     }
 
     /// 菜单项点选后标记勾选态（单选组互斥）。
@@ -372,10 +378,10 @@ mod tests {
         menu.update(1.0);
         let r = menu.panel_rect();
         // 第一项：面板内顶部。
-        let hit = menu.path_at(Point::new(r.origin.x + 20.0, r.origin.y + 10.0));
+        let hit = menu.try_path_at(Point::new(r.origin.x + 20.0, r.origin.y + 10.0));
         assert_eq!(hit, Some(MenuPath { parent: None, index: 0 }));
         // 面板外 → None。
-        assert_eq!(menu.path_at(Point::new(5.0, 5.0)), None);
+        assert_eq!(menu.try_path_at(Point::new(5.0, 5.0)), None);
     }
 }
 
