@@ -1182,6 +1182,17 @@ impl Renderer {
                         effective_clip(&clip_stack),
                     );
                 }
+                // `SceneCommand` 是 `#[non_exhaustive]`（画布还会加图元，参 docs/CANVAS_PLAN.md）：
+                // 本路径是 Linux 内嵌渲染器的兜底。新图元上线时必须在此补实现，否则画面缺一块，
+                // 所以不静默跳过 —— 每进程最多记一次警告。
+                _ => {
+                    static WARNED: std::sync::Once = std::sync::Once::new();
+                    WARNED.call_once(|| {
+                        log::warn!(
+                            "Kanesumi 渲染：遇到未实现的场景命令（画布图元新增后需补 harness/render.rs）"
+                        );
+                    });
+                }
             }
         }
 

@@ -591,6 +591,9 @@ fn cmd_bounds(c: &kanesumi_canvas::SceneCommand) -> Option<Rect> {
             Some(Rect::new(x0, y0, x1 - x0, y1 - y0))
         }
         C::PushClip { .. } | C::PopClip => None,
+        // `SceneCommand` 是 `#[non_exhaustive]`：未知图元没有可算的外框，按「无范围」处理
+        // —— 宁可少算一块损伤（下一帧全量兜底），也不要瞎猜一个矩形让损伤变成假的精确。
+        _ => None,
     }
 }
 
