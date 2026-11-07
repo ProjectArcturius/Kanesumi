@@ -37,7 +37,7 @@ REG_PATH=/org/a11y/atspi/accessible/root
 say "== 起 a11y 总线（org.a11y.Bus → at-spi-bus-launcher）=="
 RAW=$(gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
     --method org.a11y.Bus.GetAddress 2>&1)
-A11Y_BUS=$(printf "%s\n" "$RAW" | sed -n "s/^('\(.*\)',$/\1/p")
+A11Y_BUS=$(printf "%s\n" "$RAW" | sed -n "s/^('\(.*\)',)$/\1/p")
 if [ -n "${A11Y_BUS:-}" ]; then
     say "  address=$A11Y_BUS"
     export AT_SPI_BUS_ADDRESS="$A11Y_BUS"
