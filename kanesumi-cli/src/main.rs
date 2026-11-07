@@ -53,6 +53,11 @@ fn run(args: &[String]) -> Result<(), String> {
             print_help();
             Ok(())
         }
+        // 版本号取编译期 `CARGO_PKG_VERSION`：装到系统后 `kanesumi --version` 就能自证是哪一版。
+        "-V" | "--version" => {
+            println!("kanesumi {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         other => Err(format!("未知子命令 `{other}`；`kanesumi --help` 看用法")),
     }
 }
