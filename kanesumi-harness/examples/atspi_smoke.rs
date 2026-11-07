@@ -105,6 +105,7 @@ fn log_dir() -> std::path::PathBuf {
 }
 
 /// 把本进程看到的 AccessKit 树写成可读摘要（角色 / 名字 / 矩形 / 焦点）。
+#[cfg(feature = "a11y")]
 fn dump(host: &kanesumi_harness::TreeHost<SmokeApp>) -> String {
     let Some(update) = host.a11y_update() else {
         return "（还没有树）\n".to_string();
@@ -177,7 +178,11 @@ fn main() {
     }
     frame(&mut host, &mut scene);
 
+    // 没有 a11y feature 时也要能编（`cargo check --all-targets` 默认不带 feature）。
+    #[cfg(feature = "a11y")]
     let summary = dump(&host);
+    #[cfg(not(feature = "a11y"))]
+    let summary = "（本次构建没有 a11y feature，未接桥）\n".to_string();
     print!("{summary}");
     if let Err(e) = std::fs::create_dir_all(log_dir()) {
         eprintln!("建日志目录失败：{e}");
