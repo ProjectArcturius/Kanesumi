@@ -609,6 +609,10 @@ impl Tree {
             self.request_anim(id);
         }
         self.invalidate_measure(parent);
+        // 父节点的**画法**也可能取决于子节点集合（带内容槽的控件：有子节点就把正文让给
+        // 子节点）。只失效量测的话，若新子节点没改变父节点的尺寸，父节点不会重画 ——
+        // 症状是「插进去的子节点已排布好，父控件却还画着上一帧的正文」。
+        self.invalidate_paint(parent);
         id
     }
 
@@ -676,6 +680,8 @@ impl Tree {
                 pn.children.retain(|c| *c != id);
             }
             self.invalidate_measure(p);
+            // 与 `insert_boxed_with` 同理：子节点集合变了，父节点的画法就可能变。
+            self.invalidate_paint(p);
         }
         self.mark_dirty();
     }
