@@ -556,8 +556,23 @@ set_address + 点击路由（`on_menu_command`）。独立 crate `kanesumi-appme
 
 ---
 
-## 九、设计铁律速查
+## 八·五、API 命名（.NET 手感对照）
 
+写新 API 时照下面这张表；与 `.NET Framework Design Guidelines` 的命名条款逐条对应，
+理由见 `docs/research/2026-11-07_library_and_dotnet_style.md` §Ⅲ。
+
+| 场景 | 该这么写 | 别这么写 | 出处 |
+|---|---|---|---|
+| 动作型方法（有副作用） | 动词短语：`insert_child` / `scroll_into_view` | `child_insert` | 方法用动词 |
+| 取值型查询（可能查不到） | `try_item(path) -> Option<&Item>` | `item_by_path` | `Try*` 模式 |
+| 取值型查询（必成功） | 名词短语，且**廉价无副作用**：`content_height()` | 名词短语但每次分配（名字像属性、代价像方法） | 属性须廉价 |
+| 布尔查询 | `is_open` / `has_children` / `can_go_back` | `overflowing()` | 肯定式 + `Is/Has/Can` |
+| 集合属性 | 复数名词：`visible_rows` / `items` | `row_list` | 集合用复数 |
+| 事件 / 结果 | 动词过去式表示已发生：`ExpanderToggled` / `SliderValueChanged` | `ToggleExpander` | 事件用时态 |
+| 缩写 | 不用：`message` / `pane_width` | `msg` / `pw`（公共 API） | 不用缩写 |
+
+两条硬规矩：**属性名必须保证调用廉价**（重活就叫 `compute_*` 或返回迭代器）；
+**布尔量用肯定式**（`is_empty` 而不是 `not_empty`）。## 九、设计铁律速查
 1. **Kanesumi Design，而非 Fluent**——轻盈短促 0.25s、Quadratic/EaseOut；Win11
    Fluent 仅作反面教材。
 2. **Sokuou 动画唯一真源**——禁止自造动画原语。
