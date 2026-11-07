@@ -92,7 +92,30 @@ Esc / Enter / Space 语义已在（`dropdown_menu.rs:1095`）。
 数值落地时同步进 Ether 仓 `docs/INTERACTION_CANON.md` §Ⅵ（现在那一节只有四行，没写延时、
 安全三角与长菜单兜底）。
 
-## 附：源码从哪来（可复现）
+## 七、实现要点（下一轮直接照这个改，省一次摸索）
+
+**子菜单延时（第 1 项）**
+
+1. 常量照 `tooltip.rs` 的写法：`pub const SUBMENU_DELAY_MS: u64 = 150;`（Breeze 值）。
+2. 卡点：子菜单几何要 `TextEngine` + `screen`，但 `UpdateCtx` **没有** `engine()` / `surface()`
+   （只有 `invalidate_paint` / `invalidate_arrange` / `request_anim_frame` / `request_timer`）。
+   故悬停时把 `(engine.clone(), screen)` 缓存进菜单字段（`TextEngine` 克隆是 `Arc` 级，便宜），
+   `update(dt)` 里累计 `dt`，够了才 `open_submenu`。
+3. 悬停路径（`hover_inner`）只记 `pending_submenu = Some((父项索引, 0.0))`，不立即展开；
+   已展开同一父项或换到非子菜单项时清掉 pending。`Widget::event` 的 `PointerMove` 分支在
+   `hover()` 返回后若 `pending_submenu.is_some()` 要 `ctx.request_anim_frame()`，否则指针停住时
+   永远等不到下一帧。
+4. 契约变化：`hover()` 不再**同步**展开子菜单，现有 6 处测试（`dropdown_menu.rs:1379` 起）要改成
+   `menu.hover(...); menu.update(0.2);` 再断言 —— 这不是「改断言凑绿」，而是把 150 ms 时序写进用例。
+
+**安全三角（第 2 项）**
+
+现有「桥接带」（`dropdown_menu.rs:430-440`：父面板左缘 → 子菜单右缘的水平条）是粗版，
+只能覆盖水平穿越。真三角要：记「指针最后一次落在父项矩形内的位置」作顶点，取子菜单近缘的
+上下两点作底，`point_in_triangle(顶点, 上, 下)` 命中就保持展开；离开三角才开始 1000 ms 计时，
+超时才关（`SH_Menu_SubMenuSloppyCloseTimeout`）。
+
+## 八、源码从哪来（可复现）
 
 本文的 sparse clone 在 Ether 仓 `target/ref-kde/`（`target/` 已在忽略列表内）：
 
