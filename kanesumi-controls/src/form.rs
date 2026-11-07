@@ -210,11 +210,16 @@ impl Form {
         Self { parent, prev_mb: self.prev_mb }
     }
 
-    /// 建一个块容器，外边距按 CSS 折叠规则落在其上；返回容器 id。
+
+    /// 开一个新块，外边距按 CSS 折叠规则落在其上；返回**块容器 id**，往里塞自己的子件。
     ///
-    /// CSS 相邻兄弟外边距折叠：取两者较大者。元素树 Stack 不折叠，故本结构只把「折叠后的
-    /// 间距」落为块的**上**外边距（下外边距为 0），并记住本块的 CSS 下外边距供下一块折叠。
-    fn block(&mut self, tree: &mut Tree, my_mt: f32, my_mb: f32) -> WidgetId {
+    /// 这是本模块唯一的低级原语：上面的语义块（`section` / `toggle` / `note` …）都是它的
+    /// 特例，应用要写自定义行时也走它，不必自己算「与上一块差多少」。CSS 相邻兄弟外边距
+    /// 折叠取两者较大者，而元素树 Stack 的 margin 不折叠，故本结构只把**折叠后**的间距
+    /// 落为块的**上**外边距（下外边距为 0），并记住本块的 CSS 下外边距供下一块折叠。
+    ///
+    /// `my_mt` = 本块的 CSS 上外边距，`my_mb` = 本块的 CSS 下外边距。
+    pub fn block(&mut self, tree: &mut Tree, my_mt: f32, my_mb: f32) -> WidgetId {
         let top = my_mt.max(self.prev_mb);
         self.prev_mb = my_mb;
         tree.insert_with(
