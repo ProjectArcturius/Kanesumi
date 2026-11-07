@@ -1,0 +1,63 @@
+# 页面语法（form）落地进度与接手须知
+
+本文件是「把 Kanesumi 从控件库推进到应用运行时」这条线的**唯一接手入口**。规格在
+`docs/CONTROL_SPEC.md` §49 / §50 / §51，写法在 `docs/DEV_GUIDE.md` §二·四 / §二·五。
+
+## 已完成（可直接用）
+
+| 能力 | 位置 | 验证 |
+|---|---|---|
+| 页面语法 14 个语义块 | `kanesumi-controls/src/form.rs` | `tests/form_grammar.rs` 5 条；三道静态门（size / token / api）全绿 |
+| `Form::block` 底级原语 | 同上 | settings 的 `Col` 已退化成它的别名 |
+| `Form::list_item` 列表行（图标槽 + 主文本 + 右侧次要文本） | 同上 | 行高与列位单测；参照页 `form_page` 出图 |
+| `form::panel` 面板容器（表面 + 内边距 + 一列） | 同上 | 参照页 `panel_form` 出图 |
+| `MetroSurface::panel(theme)` | `kanesumi-controls/src/surface.rs` | API 表面快照 |
+| CLI 工具链 `kanesumi` | `kanesumi-cli/` | 12 条单测；deb 经真机 `dpkg-deb -I/-c` 验过 |
+
+参照页三张（都已看图确认）：`form_page`（12 块全览）、`form_theme_page`（settings 主题页原样迁移）、
+`panel_form`（顶栏控制中心形态）。
+
+## 已完成（应用侧）
+
+- **settings**：36 个页面的结构调用全部走 `Form`；私有 `window/grammar.rs` 从 755 行降到 315 行
+  （−58%），自绘控件从 36 个降到 20 个，且剩下的 20 个都是应用专属（`HomeCell` / `WifiRow` /
+  `Thumbnail`…）。改动在 Ether 主仓分支 `oc/settings-form`（6 个提交）与 `oc/librarian-fixes`。
+- **librarian**：两处修复（XDG 桌面目录、选择器双击=确认）编译通过，未部署。
+
+## 未完成（按此顺序）
+
+### 1. 顶栏面板行结构（控制中心先做）
+
+994 行的 `settings/src/topbar/control_panel.rs` 要按
+`settings/docs/PANEL_FORM_MIGRATION.md` 改：`form::panel` 建容器，滑杆/开关换成 `Form::slider` /
+`Form::toggle`，删掉 `PanelRegion` 枚举与 `pressed` / `mute_hover` / `panel_w()` / `panel_h()`。
+音频（1575）与电源（1240）同构，可照抄。网络面板（2698）需要连接列表——`Form::list_item` 可覆盖；
+通知中心（1213）需要通知卡片，尚无规格。
+
+三个已记录的坑：命令按钮别走 `Form::button`（它带 120 最小宽，三枚并排撑爆 360 面板）、
+首块 `first = true`、面板高度变化会移动合成器的浮层锚点。
+
+### 2. `MetroTableRow`（librarian 用）
+
+规格已在 `docs/CONTROL_SPEC.md` §51：列定义（`Px` / `Star` / `Fit`）、行状态（含 `SelectionTint`
+选中高亮）、展开三角、4pt 拖拽阈值、逐列命中、键盘导航、排序头。
+
+**在它落地前，librarian 的列表不要改用 `Form::list_item`** —— 那个是静态设置行，硬套会丢选择态、
+拖拽与逐列命中三样交互。
+
+### 3. 已知小项
+
+- `bg_work.rs` 里 `Job::Wallpaper` 的 match 分支写了两遍（第二份不可达），应删；
+- `kanesumi_canvas::rasterize_svg` 对「无 `fill` 属性的 SVG」能正常栅格化，已有回归用例；
+  gallery 某示例图标不显示的问题在调用侧（路径），与管线无关。
+
+## 验收命令
+
+```bash
+cargo test -p kanesumi-controls --test form_grammar \
+           --test size_discipline --test token_discipline --test idioms_enforce
+cargo test -p kanesumi-cli
+cargo test -p kanesumi-element --test api_surface   # 改公开 API 后先重出快照
+cargo run -p kanesumi-gallery --example form_page -- --snapshot out.png 1
+cargo run -p kanesumi-gallery --example panel_form -- --snapshot out.png 1
+```
