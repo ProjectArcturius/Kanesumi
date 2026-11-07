@@ -492,6 +492,25 @@ impl Form {
         (title_id, secondary_id)
     }
 
+    /// 命令行：一行右对齐的按钮（面板底部「设置 / 锁屏 / 关机」那种），返回各按钮 id。
+    ///
+    /// 这里**不用** [`Form::button`]：那个有 120 的页面级最小宽，三枚并排会把 360 宽的面板撑爆。
+    /// 命令行按内容宽排、间距 8、整体靠右 —— 面板与页面都可以用。
+    pub fn actions(&mut self, tree: &mut Tree, labels: &[&str]) -> Vec<WidgetId> {
+        let block = self.block(tree, 0.0, ITEM_MB);
+        let row = tree.insert_with(
+            block,
+            Stack::row().with_spacing(8.0),
+            LayoutProps {
+                h_align: Align::End,
+                ..LayoutProps::default()
+            },
+        );
+        labels
+            .iter()
+            .map(|label| tree.insert(row, MetroButton::new(*label)))
+            .collect()
+    }
     /// 行容器（全宽块，行内子件自排水平；`mb` = 与下一块的 CSS 下外边距）。
     /// 供「标签 + 控件 + 行尾按钮」式列表行使用。
     pub fn row_block(&mut self, tree: &mut Tree, mb: f32) -> WidgetId {

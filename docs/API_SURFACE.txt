@@ -718,6 +718,7 @@ pub enum TwoPaneWideConfig {
 pub fn accent(label: impl Into<String>) -> Self {
 pub fn accent_button(label: impl Into<String>, action: DeclAction) -> Self {
 pub fn action_rect(&self) -> Option<Rect> {
+pub fn actions(&mut self, tree: &mut Tree, labels: &[&str]) -> Vec<WidgetId> {
 pub fn activate_at(&mut self, ctx: &mut kanesumi_element::EventCtx, path: MenuPath) {
 pub fn activated_button(&self) -> Option<DialogButton> {
 pub fn actual_initials(&self) -> String {

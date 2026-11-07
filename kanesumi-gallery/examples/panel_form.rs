@@ -13,7 +13,7 @@
 // 出图：cargo run -p kanesumi-gallery --example panel_form -- --snapshot out.png 1
 
 use kanesumi_controls::form::{self, Form};
-use kanesumi_controls::{MetroButton, SwitchToggled};
+use kanesumi_controls::SwitchToggled;
 use kanesumi_core::{MetroTheme, ThemeColor};
 use kanesumi_harness::element::widgets::{Border, Stack};
 use kanesumi_harness::element::{Action, Align, Insets, LayoutProps, Tree, WidgetId};
@@ -80,19 +80,8 @@ impl TreeApp for ControlCenter {
         f.toggle(tree, "Wi-Fi", self.wifi, None);
         f.toggle(tree, "蓝牙", self.bluetooth, None);
 
-        // 命令行：面板底部的动作，靠右排。
-        let row = f.row_block(tree, form::ITEM_MB);
-        let line = tree.insert_with(
-            row,
-            Stack::row().with_spacing(8.0),
-            LayoutProps {
-                h_align: Align::End,
-                ..LayoutProps::default()
-            },
-        );
-        tree.insert(line, MetroButton::new("设置"));
-        tree.insert(line, MetroButton::new("锁屏"));
-        tree.insert(line, MetroButton::new("关机"));
+        // 命令行：面板底部的动作，靠右排（按内容宽，不走 Form::button 的 120 最小宽）。
+        f.actions(tree, &["设置", "锁屏", "关机"]);
     }
 
     fn on_action(&mut self, _tree: &mut Tree, _from: WidgetId, action: Action) {
