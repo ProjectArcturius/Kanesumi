@@ -37,12 +37,27 @@
 三个已记录的坑：命令按钮别走 `Form::button`（它带 120 最小宽，三枚并排撑爆 360 面板）、
 首块 `first = true`、面板高度变化会移动合成器的浮层锚点。
 
-### 2. `MetroTableRow`（librarian 用）
+### 2. `MetroTableRow`（librarian 用）—— **库侧已完成，剩应用侧迁移**
 
-规格已在 `docs/CONTROL_SPEC.md` §51：列定义（`Px` / `Star` / `Fit`）、行状态（含 `SelectionTint`
-选中高亮）、展开三角、4pt 拖拽阈值、逐列命中、键盘导航、排序头。
+规格 `docs/CONTROL_SPEC.md` §51，实装在 `kanesumi-controls/src/table.rs`（`oc/k-form` 已推）：
+`ColumnSet` / `column_rects` / `MetroTableRow` / `MetroTableHeader` / `paint_row` / `column_at`。
+参照页 `cargo run -p kanesumi-gallery --example table_rows -- --snapshot out.png 2`（`--light` 出浅色）。
 
-**在它落地前，librarian 的列表不要改用 `Form::list_item`** —— 那个是静态设置行，硬套会丢选择态、
+**librarian 的迁移走 `paint_row`，不要走「把行做成子节点」**：那个列表是 `ItemsRepeater` 虚拟化 +
+行内原地改名 + 框选 + 条纹，改成控件节点会与这四样打架。实施步骤：
+
+1. `librarian/src/window/views/list.rs` 的 `cols()` / `Cols` / `name_parts()` 换成一份 `ColumnSet`
+   ＋ `column_rects`（表头与行共用，列宽拖拽仍改 `ColumnWidth::Px` 的值，不再算第二套 `x`）。
+2. `ListRow::paint` 里「选中底 + 三角 + 图标 + 四列文本」整段换成 `paint_row(scene, ctx.theme(),
+   ctx.rect(), &RowLook { … })`；rename 输入框、隔行条纹仍在调用 `paint_row` **之后**（或之前）自己画
+   —— 条纹要在底、rename 要在字上面，两者顺序保持现状。
+3. `ListRow::event` 里的 `cols(...)` 逐列命中换成 `column_at(&columns, rect, pos.x)`；三角命中仍用
+   `x < 名称列起点 + TRI_W`。
+4. 表头：`ListHeader::paint` 的列标题与排序箭头可换 `MetroTableHeader`；**列宽拖拽分隔条**
+   （`divider_at`）现无库支持，继续留在应用侧，别一起删。
+5. 验收：`cargo test -p ether-librarian` + `librarian/src/window/snapshot_test.rs` 出图，看一遍深浅两套。
+
+**在它迁移完成前，librarian 的列表不要改用 `Form::list_item`** —— 那个是静态设置行，硬套会丢选择态、
 拖拽与逐列命中三样交互。
 
 ### 3. 已知小项
