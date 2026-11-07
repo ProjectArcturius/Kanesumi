@@ -73,11 +73,12 @@ if [ ! -S "$SOCK" ]; then
 fi
 say "  socket=$SOCK 就绪"
 
-say "== 构建示例 =="
+say "== 构建示例与客户端 =="
 if ! cargo build -q -p kanesumi-harness --features a11y --example atspi_smoke 2>>"$BUS_LOG"; then
-    say "构建失败，见上方日志"
+    say "构建示例失败，见上方日志"
     exit 1
 fi
+cargo build -q -p kanesumi-a11y --example atspi_client 2>>"$BUS_LOG" || say "  （客户端构建失败，稍后跳过）"
 BIN="${CARGO_TARGET_DIR:-target}/debug/examples/atspi_smoke"
 [ -x "$BIN" ] || { say "找不到示例二进制：$BIN"; exit 1; }
 
@@ -127,6 +128,22 @@ for svc in $(echo "$APPS" | grep -oE "':[0-9]+\.[0-9]+'" | tr -d "'" | sort -u);
     say "== 应用 $svc =="
     walk "$svc"
 done
+
+# 第二重证据：用 AT-SPI **客户端库**（atspi crate，与 Orca 的 pyatspi 同一份协议）走一遍树。
+# gdbus 那套只能证明「总线上有对象」，客户端库走通才能说明读屏那条消费路径成立。
+say "== AT-SPI 客户端（atspi crate）=="
+CLIENT="${CARGO_TARGET_DIR:-target}/debug/examples/atspi_client"
+if [ -x "$CLIENT" ]; then
+    if AT_SPI_BUS_ADDRESS="$AT_SPI_BUS_ADDRESS" "$CLIENT" >>"$BUS_LOG" 2>&1; then
+        say "  ✔ atspi 客户端走树成功"
+        grep -E "应用|子节点" "$BUS_LOG" | tail -n 12 | sed 's/^/    /' | tee -a "$BUS_LOG" >/dev/null
+        tail -n 14 "$BUS_LOG" | sed 's/^/    /'
+    else
+        say "  ✘ atspi 客户端失败，见 $BUS_LOG"
+    fi
+else
+    say "  （未构建 atspi_client，跳过；cargo build -p kanesumi-a11y --example atspi_client）"
+fi
 
 say "== 判定 =="
 missing=""
