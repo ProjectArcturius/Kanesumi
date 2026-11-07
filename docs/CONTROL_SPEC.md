@@ -2011,3 +2011,70 @@ CSS 相邻兄弟的垂直外边距**折叠**，取两者较大者；而元素树
 2. 行首图标槽（列表行图标）——无。
 3. 整行可点（点标签也切换开关）——无；目前只有开关自身可点，命中范围是整个控件矩形。
 4. `MetroRepeater` / `MetroTextField` 尚无元素树 `Widget` 实现，页面里暂不可用。
+
+## 50 · 面板（panel · 顶栏浮层与侧栏容器）
+
+来源：`settings/src/topbar/{control,audio,net,power}_panel.rs`（分别 994 / 1575 / 2698 / 1240 行），
+`action_center.rs`（1213 行）。这五个面板目前各是一个**整块自绘的 `Widget`**：`paint` 里先
+`scene.fill_rect` 铺底，再按手算矩形摆「图标 + 名称 + 数值 + 滑杆」的若干块，命中靠自持的
+`PanelRegion` 枚举与悬停/按压字段。
+
+### 结论：不需要新控件，需要**用页面语法重写**
+
+面板的内容行与设置页的行同形（标签 + 控件 + 数值），差别只在容器：面板落地在一个浮层表面上，
+不是滚动页面。所以面板 = **容器 + 页面语法的行 + 底部命令行**：
+
+```text
+MetroSurface（背景 / 圆角 / 裁剪）           ← 已有控件
+  ├─ Form::section("音量")                    ← 页面语法
+  ├─ Form::labeled(滑杆 + 数值)                或 Form::slider
+  ├─ Form::toggle(...)
+  └─ 命令行（Stack::row + MetroButton / MetroIconButton，右对齐）
+```
+
+这样一来：命中、悬停、焦点、Tab、无障碍全部由元素树与控件负责，面板不必再手算
+`volume_block(rect)` 这类矩形，也不必自持 `PanelRegion`。
+
+### 迁移判据
+
+| 现状（整块自绘） | 迁移后 |
+|---|---|
+| `paint` 里 `scene.fill_rect(surface)` | `MetroSurface` 容器 |
+| `volume_block(rect)` 等手算矩形 | `Form::labeled` / `Form::slider` 行 |
+| `PanelRegion` 枚举 + 逐块 `contains` | 元素树命中（无枚举） |
+| `pressed` / `mute_hover` 字段 | 控件 `ControlState` |
+| 底部的「设置 / 锁屏 / 关机」按钮 | `Stack::row` + `MetroButton`，或 `Form::button` |
+
+### 已知缺口（未实现，勿当成可用能力）
+
+1. 面板的**尺寸自适配**：现有面板各自算 `panel_w()` / `panel_h()`，页面语法层只给内容尺寸，
+   容器高度需由内容决定。`MetroSurface` 是否按内容撑开需在迁移时确认。
+2. 面板出现的**位置与动画**（贴哪个角、从哪个方向展开）属外壳职责，不在本层。
+
+---
+
+## 51 · 表格行（table row · 可交互列表行）
+
+来源：`librarian/src/window/views/list.rs`（847 行）。`ListRow` 与设置页的行不是一回事：
+
+```rust
+pub struct ListRow { index: usize, shared: SharedRef, pressed: Option<Point>, dragging: bool }
+pub struct RowPointerDown { index: usize, modifiers: Modifiers }  // 逐列命中
+pub struct RowToggleRequested(usize);                             // 展开三角
+```
+
+即：**选择态 / 拖拽阈值（4pt）/ 展开三角 / 逐列命中 / 修饰键**。`Form::list_item` 是静态的
+「图标 + 标题 + 右侧次要文本」，套不上——硬套会把可交互性丢掉。
+
+### 规格要点（待实现）
+
+- 列定义：`&[Column { width: ColumnWidth::Px(f32) | Star | Fit, align, header }]`。
+- 行状态：`Normal / Hover / Selected / Focused`，选中高亮取 `ThemeColor::SelectionTint`。
+- 行首可选项：展开三角（有子项时才出现）、图标（16 档）。
+- 命中：整行点击 = 选择；三角区域单独命中 = 展开；拖拽超过 4pt 转拖拽而非选择（参
+  `docs/INTERACTION_CANON.md`）。
+- 键盘：上下移动选中、左右折叠/展开、Enter 打开（与 `MetroList` 一致）。
+- 排序头：点击列头切换升/降序，箭头 12 档。
+
+**状态：未实现。** 在 `MetroTableRow` 落地前，librarian 的列表应继续用现有自绘实现，不要
+改成 `Form::list_item`（会丢交互）。
