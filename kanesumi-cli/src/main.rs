@@ -72,6 +72,7 @@ fn print_help() {
          \x20 kanesumi build [--release]\n\
          \x20 kanesumi package [--no-build] [--out <目录>]\n\
          \x20 kanesumi check\n\
+         \x20 kanesumi --version\n\
          \n\
          package 产出：dist/<app_id>_<version>-<revision>_<arch>.deb\n\
          （内含 usr/bin、usr/share/ether/manifests、usr/share/applications）"
@@ -191,10 +192,11 @@ edition = "2024"
 name = "{binary}"
 path = "src/main.rs"
 
+# 依赖 Kanesumi 的 main 分支。要可复现的构建就把 branch 换成 rev = "<提交哈希>"。
 [dependencies]
-kanesumi-harness = {{ git = "https://github.com/ProjectArcturius/Kanesumi" }}
-kanesumi-controls = {{ git = "https://github.com/ProjectArcturius/Kanesumi" }}
-kanesumi-core = {{ git = "https://github.com/ProjectArcturius/Kanesumi" }}
+kanesumi-harness = {{ git = "https://github.com/ProjectArcturius/Kanesumi", branch = "main" }}
+kanesumi-controls = {{ git = "https://github.com/ProjectArcturius/Kanesumi", branch = "main" }}
+kanesumi-core = {{ git = "https://github.com/ProjectArcturius/Kanesumi", branch = "main" }}
 "#
     )
 }
