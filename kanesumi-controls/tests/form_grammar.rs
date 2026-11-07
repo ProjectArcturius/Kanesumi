@@ -112,3 +112,23 @@ fn list_item_has_fixed_row_height_and_right_aligned_secondary() {
         secondary.origin.x
     );
 }
+
+#[test]
+fn row_button_is_clickable_and_has_list_height() {
+    let mut h = TestHarness::new(600.0, 400.0);
+    let mut ids: Vec<WidgetId> = Vec::new();
+    h.frame_with_layout(|tree| {
+        let col = tree.insert_with(tree.root(), Stack::column(), LayoutProps::default());
+        let mut f = Form::new(col);
+        let (btn, title, second) = f.row_button(tree, "主目录", "Librarian", form::ITEM_MB);
+        ids.extend([btn, title, second]);
+    });
+    h.settle();
+    let row = h.rect(ids[0]);
+    assert!(row.size.height >= form::LIST_ROW_H - 0.01, "整行高度应不小于列表行高：{}", row.size.height);
+    // 点行内任意位置（这里点整行中心）都应投出 ButtonClicked。
+    h.click(ids[0]);
+    let clicked = h.take::<kanesumi_controls::ButtonClicked>().len();
+    assert_eq!(clicked, 1, "点整行应投出一次 ButtonClicked");
+    assert!(h.rect(ids[2]).origin.x >= h.rect(ids[1]).right() - 0.01, "次要信息在右");
+}

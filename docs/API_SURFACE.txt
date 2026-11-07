@@ -1075,6 +1075,7 @@ pub fn render_submenu(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mu
 pub fn right_width(&self) -> f32 {
 pub fn row(children: Vec<Decl>) -> Self {
 pub fn row_block(&mut self, tree: &mut Tree, mb: f32) -> WidgetId {
+pub fn row_button(
 pub fn row_height(&self, theme: &MetroTheme) -> f32 {
 pub fn s_label() -> TextStyle {
 pub fn s_page_title() -> TextStyle {

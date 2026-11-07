@@ -511,6 +511,51 @@ impl Form {
             .map(|label| tree.insert(row, MetroButton::new(*label)))
             .collect()
     }
+    /// 可点击的列表行：主文本 + 右侧次要文本，**整行可点**，投 [`crate::ButtonClicked`]。
+    ///
+    /// 与 [`Form::list_item`] 同一套尺寸（行高 [`LIST_ROW_H`]、次要信息右对齐），差别是整行是
+    /// 一个按钮：用于「任务列表 / 连接列表」这类点一行就切走的场合。按钮的 `label` 同时是
+    /// 无障碍名字，所以主文本不要重复写进 tag。
+    ///
+    /// 返回 `(按钮 id, 主文本 id, 次文本 id)`。
+    pub fn row_button(
+        &mut self,
+        tree: &mut Tree,
+        label: &str,
+        secondary: &str,
+        mb: f32,
+    ) -> (WidgetId, WidgetId, WidgetId) {
+        let block = self.block(tree, 0.0, mb);
+        let button = tree.insert_with(
+            block,
+            MetroButton::new(label),
+            LayoutProps {
+                min: Size::new(0.0, LIST_ROW_H),
+                h_align: Align::Stretch,
+                ..LayoutProps::default()
+            },
+        );
+        // 内容槽模式：按钮画底色与交互态，子节点由框架按内容排版（参 CONTROL_SPEC §1）。
+        let row = tree.insert(button, Stack::row().with_spacing(12.0));
+        let title = tree.insert_with(
+            row,
+            Label::new(label).style(s_label()).color(ThemeColor::OnSurface),
+            LayoutProps {
+                grow: 1.0,
+                v_align: Align::Center,
+                ..LayoutProps::default()
+            },
+        );
+        let secondary_id = tree.insert_with(
+            row,
+            Label::new(secondary).style(s_label()).color(ThemeColor::OnSurfaceVariant),
+            LayoutProps {
+                v_align: Align::Center,
+                ..LayoutProps::default()
+            },
+        );
+        (button, title, secondary_id)
+    }
     /// 行容器（全宽块，行内子件自排水平；`mb` = 与下一块的 CSS 下外边距）。
     /// 供「标签 + 控件 + 行尾按钮」式列表行使用。
     pub fn row_block(&mut self, tree: &mut Tree, mb: f32) -> WidgetId {
