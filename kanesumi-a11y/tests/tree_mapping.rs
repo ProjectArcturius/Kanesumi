@@ -44,11 +44,16 @@ impl Widget for FixtureButton {
     }
 }
 
-fn by_label<'a>(
+
+/// 静态文本按 AccessKit 约定把正文放 `value`（参 src/lib.rs 里 `Role::Label` 那段）。
+fn by_static_text<'a>(
     update: &'a accesskit::TreeUpdate,
-    label: &str,
+    text: &str,
 ) -> Option<&'a (NodeId, accesskit::Node)> {
-    update.nodes.iter().find(|(_, n)| n.label() == Some(label))
+    update
+        .nodes
+        .iter()
+        .find(|(_, n)| n.role() == Role::Label && n.value() == Some(text))
 }
 
 #[test]
@@ -79,13 +84,7 @@ fn real_tree_maps_roles_names_and_structure() {
 
     // 静态文本（`Role::Label`）的正文按 AccessKit 约定走 `value`，不走 `label` ——
     // 放错位置的表现是读屏拿到一个「名字为空」的文本节点（Linux 真机验收抓到的）。
-    let label_node = update
-        .nodes
-        .iter()
-        .find(|(_, n)| n.role() == Role::Label)
-        .map(|(_, n)| n)
-        .expect("静态文本节点");
-    assert_eq!(label_node.value(), Some("说明文字"));
+    let (_, label_node) = by_static_text(&update, "说明文字").expect("静态文本节点带正文");
     assert_eq!(label_node.label(), None, "Label 不写 label，避免读屏念两遍");
     // 没有焦点的树：AccessKit 要求焦点字段恒有值，无焦点时落到根。
     assert_eq!(update.focus, node_id(h.root()), "无焦点时焦点落根");

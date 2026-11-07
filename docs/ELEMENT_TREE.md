@@ -506,7 +506,8 @@ AccessKit 平台适配器（accesskit_unix 的 AT-SPI / accesskit_windows 的 UI
 | `id` | `NodeId(id.to_u64())` | **同一份 id 空间**：将来动作回灌靠它把 AT 请求对回控件 |
 | `role` | `Role` | `AccessRole` 是 `non_exhaustive`，未知角色 → `GenericContainer`（不是 `Unknown`：至少还能读出子元素） |
 | `name` | `label` | 空串/纯空白不写（「有名字但空」与「没名字」读屏处理不同） |
-| `value` | `value` | |
+| `name`（`Role::Label`） | **`value`** | AccessKit 的约定：静态文本正文走 `value` 不走 `label`。写错的表现是读屏拿到「名字为空」的文本节点 —— 真机 AT-SPI 验收抓到的（见下） |
+| `value` | `value` | 控件当前值（输入框内容 / 列表选中项），与名字互不替代 |
 | `checked` | `toggled` | 三态直通（UIA `ToggleState`） |
 | `selected` / `expanded` | `selected` / `expanded` | **三态**：`None` = 该概念不适用，`Some(false)` = 明确未选中 / 已折叠 |
 | `disabled` | `disabled` | |
@@ -529,8 +530,23 @@ AccessKit 平台适配器（accesskit_unix 的 AT-SPI / accesskit_windows 的 UI
 - **已验（任意平台）**：映射 8 条测试；外壳接线 1 条（`tree_host::tests::frame_publishes_a11y_tree`，
   断言出帧后树里有按钮 / 输入框、矩形非退化、焦点字段有值）；`cargo check -p kanesumi-a11y
   --features at-spi` —— `accesskit_unix` 是纯 Rust，Windows 上就能把 AT-SPI 适配器编一遍。
-- **未验（要 Linux 真机）**：真的连上 AT-SPI 总线、Orca 能读出界面。属 E6 的验收门
-  （「Orca 能读出 Settings」），不是设计缺口。
+- **已验（Linux 真机，2026-11-07）**：`scripts/a11y_linux.sh` 在 Debian/T14p 上跑通，
+  **通过 AT-SPI 的 D-Bus 接口**（不是我们自己的结构）读出：
+  `无障碍冒烟 / 名称 / 确定 / 保存更改 / 保存更改？ / 文件名 / 保存（默认）/ 不保存 / 取消`，
+  判定 5/5 通过。这一次真机验收当场抓到两个 Windows 单测看不出的问题：
+  ① 静态文本正文放错字段（`label` 而非 `value`）→ 读屏拿到空名字的文本节点；
+  ② `SceneCommand` 加变体后，两条**只在 Linux 编译**的渲染路径仍然穷举匹配。
+- **仍未验**：Orca 真的把界面念出来（需要人在环、开读屏），属 E6 验收门。
+
+跑验收脚本前要知道的四个坑（都已在脚本里处理，写在头注里）：
+1. **a11y 总线是每用户单例**（`/run/user/<uid>/at-spi/bus`），桌面会话里可能已被占用 →
+   脚本用私有 `XDG_RUNTIME_DIR` 隔离，跑完 `trap` 收掉。
+2. **必须先起 launcher 再问地址**：先问 `org.a11y.Bus` 会让 D-Bus 激活一个「无障碍关闭」的桩，
+   只回地址不起 daemon（地址有、套接字无）。
+3. accesskit 只在**会话总线**上看到 `org.a11y.Status.IsEnabled == true` 才连接，该属性由
+   `at-spi-bus-launcher --a11y=1` 提供，必须与 app 在同一个 `dbus-run-session` 里。
+4. 残留的旧 launcher / 全局套接字会让新 launcher 静默退出（症状同上：地址对、套接字缺）——
+   跑之前先 `pkill -f at-spi` 并删掉 `/run/user/<uid>/at-spi/bus`。
 
 ## §Ⅹ 实施分期与分工
 

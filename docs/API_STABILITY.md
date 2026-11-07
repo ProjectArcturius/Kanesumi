@@ -60,7 +60,7 @@ git diff --stat docs/API_SURFACE.txt
 | 区域 | 现状 | 结论 |
 |---|---|---|
 | 对话框按钮 | ✅ **已真节点化**（`MetroDialogButton` + `LayoutRole::Commands` 分区排布，2026-11-07） | 现存语义已按此定稿：`show_modal*` 自动插按钮、焦点落默认按钮、←/→ 挪框架焦点、`access_items` 不再合成按钮。此后只能**增**（如自定义命令区控件），不能再改回自绘 |
-| 无障碍平台桥（AT-SPI） | ✅ **已落地并接线**（2026-11-07）：`kanesumi-a11y` 把快照映射成 `accesskit::TreeUpdate`（8 条测试）；`TreeHost::enable_a11y()`（harness feature `a11y`）每帧发布到快照槽，Linux 上同时 `flush()` 给 AT-SPI 适配器（适配器本身**编译已验证**：`accesskit_unix` 是纯 Rust，Windows 上 `--features at-spi` 就能编） | 纯新增：新 crate + 两个可选 feature，不动任何现有签名。运行时与 Orca 验收待 Linux 真机（E6 验收门）。AT 读的一律是快照，故后续加「描述 / 动作回灌」都只是本 crate 的加法 |
+| 无障碍平台桥（AT-SPI） | ✅ **已落地、接线、并在 Linux 真机验收通过**（2026-11-07）：`kanesumi-a11y` 把快照映射成 `accesskit::TreeUpdate`（8 条测试）；`TreeHost::enable_a11y()`（harness feature `a11y`）每帧发布；`scripts/a11y_linux.sh` 在 Debian/T14p 上通过 AT-SPI 的 D-Bus 接口读出 9 个节点名字（含对话框三个按钮），判定 5/5 通过 | 纯新增：新 crate + 两个可选 feature，不动任何现有签名。AT 读的一律是快照，故后续加「描述 / 动作回灌」都只是本 crate 的加法。未验的只剩「Orca 真的念出来」（E6 验收门） |
 | 画布路径能力 | 闭集图元（无任意路径）；`SceneCommand` **已标 `#[non_exhaustive]`**（2026-11-07） | 若加 `Scene::fill_path`，属**新增**：加图元不再破坏下游穷举 `match`（下游写 `_ => {}` 即可）。四个消费方（`kanesumi-render` CPU/GPU、harness 损伤、element 夹具）都已补显式兜底并留了「新图元必须在此实现」的警告 |
 | 命名遗留 | ✅ **三条已收敛**（2026-11-07）：`overflowing` → `has_overflow`、`visible_rows` → `compute_visible_rows`、`path_at` → `try_path_at`；旧名一律 `#[deprecated]` 转发，`tests/deprecated_names.rs` 挡着「旧名坏了没人知道」 | 剩下的只有 `visible_rows` **要不要缓存**（纯性能，不动签名，可落地后再做）。`try_*` 约定成为新代码硬规矩，见 `docs/DEV_GUIDE.md` §八·五 |
 | `EventCtx` 的读查询 | `children` / `child_props` / `parent` / `focus_id`（2026-11-07 补齐） | 只读、纯新增。组合型控件要按角色分区、在子节点间挪焦点就必须能读结构；不加则会各自另存一份「当前项」与框架焦点打架 |
