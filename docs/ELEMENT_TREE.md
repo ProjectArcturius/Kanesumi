@@ -536,7 +536,17 @@ AccessKit 平台适配器（accesskit_unix 的 AT-SPI / accesskit_windows 的 UI
   判定 5/5 通过。这一次真机验收当场抓到两个 Windows 单测看不出的问题：
   ① 静态文本正文放错字段（`label` 而非 `value`）→ 读屏拿到空名字的文本节点；
   ② `SceneCommand` 加变体后，两条**只在 Linux 编译**的渲染路径仍然穷举匹配。
-- **仍未验**：Orca 真的把界面念出来（需要人在环、开读屏），属 E6 验收门。
+- **已验（Linux 真机，2026-11-07，第二重证据）**：`kanesumi-a11y/examples/atspi_client.rs`
+  用 **AT-SPI 客户端库**（`atspi` crate，Odilia 读屏那套，与 Orca 的 `pyatspi` 同一份协议）
+  连总线走树，读到 `application → section → [label 无障碍冒烟, entry 名称, button 确定,
+  button 保存更改, panel 保存更改？] → panel 子节点 [entry 文件名, button 保存（默认）,
+  button 不保存, button 取消]`，角色与名字都对。这一步比 `gdbus` 更强的意义：读屏的**消费路径**
+  成立，不只是「总线上有对象」。
+  附注：AccessKit 的 Unix 适配器只实现 `GetRole`（数值角色），不实现 `GetRoleName`；
+  读屏客户端本来就是拿数值角色在本地映射名字（pyatspi 那把表），所以不影响可用性。
+- **仍未验**：语音（Orca 真的念出来）。这条卡在环境：T14p 上 orca / speech-dispatcher /
+  espeak-ng / gir1.2-atspi-2.0 都没装，且 `/dev/snd` 只有 `seq`/`timer` 没有 `pcm`
+  （没有声卡设备），装上也发不出声。属 E6 验收门，不是设计缺口。
 
 跑验收脚本前要知道的四个坑（都已在脚本里处理，写在头注里）：
 1. **a11y 总线是每用户单例**（`/run/user/<uid>/at-spi/bus`），桌面会话里可能已被占用 →
