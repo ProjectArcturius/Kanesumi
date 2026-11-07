@@ -48,18 +48,30 @@ cleanup() {
 trap cleanup EXIT
 
 say "== 起 a11y 总线（at-spi-bus-launcher --a11y=1，私有 XDG）=="
+SOCK="$XDG_RUNTIME_DIR/at-spi/bus"
 /usr/libexec/at-spi-bus-launcher --a11y=1 --launch-immediately >>"$BUS_LOG" 2>&1 &
 LAUNCHER=$!
-sleep 2
+# 等套接字出现再问地址。**先问地址会让 D-Bus 去激活一个 launcher**，而激活出来的进程继承
+# 的是 dbus-daemon 的环境 —— dbus-daemon 由 dbus-run-session 在本脚本设置 XDG 之前启动，
+# 于是那个 launcher 是「无障碍关闭 + 全局套接字」，症状是地址指向 /run/user/<uid>/at-spi。
+for _ in $(seq 1 25); do
+    [ -S "$SOCK" ] && break
+    sleep 0.2
+done
 ADDR=$(gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
     --method org.a11y.Bus.GetAddress 2>&1 | sed -n "s/^('\(.*\)',)$/\1/p")
 export AT_SPI_BUS_ADDRESS="$ADDR"
 say "  address=$ADDR"
 say "  IsEnabled=$(gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
     --method org.freedesktop.DBus.Properties.Get org.a11y.Status IsEnabled 2>&1)"
-if [ ! -S "$XDG_RUNTIME_DIR/at-spi/bus" ]; then
-    say "  !! a11y 总线套接字不存在，后面必然查不到，先看 $BUS_LOG"
+if [ ! -S "$SOCK" ]; then
+    say "  !! 私有 a11y 总线套接字没出现（$SOCK）"
+    say "     XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR perms=$(stat -c %a "$XDG_RUNTIME_DIR" 2>/dev/null)"
+    say "     launcher alive=$(kill -0 "$LAUNCHER" 2>/dev/null && echo yes || echo no)"
+    say "     见 $BUS_LOG"
+    exit 2
 fi
+say "  socket=$SOCK 就绪"
 
 say "== 构建示例 =="
 if ! cargo build -q -p kanesumi-harness --features a11y --example atspi_smoke 2>>"$BUS_LOG"; then
