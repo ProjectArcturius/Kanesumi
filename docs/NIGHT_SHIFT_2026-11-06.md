@@ -94,7 +94,10 @@ git -C /path/to/Ether/target/wt/k-menu-a11y bundle create k-menu-a11y.bundle 389
 - **门**：`cargo test -p kanesumi-controls --lib dialog`；Tab 顺序测试（三个按钮依次获得焦点）；Enter/Space 激活焦点按钮；Esc 关闭；焦点陷阱内循环。
 - **禁区**：不改 `DialogResult` 语义、不改按钮视觉规格、不删既有 ←→ 选择（两套输入可共存，但要写明优先级）。
 
-### W2 · 菜单手感收尾
+### ~~W2 · 菜单手感收尾~~ **已完成（2026-11-06 收尾批，提交 4cedd29）**
+`submenu_gap` 可配、指示条可拖（命中区左扩 8pt、拖动期不改悬停项、松手不激活）；回弹登记为有意不做。**夜班跳过本卡。**
+
+### W2（原卡，留档）
 - 拖拽滚动指示 thumb、滚到尽头回弹（或明确不做并登记）、子菜单间距可配（`submenu_gap`）；
 - **文件面**：`kanesumi-controls/src/dropdown_menu.rs`、`popup.rs`；
 - **门**：现有菜单测试全绿 + 新增 ≥2 条（thumb 拖动改变偏移、间距配置生效）；`examples/menu_states_snapshot.rs` 出图（2×）并亲看。

@@ -294,7 +294,8 @@
 | 状态色 | PointerOver = 中性高亮（暗 #FF212121 / 亮 #FFE5E5E5）；Pressed = 中（暗 #FFFFFFFF / 亮 #FF000000）；**瞬时** |
 | 弹出动画 | `PopupThemeAnimation`（OS，~200ms 位移+淡入 ease-out；**未在快照**，用 `sheet_appear`/`sheet_dismiss` 对齐） |
 | 面板高度上限 | **504**（`MENU_MAX_HEIGHT`；**推断值** —— 模板里没有 `MaxHeight`，取自同族 ComboBox 的 `MaxDropDownHeight`，登记 `CANON_VS_TEMPORARY` T26）。超过封顶后内容**内部滚动**，右侧 3pt 胶囊滚动指示（2026-11-06） |
-| 滚动 | 滚轮 / 触控板（指针在面板内或菜单有焦点时生效）、↑↓ 与 Home/End 自动把选项滚进视口；偏移夹在 `[0, 内容高 − 面板高]`，面板变矮或项变少时自动夹回 |
+| 滚动 | 滚轮 / 触控板（指针在面板内或菜单有焦点时生效）、↑↓ 与 Home/End 自动把选项滚进视口、**拖拽右侧指示条**（命中区左扩 8pt；拖动期不改悬停项、松手不激活下面的项）；偏移夹在 `[0, 内容高 − 面板高]`，面板变矮或项变少时自动夹回 |
+| 子菜单间距 | `submenu_gap`（默认 **2**，UWP 值；可配，配 0 退回随缩放取整的通用间距） |
 | 禁用项（`MenuFlyoutItem.IsEnabled=false`） | 文字与图标按 `MetroIndication::disabled_opacity`（0.38）降透明度；**不出现悬停底**；点击/回车无动作且菜单不关；键盘 ↑↓ / Home / End 跳过（2026-11-06 实装） |
 | 勾选列 | 菜单存在可勾选项（`checked` 或 `radio_group`）时，左缘固定留 **16pt 勾选列**，勾用自绘折线（非字体字形），标签起点不随勾选变化（2026-11-06 实装；旧做法是标签拼「✓」前缀，勾行文字右移一格） |
 
