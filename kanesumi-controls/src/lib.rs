@@ -167,8 +167,8 @@ pub use tab_view::{
 };
 pub use table::{
     Column, ColumnAlign, ColumnSet, ColumnWidth, DRAG_THRESHOLD, MetroTableHeader, MetroTableRow,
-    SortRequested, TableRowActivated, TableRowClicked, TableRowContextRequested, TableRowDragged,
-    TableRowToggled, column_rects,
+    RowLook, SortRequested, TableRowActivated, TableRowClicked, TableRowContextRequested,
+    TableRowDragged, TableRowToggled, column_at, column_rects, paint_row,
 };
 pub use teaching_tip::{
     MetroTeachingTip, TeachingTipAction, TeachingTipClick, TeachingTipClosed, TeachingTipPlacement,

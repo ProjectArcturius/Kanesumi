@@ -770,6 +770,7 @@ pub fn close_submenu(&mut self) {
 pub fn cluster_boundaries(&self) -> Vec<usize> {
 pub fn collect_hits(
 pub fn column(children: Vec<Decl>) -> Self {
+pub fn column_at(columns: &ColumnSet, rect: Rect, x: f32) -> usize {
 pub fn column_rects(columns: &ColumnSet, area: Rect) -> Vec<Rect> {
 pub fn commands(&self) -> &[SceneCommand] {
 pub fn commit_ime(&mut self, s: &str) -> bool {
@@ -1017,6 +1018,7 @@ pub fn overflowing(&self, engine: &TextEngine, rect: Rect) -> bool {
 pub fn overlay_alpha(&self) -> f32 {
 pub fn page_title(&mut self, tree: &mut Tree, text: &str) -> WidgetId {
 pub fn paint_at(
+pub fn paint_row(scene: &mut Scene, theme: &kanesumi_core::MetroTheme, rect: Rect, look: &RowLook<'_>) {
 pub fn pane_progress(&self) -> f32 {
 pub fn pane_rects(&self, rect: Rect) -> (Rect, Rect) {
 pub fn pane_width(&self) -> f32 {
@@ -1371,6 +1373,7 @@ pub struct RadioSelectionChanged(pub usize);
 pub struct RatingValueChanged(pub f64);
 pub struct RetainedScene {
 pub struct RowButtonClicked(pub usize);
+pub struct RowLook<'a> {
 pub struct ScrollOffsetChanged(pub f32);
 pub struct SelectorSelectionChanged(pub usize);
 pub struct SliderValueChanged(pub f64);

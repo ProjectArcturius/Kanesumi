@@ -178,6 +178,21 @@ pub fn column_rects(columns: &ColumnSet, area: Rect) -> Vec<Rect> {
         .collect()
 }
 
+/// 行的左右内边距之后的可用区（行与表头共用的切列起点）。
+fn inner_area(rect: Rect) -> Rect {
+    Rect::new(
+        rect.origin.x + PAD_H,
+        rect.origin.y,
+        (rect.size.width - PAD_H * 2.0).max(0.0),
+        rect.size.height,
+    )
+}
+
+/// `x` 落在第几列（列外夹到两端）。自绘容器判「点在哪一列」用，与行内命中同源。
+pub fn column_at(columns: &ColumnSet, rect: Rect, x: f32) -> usize {
+    index_at(&column_rects(columns, inner_area(rect)), x)
+}
+
 // ── 行投出的动作 ─────────────────────────────────────────────────────────────
 //
 // 行的每种交互都要带回**身份**（行号）与**位置信息**，因为点哪一行的哪一列决定了后果：
@@ -399,6 +414,112 @@ fn paint_tri(scene: &mut Scene, slot: Rect, expanded: bool, color: kanesumi_core
     }
 }
 
+/// 一行的视觉参数：给**自绘容器**复用表格行外观用（不必把行做成独立节点）。
+///
+/// librarian 的列表是虚拟化容器 `ItemsRepeater` + 自己按数据画行，一行不是独立控件；
+/// 它要的只是「列的切法与行内视觉」这一份规格。把这份规格提成自由函数，容器照常自绘
+/// （rename 输入框、条纹、框选都不受影响），同时与 [`MetroTableRow`] 共享同一套几何，
+/// 不会出现「控件版与自绘版长得不一样」。
+pub struct RowLook<'a> {
+    /// 列定义（与表头同一份）。
+    pub columns: &'a ColumnSet,
+    /// 各列文本（不足按空串补）。
+    pub cells: &'a [String],
+    /// 缩进层级。
+    pub indent: u8,
+    /// 是否可展开（决定行首三角槽是否有三角）。
+    pub expandable: bool,
+    /// 三角朝向（仅在 `expandable` 时有效）。
+    pub expanded: bool,
+    /// 当前项：画选中底。
+    pub selected: bool,
+    /// 指针悬停：画中性高亮（选中优先）。
+    pub hovered: bool,
+    /// 行首图标。
+    pub icon: Option<&'a Icon>,
+}
+
+/// 把一个表格行画进 `scene`（裁剪到 `rect`）。
+///
+/// 调用方负责自己的容器语义（虚拟化、条纹、rename 输入框），本函数只画「一行表格」：
+/// 选中 / 悬停底、三角、图标、多列文本与列间内缩。参 `docs/CONTROL_SPEC.md` §51。
+pub fn paint_row(scene: &mut Scene, theme: &kanesumi_core::MetroTheme, rect: Rect, look: &RowLook<'_>) {
+    let cols = column_rects(
+        look.columns,
+        Rect::new(
+            rect.origin.x + PAD_H,
+            rect.origin.y,
+            (rect.size.width - PAD_H * 2.0).max(0.0),
+            rect.size.height,
+        ),
+    );
+    let first_col = cols.first().copied().unwrap_or(rect);
+
+    scene.push_clip(rect);
+
+    if look.selected {
+        scene.fill_rect(ThemeColor::SelectionTint.resolve(theme), rect);
+    } else if look.hovered {
+        scene.fill_rect(theme.indication.hover_tint, rect);
+    }
+
+    let ink = ThemeColor::OnSurface.resolve(theme);
+    // 选中行整行压深色底，次级色在强调色上会糊掉 —— 选中时统一用主前景。
+    let ink2 = if look.selected {
+        ink
+    } else {
+        ThemeColor::OnSurfaceVariant.resolve(theme)
+    };
+
+    // 行首：缩进 → 三角槽 → 图标槽（两槽恒占位，混排行的名称左缘才对得齐）。
+    let mut x = first_col.origin.x + look.indent as f32 * INDENT;
+    let tri = Rect::new(
+        x,
+        rect.origin.y + (rect.size.height - TRI_W) / 2.0,
+        TRI_W.min((first_col.right() - x).max(0.0)),
+        TRI_W,
+    );
+    x += TRI_W + GAP;
+    let icon_rect = Rect::new(
+        x,
+        rect.origin.y + (rect.size.height - ICON) / 2.0,
+        ICON.min((first_col.right() - x).max(0.0)),
+        ICON,
+    );
+    x += ICON + GAP;
+    let name_rect = Rect::new(x, rect.origin.y, (first_col.right() - x).max(0.0), rect.size.height);
+
+    if look.expandable {
+        paint_tri(scene, tri, look.expanded, ink2);
+    }
+    if let Some(icon) = look.icon {
+        scene.image(icon, icon_rect, Some(ink2));
+    }
+
+    let style = s_cell();
+    let first = look.cells.first().map(String::as_str).unwrap_or("");
+    scene.label(first.to_string(), cell_box(name_rect, style), ink, style, TextAlign::Left);
+    for (i, col) in cols.iter().enumerate().skip(1) {
+        let text = look.cells.get(i).map(String::as_str).unwrap_or("");
+        if text.is_empty() {
+            continue;
+        }
+        let align = look.columns.get(i).map(|c| c.align).unwrap_or_default();
+        scene.text_with_options(
+            text.to_string(),
+            cell_box(*col, style),
+            ink2,
+            style,
+            align.text_align(),
+            false,
+            Some(1),
+            TextOverflow::Ellipsis,
+        );
+    }
+
+    scene.pop_clip();
+}
+
 impl Widget for MetroTableRow {
     fn measure(&mut self, _ctx: &mut MeasureCtx, available: Size) -> Size {
         // 行宽由容器给（虚拟化只决定可见行，不决定列宽），高恒为行高档。
@@ -406,67 +527,23 @@ impl Widget for MetroTableRow {
     }
 
     fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
-        let rect = ctx.rect();
         let theme = *ctx.theme();
         let state = control_state(ctx.state());
-        let cols = self.rects(rect);
-        let (tri, icon_rect, text_rect) = self.name_parts(rect, &cols);
-
-        // 容器语义：本行是自己的边界，半行滚出视口时文字不得画到行外。
-        scene.push_clip(rect);
-
-        if self.selected {
-            scene.fill_rect(ThemeColor::SelectionTint.resolve(&theme), rect);
-        } else if matches!(state, ControlState::Hovered | ControlState::Pressed) {
-            // 悬停 = 中性高亮（与 `MetroList` 同值，一手源 `SystemControlHighlightListLowBrush`）。
-            scene.fill_rect(theme.indication.hover_tint, rect);
-        }
-
-        let ink = ThemeColor::OnSurface.resolve(&theme);
-        // 选中行整行压深色底，次级色在强调色上会糊掉 —— 选中时统一用主前景
-        // （librarian 现状同款：选中行一律白字）。
-        let ink2 = if self.selected {
-            ink
-        } else {
-            ThemeColor::OnSurfaceVariant.resolve(&theme)
-        };
-
-        if self.expandable {
-            paint_tri(scene, tri, self.expanded, ink2);
-        }
-        if let Some(icon) = &self.icon {
-            scene.image(icon, icon_rect, Some(ink2));
-        }
-
-        // 单元格：第 0 列吃三角与图标之后的剩余宽，其余列按列矩形对齐。
-        let style = s_cell();
-        let first = self.cells.first().map(String::as_str).unwrap_or("");
-        scene.label(
-            first.to_string(),
-            cell_box(text_rect, style),
-            ink,
-            style,
-            TextAlign::Left,
+        paint_row(
+            scene,
+            &theme,
+            ctx.rect(),
+            &RowLook {
+                columns: &self.columns,
+                cells: &self.cells,
+                indent: self.indent,
+                expandable: self.expandable,
+                expanded: self.expanded,
+                selected: self.selected,
+                hovered: matches!(state, ControlState::Hovered | ControlState::Pressed),
+                icon: self.icon.as_ref(),
+            },
         );
-        for (i, col) in cols.iter().enumerate().skip(1) {
-            let text = self.cells.get(i).map(String::as_str).unwrap_or("");
-            if text.is_empty() {
-                continue;
-            }
-            let align = self.columns.get(i).map(|c| c.align).unwrap_or_default();
-            scene.text_with_options(
-                text.to_string(),
-                cell_box(*col, style),
-                ink2,
-                style,
-                align.text_align(),
-                false,
-                Some(1),
-                TextOverflow::Ellipsis,
-            );
-        }
-
-        scene.pop_clip();
     }
 
     fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
