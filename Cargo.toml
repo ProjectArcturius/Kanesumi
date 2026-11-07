@@ -6,6 +6,7 @@ members = [
     "kanesumi-canvas",
     "kanesumi-render",
     "kanesumi-element",
+    "kanesumi-a11y",
     "kanesumi-structure",
     "kanesumi-controls",
     "kanesumi-harness",

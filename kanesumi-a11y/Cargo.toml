@@ -1,0 +1,33 @@
+[package]
+name = "kanesumi-a11y"
+description = "Kanesumi（矩隅）· 无障碍平台桥：元素树快照 → AccessKit 树（AT-SPI / UIA 的共同输入）"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["Project Arcturius"]
+
+[dependencies]
+kanesumi-core = { path = "../kanesumi-core" }
+kanesumi-element = { path = "../kanesumi-element" }
+# AccessKit 的**数据层**（Node / TreeUpdate / Role）：纯数据、无平台依赖，Windows 与 Linux
+# 都能编。平台适配器（accesskit_unix 的 AT-SPI、accesskit_windows 的 UIA）单独加 ——
+# 数据层可在任意平台单测，适配器只能在目标平台验运行时。
+# 参 docs/ELEMENT_TREE.md 第 IX-3 节、docs/API_STABILITY.md 第五节。
+# 版本必须与 accesskit_unix 0.24 要求的 accesskit 0.25 对齐：两套 accesskit 并存会让
+# Adapter::new 收到「另一个 crate 的 TreeUpdate」，类型对不上（编不过）。
+accesskit = "0.25"
+
+# Linux 读屏适配器。声明成**普通可选依赖**（而不是 target 条件依赖）是为了让
+# 「--features at-spi」在任意平台都能把这份代码编一遍：accesskit_unix 是纯 Rust，
+# 于是 Linux 适配器不必先有一台 Linux 机器才能验证类型与 API。运行时只有 Linux 接得上。
+accesskit_unix = { version = "0.24", optional = true }
+
+[dev-dependencies]
+kanesumi-element = { path = "../kanesumi-element" }
+# 测试夹具要画一个 Scene（控件 paint 的入参），故 dev 依赖画布。
+kanesumi-canvas = { path = "../kanesumi-canvas" }
+
+[features]
+# AT-SPI（Linux 读屏）。默认关：它只在 Linux 上有意义，而且会把一套 D-Bus 线程拉进进程 ——
+# 不想接无障碍的客户端不该为此付代价。开启后可用 atspi::install。
+at-spi = ["dep:accesskit_unix"]

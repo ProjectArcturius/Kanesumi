@@ -482,8 +482,51 @@ WinUI 的做法也是给虚拟化项合成 AutomationPeer，而不是给每一�
 `MetroDialog` 不再 `access_items` 合成按钮（否则读屏里出现两遍）。默认按钮的「（默认）」标记
 写在按钮节点的 `AccessInfo::name` 里，替 UIA 的 `IsDefault` 属性占位。
 
-仍未做：**每条命令还不是框架节点**（不能单独聚焦 / 单独参与 Tab 或命中路由）；AT-SPI 桥
-（需新依赖，未授权）。菜单仍靠合成项——读屏能枚举，但「把菜单命令当普通控件树操作」还不行。
+仍未做：**每条命令还不是框架节点**（不能单独聚焦 / 单独参与 Tab 或命中路由）。菜单仍靠合成项
+——读屏能枚举，但「把菜单命令当普通控件树操作」还不行。
+
+### §Ⅸ-3 平台桥：`kanesumi-a11y`（AccessKit / AT-SPI，2026-11-07）
+
+快照 → 平台树的那一步单独成 crate，与控件库解耦：
+
+```
+kanesumi-element  Tree::access_snapshot()          ← 纯数据快照（§Ⅸ-1/2）
+       ↓  kanesumi-a11y::update(snapshot, focus)   ← 纯函数：快照 → accesskit::TreeUpdate
+AccessKit 平台适配器（accesskit_unix 的 AT-SPI / accesskit_windows 的 UIA）→ 读屏
+```
+
+为什么单独一层：① 依赖方向 —— 元素层是控件平台的地基，不该为无障碍拖进一套协议库；
+② **可验性** —— 映射是纯函数，角色 / 名字 / 值 / 三态 / 子节点 / 合成项 / 焦点在 Windows 上
+就能全部钉死（`kanesumi-a11y/tests/tree_mapping.rs`，8 条），Linux 侧只剩「接上 D-Bus」。
+
+映射规则（`AccessNode` → `accesskit::Node`）：
+
+| 快照 | AccessKit | 备注 |
+|---|---|---|
+| `id` | `NodeId(id.to_u64())` | **同一份 id 空间**：将来动作回灌靠它把 AT 请求对回控件 |
+| `role` | `Role` | `AccessRole` 是 `non_exhaustive`，未知角色 → `GenericContainer`（不是 `Unknown`：至少还能读出子元素） |
+| `name` | `label` | 空串/纯空白不写（「有名字但空」与「没名字」读屏处理不同） |
+| `value` | `value` | |
+| `checked` | `toggled` | 三态直通（UIA `ToggleState`） |
+| `selected` / `expanded` | `selected` / `expanded` | **三态**：`None` = 该概念不适用，`Some(false)` = 明确未选中 / 已折叠 |
+| `disabled` | `disabled` | |
+| `bounds` | `bounds` | 逻辑像素、y 向下、绝对坐标 |
+| `items`（合成项） | 子节点 | id 从 `u64::MAX` 往下确定性分配（不与框架 id 撞号） |
+| `Tree::focused()` | `TreeUpdate::focus` | 陈旧/不存在时退回根（AccessKit 对此 panic） |
+
+本轮**只读**：不声明任何 `Action`。声明了 `Click` 却没有把动作回灌成树事件的通路，读屏会显示
+一堆按了没反应的按钮 —— 比不声明更糟（`tests/tree_mapping.rs::no_actions_are_advertised_yet`
+钉住这一点）。动作回灌与 `Action::Focus/Click` 一起在下一步做，届时不改现有签名。
+
+接线与验证状态：外壳持 `SnapshotSlot`，每帧 `Tree::frame()` 之后
+`slot.publish(kanesumi_a11y::update_for_tree(&tree))`；Linux 上再 `kanesumi_a11y::atspi::install()`
+（feature `at-spi`，默认关）。
+
+- **已验（任意平台）**：映射 8 条测试；`cargo check -p kanesumi-a11y --features at-spi` ——
+  `accesskit_unix` 是纯 Rust，所以在 Windows 上就能把 AT-SPI 适配器编一遍，类型与 API 用法
+  不是「写着看看」。
+- **未验（要 Linux 真机）**：真的连上 AT-SPI 总线、Orca 能读出界面；以及外壳接线那两行。
+  这两件事属于 E6 的验收门（「Orca 能读出 Settings」），不是设计缺口。
 
 ## §Ⅹ 实施分期与分工
 

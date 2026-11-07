@@ -9,11 +9,16 @@
 use std::path::{Path, PathBuf};
 
 /// 受管的库 crate（顺序即快照里的分节顺序）。
-pub const CRATES: [&str; 4] = [
+///
+/// 判据不是「是不是 lib」，而是「下游应用会不会直接 use 它」：core / canvas / element /
+/// controls 是应用直接消费的四层，a11y 是外壳要接的桥 —— 这五个的公共面一旦被应用引用，
+/// 改动就是破坏。render 是外壳内部实现，暂不纳入（它没有稳定的应用侧契约）。
+pub const CRATES: [&str; 5] = [
     "kanesumi-core",
     "kanesumi-canvas",
     "kanesumi-element",
     "kanesumi-controls",
+    "kanesumi-a11y",
 ];
 
 /// workspace 根（各 crate 的上一级）。
