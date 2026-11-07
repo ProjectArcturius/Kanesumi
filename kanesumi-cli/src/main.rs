@@ -62,7 +62,7 @@ fn print_help() {
         "kanesumi —— Kanesumi 应用工具链\n\
          \n\
          用法：\n\
-         \x20 kanesumi new <名字> [--app-id <反域名>] [--dir <目录>]\n\
+         \x20 kanesumi new <名字> [--app-id <反域名>] [--dir <目录>] [--template blank|settings]\n\
          \x20 kanesumi run\n\
          \x20 kanesumi build [--release]\n\
          \x20 kanesumi package [--no-build] [--out <目录>]\n\
@@ -79,6 +79,7 @@ fn cmd_new(args: &[String]) -> Result<(), String> {
     let mut name: Option<String> = None;
     let mut app_id: Option<String> = None;
     let mut dir: Option<PathBuf> = None;
+    let mut template = Template::Blank;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -88,6 +89,10 @@ fn cmd_new(args: &[String]) -> Result<(), String> {
             }
             "--dir" => {
                 dir = Some(PathBuf::from(take_value(args, i, "--dir")?));
+                i += 2;
+            }
+            "--template" => {
+                template = Template::parse(&take_value(args, i, "--template")?)?;
                 i += 2;
             }
             other if other.starts_with("--") => return Err(format!("未知选项 `{other}`")),
@@ -112,7 +117,7 @@ fn cmd_new(args: &[String]) -> Result<(), String> {
     let files: [(&str, String); 4] = [
         (PROJECT_FILE, scaffold_project(&name, &app_id, &binary)),
         ("Cargo.toml", scaffold_cargo(&slug, &binary)),
-        ("src/main.rs", scaffold_main(&name)),
+        ("src/main.rs", scaffold_main(&name, template)),
         (".gitignore", "target/\ndist/\n".to_string()),
     ];
     for (path, content) in files {
@@ -189,7 +194,33 @@ kanesumi-core = {{ git = "https://github.com/ProjectArcturius/Kanesumi" }}
     )
 }
 
-fn scaffold_main(name: &str) -> String {
+/// 脚手架模板：`blank` 最小骨架，`settings` 设置页形状。
+#[derive(Clone, Copy, PartialEq)]
+enum Template {
+    /// 最小骨架：一个开关 + 一段说明。
+    Blank,
+    /// 设置页形状：页标题、分区、滑杆行、开关行、链接行、按钮行。
+    Settings,
+}
+
+impl Template {
+    fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "blank" => Ok(Self::Blank),
+            "settings" => Ok(Self::Settings),
+            other => Err(format!("未知模板 `{other}`；可选 blank / settings")),
+        }
+    }
+}
+
+fn scaffold_main(name: &str, template: Template) -> String {
+    match template {
+        Template::Blank => scaffold_main_blank(name),
+        Template::Settings => scaffold_main_settings(name),
+    }
+}
+
+fn scaffold_main_blank(name: &str) -> String {
     format!(
         r#"// {name} —— 用页面语法写的第一个页面：零手写几何。
 //
@@ -268,6 +299,109 @@ fn main() {{
 "#
     )
     .replace("!TITLE!", name)
+}
+
+/// 设置页模板：示例一页「显示设置」，覆盖页面语法的常用块。
+fn scaffold_main_settings(name: &str) -> String {
+    format!(
+        r#"// {name} —— 设置页模板：分区 + 行 + 相关设置，整页零手写几何。
+//
+// 每一行都是「标签在上、控件在中、说明在下」，间距由页面语法层负责（参
+// Kanesumi 仓 docs/DEV_GUIDE.md §二·五、docs/CONTROL_SPEC.md §四十九）。
+// 动作里只改状态，不碰坐标。
+
+use kanesumi_controls::form::{{self, Form}};
+use kanesumi_controls::{{FormLinkClicked, SwitchToggled}};
+use kanesumi_core::{{MetroTheme, ThemeColor}};
+use kanesumi_harness::element::widgets::{{Border, Stack}};
+use kanesumi_harness::element::{{Action, Insets, LayoutProps, Tree, WidgetId}};
+use kanesumi_harness::{{AppConfig, EtherRole, TreeApp}};
+
+/// 页宽：内容列 600 + 左右内边距 48。
+const PAGE_W: f32 = 660.0;
+/// 页高。
+const PAGE_H: f32 = 640.0;
+
+struct Settings {{
+    config: AppConfig,
+    theme: MetroTheme,
+    auto_brightness: bool,
+    night: bool,
+    last_link: Option<String>,
+}}
+
+impl Settings {{
+    fn new() -> Self {{
+        Self {{
+            config: AppConfig::new("{name}", "显示设置", EtherRole::Browser, PAGE_W, PAGE_H),
+            theme: MetroTheme::ether_dark(),
+            auto_brightness: true,
+            night: false,
+            last_link: None,
+        }}
+    }}
+}}
+
+impl TreeApp for Settings {{
+    fn config(&self) -> &AppConfig {{ &self.config }}
+    fn theme(&self) -> MetroTheme {{ self.theme }}
+
+    fn build(&mut self, tree: &mut Tree) {{
+        let page = tree.insert(tree.root(), Border::new().background(ThemeColor::Background));
+        let col = tree.insert_with(
+            page,
+            Stack::column(),
+            LayoutProps {{
+                width: Some(form::COL_WIDTH),
+                margin: Insets::new(24.0, 20.0, 24.0, 20.0),
+                ..LayoutProps::default()
+            }},
+        );
+
+        let mut f = Form::new(col);
+        f.page_title(tree, "显示");
+
+        f.section(tree, "亮度", true);
+        f.slider(tree, "屏幕亮度", "60%", 0.6, 0.0, 1.0, Some(0.01), None);
+        f.toggle(tree, "自动亮度", self.auto_brightness, Some("按环境光调整屏幕亮度。"));
+
+        f.section(tree, "夜间模式", false);
+        f.toggle(tree, "定时开启", self.night, Some("日落后自动转为暖色。"));
+
+        f.section(tree, "相关设置", false);
+        f.link(tree, "声音设置", "sound");
+        f.link(tree, "电源与睡眠", "power");
+        f.button(tree, "重置本页设置", Some("只影响本页。"));
+
+        let status = match &self.last_link {{
+            Some(t) => format!("最近一次跳转：{{t}}"),
+            None => "点上面的链接试试。".to_string(),
+        }};
+        f.note(tree, &status);
+    }}
+
+    fn on_action(&mut self, _tree: &mut Tree, _from: WidgetId, action: Action) {{
+        if let Some(t) = action.downcast_ref::<SwitchToggled>() {{
+            // 真实应用按行身份路由；模板里两行都翻转以演示动作通路。
+            if self.auto_brightness != t.0 {{ self.auto_brightness = t.0; }} else {{ self.night = t.0; }}
+        }} else if let Some(l) = action.downcast_ref::<FormLinkClicked>() {{
+            self.last_link = Some(l.target.to_string());
+        }}
+    }}
+}}
+
+fn main() {{
+    let host = kanesumi_harness::TreeHost::new(Settings::new());
+    #[cfg(target_os = "linux")]
+    kanesumi_harness::platform::run(Box::leak(Box::new(host)));
+    #[cfg(not(target_os = "linux"))]
+    {{
+        let _ = host;
+        println!("实时窗口需要 Linux Wayland 会话。");
+    }}
+}}
+"#
+    )
 }
 
 /// 名字 → 包名片段：小写、非字母数字换成连字符、去首尾连字符。

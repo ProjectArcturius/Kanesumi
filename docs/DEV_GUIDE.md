@@ -371,7 +371,7 @@ kanesumi package                            # 出 deb 到 dist/
 
 | 子命令 | 作用 |
 |---|---|
-| `new <名字> [--app-id <反域名>] [--dir <目录>]` | 建项目：`Kanesumi.toml` + `Cargo.toml` + `src/main.rs`（页面语法示例，直接可跑） |
+| `new <名字> [--app-id <反域名>] [--dir <目录>] [--template blank\|settings]` | 建项目：`Kanesumi.toml` + `Cargo.toml` + `src/main.rs`。`blank` 是最小骨架；`settings` 直接给一页设置页（页标题 / 分区 / 滑杆行 / 开关行 / 链接行 / 按钮行 / 说明），两块模板都实测可编译 |
 | `check` | 只校验项目文件并打印解析结果 |
 | `build [--release]` | `cargo build` |
 | `run` | `cargo run` |
