@@ -175,6 +175,10 @@ pub struct MetroDropdownMenu {
     last_pointer: Option<Point>,
     /// 面板高度上限（默认 [MENU_MAX_HEIGHT]；子菜单 / 测试可改小）。
     pub max_height: f32,
+    /// 级联子菜单与父面板的水平间距（逻辑 pt；UWP 为 2，可配）。
+    pub submenu_gap: f32,
+    /// 正在拖动右侧滚动指示条（拖动期间不改悬停项、不触发项激活）。
+    hint_drag: bool,
 }
 
 impl MetroDropdownMenu {
@@ -191,6 +195,8 @@ impl MetroDropdownMenu {
             scroll: 0.0,
             last_pointer: None,
             max_height: MENU_MAX_HEIGHT,
+            submenu_gap: 2.0,
+            hint_drag: false,
         }
     }
 
@@ -462,7 +468,13 @@ impl MetroDropdownMenu {
         menu.item_height = self.item_height;
         menu.max_height = self.max_height;
         let sub_size = menu.panel_size(engine);
-        let panel = place_submenu(parent_rect, sub_size, screen, popup_gap().min(2.0));
+        // 间距可配（默认 2，UWP 值）；配 0 时退回随缩放取整的通用间距。
+        let gap = if self.submenu_gap > 0.0 {
+            self.submenu_gap
+        } else {
+            popup_gap().min(2.0)
+        };
+        let panel = place_submenu(parent_rect, sub_size, screen, gap);
         menu.panel_rect = panel;
         menu.anim.open();
         self.submenu = Some(SubmenuState {
@@ -663,11 +675,13 @@ impl MetroDropdownMenu {
         scene.pop_clip();
     }
 
-    /// 右侧细滚动条（仅面板装不下时画）。
-    fn render_scroll_hint(&self, theme: &MetroTheme, scene: &mut Scene) {
+    /// 滚动指示条的 thumb 矩形（装得下时 `None`）。
+    ///
+    /// 渲染与拖动命中**共用这一处**几何：分开算的话，看到的位置和能拖的位置会差几个像素。
+    fn scroll_hint_rect(&self) -> Option<Rect> {
         let max = self.max_scroll();
         if max <= 0.0 {
-            return;
+            return None;
         }
         const BAR_W: f32 = 3.0;
         const INSET: f32 = 4.0;
@@ -677,20 +691,57 @@ impl MetroDropdownMenu {
         let thumb_h = (track_h * visible_ratio).max(24.0).min(track_h);
         let progress = (self.scroll / max).clamp(0.0, 1.0);
         let thumb_y = panel.origin.y + INSET + (track_h - thumb_h) * progress;
+        Some(Rect::new(
+            panel.right() - INSET - BAR_W,
+            snap_edge(thumb_y),
+            BAR_W,
+            thumb_h,
+        ))
+    }
+
+    /// 滚动指示条的**命中区**：可见条只有 3pt 宽，直接拿来判命中等于点不中。
+    /// 向左扩 8pt（面板右缘那一条），纵向用 thumb 的范围。
+    fn scroll_hint_hit_rect(&self) -> Option<Rect> {
+        let thumb = self.scroll_hint_rect()?;
+        Some(Rect::new(
+            thumb.origin.x - 8.0,
+            thumb.origin.y,
+            thumb.size.width + 8.0,
+            thumb.size.height,
+        ))
+    }
+    /// 拖动 thumb 到指针纵向位置（`pos.y`），换算成滚动偏移并夹紧。
+    fn drag_hint_to(&mut self, pos: Point) -> bool {
+        let max = self.max_scroll();
+        if max <= 0.0 {
+            return false;
+        }
+        const INSET: f32 = 4.0;
+        let Some(thumb) = self.scroll_hint_rect() else {
+            return false;
+        };
+        let track_top = self.panel_rect.origin.y + INSET;
+        let track_h = (self.panel_rect.size.height - INSET * 2.0).max(0.0);
+        let free = (track_h - thumb.size.height).max(1.0);
+        // 让指针落在 thumb 中央附近也无所谓：按「thumb 顶端 = 指针 − 半 thumb 高」算，
+        // 手感更跟手（按下时不会突然跳一下）。
+        let target_top = pos.y - thumb.size.height / 2.0;
+        let progress = ((target_top - track_top) / free).clamp(0.0, 1.0);
+        let before = self.scroll;
+        self.scroll = progress * max;
+        (self.scroll - before).abs() > 0.01
+    }
+
+    /// 右侧细滚动条（仅面板装不下时画）。
+    fn render_scroll_hint(&self, theme: &MetroTheme, scene: &mut Scene) {
+        let Some(thumb) = self.scroll_hint_rect() else {
+            return;
+        };
         let color = theme
             .colors
             .on_surface_variant
             .with_alpha(theme.indication.base_medium_low);
-        scene.fill_rounded_rect(
-            color,
-            Rect::new(
-                panel.right() - INSET - BAR_W,
-                snap_edge(thumb_y),
-                BAR_W,
-                thumb_h,
-            ),
-            kanesumi_core::CornerRadius::Capsule,
-        );
+        scene.fill_rounded_rect(color, thumb, kanesumi_core::CornerRadius::Capsule);
     }
 
     /// 渲染子菜单（若展开）。画在顶层面板之上。
@@ -951,8 +1002,34 @@ impl Widget for MetroDropdownMenu {
 
     fn event(&mut self, ctx: &mut EventCtx, event: &Event) {
         match event {
+            // 按下滚动指示条 → 开始拖动（命中区比 3pt 的可见条宽，见 `scroll_hint_hit_rect`）。
+            Event::PointerDown {
+                pos,
+                button: PointerButton::Left,
+                ..
+            } => {
+                self.last_pointer = Some(*pos);
+                if self
+                    .scroll_hint_hit_rect()
+                    .is_some_and(|r| r.contains(*pos))
+                {
+                    self.hint_drag = true;
+                    if self.drag_hint_to(*pos) {
+                        ctx.invalidate_paint();
+                    }
+                    ctx.set_handled();
+                }
+            }
             Event::PointerMove { pos } => {
                 self.last_pointer = Some(*pos);
+                // 拖动中：只滚内容，不改悬停项（否则一路扫过去会把悬停高亮带跑）。
+                if self.hint_drag {
+                    if self.drag_hint_to(*pos) {
+                        ctx.invalidate_paint();
+                    }
+                    ctx.set_handled();
+                    return;
+                }
                 if let Some(engine) = ctx.engine().cloned()
                     && self.hover(&engine, ctx.surface(), *pos)
                 {
@@ -975,6 +1052,12 @@ impl Widget for MetroDropdownMenu {
                 button: PointerButton::Left,
                 ..
             } => {
+                // 拖着滚动条松手：只结束拖动，不激活下面的项。
+                if self.hint_drag {
+                    self.hint_drag = false;
+                    ctx.set_handled();
+                    return;
+                }
                 if let Some(path) = self.path_at(*pos) {
                     self.activate_at(ctx, path);
                 }
@@ -1647,6 +1730,71 @@ mod tests {
     ) -> Rect {
         let r = h.rect(id);
         Rect::new(r.origin.x, r.origin.y + i as f32 * 32.0, r.size.width, 32.0)
+    }
+    // ── 滚动指示条拖动 + 子菜单间距可配（2026-11-06 收尾）──────────────────────
+
+    #[test]
+    fn drag_hint_maps_pointer_to_scroll_and_clamps() {
+        let Some(engine) = find_engine() else { return };
+        let mut menu = long_menu(40);
+        let size = menu.panel_size(&engine);
+        menu.open(Rect::new(0.0, 0.0, size.width, size.height));
+        let max = menu.max_scroll();
+        assert!(max > 0.0);
+
+        // 拖到面板底部 → 滚到底。
+        assert!(menu.drag_hint_to(Point::new(10.0, size.height)));
+        assert!((menu.scroll - max).abs() < 0.5, "拖到底 = 滚到底：{} vs {max}", menu.scroll);
+
+        // 拖到顶部以上 → 夹回 0。
+        menu.drag_hint_to(Point::new(10.0, -50.0));
+        assert_eq!(menu.scroll, 0.0, "拖出上缘夹到 0");
+
+        // 拖到中部 → 落在 (0, max) 之间。
+        menu.drag_hint_to(Point::new(10.0, size.height / 2.0));
+        assert!(menu.scroll > 0.0 && menu.scroll < max, "中部：{}", menu.scroll);
+    }
+
+    #[test]
+    fn scroll_hint_hit_area_is_wider_than_the_visible_bar() {
+        let Some(engine) = find_engine() else { return };
+        let mut short = long_menu(3);
+        let size = short.panel_size(&engine);
+        short.open(Rect::new(0.0, 0.0, size.width, size.height));
+        assert!(short.scroll_hint_hit_rect().is_none(), "装得下时没有可拖的条");
+
+        let mut long = long_menu(40);
+        let size = long.panel_size(&engine);
+        long.open(Rect::new(0.0, 0.0, size.width, size.height));
+        let bar = long.scroll_hint_rect().expect("有滚动条");
+        let hit = long.scroll_hint_hit_rect().expect("有命中区");
+        assert!(hit.contains(bar.center()), "命中区包含可见条");
+        assert!(
+            hit.size.width >= bar.size.width + 7.0,
+            "命中区向左扩（3pt 的条点不准）：bar {:?} hit {:?}",
+            bar,
+            hit
+        );
+    }
+
+    #[test]
+    fn submenu_gap_is_configurable() {
+        let Some(engine) = find_engine() else { return };
+        let mut menu = MetroDropdownMenu::new(vec![
+            MenuItem::new("视图"),
+            MenuItem::new("排序").with_submenu(vec![MenuItem::new("名称")]),
+        ]);
+        menu.submenu_gap = 12.0;
+        menu.open(Rect::new(0.0, 0.0, 120.0, 64.0));
+        let r1 = menu.item_rect(1);
+        menu.open_submenu(&engine, TEST_SCREEN, 1);
+        let sub = menu.submenu_state().expect("子菜单已开");
+        assert!(
+            (sub.panel.origin.x - (r1.right() + 12.0)).abs() < 0.5,
+            "间距按配置生效：panel {} vs 期望 {}",
+            sub.panel.origin.x,
+            r1.right() + 12.0
+        );
     }
     // ── 长菜单滚动（面板封顶 MENU_MAX_HEIGHT，2026-11-06）────────────────────────
 
