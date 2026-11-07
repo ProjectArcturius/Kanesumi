@@ -351,6 +351,25 @@ fn downsample_rgba(rgba: &[u8], w: u32, h: u32, max_w: u32, max_h: u32) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// 回归：**无 `fill` 属性的 SVG**（全用默认填充）必须能栅格化出可见像素。
+    ///
+    /// 起因：gallery 的 `assets/icons/share.svg` 三个 `<rect>` 都没写 `fill`，用它做列表行
+    /// 图标时整行只看到一个空槽 —— 图标路径返回了 None 或全透明像素，而调用方无法区分
+    /// 「没有图标」和「图标解码失败」。这里同时钉住「返回 Some」与「有非零 alpha」。
+    #[test]
+    fn rasterizes_svg_without_explicit_fill() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <rect x="2" y="6" width="6" height="6"/>
+  <rect x="8" y="1" width="6" height="6"/>
+  <rect x="8" y="9" width="6" height="6"/>
+</svg>"#;
+        // 不落盘：直接走 usvg 解析 + 光栅核心（测试与 `rasterize_svg` 共用同一段代码）。
+        let tree = parse_svg(svg.as_bytes()).expect("usvg 解析失败");
+        let icon = render_svg_scaled(&tree, 16, 16, 1.0).expect("光栅失败");
+        assert_eq!((icon.width, icon.height), (16, 16), "尺寸应为 16×16");
+        let opaque = icon.rgba.chunks_exact(4).filter(|p| p[3] > 0).count();
+        assert!(opaque > 0, "应当画出像素，实际 alpha 全零");
+    }
 
     /// 每用例唯一的夹具目录（pid + 用例名限定）：共享 /tmp 下不再与其他 uid /
     /// 并发运行碰撞固定名；用例结束即清理，断言失败的残留也因唯一而不影响后续运行。
