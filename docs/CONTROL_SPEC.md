@@ -1979,6 +1979,7 @@ settings 36 个自绘控件、librarian 15 个、launcher 10 个，重复劳动�
 | `Form::row_block(mb)` | 容器 id | 行内子件自排水平的全宽行 |
 | `Form::slider(label, value_text, …)` | (滑杆 id, 值 id) | 复用 `MetroSlider`，行高 32 |
 | `form::related(tree, parent, sections, width)` | 栏容器 id | 「相关设置」栏；`width=None` 时随内容列拉伸 |
+| `Form::block(mt, mb)` | 块容器 id | **唯一低级原语**：开一个新块并落「折叠后的」上外边距。上面每个语义块都是它的特例；应用写自定义行时也走它，不必自己算与上一块的间距 |
 
 ### 间距规则（必须照做）
 
