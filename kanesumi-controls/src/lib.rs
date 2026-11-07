@@ -26,6 +26,7 @@ pub mod drop_down_button;
 pub mod dropdown_menu;
 pub mod expander;
 pub mod focus;
+pub mod form;
 pub mod icon_button;
 pub mod ime;
 pub mod info_badge;
@@ -117,6 +118,7 @@ pub use dialog_button::{
     DIALOG_BUTTON_H, DIALOG_BUTTON_W, MetroDialogButton,
 };
 pub use drop_down_button::MetroDropDownButton;
+pub use form::{Form, FormLinkClicked, MetroFormLink};
 pub use dropdown_menu::{MenuItem, MenuPath, MenuInteractionSignature, MetroDropdownMenu, SubmenuState};
 pub use expander::{ExpandDirection, ExpanderToggled, MetroExpander};
 pub use icon_button::{IconButtonClicked, MetroIconButton};
