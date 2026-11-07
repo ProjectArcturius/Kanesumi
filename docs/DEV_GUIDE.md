@@ -392,7 +392,7 @@ impl TreeApp for SettingsPage {
     }
 
     fn on_action(&mut self, tree: &mut Tree, _from: WidgetId, action: Action) {
-        if let Ok(link) = action.downcast::<FormLinkClicked>() {
+        if let Some(link) = action.downcast_ref::<FormLinkClicked>() {
             self.navigate(&link.target);                     // 跳转键 → 应用自己的路由
             tree.invalidate();
         }
