@@ -621,8 +621,24 @@ pub fn panel(tree: &mut Tree, parent: WidgetId, theme: MetroTheme, width: f32) -
             ..LayoutProps::default()
         },
     );
+    panel_in(tree, surface, width)
+}
+
+/// 在**已经存在的面板节点**里铺一列内容，返回内容列 id。
+///
+/// 配合 `Tree::open_popup` 用：弹层只能由**应用层**打开（`Widget::event` 里拿不到 `Tree`），
+/// 所以「打开弹层 → 往里塞页面语法的行」这个流程是：
+///
+/// ```ignore
+/// let panel = tree.open_popup(MetroSurface::panel(theme), spec);
+/// let col = form::panel_in(tree, panel, form::COL_WIDTH);
+/// let mut f = Form::new(col);
+/// f.section(tree, "正在运行", true);
+/// f.row_button(tree, "主目录", "Librarian", form::ITEM_MB);
+/// ```
+pub fn panel_in(tree: &mut Tree, node: WidgetId, width: f32) -> WidgetId {
     tree.insert_with(
-        surface,
+        node,
         Stack::column(),
         LayoutProps {
             width: Some(width),

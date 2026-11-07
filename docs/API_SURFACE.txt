@@ -1012,6 +1012,7 @@ pub fn panel(theme: MetroTheme) -> Self {
 pub fn panel(tree: &mut Tree, parent: WidgetId, theme: MetroTheme, width: f32) -> WidgetId {
 pub fn panel_height(&self) -> f32 {
 pub fn panel_height(&self, engine: &TextEngine) -> f32 {
+pub fn panel_in(tree: &mut Tree, node: WidgetId, width: f32) -> WidgetId {
 pub fn panel_items(&self) -> Vec<PagerItem> {
 pub fn panel_progress(&self) -> f64 {
 pub fn panel_rect(&self) -> Rect {
