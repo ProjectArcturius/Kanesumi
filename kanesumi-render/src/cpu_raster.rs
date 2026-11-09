@@ -245,6 +245,26 @@ impl CpuRenderer {
         self.buf = vec![0u8; self.w as usize * self.h as usize * 4];
     }
 
+    /// 损伤矩形按物理像素网格**外扩**对齐（逻辑坐标）。
+    ///
+    /// 损伤是像素区，不是几何区：`clear_rect` 用 floor/ceil 清整像素，绘制裁剪若仍用原始
+    /// 小数边界，边界像素只被重绘一部分 —— 清掉后没画满，留下半透明 1 px 竖线 / 横线
+    ///（真机 Known Issue #17 悬停残留 / #18 菜单 1 px 缝的同一个根）。两处必须同一口径。
+    fn snap_damage(&self, d: Rect) -> Rect {
+        if d.size.width <= 0.0 || d.size.height <= 0.0 {
+            return d; // 零面积 = 「本帧没变」，不可被外扩成 1 px。
+        }
+        let s = self.scale;
+        if s <= 0.0 || !s.is_finite() {
+            return d;
+        }
+        let x0 = (d.origin.x * s).floor() / s;
+        let y0 = (d.origin.y * s).floor() / s;
+        let x1 = (d.right() * s).ceil() / s;
+        let y1 = (d.bottom() * s).ceil() / s;
+        Rect::new(x0, y0, x1 - x0, y1 - y0)
+    }
+
     /// 只清逻辑 `d` 覆盖的物理像素（局部重绘用，其余像素保留上帧）。
     fn clear_rect(&mut self, d: Rect) {
         let x0 = (d.origin.x * self.scale).floor().clamp(0.0, self.w as f32) as u32;
@@ -296,6 +316,8 @@ impl CpuRenderer {
         } else { None };
         let first_image_copied = self.opaque_image_hint.is_some();
         if first_image_copied { self.image_row_blits += self.h as u64; }
+        // 清底与裁剪共用同一份「像素对齐后」的损伤（见 `snap_damage` 的注释）。
+        let damage = damage.map(|d| self.snap_damage(d));
         match damage {
             // S4：仅清损坏矩形，其余保留上帧（配合命令裁剪 = 只重绘变化区）。
             Some(d) => self.clear_rect(d),
@@ -1834,6 +1856,31 @@ mod tests {
         r.render_inner(None, &scene2, Some(Rect::new(4.0, 0.0, 4.0, 8.0)));
         assert_eq!(px_at(&r, 2, 4), [255, 255, 255, 255], "左侧未重光栅保持帧1");
         assert_eq!(px_at(&r, 6, 4), [255, 0, 0, 255], "右侧重绘为红");
+    }
+
+    /// 回归（2026-11-10，Known Issue #17 / #18）：损伤边界落在小数逻辑坐标时，
+    /// 清底与绘制裁剪必须同一口径 —— 都按物理像素网格外扩对齐。
+    ///
+    /// 修前：`clear_rect` 清整像素、绘制裁剪用原始小数边界，边界列被清掉后只画回
+    /// 一部分，留下半透明 1 px 竖线；真机读作「悬停高亮残留 / 相邻项 1 px 缝」。
+    #[test]
+    fn fractional_damage_boundary_repaints_full_pixels() {
+        let mut r = CpuRenderer::new(8.0, 4.0, 2.0);
+        let mut scene = Scene::default();
+        scene.fill_rect(
+            Color::new(0.2, 0.2, 0.2, 1.0),
+            Rect::new(0.0, 0.0, 8.0, 4.0),
+        );
+        r.render_inner(None, &scene, None);
+        // 损伤 x0 = 1.25pt（物理 2.5）、y0 = 0.4pt（物理 0.8）：两条边界都切在像素中间。
+        r.render_inner(None, &scene, Some(Rect::new(1.25, 0.4, 5.5, 3.2)));
+        for (x, y) in [(2u32, 1u32), (2, 0), (13, 0), (13, 6)] {
+            assert_eq!(
+                px_at(&r, x, y),
+                [51, 51, 51, 255],
+                "损伤边界像素 ({x},{y}) 必须被整像素重绘，不留半透明列"
+            );
+        }
     }
 
     /// S4：无 damage + 全量 → 整表面被当前命令覆盖（旧行为）。
