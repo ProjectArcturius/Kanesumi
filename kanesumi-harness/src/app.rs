@@ -626,6 +626,24 @@ pub trait App {
         *out = self.render(engine, size);
     }
 
+    // ── 一帧分段计时（诊断口，缺省关） ─────────────────────────────────────────
+
+    /// 开关元素树的一帧分段计时（量测 / 排布 / 绘制 / 拼接）。
+    ///
+    /// 缺省关：关闭时元素树热路径不新增一次取时（参 docs/ELEMENT_TREE.md §Ⅴ-bis）。
+    /// 有元素树的外壳（`TreeHost`）覆写本钩子；旧式 `App` 无树，保持空实现。
+    fn set_frame_phases(&mut self, _on: bool) {}
+
+    /// 取走主表面最近一帧的分段耗时。未开计时 / 无树 → `None`。
+    fn take_frame_phases(&mut self) -> Option<kanesumi_element::FramePhases> {
+        None
+    }
+
+    /// 取走第 `index` 个浮层最近一帧的分段耗时。未开计时 / 无此浮层 → `None`。
+    fn take_floating_frame_phases(&mut self, _index: usize) -> Option<kanesumi_element::FramePhases> {
+        None
+    }
+
     // ── 锁屏表面（session_lock 外壳；非锁屏应用用默认实现，行为不变） ──────────
 
     /// 渲染锁屏表面。`primary=false` 的输出只需画背板（其余输出不画完整界面）。

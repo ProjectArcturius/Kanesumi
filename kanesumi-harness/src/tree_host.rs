@@ -264,6 +264,8 @@ struct FloatingTree {
     pointer: Point,
     /// 上一次 `render_floating` 的帧损伤（`None` = 整幅）。
     damage: Option<Rect>,
+    /// 最近一帧的分段耗时（未开分段计时 → 全 0）。外壳出帧后取走填 `FrameTiming`。
+    phases: kanesumi_element::FramePhases,
 }
 
 /// 外壳输入 → 树方法（主表面 / 浮层共用）。返回没有控件处理的按键（交给 App 加速键）。
@@ -348,6 +350,10 @@ pub struct TreeHost<A: TreeApp> {
     last_tick_ms: f32,
     /// dk3-perf：最近一次 `update` 里各浮层 tick 的墙钟（毫秒，与 `floating` 同序）。
     last_floating_tick_ms: Vec<f32>,
+    /// 一帧分段计时的开关（外壳按 `KANESUMI_FRAME_PHASES=1` 打开）。关闭时不取时。
+    phases_on: bool,
+    /// 主表面最近一帧的分段耗时（`phases_on` 为假时不写）。
+    main_phases: kanesumi_element::FramePhases,
     /// 无障碍快照槽（feature `a11y`）。`Some` = 每帧把元素树快照发布进去。
     ///
     /// 为什么不直接持有 `AtspiBridge`：发布（快照 → `TreeUpdate`）是跨平台且可单测的一步，
@@ -381,7 +387,7 @@ impl<A: TreeApp> TreeHost<A> {
                 app.build_floating(i, &mut t);
                 // 浮层恒为 CPU 光栅 + 局部提交（外壳按 `floating_damage` 只重画损伤区）。
                 t.set_damage_cull(true);
-                FloatingTree { tree: t, pending_dt: 0.0, timer_dt: 0.0, pointer: Point::new(0.0, 0.0), damage: None }
+                FloatingTree { tree: t, pending_dt: 0.0, timer_dt: 0.0, pointer: Point::new(0.0, 0.0), damage: None, phases: Default::default() }
             })
             .collect();
         Self {
@@ -403,6 +409,8 @@ impl<A: TreeApp> TreeHost<A> {
             next_layer: TREE_LAYER_BASE,
             last_tick_ms: 0.0,
             last_floating_tick_ms: Vec::new(),
+            phases_on: false,
+            main_phases: Default::default(),
             #[cfg(feature = "a11y")]
             a11y_slot: None,
             #[cfg(all(feature = "a11y", target_os = "linux"))]
@@ -684,6 +692,18 @@ impl<A: TreeApp> TreeHost<A> {
         self.tree.frame_with_layout(engine, size, dt, |tree| app.after_layout(tree))
     }
 
+    /// 开 / 关分段计时：主树与各浮层树同步（浮层的 `scene_ms` 与主表面同口径）。
+    ///
+    /// 关闭时 `Tree` 内部不建取时器，因此热路径不多一次 `Instant::now()`
+    /// （参 docs/ELEMENT_TREE.md §Ⅴ-bis）。
+    fn set_phase_timing(&mut self, on: bool) {
+        self.phases_on = on;
+        self.tree.set_phase_timing(on);
+        for f in &mut self.floating {
+            f.tree.set_phase_timing(on);
+        }
+    }
+
     /// 装上无障碍（feature `a11y`）。外壳启动时调一次；此后每帧自动把元素树快照发布出去，
     /// Linux 上同时转交给 AT-SPI（读屏没在跑时这一步只是一次内存覆盖）。
     ///
@@ -800,6 +820,7 @@ impl<A: TreeApp> App for TreeHost<A> {
         // 本帧产物即将提交：把进入提交的节点汇报给树（内容就绪门控就绪信号）。
         f.tree.report_content_committed(&out.painted);
         f.damage = frame_damage(&out);
+        f.phases = out.phases;
         out.scene
     }
 
@@ -1250,6 +1271,24 @@ impl<A: TreeApp> App for TreeHost<A> {
         out
     }
 
+    fn set_frame_phases(&mut self, on: bool) {
+        self.set_phase_timing(on);
+    }
+
+    fn take_frame_phases(&mut self) -> Option<kanesumi_element::FramePhases> {
+        // 开关关着时不留残账：外壳只看 `Some` 就是「本帧真的量过」。
+        self.phases_on.then(|| std::mem::take(&mut self.main_phases))
+    }
+
+    fn take_floating_frame_phases(&mut self, index: usize) -> Option<kanesumi_element::FramePhases> {
+        if !self.phases_on {
+            return None;
+        }
+        self.floating
+            .get_mut(index)
+            .map(|f| std::mem::take(&mut f.phases))
+    }
+
     fn render_into(&mut self, engine: &TextEngine, size: Size, out: &mut Scene) {
         // 引擎宿主：界面在候选窗 popup 表面（`ime_engine_popup_scene`），主表面恒透明。
         if self.app.ime_engine_host() {
@@ -1263,6 +1302,8 @@ impl<A: TreeApp> App for TreeHost<A> {
         self.note_popup_motion_frames();
         let dt = std::mem::take(&mut self.pending_dt);
         let frame = self.frame_main(engine, size, dt);
+        // 分段耗时随帧返回：外壳出帧后经 `App::take_frame_phases` 取走填 `FrameTiming`。
+        self.main_phases = frame.phases;
         self.damage_full = frame.full;
         // 本帧产物即将由外壳提交：汇报进入提交的节点（内容就绪门控就绪信号）。
         // 平台提交点紧随本调用（platform.rs 主循环），故就绪与解挂同帧生效。

@@ -424,6 +424,7 @@ pub fn focused(&self) -> Option<WidgetId> {
 pub fn form(label_width: f32) -> Self {
 pub fn frame(&mut self) -> &FrameOutput {
 pub fn frame(&mut self, engine: &TextEngine, size: Size, dt: f64) -> FrameOutput {
+pub fn frame_phases(&self) -> FramePhases {
 pub fn frame_with_layout(
 pub fn frame_with_layout(&mut self, after_layout: impl FnOnce(&mut Tree)) -> &FrameOutput {
 pub fn from_evdev(button: u32) -> Self {
@@ -462,6 +463,7 @@ pub fn is_enabled(&self, id: WidgetId) -> bool {
 pub fn is_focus_related(&self, node: WidgetId) -> bool {
 pub fn is_layer(&self, id: WidgetId) -> bool {
 pub fn is_paint_dirty(&self, id: WidgetId) -> bool {
+pub fn is_sampled(&self) -> bool {
 pub fn is_scroller(&self, id: WidgetId) -> bool {
 pub fn is_stacked(&self) -> bool {
 pub fn is_visible(&self, id: WidgetId) -> bool {
@@ -537,6 +539,7 @@ pub fn resize(&mut self, width: f32, height: f32) {
 pub fn right_click(&mut self, id: WidgetId) {
 pub fn root(&self) -> WidgetId {
 pub fn row() -> Self {
+pub fn scene_sum_ms(&self) -> f32 {
 pub fn scroll(&mut self, pos: Point, dx: f32, dy: f32, modifiers: Modifiers) {
 pub fn scroll_ex(&mut self, pos: Point, input: ScrollInput) {
 pub fn scroller_needs_realize(offset: f32, viewport_h: f32, realized: (f32, f32), content_h: f32) -> bool {
@@ -556,6 +559,7 @@ pub fn set_layer(&mut self, id: WidgetId, on: bool) {
 pub fn set_layer_clip(&mut self, id: WidgetId, insets: LayerInsets) {
 pub fn set_layer_offset(&mut self, id: WidgetId, x: f32, y: f32) {
 pub fn set_layer_opacity(&mut self, id: WidgetId, opacity: f32) {
+pub fn set_phase_timing(&mut self, on: bool) {
 pub fn set_popup_bounds(&mut self, bounds: Option<Rect>) {
 pub fn set_scroller(&mut self, id: WidgetId, on: bool) -> bool {
 pub fn set_theme(&mut self, theme: MetroTheme) {
@@ -619,6 +623,7 @@ pub struct EditCtx {
 pub struct EventCtx<'a> {
 pub struct FocusGroupSpec {
 pub struct FrameOutput {
+pub struct FramePhases {
 pub struct Grid {
 pub struct Image {
 pub struct ImeContext {

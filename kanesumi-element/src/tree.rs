@@ -227,6 +227,95 @@ pub struct FrameOutput {
     /// [`Tree::report_content_committed`]（内容就绪门控的就绪信号）。
     /// 参 `docs/ELEMENT_TREE.md`「内容就绪与动画门控」。
     pub painted: Vec<WidgetId>,
+    /// 本帧分段耗时（毫秒）。未开 `Tree::set_phase_timing` 时全 0 —— 全 0 表示
+    /// **没有量**，不是「耗时为零」。
+    pub phases: FramePhases,
+}
+
+/// 一帧分段耗时（毫秒）：量测 / 排布 / 绘制 / 拼接，另附实现钩子与动画推进。
+///
+/// 为什么要有它：真机 Dock 冷启首帧 `scene_ms` 达 39~83 ms，外壳只有一个整段，分不出
+/// 是量测、排布、绘制还是拼接 —— 热点只能靠猜。分段在各段边界取时，由
+/// [`Tree::frame_with_layout`] 填进 [`FrameOutput::phases`]。
+///
+/// **只在被读时才计时**：外壳显式调 [`Tree::set_phase_timing`]`(true)` 才开；关闭时
+/// 热路径一次 `Instant::now()` 都不取（见该方法的实现）。缺省关闭。
+/// 参 docs/ELEMENT_TREE.md §Ⅴ-bis。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct FramePhases {
+    /// 量测（measure）累计毫秒。
+    pub measure_ms: f32,
+    /// 排布（arrange）累计毫秒 —— 含布局后的 `after_layout` 视觉同步。
+    pub arrange_ms: f32,
+    /// 绘制（paint）累计毫秒（只含待绘集合里的节点）。
+    pub paint_ms: f32,
+    /// 拼接（compose）累计毫秒 —— 含遮罩、图层内容同步与转场起播。
+    pub compose_ms: f32,
+    /// 实现钩子（realize）累计毫秒。
+    pub realize_ms: f32,
+    /// 动画推进（`update` tick）累计毫秒。
+    pub animate_ms: f32,
+}
+
+impl FramePhases {
+    /// 四段之和（量测 + 排布 + 绘制 + 拼接），用来与外壳的 `scene_ms` 对账：
+    /// 它必然 ≤ 整帧（帧内还有 tick、焦点校验、IME 上下文等段外工作）。
+    pub fn scene_sum_ms(&self) -> f32 {
+        self.measure_ms + self.arrange_ms + self.paint_ms + self.compose_ms
+    }
+
+    /// 全 0 = 未采样（开关关闭或尚未出帧）。四段真的都取到 0.000 ms 的概率不足为凭。
+    pub fn is_sampled(&self) -> bool {
+        *self != Self::default()
+    }
+}
+
+/// 分段取时器：第一次取时在 `frame_with_layout` 入口，之后每过一个段边界结一次账。
+///
+/// 只在开关打开时存在（`Tree::phase_timing.then(PhaseClock::start)`），关闭时没有实例，
+/// 也就没有取时 —— 这是「关闭时热路径零开销」的实现形态。
+struct PhaseClock {
+    last: Instant,
+    phases: FramePhases,
+}
+
+impl PhaseClock {
+    /// 起表（入口那一次取时也算进「段外」，不计入任何段）。
+    fn start() -> Self {
+        Self {
+            last: Instant::now(),
+            phases: FramePhases::default(),
+        }
+    }
+
+    /// 结算自上次 `mark` 以来的墙钟到 `stage`，并重开表。
+    fn mark(&mut self, stage: Stage) {
+        let now = Instant::now();
+        let ms = now.duration_since(self.last).as_secs_f32() * 1000.0;
+        self.last = now;
+        let p = &mut self.phases;
+        let slot = match stage {
+            Stage::Animate => &mut p.animate_ms,
+            Stage::Realize => &mut p.realize_ms,
+            Stage::Measure => &mut p.measure_ms,
+            Stage::Arrange => &mut p.arrange_ms,
+            Stage::Paint => &mut p.paint_ms,
+            Stage::Compose => &mut p.compose_ms,
+        };
+        *slot += ms;
+    }
+}
+
+/// 分段边界名（`PhaseClock::mark` 的段）。量测 / 排布各要两次边界（主表面与覆盖层
+/// 交替量测排布），故用累加而非赋值。
+#[derive(Clone, Copy)]
+enum Stage {
+    Animate,
+    Realize,
+    Measure,
+    Arrange,
+    Paint,
+    Compose,
 }
 
 /// 一帧里「内容入场行」的重画统计（按弹层聚合）。
@@ -416,6 +505,11 @@ pub struct Tree {
     content_motion_nodes: std::collections::BTreeMap<WidgetId, u32>,
     /// 本帧各弹层的内容重画毫秒 / 行数；帧末发布到线程局部表供外壳读。
     frame_content: std::collections::BTreeMap<WidgetId, ContentFrameStats>,
+    /// 一帧分段计时开关（`Tree::set_phase_timing`）。关闭时 `frame` 不取任何时钟。
+    /// 参 docs/ELEMENT_TREE.md §Ⅴ-bis。
+    phase_timing: bool,
+    /// 最近一帧的分段耗时（未开计时 / 尚未出帧 → 全 0）。参 `FramePhases`。
+    frame_phases: FramePhases,
     /// 转场动画序号（外壳按此回报 Done / Cancelled）。
     pub(crate) next_layer_serial: u32,
     /// compose 时允许进入的图层根：拼某图层内容时 = 该图层；拼主场景时 = None（跳过所有图层子树）。
@@ -471,6 +565,8 @@ impl Tree {
             frame_painted: Vec::new(),
             content_motion_nodes: std::collections::BTreeMap::new(),
             frame_content: std::collections::BTreeMap::new(),
+            phase_timing: false,
+            frame_phases: FramePhases::default(),
             next_layer_serial: 1,
             compose_layer: std::cell::Cell::new(None),
             full_repaint: true,
@@ -506,6 +602,25 @@ impl Tree {
     pub fn request_full_repaint(&mut self) {
         self.full_repaint = true;
         self.mark_dirty();
+    }
+
+    /// 开关一帧分段计时（量测 / 排布 / 绘制 / 拼接）。缺省关。
+    ///
+    /// **关闭时 `frame` 热路径不新增一次取时**：分段取时器按本开关建在 `Option` 里，
+    /// 关闭时它根本不实例化（见 `frame_with_layout` 的 `PhaseClock::start`）。诊断口，
+    /// 只应由外壳在显式开启诊断（`KANESUMI_FRAME_PHASES=1`）时打开。
+    /// 参 docs/ELEMENT_TREE.md §Ⅴ-bis。
+    pub fn set_phase_timing(&mut self, on: bool) {
+        self.phase_timing = on;
+        if !on {
+            // 关掉即清账：残留上一帧的毫秒数会让外壳把「没量」误读成「量到了」。
+            self.frame_phases = FramePhases::default();
+        }
+    }
+
+    /// 最近一帧的分段耗时（未开计时 / 尚未出帧 → 全 0）。与 `FrameOutput::phases` 同值。
+    pub fn frame_phases(&self) -> FramePhases {
+        self.frame_phases
     }
 
     /// 树级预热：把解码请求提交给 Kanesumi 统一解码服务（界面显现前调用，命中即忽略）。
@@ -1198,6 +1313,9 @@ impl Tree {
         after_layout: impl FnOnce(&mut Self),
     ) -> FrameOutput {
         let epoch0 = self.invalidate_epoch;
+        // 分段计时器：开关关闭时为 `None`，下面的每个 `if let` 都不取时钟（热路径零开销）。
+        // 参 docs/ELEMENT_TREE.md §Ⅴ-bis。
+        let mut clock = self.phase_timing.then(PhaseClock::start);
         self.frame_dt = dt;
         self.frame_painted.clear();
         self.frame_content.clear();
@@ -1234,9 +1352,15 @@ impl Tree {
                 n.widget = Some(w);
             }
         }
+        if let Some(c) = clock.as_mut() {
+            c.mark(Stage::Animate);
+        }
 
         // 2. 实现钩子：虚拟化容器在 measure 之前按上一帧视口增删子节点（参 §Ⅳ-bis）。
         self.realize_dirty(engine);
+        if let Some(c) = clock.as_mut() {
+            c.mark(Stage::Realize);
+        }
 
         // 3. 布局。弹层位置依赖锚点矩形 —— 有弹层时每帧重排覆盖层（弹层子树本身有缓存，代价只是重算槽位）。
         // 用 quiet 版：结果在本帧 arrange 中被消费，不应计为「帧内新失效」而多出一帧。
@@ -1245,20 +1369,39 @@ impl Tree {
         }
         let full = Rect::new(0.0, 0.0, size.width, size.height);
         self.measure_node(self.root, size, engine);
+        if let Some(c) = clock.as_mut() {
+            c.mark(Stage::Measure);
+        }
         self.arrange_node(self.root, full, engine);
+        if let Some(c) = clock.as_mut() {
+            c.mark(Stage::Arrange);
+        }
         let bounds = self.popup_bounds();
         self.measure_node(self.overlay, bounds.size, engine);
+        if let Some(c) = clock.as_mut() {
+            c.mark(Stage::Measure);
+        }
         self.arrange_node(self.overlay, bounds, engine);
+        if let Some(c) = clock.as_mut() {
+            c.mark(Stage::Arrange);
+        }
         self.validate_focus();
         after_layout(self);
         if cfg!(debug_assertions) {
             self.check_containment();
+        }
+        // 布局尾（焦点校验 + `after_layout` 视觉同步）计入排布：它同样是「布局后才有的」工作。
+        if let Some(c) = clock.as_mut() {
+            c.mark(Stage::Arrange);
         }
 
         // 4. 绘制脏节点：只处理待绘集合（不再每帧递归整棵树找 needs_paint）。
         // 集合里的悬垂 id（已删除）与不可见节点在 paint_node 内跳过。
         for id in std::mem::take(&mut self.paint_queue) {
             self.paint_node(id, engine);
+        }
+        if let Some(c) = clock.as_mut() {
+            c.mark(Stage::Paint);
         }
 
         // 5. 拼接。剔除条件 = 表面 ∩ 本帧 damage（局部帧只拼与 damage 相交的节点；
@@ -1288,6 +1431,10 @@ impl Tree {
         self.sync_layers();
         // 5c. 转场：图层建好后发出暂存的初值 + Animate（Create → 初值 → Animate）。
         self.flush_pending_starts();
+        // 拼接段到此为止：其后的 IME 上下文与帧记账属于「段外」，不计入任何一段。
+        if let Some(c) = clock.as_mut() {
+            c.mark(Stage::Compose);
+        }
 
         // 6. 焦点控件的 IME 上下文（用本帧布局与排版）。
         self.ime = self.focus.and_then(|f| {
@@ -1302,12 +1449,14 @@ impl Tree {
         // 否则本帧工作已消费干净，可以进入空闲。
         self.dirty = self.invalidate_epoch != epoch0;
         self.publish_content_stats();
+        self.frame_phases = clock.map_or(FramePhases::default(), |c| c.phases);
         FrameOutput {
             scene,
             damage: frame_damage,
             full,
             animating: !self.anim.is_empty(),
             painted: std::mem::take(&mut self.frame_painted),
+            phases: self.frame_phases,
         }
     }
 

@@ -270,6 +270,23 @@ pub trait Widget {
   `IDLE_MAX`（50ms）。修复前「只 `invalidate_paint`、不登记动画帧」的驱动在渲染后 `busy`
   转假 → 退到 50ms 档 → 动画只跑约 20fps，现由 Ⅴ-bis.2 + Ⅴ-bis.3 共同消除。
 
+### Ⅴ-bis.5 一帧分段计时（诊断，2026-11-08 立）
+
+- 动机：真机 Dock 冷启首帧 `scene_ms` 达 39~83 ms，外壳只有一个整段，分不出是量测、排布、
+  绘制还是拼接 —— 热点只能靠猜。分段让下一轮能直接定位。
+- `Tree::set_phase_timing(true)` 打开采样；**缺省关闭**。关闭时 `frame` 不实例化取时器，
+  热路径一次 `Instant::now()` 都不多取（零开销的判据是「有没有取时」，不是「取时多快」）。
+- 结果由 `FramePhases { measure_ms, arrange_ms, paint_ms, compose_ms, realize_ms, animate_ms }`
+  承载，随 `FrameOutput::phases` 返回，也可经 `Tree::frame_phases()` 回读最近一帧。
+  量测 / 排布各取两次边界（主表面与覆盖层交替量测排布），故两段用累加。
+- 四段之和（`FramePhases::scene_sum_ms`）必然 ≤ `scene_ms`：帧内还有 `tick_gated`、焦点校验、
+  `after_layout` 之外的记账与 IME 上下文等「段外」工作，它们不计入任何一段。
+- 外壳侧：`KANESUMI_FRAME_PHASES=1` → `App::set_frame_phases(true)`，出帧后经
+  `App::take_frame_phases` / `take_floating_frame_phases` 取回，写进尖峰行的
+  `scene_measure` / `scene_arrange` / `scene_paint` / `scene_compose`。开关关闭时四者为 0，
+  含义是**没有量**，不是「很快」。弹层表面与 IME 候选窗的 Scene 来自已缓存的子树拼接
+  （不经整帧），故它们的分段恒 0。
+
 ## §Ⅴ-ter 主题转场（`transitions.rs`，2026-10-07）
 
 转场是「场景到动画的映射表」（`ANIMATION_SPEC` §Ⅱ），由框架发**图层命令**实现：给节点

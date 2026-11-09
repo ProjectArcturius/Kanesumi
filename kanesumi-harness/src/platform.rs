@@ -94,6 +94,19 @@ pub fn canvas_v2_enabled() -> bool {
 
 pub use crate::renderer_policy::canvas_v2_active;
 
+/// 一帧分段计时开关：`KANESUMI_FRAME_PHASES=1` 打开，缺省关。
+///
+/// 为什么要它：真机 Dock 冷启首帧 `scene_ms` 达 39~83 ms，尖峰行只有一个整段，分不出是
+/// 量测、排布、绘制还是拼接。打开后元素树才取时（关闭时热路径不多一次 `Instant::now()`），
+/// 尖峰行追加 `scene_measure` / `scene_arrange` / `scene_paint` / `scene_compose` 四段。
+/// 参 docs/ELEMENT_TREE.md §Ⅴ-bis。
+///
+/// `OnceLock` 缓存：每帧只判一个 `bool`，不在热路径反复读环境。
+pub fn frame_phases_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("KANESUMI_FRAME_PHASES").as_deref() == Ok("1"))
+}
+
 /// 表面渲染器枚举：v1 / v2 对外接口对齐，创建处统一经 [`SurfaceRenderer::with_context`]。
 /// allow：v1 `Renderer` 自身 1560 字节（顶点缓冲句柄等），v2 已 Box 仍超 clippy 的
 /// 变体尺寸差阈值；v1 属存量实现不动，此处维持直存。
@@ -1856,6 +1869,8 @@ impl Shell {
         let t_render = Instant::now();
         // 本表面缩放注入全局：应用在 paint 期光栅图标时读它出物理像素。
         set_surface_scale(f.scale);
+        // 一帧分段计时（缺省关）：与主表面同口径，浮层树同样只在开关打开时取时。
+        app.set_frame_phases(frame_phases_enabled());
         let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             app.render_floating(&self.engine, idx, Size::new(f.width, f.height))
         }));
@@ -1981,6 +1996,13 @@ impl Shell {
         let cpu_path = gpu_timing.is_none();
         let mut timing = gpu_timing.unwrap_or_default();
         timing.scene_ms = render_ms;
+        // 场景四段：浮层树与主树同口径（开关关着时取不到，四者保持 0）。
+        if let Some(p) = self.app.take_floating_frame_phases(idx) {
+            timing.measure_ms = p.measure_ms;
+            timing.arrange_ms = p.arrange_ms;
+            timing.paint_ms = p.paint_ms;
+            timing.compose_ms = p.compose_ms;
+        }
         timing.tick_ms = self.app.last_floating_tick_ms(idx);
         timing.scene_cmds = scene.commands.len() as u32;
         if cpu_path {
@@ -2573,6 +2595,8 @@ impl Shell {
         let mut scene_buf = std::mem::take(&mut self.scene_buf);
         // 本表面缩放注入全局：应用在 paint 期光栅图标时读它出物理像素。
         set_surface_scale(self.scale);
+        // 一帧分段计时（缺省关）：开帧前把开关交给树，出帧后按帧取回四段 —— 只在被读时才计时。
+        self.app.set_frame_phases(frame_phases_enabled());
         let t_render = Instant::now();
         let scene_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.app.render_into(&self.engine, size, &mut scene_buf)
@@ -2694,6 +2718,13 @@ impl Shell {
         let cpu_path = gpu_timing.is_none();
         let mut timing = gpu_timing.unwrap_or_default();
         timing.scene_ms = render_ms;
+        // 场景四段（量测 / 排布 / 绘制 / 拼接）：开关关着时取不到，四者保持 0。
+        if let Some(p) = self.app.take_frame_phases() {
+            timing.measure_ms = p.measure_ms;
+            timing.arrange_ms = p.arrange_ms;
+            timing.paint_ms = p.paint_ms;
+            timing.compose_ms = p.compose_ms;
+        }
         timing.tick_ms = self.app.last_tick_ms();
         timing.scene_cmds = self.scene_buf.commands.len() as u32;
         if cpu_path {

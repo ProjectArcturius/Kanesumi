@@ -35,8 +35,8 @@ pub use transitions::{
     VisualAnim, visual_at_ms,
 };
 pub use tree::{
-    Action, EditCtx, FrameOutput, PopupDismissed, PopupMotion, PopupMotionPlan, PopupSide,
-    PopupSpec, Tree,
+    Action, EditCtx, FrameOutput, FramePhases, PopupDismissed, PopupMotion, PopupMotionPlan,
+    PopupSide, PopupSpec, Tree,
 };
 pub use visual_state::VisualState;
 pub use widget::{

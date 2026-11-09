@@ -88,12 +88,25 @@ impl Ring {
 /// layout / paint：两者在 `kanesumi-element::Tree::frame` 内部相邻，拆开需要元素树埋点，
 /// 超出本件允许改动的路径（只动 kanesumi-harness）。`scene_cmds` 记本帧场景命令数，
 /// 用来区分「场景很小但还是慢」与「场景巨大」。
+///
+/// 分段已补（`t-frame-phases`）：元素树按 `KANESUMI_FRAME_PHASES=1` 打开分段计时后，
+/// `measure_ms` / `arrange_ms` / `paint_ms` / `compose_ms` 由外壳取回填在这四个字段里；
+/// 开关关闭时四者恒 0（表示**没有量**），`scene_ms` 语义不变。四段之和必然 ≤ `scene_ms`
+/// （帧内还有 tick、焦点校验、IME 上下文等段外工作）。参 docs/ELEMENT_TREE.md §Ⅴ-bis。
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct FrameTiming {
     /// 本帧之前的 App update（定时器 + App::tick + 各浮层 tick），毫秒。
     pub tick_ms: f32,
     /// 场景录制（元素树 frame：量测 / 排布 / 绘制 / 拼接），毫秒。
     pub scene_ms: f32,
+    /// 场景内的量测段（`scene_ms` 的一部分；未开 `KANESUMI_FRAME_PHASES=1` → 0）。
+    pub measure_ms: f32,
+    /// 场景内的排布段（含布局后的视觉同步；未开分段计时 → 0）。
+    pub arrange_ms: f32,
+    /// 场景内的绘制段（未开分段计时 → 0）。
+    pub paint_ms: f32,
+    /// 场景内的拼接段（含遮罩 / 图层内容 / 转场起播；未开分段计时 → 0）。
+    pub compose_ms: f32,
     /// GPU：Scene → 顶点（build_frame）。CPU：CpuRenderer 光栅化。
     pub encode_ms: f32,
     /// GPU：字形 / 图像上传 + 命令编码 + queue.submit。CPU：写 SHM / dmabuf 缓冲。
@@ -323,7 +336,7 @@ pub fn spike_line(proc: &str, role: &str, surface: &str, t: &FrameTiming) -> Str
         .map(|d| d.as_millis())
         .unwrap_or(0);
     format!(
-        "t={ms} proc={proc} role={role} surface={surface} total_ms={:.2} tick={:.2} scene={:.2} encode={:.2} acquire={:.2} submit={:.2} present={:.2} cmds={} up_bytes={} up_images={} up_glyphs={} new_surface={} content_ms={:.2} rows={}\n",
+        "t={ms} proc={proc} role={role} surface={surface} total_ms={:.2} tick={:.2} scene={:.2} encode={:.2} acquire={:.2} submit={:.2} present={:.2} cmds={} up_bytes={} up_images={} up_glyphs={} new_surface={} content_ms={:.2} rows={} scene_measure={:.2} scene_arrange={:.2} scene_paint={:.2} scene_compose={:.2}\n",
         t.total_ms(),
         t.tick_ms,
         t.scene_ms,
@@ -338,6 +351,10 @@ pub fn spike_line(proc: &str, role: &str, surface: &str, t: &FrameTiming) -> Str
         t.new_surface as u8,
         t.content_ms,
         t.content_rows,
+        t.measure_ms,
+        t.arrange_ms,
+        t.paint_ms,
+        t.compose_ms,
     )
 }
 
@@ -1173,6 +1190,10 @@ mod tests {
             content_ms: 0.0,
             content_rows: 0,
             new_surface: true,
+            measure_ms: 0.6,
+            arrange_ms: 0.4,
+            paint_ms: 0.7,
+            compose_ms: 0.3,
         }
     }
 
@@ -1203,6 +1224,19 @@ mod tests {
         let line = spike_line("ether-settings", "TopBar", "popup", &t);
         assert!(line.contains("content_ms=1.25"), "{line}");
         assert!(line.contains("rows=7"), "{line}");
+    }
+
+    /// 尖峰行带场景四段：真机据此把 `scene` 归到量测 / 排布 / 绘制 / 拼接。
+    #[test]
+    fn spike_line_reports_scene_split() {
+        let t = timing_sample();
+        let line = spike_line("ether-launcher", "Dock", "main", &t);
+        assert!(line.contains("scene_measure=0.60"), "{line}");
+        assert!(line.contains("scene_arrange=0.40"), "{line}");
+        assert!(line.contains("scene_paint=0.70"), "{line}");
+        assert!(line.contains("scene_compose=0.30"), "{line}");
+        // 四段是 `scene_ms` 的一部分，绝不进总耗时（否则尖峰基准被双重计入）。
+        assert!((t.total_ms() - 7.25).abs() < 1e-5, "分段不得加进 total_ms");
     }
 
     /// 周期行尾追加 content_p99；无内容入场时为 0.00。
