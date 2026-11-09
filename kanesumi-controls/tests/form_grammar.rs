@@ -156,3 +156,67 @@ fn row_button_selected_flag_marks_current_item() {
     assert!(!a.selected && b.selected, "选中标记应只落在被点的那一行");
     assert_eq!(b.index, 1, "行号不应被改动");
 }
+
+// ── 2026-11-09：Win10 行文法（标签左、控件右；滑杆值在标签行、轨道占满整列）────────────
+
+/// 开关贴行右端：用户 11-09 实机反馈「按钮错位到滑杆下面」的同一类问题 ——
+/// 控件必须与标签同一行，而不是掉到标签下方。
+#[test]
+fn toggle_switch_sits_at_right_edge_of_label_row() {
+    let mut h = TestHarness::new(600.0, 400.0);
+    let mut ids: Vec<WidgetId> = Vec::new();
+    h.frame_with_layout(|tree| {
+        let col = tree.insert_with(tree.root(), Stack::column(), LayoutProps::default());
+        let mut f = Form::new(col);
+        let (sw, desc) = f.toggle_desc(tree, "自动亮度", false, "随环境光调整");
+        ids.extend([sw, desc]);
+    });
+    h.settle();
+    let sw = h.rect(ids[0]);
+    let desc = h.rect(ids[1]);
+    assert!(
+        sw.origin.x > 600.0 / 2.0,
+        "开关应贴行右端（右半侧），实际 x={}",
+        sw.origin.x
+    );
+    // 开关在整行（标签 + 说明）里垂直居中，不得有半个身子落到说明下面。
+    assert!(
+        sw.bottom() <= desc.bottom() + 0.5,
+        "开关应留在行内：switch.bottom={} desc.bottom={}",
+        sw.bottom(),
+        desc.bottom()
+    );
+    assert!(sw.origin.y >= 0.0, "开关不应被排到行上方：y={}", sw.origin.y);
+}
+
+/// 滑杆行的值在标签行右端，滑杆在下方占满整列宽（不是只占标签下面那一截）。
+#[test]
+fn slider_value_stays_on_label_row_and_track_spans_column() {
+    let mut h = TestHarness::new(600.0, 400.0);
+    let mut ids: Vec<WidgetId> = Vec::new();
+    h.frame_with_layout(|tree| {
+        let col = tree.insert_with(tree.root(), Stack::column(), LayoutProps::default());
+        let mut f = Form::new(col);
+        let (slider, value) = f.slider(tree, "主音量", "70%", 0.7, 0.0, 1.0, Some(0.01), None);
+        ids.extend([slider, value]);
+    });
+    h.settle();
+    let slider = h.rect(ids[0]);
+    let value = h.rect(ids[1]);
+    assert!(
+        value.bottom() <= slider.origin.y + 1.0,
+        "值文本应在滑杆**上方**的标签行：value.bottom={} slider.y={}",
+        value.bottom(),
+        slider.origin.y
+    );
+    assert!(
+        value.origin.x > 600.0 / 2.0,
+        "值文本贴标签行右端，实际 x={}",
+        value.origin.x
+    );
+    assert!(
+        slider.size.width >= 600.0 - 1.0,
+        "滑杆轨道应占满整列宽（600），实际 {}",
+        slider.size.width
+    );
+}

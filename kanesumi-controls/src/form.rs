@@ -6,9 +6,10 @@
 // 15 个、launcher 10 个）。提升到控件库后，写页面只组合语义块，几何与间距由本模块负责，
 // 应用不再各写一套。参 `docs/CONTROL_SPEC.md` §49、`docs/DEV_GUIDE.md` §二·五。
 //
-// 铁律（裁定 `DECISIONS_2026-10-05.md` §110）：**一个控件 = 标签在上（14）+ 控件 +
-// 可选说明在下（14 次级色）**，左对齐单列；禁止 Win11 式「左标题右控件」。将来若要支持
-// 那种排布，必须作为独立布局变体显式 opt-in，不得改本默认。
+// 文法（2026-11-09 用户推翻 `DECISIONS_2026-10-05.md` §110，改按 Win10 Settings）：
+// **一行 = 标签（14，说明在标签下）在左 + 控件贴行右端**；滑杆是「标签 …… 当前值」一行、
+// 轨道占满整列；按钮行仍左对齐。旧规则是「标签在上、控件在下」的单列，实机上被读成
+// 「按钮错位到滑杆下面」。参 `DECISIONS_2026-11-09.md` §269 与 `docs/CONTROL_SPEC.md` §49。
 //
 // 尺寸全部引用 `kanesumi_core::sizes`（页面语法族 `FORM_*`），颜色只用 `ThemeColor` 令牌：
 // 本模块内不出现尺寸字面量与颜色构造器，由 `tests/size_discipline.rs` 与
@@ -285,7 +286,11 @@ impl Form {
         text_block(tree, block, text, s_section(), ThemeColor::OnSurface, 0.0)
     }
 
-    /// 开关行：标签在上 + 开关 + 可选说明在下。返回开关 id。
+    /// 开关行：**Win10 行文法** —— 标签（+ 可选说明）在左，开关贴行右端并垂直居中。
+    ///
+    /// 2026-11-09 用户推翻裁定 §110：单列「标签在上、控件在下」在实机上被读成错位
+    /// （「按钮错位到滑杆下面」），Win10 Settings 的行是「左标题右控件」。参
+    /// `DECISIONS_2026-11-09` 与 `docs/CONTROL_SPEC.md` §49。
     pub fn toggle(
         &mut self,
         tree: &mut Tree,
@@ -293,23 +298,11 @@ impl Form {
         checked: bool,
         desc: Option<&str>,
     ) -> WidgetId {
-        let block = self.block(tree, 0.0, ITEM_MB);
-        text_block(tree, block, label, s_label(), ThemeColor::OnSurface, LABEL_MB);
-        let sw = tree.insert_with(
-            block,
-            MetroSwitch::new().with_checked(checked).with_state_text("开", "关"),
-            LayoutProps {
-                h_align: Align::Start,
-                ..LayoutProps::default()
-            },
-        );
-        if let Some(d) = desc {
-            desc_block(tree, block, d, DESC_MT);
-        }
+        let (sw, _, _) = self.toggle_row(tree, label, checked, desc);
         sw
     }
 
-    /// 开关行（说明恒建）：返回 `(开关 id, 说明标签 id)`。与 [`Form::toggle`] 同布局，
+    /// 开关行（说明恒建）：返回 `(开关 id, 说明标签 id)`。与 [`Form::toggle`] 同一行文法，
     /// 差别是说明节点总是存在，供运行时改写文案或隐藏（如「由硬件开关控制」）。
     pub fn toggle_desc(
         &mut self,
@@ -318,18 +311,49 @@ impl Form {
         checked: bool,
         desc: &str,
     ) -> (WidgetId, WidgetId) {
+        let (sw, _, desc_id) = self.toggle_row(tree, label, checked, Some(desc));
+        (sw, desc_id.expect("toggle_desc 的说明节点恒建"))
+    }
+
+    /// 开关行的共同实现：`[标签 / 说明] ……… [开关]` 一行两列。
+    ///
+    /// 说明在标签正下方而不是整行下方：开关只服务标签，说明若横跨整行会让开关落进说明
+    /// 的垂直范围里，读起来像「开关是给说明的」。Win10 同样把说明绑在标题上。
+    fn toggle_row(
+        &mut self,
+        tree: &mut Tree,
+        label: &str,
+        checked: bool,
+        desc: Option<&str>,
+    ) -> (WidgetId, Option<WidgetId>, Option<WidgetId>) {
         let block = self.block(tree, 0.0, ITEM_MB);
-        text_block(tree, block, label, s_label(), ThemeColor::OnSurface, LABEL_MB);
-        let sw = tree.insert_with(
+        let row = tree.insert_with(
             block,
-            MetroSwitch::new().with_checked(checked).with_state_text("开", "关"),
+            Stack::row().with_spacing(sizes::FORM_ROW_GAP),
+            LayoutProps::default(),
+        );
+        let text_col = tree.insert_with(
+            row,
+            Stack::column(),
             LayoutProps {
-                h_align: Align::Start,
+                grow: 1.0,
                 ..LayoutProps::default()
             },
         );
-        let desc_id = desc_block(tree, block, desc, DESC_MT);
-        (sw, desc_id)
+        let label_id = text_block(tree, text_col, label, s_label(), ThemeColor::OnSurface, 0.0);
+        let desc_id = match desc {
+            Some(d) => Some(desc_block(tree, text_col, d, DESC_MT)),
+            None => None,
+        };
+        let sw = tree.insert_with(
+            row,
+            MetroSwitch::new().with_checked(checked).with_state_text("开", "关"),
+            LayoutProps {
+                v_align: Align::Center,
+                ..LayoutProps::default()
+            },
+        );
+        (sw, Some(label_id), desc_id)
     }
 
     /// 按钮行：可选说明（在按钮之上）+ 按钮。返回 `(按钮 id, 说明标签 id)`。
@@ -562,7 +586,11 @@ impl Form {
         self.block(tree, 0.0, mb)
     }
 
-    /// 滑杆行：标签在上 + 滑杆 + 值行（次级色）+ 可选说明。返回 `(滑杆 id, 值 id)`。
+    /// 滑杆行（Win10 行文法）：`[标签 ……… 当前值]` 一行，滑杆在下方**占满整列宽**，
+    /// 可选说明在最下。返回 `(滑杆 id, 值 id)`。
+    ///
+    /// 用户 11-09 的实物反馈正是这一行：旧写法把值文本与「相关控件」排到滑杆下面，看着
+    /// 像按钮掉到了滑杆底下；Win10 的百分比始终在标签行右端，滑杆自己占满整列。
     #[allow(clippy::too_many_arguments)] // 布局参数（值域 + 步进 + 可选说明），拆结构体反而更绕。
     pub fn slider(
         &mut self,
@@ -576,7 +604,29 @@ impl Form {
         desc: Option<&str>,
     ) -> (WidgetId, WidgetId) {
         let block = self.block(tree, 0.0, ITEM_MB);
-        text_block(tree, block, label, s_label(), ThemeColor::OnSurface, LABEL_MB);
+        let header = tree.insert_with(
+            block,
+            Stack::row().with_spacing(sizes::FORM_ROW_GAP),
+            LayoutProps::default(),
+        );
+        // 标签列吃满剩余宽，值贴右端：两个子件同一行，值不会掉到滑杆下面。
+        let label_id = text_block(
+            tree,
+            header,
+            label,
+            s_label(),
+            ThemeColor::OnSurface,
+            0.0,
+        );
+        tree.update_props(label_id, |p| p.grow = 1.0);
+        let vid = text_block(
+            tree,
+            header,
+            value_text,
+            s_label(),
+            ThemeColor::OnSurfaceVariant,
+            0.0,
+        );
         let mut slider = MetroSlider::new().with_range(min, max);
         if let Some(s) = step {
             slider = slider.with_step(s);
@@ -587,13 +637,13 @@ impl Form {
             slider,
             LayoutProps {
                 height: Some(SLIDER_H),
-                h_align: Align::Start,
+                h_align: Align::Stretch,
+                margin: Insets::new(0.0, LABEL_MB, 0.0, 0.0),
                 ..LayoutProps::default()
             },
         );
-        let vid = text_block(tree, block, value_text, s_label(), ThemeColor::OnSurfaceVariant, 0.0);
         if let Some(d) = desc {
-            text_block(tree, block, d, s_label(), ThemeColor::OnSurfaceVariant, 0.0);
+            desc_block(tree, block, d, DESC_MT);
         }
         (sid, vid)
     }
