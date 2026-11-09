@@ -9,7 +9,7 @@
 // 文法（2026-11-09 用户推翻 `DECISIONS_2026-10-05.md` §110，改按 Win10 Settings）：
 // **一行 = 标签（14，说明在标签下）在左 + 控件贴行右端**；滑杆是「标签 …… 当前值」一行、
 // 轨道占满整列；按钮行仍左对齐。旧规则是「标签在上、控件在下」的单列，实机上被读成
-// 「按钮错位到滑杆下面」。参 `DECISIONS_2026-11-09.md` §269 与 `docs/CONTROL_SPEC.md` §49。
+// 「按钮错位到滑杆下面」。参 `DECISIONS_2026-11-09.md` §256 与 `docs/CONTROL_SPEC.md` §49。
 //
 // 尺寸全部引用 `kanesumi_core::sizes`（页面语法族 `FORM_*`），颜色只用 `ThemeColor` 令牌：
 // 本模块内不出现尺寸字面量与颜色构造器，由 `tests/size_discipline.rs` 与
@@ -290,7 +290,7 @@ impl Form {
     ///
     /// 2026-11-09 用户推翻裁定 §110：单列「标签在上、控件在下」在实机上被读成错位
     /// （「按钮错位到滑杆下面」），Win10 Settings 的行是「左标题右控件」。参
-    /// `DECISIONS_2026-11-09` 与 `docs/CONTROL_SPEC.md` §49。
+    /// `DECISIONS_2026-11-09.md` §256 与 `docs/CONTROL_SPEC.md` §49。
     pub fn toggle(
         &mut self,
         tree: &mut Tree,
