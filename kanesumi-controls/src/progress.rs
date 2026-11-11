@@ -3,6 +3,9 @@ use kanesumi_canvas::Scene;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_core::{CornerRadius, MetroTheme, Point, Rect};
 
+use crate::state::ControlState;
+use crate::style::{ControlStyle, resolve, state_name};
+
 /// Paused 态指示条不透明度 —— 一手源：UWP `ProgressBarIndicatorPauseOpacity`
 /// = **暗 0.6 / 亮 1.0**（`themeresources.xaml` L71 / L2798；模板在 Paused 态把
 /// `ProgressBarIndicator` 的 Opacity 动画到该值）。
@@ -203,6 +206,10 @@ pub struct MetroProgressRing {
     pub active: bool,
     pub size: f32,
     pub thickness: f32,
+    /// 当前交互状态。节点模式下 `paint` 直接用框架状态；即时模式调用方自行设置。
+    pub state: ControlState,
+    /// 状态 → 画刷的声明（参 [`crate::style`]）。控件自己不再按状态挑色。
+    pub style: ControlStyle,
     /// 不确定旋转相位 [0,2.0)s，由 `update(dt)` 推进。
     phase: f64,
 }
@@ -215,6 +222,8 @@ impl Default for MetroProgressRing {
             active: true,
             size: 32.0,
             thickness: 4.0,
+            state: ControlState::Normal,
+            style: ControlStyle::accent(),
             phase: 0.0,
         }
     }
@@ -236,8 +245,20 @@ impl MetroProgressRing {
         }
     }
 
-    /// 渲染到 `rect` 中心。
+    /// 渲染到 `rect` 中心（使用控件自身 `state`）。
     pub fn render(&self, theme: &MetroTheme, rect: Rect, scene: &mut Scene) {
+        self.render_in_state(theme, self.state, rect, scene);
+    }
+
+    /// 以指定状态绘制。颜色只经 [`resolve`] 从 `style` 取出，本函数不按状态分支取色
+    /// （迁移前这里直接写死 `theme.colors.primary`，状态无处可进）。
+    fn render_in_state(
+        &self,
+        theme: &MetroTheme,
+        state: ControlState,
+        rect: Rect,
+        scene: &mut Scene,
+    ) {
         if !self.active {
             return;
         }
@@ -247,7 +268,7 @@ impl MetroProgressRing {
             rect.origin.y + (rect.size.height - size) / 2.0 + size / 2.0,
         );
         let radius = (size - self.thickness) / 2.0;
-        let color = theme.colors.primary;
+        let color = resolve(&self.style, state_name(state)).color(theme);
 
         if self.indeterminate {
             // 旋转 0°→900°（2.5 圈）@2s；弧 90°↔180° 呼吸。
@@ -353,7 +374,8 @@ impl kanesumi_element::Widget for MetroProgressRing {
     }
 
     fn paint(&mut self, ctx: &mut kanesumi_element::PaintCtx, scene: &mut Scene) {
-        self.render(ctx.theme(), ctx.rect(), scene);
+        let state = crate::state::control_state(ctx.state());
+        self.render_in_state(ctx.theme(), state, ctx.rect(), scene);
         if self.indeterminate && self.active {
             ctx.request_anim_frame();
         }

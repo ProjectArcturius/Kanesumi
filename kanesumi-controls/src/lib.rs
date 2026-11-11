@@ -73,6 +73,7 @@ pub mod selector_flyout;
 pub mod slider;
 pub mod split_button;
 pub mod state;
+pub mod style;
 pub mod surface;
 pub mod swipe_control;
 pub mod switch;
@@ -163,6 +164,11 @@ pub use selector_flyout::{MetroSelectorFlyout, SelectorSelectionChanged};
 pub use slider::{MetroSlider, SliderValueChanged, SLIDER_HEADER_MARGIN, SLIDER_MIN_H, SLIDER_MIN_W, SLIDER_THUMB_H, SLIDER_THUMB_W, SLIDER_TRACK_ALPHA, SLIDER_TRACK_H, SLIDER_TRACK_HOVER_ALPHA};
 pub use split_button::{MetroSplitButton, SplitButtonInvoked, SplitButtonClick, SplitButtonPart};
 pub use state::{ButtonState, ControlState, control_state};
+pub use style::{
+    BrushSlot, ControlStyle, Paint, STATE_DISABLED, STATE_FOCUSED, STATE_NORMAL, STATE_POINTER_OVER,
+    STATE_PRESSED, StateProperties, StyleBrush, VisualStateDecl, VisualStates, missing_brush_fallbacks,
+    resolve, state_for, state_name, unknown_state_fallbacks,
+};
 pub use surface::MetroSurface;
 pub use swipe_control::{MetroSwipeControl, SwipeAction, SwipeInvoked, SwipeItem, SwipeItemAction, SwipeMode};
 pub use switch::{MetroSwitch, SwitchToggled};
