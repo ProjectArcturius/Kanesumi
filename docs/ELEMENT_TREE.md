@@ -219,7 +219,7 @@ pub trait Widget {
 
 - `Tree` 有两棵根：`root`（内容）与 `overlay`（弹层）。覆盖层在内容之后绘制、之前命中。
 - 下拉菜单 / 选择器浮层 / TeachingTip / 对话框作为 overlay 的子节点挂载，锚点取触发器的 `rect`
-  （同一布局产物，`COMPOSITION` 契约 3），位置用现有 `place_popup` 计算。
+  （同一布局产物，`COMPOSITION` 契约 3），位置由 `placement::place` 统一计算（参 §Ⅴ.2-bis）。
 - 覆盖层有内容时启用 **LightDismiss**：点在覆盖层外 → 关闭最上层弹层并吞掉该次点击（参
   `CONTEXT_MENU_SPEC` §Ⅵ）；模态对话框改为「吞掉但不关闭」+ 焦点陷阱。
 - **矮表面问题**（TopBar 30px / Dock 上的菜单）：第一期仍画在本表面内（受表面尺寸限制，与现状同）；
@@ -668,3 +668,37 @@ E5 结束后统一删除并记入 `CANON_VS_TEMPORARY`。
 3. 变换（旋转 / 缩放）进入布局或命中 —— 变换只作用于绘制（`COMPOSITION` 契约 12）。
 4. 多线程布局 / 绘制。
 5. 修改 harness 外壳主循环（`TreeHost` 走现有 `App` trait）。
+
+### Ⅴ.2-bis 弹层定位（`placement.rs`，2026-11-11 立）
+
+**唯一实现**：`kanesumi-element::placement::place`。元素树弹层（菜单 / 工具提示 / 对话框）、
+控件库（`place_popup` / `place_context_menu` / `place_submenu`）与命令条都调它，谁都不许再算一遍
+（`k-popup-placement`）。
+
+输入 `PlacementRequest { anchor, size, bounds, margin, gap, side, align }`，
+输出 `Placement { rect, side, slid }` —— 最终矩形、**实际**方向（翻边后）、是否滑移。
+
+判据按优先级写死（实现与测试同序，`placement.rs` 模块测试逐条钉住）：
+
+1. **尺寸先夹进可用区**：`bounds` 各边内缩 `margin` 得可用区，面板尺寸不得超过它
+   （旧命令条「宽保持、画出屏外」的行为随之取消）。
+2. **下方优先**：首选方向放得下就用首选方向。
+3. **上翻**：放不下 → 翻到对侧。
+4. 两侧都放不下 → 取空间更大的一侧（GTK 四向 `overshoot` 最小）。
+5. **左右滑移**：交叉轴按 `align` 对齐锚点，越界则整体推开（`slid = true`）。
+6. **夹紧**：收尾一律夹进可用区 —— 弹层不得超出锚点所在输出的 workarea。
+
+边界口径：`bounds` 必须是**锚点所在输出的 workarea**（已扣 TopBar / Dock 排他区）。
+多输出走 `place_on_outputs(req, outputs)`：先按锚点**中心**选输出（Qt
+`QGuiApplication::screenAt` / `QPlatformWindow::screenForGeometry` 同款），再用该输出的
+workarea 定位 —— 弹层跨到相邻输出时以锚点所在输出为准，不跟着指针漂到隔壁屏。
+
+成熟做法对照：Qt `QMenuPrivate::popup()`（qmenu.cpp:2469-2516，越界收拢 → 上翻 → 贴底）、
+`popupGeometry()` 取 `availableGeometry()`（qmenu.cpp:292）；GTK3
+`gtk_popover_update_position()`（gtkpopover.c:1068，`overshoot` 判据）与
+`popover_get_rect()`（gtkwindow.c:6659，交叉轴 `CLAMP`）；GTK4 回读实际翻边方向
+（gtkpopover.c:408-438）。
+
+已知缺口：**RTL 未支持**（`align` 恒按 LTR 左缘 / 上缘解释，Qt 在 RTL 下镜像对齐与翻边，
+qmenu.cpp:2470-2490）。支持时给 `PlacementRequest` 加书写方向入参，`align_x` 里把
+`Start` / `End` 对调即可，调用点需先拿得到书写方向。

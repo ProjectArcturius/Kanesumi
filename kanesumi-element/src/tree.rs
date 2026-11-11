@@ -37,18 +37,10 @@ pub type Action = Box<dyn Any>;
 pub struct PopupDismissed;
 
 /// 弹层相对锚点的方位（XAML `FlyoutPlacementMode` 的主方位）。放不下时翻到对侧。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PopupSide {
-    /// 锚点下方（默认；下方放不下而上方放得下则上翻 —— ComboBoxHelper 判据）。
-    #[default]
-    Bottom,
-    Top,
-    Left,
-    Right,
-    /// 表面居中（对话框）。锚点仍用于关闭通知与焦点交还 —— `EventCtx::open_popup` 总会把锚点设为
-    /// 打开者，故「居中」要显式声明，不能靠「无锚点」（E3 批 F 对话框迁移时发现）。
-    Center,
-}
+///
+/// 定义搬到 [`crate::placement`]（定位的唯一实现在这里消费它），树内外继续用
+/// `kanesumi_element::PopupSide` 这个路径 —— 类型身份没变，只是搬了个家。
+pub use crate::placement::PopupSide;
 
 /// 弹层表面动画策略。参 `docs/FEEL_PLAN.md` §Ⅰ-2 / §Ⅰ-4、`transitions.rs`。
 ///
@@ -3076,6 +3068,11 @@ impl Tree {
         }
     }
 
+    /// 弹层槽位 = [`crate::placement::place`] 的结果（框架内**唯一**的定位实现）。
+    ///
+    /// 树这边只做「翻译」：`PopupSpec` 的锚点 / 点锚定 / 方位 / 对齐 / 间隙 → 定位请求，
+    /// `bounds` = 外壳给的放置区（矮表面由外壳放大到整个输出，参 `popup_bounds`）。
+    /// 翻边 / 滑移 / 夹紧的判据全在 `placement` 里，工具提示、菜单、右键菜单因此共用一套规则。
     pub(crate) fn popup_slot(&self, popup: WidgetId, desired: Size, bounds: Rect) -> Rect {
         let spec = self
             .popups
@@ -3083,37 +3080,31 @@ impl Tree {
             .find(|(p, _)| *p == popup)
             .map(|(_, s)| *s)
             .unwrap_or_default();
-        let w = desired.width.min(bounds.size.width);
-        let h = desired.height.min(bounds.size.height);
         let anchor = spec.anchor.and_then(|a| self.rect(a));
-        let (x, y) = match (spec.at, anchor) {
-            // 右键菜单：点锚定（CONTEXT_MENU_SPEC §Ⅲ，同 `place_context_menu`）。
-            (Some(p), _) => (
-                if p.x + w > bounds.right() {
-                    p.x - w
-                } else {
-                    p.x
-                },
-                if p.y + h > bounds.bottom() {
-                    p.y - h
-                } else {
-                    p.y
-                },
-            ),
-            (None, Some(_)) | (None, None) if spec.side == PopupSide::Center => (
-                bounds.origin.x + (bounds.size.width - w) / 2.0,
-                bounds.origin.y + (bounds.size.height - h) / 2.0,
-            ),
-            (None, Some(a)) => place_on_side(a, w, h, spec, bounds),
-            (None, None) => (
-                bounds.origin.x + (bounds.size.width - w) / 2.0,
-                bounds.origin.y + (bounds.size.height - h) / 2.0,
-            ),
+        // 没有锚点、也不是点锚定：居中（对话框缺省形态）。
+        let side = match (spec.at, anchor, spec.side) {
+            (None, None, _) | (_, _, PopupSide::Center) => PopupSide::Center,
+            (Some(_), _, _) => PopupSide::Bottom,
+            (None, Some(_), s) => s,
         };
-        // 夹进表面：面板不得画到屏幕外（ROADMAP §Ⅴ-2 place_popup 同款契约）。
-        let x = x.clamp(bounds.origin.x, (bounds.right() - w).max(bounds.origin.x));
-        let y = y.clamp(bounds.origin.y, (bounds.bottom() - h).max(bounds.origin.y));
-        Rect::new(x, y, w, h)
+        let anchor = match (spec.at, anchor) {
+            // 右键菜单 / 指针锚定：零尺寸矩形，落到指针点（CONTEXT_MENU_SPEC §Ⅲ）。
+            (Some(p), _) => Rect::new(p.x, p.y, 0.0, 0.0),
+            (None, Some(a)) => a,
+            (None, None) => Rect::new(bounds.center().x, bounds.center().y, 0.0, 0.0),
+        };
+        crate::placement::place(crate::placement::PlacementRequest {
+            anchor,
+            size: desired,
+            bounds,
+            margin: 0.0,
+            // 点锚定不带间隙：面板左上角就落在指针上（CONTEXT_MENU_SPEC §Ⅲ 的旧口径，
+            // 命令条 / 右键菜单都靠它；带 4pt 会让菜单离指针一格，点哪儿都不准）。
+            gap: if spec.at.is_some() { 0.0 } else { spec.gap },
+            side,
+            align: spec.align,
+        })
+        .rect
     }
 
     // ── 测试 / 诊断 ─────────────────────────────────────────────────────────
@@ -3604,47 +3595,6 @@ fn theme_background_argb(theme: &MetroTheme) -> u32 {
     (to8(c.a) << 24) | (to8(c.r) << 16) | (to8(c.g) << 8) | to8(c.b)
 }
 
-/// 锚点方位放置：首选方位放不下而对侧放得下则翻转；沿边按 `align` 对齐。
-/// 夹进表面由调用方统一做。
-fn place_on_side(a: Rect, w: f32, h: f32, spec: PopupSpec, bounds: Rect) -> (f32, f32) {
-    use crate::props::Align;
-    let along = |start: f32, anchor_len: f32, len: f32| match spec.align {
-        Align::Center => start + (anchor_len - len) / 2.0,
-        Align::End => start + anchor_len - len,
-        Align::Start | Align::Stretch => start,
-    };
-    let g = spec.gap;
-    match spec.side {
-        PopupSide::Bottom | PopupSide::Top => {
-            let below = a.bottom() + g;
-            let above = a.origin.y - g - h;
-            let fits_below = below + h <= bounds.bottom();
-            let fits_above = above >= bounds.origin.y;
-            let y = match spec.side {
-                PopupSide::Bottom if !fits_below && fits_above => above,
-                PopupSide::Bottom => below,
-                _ if !fits_above && fits_below => below,
-                _ => above,
-            };
-            (along(a.origin.x, a.size.width, w), y)
-        }
-        PopupSide::Center => (a.origin.x, a.origin.y), // 调用方已拦截，保底
-        PopupSide::Left | PopupSide::Right => {
-            let right = a.right() + g;
-            let left = a.origin.x - g - w;
-            let fits_right = right + w <= bounds.right();
-            let fits_left = left >= bounds.origin.x;
-            let x = match spec.side {
-                PopupSide::Right if !fits_right && fits_left => left,
-                PopupSide::Right => right,
-                _ if !fits_left && fits_right => right,
-                _ => left,
-            };
-            (x, along(a.origin.y, a.size.height, h))
-        }
-    }
-}
-
 /// 焦点视觉绘制范围外扩量（描边内绘，此处为抗锯齿外溢留余量；正典 §Ⅳ 外圈 2px）。
 const FOCUS_VISUAL_THICKNESS: f32 = kanesumi_core::interaction::FOCUS_OUTER_PX;
 
@@ -3856,6 +3806,39 @@ mod tooltip_tests {
         assert!(h.tree.tooltip_popup().is_none());
         h.idle(0.6);
         assert!(h.tree.tooltip_popup().is_some(), "键盘焦点停留满延迟也显示");
+    }
+
+    /// 工具提示走统一 `placement::place`（k-popup-placement）：锚点贴下缘 → 上翻；
+    /// 气泡宽于剩余横向空间 → 左滑；两者都只为「不越出放置区」。
+    #[test]
+    fn tooltip_flips_up_and_slides_to_stay_inside() {
+        let mut h = TestHarness::new(400.0, 300.0);
+        let near = h.tree.insert_with(
+            h.root(),
+            HitBox,
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                margin: crate::props::Insets::new(300.0, 270.0, 0.0, 0.0),
+                ..LayoutProps::default()
+            },
+        );
+        h.tree.set_tooltip(near, "靠下靠右的提示文字，足够长以撑宽气泡触发右缘滑移");
+        h.frame();
+        h.move_to(h.center(near));
+        h.idle(0.6);
+        let popup = h.tree.tooltip_popup().expect("提示显示");
+        let r = h.rect(popup);
+        let anchor = h.rect(near);
+        assert!(
+            r.bottom() <= anchor.origin.y + 0.01,
+            "下方放不下 → 上翻：气泡 {r:?} / 锚点 {anchor:?}"
+        );
+        let bounds = h.tree.popup_bounds();
+        assert!(
+            r.origin.x >= bounds.origin.x - 0.01 && r.right() <= bounds.right() + 0.01,
+            "气泡不越出放置区：{r:?} / {bounds:?}"
+        );
     }
 
     #[test]
