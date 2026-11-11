@@ -11,13 +11,20 @@ use std::path::{Path, PathBuf};
 /// 受管的库 crate（顺序即快照里的分节顺序）。
 ///
 /// 判据不是「是不是 lib」，而是「下游应用会不会直接 use 它」：core / canvas / element /
-/// controls 是应用直接消费的四层，a11y 是外壳要接的桥 —— 这五个的公共面一旦被应用引用，
-/// 改动就是破坏。render 是外壳内部实现，暂不纳入（它没有稳定的应用侧契约）。
-pub const CRATES: [&str; 5] = [
+/// controls 是应用直接消费的四层，harness 是三个真应用（settings / launcher / librarian）
+/// 实际绑的壳（`TreeHost` / `App` / `platform`），a11y 是外壳要接的桥 —— 这六个的公共面
+/// 一旦被应用引用，改动就是破坏。render 是外壳内部实现，暂不计入（它没有稳定的应用侧契约）。
+///
+/// harness 放在 controls 与 a11y 之间：维持「应用直接消费的四层 → 应用壳 → 无障碍桥」
+/// 的读法，且 harness 依赖 controls、a11y 被 harness 可选依赖，分节顺序与依赖方向一致。
+/// 2026-11-11 补：harness 自三个应用接线起就已是应用侧契约，`API_STABILITY.md` §二
+/// 原先「接第一个外部应用时纳入」的前提在那天已过期。
+pub const CRATES: [&str; 6] = [
     "kanesumi-core",
     "kanesumi-canvas",
     "kanesumi-element",
     "kanesumi-controls",
+    "kanesumi-harness",
     "kanesumi-a11y",
 ];
 

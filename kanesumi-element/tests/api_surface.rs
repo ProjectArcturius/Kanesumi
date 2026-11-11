@@ -3,7 +3,7 @@
 // 为什么要有它：Kanesumi 一旦被上层应用（settings / librarian / launcher）消费，
 // 改接口就是改别人的编译错误。人工「注意一下」守不住 —— 必须有一条会红的线。
 //
-// 机制：把四个库 crate 的 `pub fn` / `pub struct` / `pub enum` / `pub trait` 签名
+// 机制：把六个库 crate 的 `pub fn` / `pub struct` / `pub enum` / `pub trait` 签名
 // 扫成排序去重的清单，与本目录同级的 `docs/API_SURFACE.txt` 比对。**任何增删改签名
 // 都会红**，于是每一次接口变动都必须显式重新生成并写进提交信息 —— 变更是有意的。
 //

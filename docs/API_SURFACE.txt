@@ -1413,6 +1413,248 @@ pub struct TreeRow {
 pub struct TreeViewNode {
 pub trait ItemFactory: 'static {
 
+## kanesumi-harness
+pub const fn enabled(&self) -> bool {
+pub const fn new(
+pub const fn new() -> Self {
+pub const fn new(delay_ms: u32, rate: u32) -> Self {
+pub const fn with_min_size(mut self, width: f32, height: f32) -> Self {
+pub const fn with_top_margin(mut self, margin: f32) -> Self {
+pub enum AnchorKind {
+pub enum BackdropTarget {
+pub enum ContextMenuAction {
+pub enum EtherRole {
+pub enum ImeAction {
+pub enum InputEvent {
+pub enum LayerCommand {
+pub enum LayerEvent {
+pub enum LayerKeyboardInteractivity {
+pub enum LayerKind {
+pub enum LayerParent {
+pub enum LockEvent {
+pub enum RendererKind {
+pub enum SurfaceClass {
+pub enum SurfaceKind {
+pub enum SurfaceRenderer {
+pub fn a11y_enabled(&self) -> bool {
+pub fn a11y_update(&self) -> Option<kanesumi_a11y::A11yUpdate> {
+pub fn advance_frame(&mut self, now: Instant) -> f64 {
+pub fn after_done(&mut self, serial_matched: bool) -> bool {
+pub fn allows_context_update(&mut self, action: Option<ImeAction>) -> bool {
+pub fn animate(&mut self, id: LayerId, anim: LayerAnim) {
+pub fn app(&self) -> &A {
+pub fn apply(&self) -> Vec<InputEvent> {
+pub fn apply_done(&self, serial: u32, current_serial: u32) -> ImeDoneOutcome {
+pub fn begin(&mut self, name: &str, trigger: std::time::Instant) {
+pub fn callback_pending(&self) -> bool {
+pub fn can_render(&mut self, now: Instant, animating: bool) -> (bool, bool) {
+pub fn cancel(&mut self) {
+pub fn canvas_v2_active(env: Option<&str>) -> bool {
+pub fn canvas_v2_enabled() -> bool {
+pub fn capture() -> Self {
+pub fn choose_renderer(
+pub fn close(&mut self) {
+pub fn compute_ime_action(
+pub fn config(&self) -> RepeatConfig {
+pub fn config_path() -> PathBuf {
+pub fn count_dropped(intervals_ms: &[f32], refresh_ms: f32) -> u32 {
+pub fn create(&mut self, id: LayerId, parent: LayerParent, rect: Rect) {
+pub fn current_predicted_present(&self) -> Option<Instant> {
+pub fn decision_reason(
+pub fn default_expected_hz(class: SurfaceClass) -> f32 {
+pub fn default_repeatable(key: &kanesumi_element::Key) -> bool {
+pub fn diagnostics(&self) -> String {
+pub fn dmabuf_probe_entry() {
+pub fn drain(&mut self) -> Vec<(Option<usize>, InputEvent)> {
+pub fn drain_gpu_samples(&mut self) -> Vec<f32> {
+pub fn enable_a11y(&mut self) {
+pub fn ensure_started(app_id: &str) {
+pub fn fallback_clip_events(id: LayerId, anim: &LayerClipAnim) -> [LayerEvent; 1] {
+pub fn fallback_events(id: LayerId, anim: &LayerAnim) -> [LayerEvent; 1] {
+pub fn find_font() -> Option<std::path::PathBuf> {
+pub fn find_font_source() -> Option<kanesumi_canvas::text::FontSource> {
+pub fn fingerprint() -> Option<SystemTime> {
+pub fn finish(&mut self, name: &str, _now: std::time::Instant) -> Option<String> {
+pub fn floating_tree(&self, index: usize) -> Option<&Tree> {
+pub fn format_header(
+pub fn format_line(proc: &str, role: &str, surface: &str, p: &SurfacePerf) -> String {
+pub fn format_pacing_line(r: &PacingReport) -> String {
+pub fn frame_phases_enabled() -> bool {
+pub fn from_env() -> Self {
+pub fn gpu_kill_switch() -> bool {
+pub fn gpu_timing_supported(&self) -> bool {
+pub fn handle_pointer(
+pub fn held(&self) -> Option<u64> {
+pub fn hovered_rects(&self) -> Vec<kanesumi_core::Rect> {
+pub fn instant_of(&self, mono: Duration) -> Instant {
+pub fn interaction_signature(&self) -> MenuInteractionSignature {
+pub fn interval_secs(&self) -> f64 {
+pub fn into_inner(self) -> kanesumi_render::CanvasV2 {
+pub fn is_animating(&self) -> bool {
+pub fn is_dropped(interval_ms: f32, refresh_ms: f32) -> bool {
+pub fn is_empty(&self) -> bool {
+pub fn is_installed() -> bool {
+pub fn is_open(&self) -> bool {
+pub fn is_spike(t: &FrameTiming) -> bool {
+pub fn is_target_valid(&self) -> bool {
+pub fn is_visible(&self) -> bool {
+pub fn key_id(key: &kanesumi_element::Key) -> u64 {
+pub fn key_to_text_input(key: Key) -> Option<kanesumi_controls::TextInputKey> {
+pub fn keyboard_interactivity(self) -> LayerKeyboardInteractivity {
+pub fn kill_switch_active(env_canesumi_gpu: Option<&str>, gpu_off_file: bool) -> bool {
+pub fn last_c15_stats(&self) -> Option<(bool, f32, u32)> {
+pub fn last_draws(&self) -> Option<u32> {
+pub fn last_frame_full(&self) -> bool {
+pub fn load() -> InteractionSettings {
+pub fn load() -> MetroTheme {
+pub fn load_backdrop() -> Backdrop {
+pub fn load_wallpaper() -> Option<kanesumi_canvas::Icon> {
+pub fn load_wallpaper_from(backdrop: &Backdrop) -> Option<kanesumi_canvas::Icon> {
+pub fn mark(
+pub fn max(&self) -> f32 {
+pub fn maybe_spike(proc: &str, role: &str, surface: &str, t: &FrameTiming) -> bool {
+pub fn mono_base(&self) -> &MonoBase {
+pub fn mono_of(&self, t: Instant) -> Duration {
+pub fn monotonic_now() -> Duration {
+pub fn msaa_samples(&self) -> u32 {
+pub fn msaa_samples() -> u32 {
+pub fn new(
+pub fn new() -> Self {
+pub fn new(config: RepeatConfig) -> Self {
+pub fn new(mut app: A) -> Self {
+pub fn new(period: Duration) -> Self {
+pub fn new_with_backends(
+pub fn next_wake(
+pub fn next_wake(&self, now: f64) -> Option<f64> {
+pub fn note(stage: &str) {
+pub fn note_detail(stage: &str, detail: &str) {
+pub fn note_once(stage: &'static str) {
+pub fn note_once_detail(stage: &'static str, detail: &str) {
+pub fn now_ms() -> f64 {
+pub fn on_discarded(&mut self) {
+pub fn on_frame_callback(&mut self) {
+pub fn on_frame_callback(&mut self, cb_at: Instant) {
+pub fn on_frame_rendered(&mut self) {
+pub fn on_present(&mut self, now: std::time::Instant) {
+pub fn on_presented(&mut self, presented_at: Instant, refresh_ns: u32) {
+pub fn on_request_callback(&mut self, now: Instant) {
+pub fn one_canvas() -> bool {
+pub fn one_canvas_active(env_one_canvas: Option<&str>) -> bool {
+pub fn open(&mut self, engine: &TextEngine, anchor: Point, items: Vec<MenuItem>, screen: Rect) {
+pub fn pacing_begin(name: &str, trigger: std::time::Instant) {
+pub fn pacing_feedback(name: &str, err_us: f32) {
+pub fn pacing_finish(name: &str, now: std::time::Instant) {
+pub fn pacing_mark(name: &str, active: bool, trigger: std::time::Instant, now: std::time::Instant) {
+pub fn pacing_present(now: std::time::Instant) {
+pub fn pacing_present_named(
+pub fn pacing_set_period(period: std::time::Duration) {
+pub fn panel_rect(&self) -> Rect {
+pub fn panel_size(&self, engine: &TextEngine) -> kanesumi_core::Size {
+pub fn parse(raw: &str) -> InteractionSettings {
+pub fn parse(raw: &str) -> MetroTheme {
+pub fn parse_backdrop(raw: &str) -> Backdrop {
+pub fn parts_mut(&mut self) -> (&mut A, &mut Tree) {
+pub fn pending(&self) -> bool {
+pub fn percentile(&self, p: f32) -> f32 {
+pub fn period(&self) -> Duration {
+pub fn physical_size(&self) -> (u32, u32) {
+pub fn poll(&mut self, now: f64) -> Option<u64> {
+pub fn predict_next_present(&mut self, now: Instant) -> Instant {
+pub fn press(&mut self, id: u64, now: f64, repeatable: bool) {
+pub fn probe_stage_name(code: u8) -> &'static str {
+pub fn push(&mut self, c: LayerCommand) {
+pub fn push(&mut self, target: Option<usize>, event: InputEvent) {
+pub fn read_font_bytes(path: &Path) -> io::Result<FontBytes> {
+pub fn readback_slot_for(frame: u64, slots: u64, lag: u64) -> Option<usize> {
+pub fn record(&mut self, button: PointerButton, x: f32, y: f32, time_ms: u32) -> bool {
+pub fn record(&mut self, ms: f32) {
+pub fn record(&mut self, render_ms: f32, raster_ms: f32, commit_ms: f32) {
+pub fn record_acquire(&mut self, ms: f32) {
+pub fn record_c15(&mut self, inc: bool, dmg_pct: f32, insts: u32) {
+pub fn record_draws(&mut self, n: u32) {
+pub fn record_feedback(&mut self, name: &str, err_us: f32) {
+pub fn record_gpu(&mut self, gpu_ms: f32) {
+pub fn record_phases(&mut self, t: &FrameTiming) {
+pub fn record_present(
+pub fn refresh_period_ms() -> f32 {
+pub fn release(&mut self, id: u64) {
+pub fn render(
+pub fn render(&mut self, engine: &TextEngine, scene: &Scene) {
+pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
+pub fn render_backends() -> Vec<wgpu::Backends> {
+pub fn render_png(
+pub fn render_with_damage(
+pub fn render_with_damage(&mut self, engine: &TextEngine, scene: &Scene, damage: Option<Rect>) {
+pub fn request() {
+pub fn reset(&mut self) {
+pub fn resize(&mut self, width: f32, height: f32, scale: f32) {
+pub fn route_main_event(
+pub fn run(app: &'static mut dyn App, engine: TextEngine) -> ! {
+pub fn run(app: &mut dyn App) -> ! {
+pub fn set_a11y_window_focused(&mut self, focused: bool) {
+pub fn set_config(&mut self, config: RepeatConfig) {
+pub fn set_content(&mut self, id: LayerId, scene: Scene) {
+pub fn set_hook(hook: Hook) {
+pub fn set_period(&mut self, period: Duration) {
+pub fn set_refresh_period(&mut self, period_ms: f32) {
+pub fn set_settings(&mut self, settings: InteractionSettings) {
+pub fn set_text_tuning(&mut self, tuning: TextRenderTuning) {
+pub fn signal_name(sig: i32) -> String {
+pub fn spike_line(proc: &str, role: &str, surface: &str, t: &FrameTiming) -> String {
+pub fn start(app_id: &str) {
+pub fn state_log_path(name: &str) -> Option<PathBuf> {
+pub fn supports_v3(proxy_version: u32) -> bool {
+pub fn surface_kind(self) -> SurfaceKind {
+pub fn take(&mut self) -> Vec<LayerCommand> {
+pub fn take_acquire_ms(&mut self) -> Option<f32> {
+pub fn take_frame_timing(&mut self) -> crate::perf::FrameTiming {
+pub fn text_tuning(&self) -> TextRenderTuning {
+pub fn ticks_to_ms(start: u64, end: u64, period_ns: f32) -> f32 {
+pub fn timestamp_slot(frame: u64, slots: u64) -> usize {
+pub fn total(&self) -> u64 {
+pub fn total_ms(&self) -> f32 {
+pub fn tree(&self) -> &Tree {
+pub fn update(&mut self, dt: f64) {
+pub fn with_context(
+pub fn write_log(path: &Path, content: &str) {
+pub fn write_pacing(line: &str) {
+pub struct AppConfig {
+pub struct Backdrop {
+pub struct BackdropMaterial {
+pub struct CanvasV2(pub kanesumi_render::CanvasV2);
+pub struct ClickTracker {
+pub struct ContextMenuState {
+pub struct DmabufBuffers {
+pub struct DmabufDevice {
+pub struct FloatingLayer {
+pub struct FrameClock {
+pub struct FramePacing {
+pub struct FrameTiming {
+pub struct ImeDoneOutcome {
+pub struct ImeReconcileGate {
+pub struct InputCoalescer {
+pub struct KeyRepeat {
+pub struct LayerAnim {
+pub struct LayerClipAnim {
+pub struct LayerId(pub u32);
+pub struct LayerInsets {
+pub struct LayerQueue {
+pub struct MonoBase {
+pub struct PacingReport {
+pub struct PacingThrottle {
+pub struct PendingImeBatch {
+pub struct PopupRequest {
+pub struct PresentationFeedbackData {
+pub struct Renderer {
+pub struct RepeatConfig {
+pub struct Ring {
+pub struct RoleParseError;
+pub struct SurfacePerf {
+pub struct TreeHost<A: TreeApp> {
+pub trait App {
+pub trait GpuContextExt {
+pub trait TreeApp {
+
 ## kanesumi-a11y
 pub fn current(&self) -> Option<TreeUpdate> {
 pub fn flush(&mut self) {
