@@ -95,7 +95,7 @@ pub(crate) enum DismissCause {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kanesumi_canvas::Scene;
+    use kanesumi_canvas::{Scene, SceneCommand};
     use kanesumi_core::{Rect, Size};
 
     use crate::event::{Event, Key};
@@ -251,6 +251,16 @@ mod tests {
 
     fn seen(h: &mut TestHarness) -> Vec<Seen> {
         h.take::<Seen>().into_iter().map(|(_, a)| a).collect()
+    }
+
+    /// 焦点框是框架在 compose 阶段加的 StrokeRect；指针聚焦应为 0 条。
+    fn focus_strokes(h: &TestHarness) -> usize {
+        h.last
+            .scene
+            .commands
+            .iter()
+            .filter(|c| matches!(c, SceneCommand::StrokeRect { .. }))
+            .count()
     }
 
     /// 一段状态转录：每行 = 输入 + 该输入之后的可观察状态。
@@ -457,11 +467,13 @@ mod tests {
         h.click(b);
         t.state(2, "click(b)", &h, b);
         t.state(2, "click(b)", &h, a);
+        assert_eq!(focus_strokes(&h), 0, "指针聚焦不画焦点框");
         h.click(b);
         t.state(3, "click(b_again)", &h, b);
         h.tab();
         t.state(4, "Tab", &h, a);
         t.state(4, "Tab", &h, b);
+        assert_eq!(focus_strokes(&h), 2, "键盘焦点画外 2px + 内 1px");
         t.expect(
             "01 Tab                      hover=0 pressed=0 focus_visible=1\n\
              01 Tab                      hover=0 pressed=0 focus_visible=0\n\
@@ -572,11 +584,22 @@ mod tests {
         let mut h = TestHarness::new(300.0, 200.0);
         let a = probe_at(&mut h, 10.0, 10.0, 80.0, 24.0, Probe::new(80.0, 24.0));
         h.frame();
+        let mut t = Trace::default();
         h.press_at(h.center(a), PointerButton::Left);
+        t.state(1, "press(a)", &h, a);
         h.tree.pointer_double(h.center(a), PointerButton::Left);
+        t.state(2, "double(a)", &h, a);
         h.release_at(h.center(a), PointerButton::Left);
         h.frame();
+        t.state(3, "release(a)", &h, a);
         let events = seen(&mut h);
+        t.note(4, "events", &format!("{events:?}"));
+        t.expect(
+            "01 press(a)                 hover=1 pressed=1 focus_visible=0\n\
+             02 double(a)                hover=1 pressed=1 focus_visible=0\n\
+             03 release(a)               hover=1 pressed=0 focus_visible=0\n\
+             04 events                   [Enter, Down, Double, Up, Click]",
+        );
         assert_eq!(
             events,
             [Seen::Enter, Seen::Down, Seen::Double, Seen::Up, Seen::Click],
