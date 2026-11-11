@@ -7,7 +7,11 @@
 //
 // 纯逻辑、跨平台、不依赖 harness：外壳由 harness 的 `TreeHost` 接入（参 ELEMENT_TREE §Ⅷ）。
 
+#[cfg(test)]
+mod alloc_budget;
+
 pub mod access;
+pub mod diagnostics;
 pub mod event;
 pub mod id;
 pub mod ime;
@@ -20,6 +24,7 @@ pub mod visual_state;
 pub mod widget;
 pub mod widgets;
 
+pub use diagnostics::{STRICT_ENV, set_strict_for_test, strict};
 pub use access::{
     AccessNode, AccessViolation, AccessViolationKind, check_access_contract, check_bounds_hit,
     check_disabled_state, check_focusable_named,
