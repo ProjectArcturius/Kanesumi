@@ -838,6 +838,73 @@ mod tests {
         );
     }
 
+    /// 四种轻关闭在同一序列里各走一次：顺序固定为 Esc → 外点 → 失焦 → 右键重开。
+    /// 外点看「下层是否收到事件」，Esc 看返回值；失焦不是输入事件，没有消费语义。
+    #[test]
+    fn transcript_light_dismiss_order() {
+        let mut h = TestHarness::new(300.0, 200.0);
+        let a = probe_at(&mut h, 10.0, 10.0, 80.0, 24.0, Probe::menu(80.0, 24.0));
+        h.frame();
+        h.move_to(h.center(a));
+        h.frame();
+        let _ = seen(&mut h); // 悬停 Enter 属于上一动作，清掉后只看点击是否落到底层。
+        let mut t = Trace::default();
+        open_popup(&mut h, a, Point::new(120.0, 60.0), false);
+        t.note(1, "open", &format!("popups={}", h.tree.popups().count()));
+        let consumed = h.key(Key::Escape);
+        t.note(
+            2,
+            "Esc",
+            &format!(
+                "consumed={} popups={}",
+                consumed as u8,
+                h.tree.popups().count()
+            ),
+        );
+        open_popup(&mut h, a, Point::new(120.0, 60.0), false);
+        t.note(3, "reopen", &format!("popups={}", h.tree.popups().count()));
+        h.click_at(h.center(a));
+        t.note(
+            4,
+            "outside_click",
+            &format!(
+                "popups={} lower_events={}",
+                h.tree.popups().count(),
+                seen(&mut h).len()
+            ),
+        );
+        open_popup(&mut h, a, Point::new(120.0, 60.0), false);
+        t.note(5, "reopen", &format!("popups={}", h.tree.popups().count()));
+        h.tree.dismiss_popups();
+        t.note(
+            6,
+            "window_blur",
+            &format!("popups={}", h.tree.popups().count()),
+        );
+        h.right_click(a);
+        let reopened = h.tree.popups().next();
+        t.note(
+            7,
+            "right_click",
+            &format!(
+                "popups={} same_anchor={}",
+                h.tree.popups().count(),
+                reopened
+                    .and_then(|p| h.tree.popup_spec(p))
+                    .is_some_and(|s| s.anchor == Some(a)) as u8
+            ),
+        );
+        t.expect(
+            "01 open                     popups=1\n\
+             02 Esc                      consumed=1 popups=0\n\
+             03 reopen                   popups=1\n\
+             04 outside_click            popups=0 lower_events=0\n\
+             05 reopen                   popups=1\n\
+             06 window_blur              popups=0\n\
+             07 right_click              popups=1 same_anchor=1",
+        );
+    }
+
     // ── ⑦ 悬停提示延迟：静止满 500 ms 才出，移动超出 4×4 px 框即撤回 ────────────
 
     fn tooltip_probe(h: &mut TestHarness) -> WidgetId {
