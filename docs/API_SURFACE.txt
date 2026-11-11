@@ -524,6 +524,7 @@ pub fn prefetch(&self) -> bool {
 pub fn press_at(&mut self, pos: Point, button: PointerButton) {
 pub fn props(&self, id: WidgetId) -> Option<LayoutProps> {
 pub fn raster(icon: Icon) -> Self {
+pub fn record(&mut self, button: PointerButton, x: f32, y: f32, time_ms: u32) -> bool {
 pub fn rect(&self) -> Rect {
 pub fn rect(&self, id: WidgetId) -> Option<Rect> {
 pub fn rect(&self, id: WidgetId) -> Rect {
@@ -536,6 +537,7 @@ pub fn request_anim_frame(&mut self) {
 pub fn request_focus(&mut self, keyboard: bool) {
 pub fn request_full_repaint(&mut self) {
 pub fn request_timer(&mut self, secs: f64) {
+pub fn reset(&mut self) {
 pub fn resize(&mut self, width: f32, height: f32) {
 pub fn right_click(&mut self, id: WidgetId) {
 pub fn root(&self) -> WidgetId {
@@ -563,6 +565,7 @@ pub fn set_layer_opacity(&mut self, id: WidgetId, opacity: f32) {
 pub fn set_phase_timing(&mut self, on: bool) {
 pub fn set_popup_bounds(&mut self, bounds: Option<Rect>) {
 pub fn set_scroller(&mut self, id: WidgetId, on: bool) -> bool {
+pub fn set_settings(&mut self, settings: InteractionSettings) {
 pub fn set_theme(&mut self, theme: MetroTheme) {
 pub fn set_tooltip(&mut self, id: WidgetId, text: impl Into<String>) {
 pub fn settle(&mut self) {
@@ -618,6 +621,7 @@ pub struct AdaptiveGrid {
 pub struct AdaptiveStack {
 pub struct ArrangeCtx<'a> {
 pub struct Border {
+pub struct ClickTracker {
 pub struct ContentFrameStats {
 pub struct ControlStates {
 pub struct EditCtx {

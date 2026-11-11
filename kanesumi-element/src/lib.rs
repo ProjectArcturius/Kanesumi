@@ -11,6 +11,7 @@ pub mod access;
 pub mod event;
 pub mod id;
 pub mod ime;
+pub mod interaction;
 pub mod layer;
 pub mod props;
 pub mod testing;
