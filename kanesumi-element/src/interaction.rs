@@ -348,18 +348,18 @@ mod tests {
         h.frame();
         let mut t = Trace::default();
         h.move_to(h.center(a));
-        t.state(1, "move(child_a)", &h, pane);
-        t.state(2, "move(child_a)", &h, a);
+        t.state(1, "move(child_a)/pane", &h, pane);
+        t.state(2, "move(child_a)/a", &h, a);
         h.move_to(h.center(b));
-        t.state(3, "move(child_b)", &h, pane);
-        t.state(4, "move(child_b)", &h, a);
-        t.state(5, "move(child_b)", &h, b);
+        t.state(3, "move(child_b)/pane", &h, pane);
+        t.state(4, "move(child_b)/a", &h, a);
+        t.state(5, "move(child_b)/b", &h, b);
         t.expect(
-            "01 move(child_a)            hover=1 pressed=0 focus_visible=0\n\
-             02 move(child_a)            hover=1 pressed=0 focus_visible=0\n\
-             03 move(child_b)            hover=1 pressed=0 focus_visible=0\n\
-             04 move(child_b)            hover=0 pressed=0 focus_visible=0\n\
-             05 move(child_b)            hover=1 pressed=0 focus_visible=0",
+            "01 move(child_a)/pane       hover=1 pressed=0 focus_visible=0\n\
+             02 move(child_a)/a          hover=1 pressed=0 focus_visible=0\n\
+             03 move(child_b)/pane       hover=1 pressed=0 focus_visible=0\n\
+             04 move(child_b)/a          hover=0 pressed=0 focus_visible=0\n\
+             05 move(child_b)/b          hover=1 pressed=0 focus_visible=0",
         );
         // 父级只进一次、没有离开：子节点切换不产生 Enter/Leave 抖动。
         assert_eq!(
@@ -462,26 +462,26 @@ mod tests {
         h.frame();
         let mut t = Trace::default();
         h.tab();
-        t.state(1, "Tab", &h, a);
-        t.state(1, "Tab", &h, b);
+        t.state(1, "Tab/a", &h, a);
+        t.state(1, "Tab/b", &h, b);
         h.click(b);
-        t.state(2, "click(b)", &h, b);
-        t.state(2, "click(b)", &h, a);
+        t.state(2, "click(b)/b", &h, b);
+        t.state(2, "click(b)/a", &h, a);
         assert_eq!(focus_strokes(&h), 0, "指针聚焦不画焦点框");
         h.click(b);
-        t.state(3, "click(b_again)", &h, b);
+        t.state(3, "click(b_again)/b", &h, b);
         h.tab();
-        t.state(4, "Tab", &h, a);
-        t.state(4, "Tab", &h, b);
+        t.state(4, "Tab/a", &h, a);
+        t.state(4, "Tab/b", &h, b);
         assert_eq!(focus_strokes(&h), 2, "键盘焦点画外 2px + 内 1px");
         t.expect(
-            "01 Tab                      hover=0 pressed=0 focus_visible=1\n\
-             01 Tab                      hover=0 pressed=0 focus_visible=0\n\
-             02 click(b)                 hover=1 pressed=0 focus_visible=0\n\
-             02 click(b)                 hover=0 pressed=0 focus_visible=0\n\
-             03 click(b_again)           hover=1 pressed=0 focus_visible=0\n\
-             04 Tab                      hover=0 pressed=0 focus_visible=1\n\
-             04 Tab                      hover=1 pressed=0 focus_visible=0",
+            "01 Tab/a                    hover=0 pressed=0 focus_visible=1\n\
+             01 Tab/b                    hover=0 pressed=0 focus_visible=0\n\
+             02 click(b)/b               hover=1 pressed=0 focus_visible=0\n\
+             02 click(b)/a               hover=0 pressed=0 focus_visible=0\n\
+             03 click(b_again)/b         hover=1 pressed=0 focus_visible=0\n\
+             04 Tab/a                    hover=0 pressed=0 focus_visible=1\n\
+             04 Tab/b                    hover=1 pressed=0 focus_visible=0",
         );
         assert_eq!(h.tree.focused(), Some(a));
         assert!(h.tree.focus_is_keyboard(), "Tab 重新取得键盘焦点");
