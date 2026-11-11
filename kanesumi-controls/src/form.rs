@@ -1,4 +1,4 @@
-// form.rs —— 页面语法（form grammar）：页标题 / 分区标题 / 行 / 说明 / 链接 / 滑杆。
+// form.rs —— 页面语法（form grammar）：页标题 / 分区标题 / 可折叠节 / 行 / 说明 / 链接 / 滑杆。
 //
 // 存在理由：设置类页面几乎全是同一套结构 ——「分区标题 + 一行一个设置项，标签在上、
 // 控件在下、说明在最下」。此前这套结构以 755 行私有 `settings/src/window/grammar.rs`
@@ -27,6 +27,7 @@ use kanesumi_element::{
 };
 
 use crate::button::MetroButton;
+use crate::expander::MetroExpander;
 use crate::slider::MetroSlider;
 use crate::surface::MetroSurface;
 use crate::switch::MetroSwitch;
@@ -234,6 +235,16 @@ pub struct Form {
     prev_mb: f32,
 }
 
+/// [`Form::expander`] 建出的可折叠节：`expander` 是标题行控件（展开态 / 动画都在它身上），
+/// `body` 是它下面的内容列（整节重建时清这个节点，不要清展开器自己）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormExpander {
+    /// 展开器节点（`MetroExpander`）：点标题、按 Enter / 空格都由它处理。
+    pub expander: WidgetId,
+    /// 内容列节点：节内所有块的父节点，重建时 `tree.clear_children(body)`。
+    pub body: WidgetId,
+}
+
 impl Form {
     /// 在 `parent` 里开始一列。
     pub fn new(parent: WidgetId) -> Self {
@@ -284,6 +295,38 @@ impl Form {
         let mt = if first { SECTION_FIRST_MT } else { SECTION_MT };
         let block = self.block(tree, mt, SECTION_MB);
         text_block(tree, block, text, s_section(), ThemeColor::OnSurface, 0.0)
+    }
+
+    /// 可折叠节：标题行由 [`MetroExpander`] 自绘，内容写进它下面的单列容器。
+    ///
+    /// 语义照 Win10 设置页：`expanded = true` 是默认展开态（**不播开场动画**，首帧就有
+    /// 完整内容高）；点标题行 / Enter / 空格外加一个 `ExpanderToggled`。收起时展开器
+    /// 不再量测内容（只报标题高），但子树原样留在树里 —— 元素 id 与序号不变，重新展开
+    /// 或动画中途反向都能接着走（参 `expander.rs` 的 `measure` / `arrange`）。
+    ///
+    /// 闭包同时拿到 `&mut Tree` 与一个以内容列起头的 [`Form`]：`Form` 本身不持有树，
+    /// 让调用方仍能用同一棵树继续插自己的控件（`|tree, f| { f.list_item(tree, …); }`）。
+    ///
+    /// 返回的 [`FormExpander`] 同时给出展开器与内容列 id：内容列是「整节重建」的宿主
+    /// （`tree.clear_children(body)` 后重新填），展开器身份与展开态不受重建影响。
+    pub fn expander(
+        &mut self,
+        tree: &mut Tree,
+        title: &str,
+        expanded: bool,
+        fill: impl FnOnce(&mut Tree, &mut Form),
+    ) -> FormExpander {
+        let block = self.block(tree, 0.0, ITEM_MB);
+        let expander = tree.insert_with(
+            block,
+            MetroExpander::new(title).with_expanded(expanded),
+            LayoutProps::default(),
+        );
+        // 展开器只按「一个内容容器」量测；内容列再逐块累加，否则多行会被取最大高度。
+        let body = tree.insert_with(expander, Stack::column(), LayoutProps::default());
+        let mut inner = Form::new(body);
+        fill(tree, &mut inner);
+        FormExpander { expander, body }
     }
 
     /// 开关行：**Win10 行文法** —— 标签（+ 可选说明）在左，开关贴行右端并垂直居中。
@@ -781,4 +824,281 @@ pub fn related(
         }
     }
     column
+}
+
+#[cfg(test)]
+mod expander_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use kanesumi_canvas::Scene;
+    use kanesumi_core::Point;
+    use kanesumi_element::testing::TestHarness;
+
+    use crate::expander::{EXPANDER_HEADER_HEIGHT, MetroExpander};
+
+    /// 计数用子控件：记录 `measure` 被调用次数（钉住「折叠后不重量测 / 动画只动视觉」）。
+    struct Counted {
+        size: Size,
+        count: Rc<Cell<u32>>,
+    }
+
+    impl Widget for Counted {
+        fn measure(&mut self, _ctx: &mut MeasureCtx, _available: Size) -> Size {
+            self.count.set(self.count.get() + 1);
+            self.size
+        }
+        fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
+            scene.fill_rect(kanesumi_core::Color::WHITE, ctx.rect());
+        }
+    }
+
+    fn harness() -> (TestHarness, WidgetId) {
+        let mut h = TestHarness::new(600.0, 900.0);
+        let col = h
+            .tree
+            .insert_with(h.root(), Stack::column(), LayoutProps::default());
+        h.frame();
+        (h, col)
+    }
+
+    fn header_center(h: &TestHarness, id: WidgetId) -> Point {
+        h.tree
+            .get::<MetroExpander>(id)
+            .expect("节标题应是 MetroExpander")
+            .header_rect(h.rect(id))
+            .center()
+    }
+
+    fn collapse(h: &mut TestHarness, id: WidgetId) {
+        h.click_at(header_center(h, id));
+        h.settle();
+    }
+
+    #[test]
+    fn collapsed_measures_header_only_but_keeps_body_id() {
+        let (mut h, col) = harness();
+        let mut f = Form::new(col);
+        let e = f.expander(&mut h.tree, "输出", true, |tree, f| {
+            f.list_item(tree, None, "扬声器", "已连接", ITEM_MB);
+            f.slider(tree, "主音量", "60%", 60.0, 0.0, 150.0, Some(1.0), None);
+        });
+        h.settle();
+
+        let expanded_h = h.rect(e.expander).size.height;
+        let body_h = h.rect(e.body).size.height;
+        assert!(
+            expanded_h > EXPANDER_HEADER_HEIGHT + 40.0,
+            "默认展开：量测高应含内容（实际 {expanded_h}）"
+        );
+        assert!(body_h > 40.0, "内容列应拿到内容高（实际 {body_h}）");
+
+        collapse(&mut h, e.expander);
+        assert_eq!(
+            h.rect(e.expander).size.height,
+            EXPANDER_HEADER_HEIGHT,
+            "收起后只量测标题行"
+        );
+        assert!(
+            h.rect(e.body).size.height <= 0.01,
+            "收起后内容列零高（实际 {}）",
+            h.rect(e.body).size.height
+        );
+        assert!(
+            h.tree.contains(e.body),
+            "收起只是零高槽位，内容列身份必须保留（动画可打断 / 重新展开）"
+        );
+    }
+
+    /// `expanded = false` 出生：首帧就是标题高，且**没有**从 0 起播的展开动画。
+    ///
+    /// 这条钉的是 `with_expanded` 的 `jump_to` 语义：`MetroAnim` 的 target 也得跟着落，
+    /// 否则 value=0 / target=1 会让下一帧自己「补播」展开，页面一打开就抖。
+    #[test]
+    fn built_collapsed_starts_collapsed_without_open_animation() {
+        let (mut h, col) = harness();
+        let mut f = Form::new(col);
+        let e = f.expander(&mut h.tree, "输入", false, |tree, f| {
+            f.note(tree, "节内说明");
+        });
+        h.frame();
+        assert_eq!(
+            h.rect(e.expander).size.height,
+            EXPANDER_HEADER_HEIGHT,
+            "折叠出生：首帧只有标题高"
+        );
+        assert!(
+            !h.tree.get::<MetroExpander>(e.expander).unwrap().is_animating(),
+            "折叠出生不得带开场展开动画"
+        );
+        h.settle();
+        assert_eq!(h.rect(e.expander).size.height, EXPANDER_HEADER_HEIGHT);
+        assert!(h.rect(e.body).size.height <= 0.01);
+
+        h.click_at(header_center(&h, e.expander));
+        h.settle();
+        assert!(
+            h.rect(e.expander).size.height > EXPANDER_HEADER_HEIGHT,
+            "点标题后应展开出内容"
+        );
+    }
+
+    #[test]
+    fn collapse_stops_measuring_content_and_expand_animation_only_repaints() {
+        let (mut h, col) = harness();
+        let count = Rc::new(Cell::new(0));
+        let mut f = Form::new(col);
+        let mut row = None;
+        let e = f.expander(&mut h.tree, "输出", true, |tree, f| {
+            row = Some(f.labeled(
+                tree,
+                "行",
+                Counted {
+                    size: Size::new(120.0, 80.0),
+                    count: count.clone(),
+                },
+                None,
+            ));
+        });
+        let row = row.expect("节内行应已建出");
+        h.settle();
+        let after_build = count.get();
+        assert!(after_build >= 1, "展开态应量测过内容");
+
+        collapse(&mut h, e.expander);
+        assert_eq!(count.get(), after_build, "收起后不得再量测内容");
+
+        // 内容在收起期间可能被改写：标脏后重新展开必须走一次量测；动画期只看视觉。
+        h.tree.invalidate_measure(row);
+        h.click_at(header_center(&h, e.expander));
+        h.frame();
+        let at_expand = count.get();
+        assert!(at_expand > after_build, "重新展开量测一次内容");
+        for _ in 0..6 {
+            h.frame();
+        }
+        assert_eq!(count.get(), at_expand, "展开动画期间只动视觉，不重量测");
+        h.settle();
+        assert_eq!(count.get(), at_expand, "动画结束也不额外量测");
+    }
+
+    #[test]
+    fn tab_reaches_header_and_space_toggles() {
+        let (mut h, col) = harness();
+        let mut f = Form::new(col);
+        let e = f.expander(&mut h.tree, "输出", true, |tree, f| {
+            f.note(tree, "节内说明");
+        });
+        h.settle();
+        assert_eq!(h.tree.focused(), None);
+
+        h.tab();
+        assert_eq!(
+            h.tree.focused(),
+            Some(e.expander),
+            "Tab 应停到节标题行"
+        );
+        h.key(kanesumi_element::Key::Space);
+        assert!(
+            !h.tree.get::<MetroExpander>(e.expander).unwrap().expanded,
+            "空格应折叠当前节"
+        );
+        h.settle();
+        assert_eq!(h.rect(e.expander).size.height, EXPANDER_HEADER_HEIGHT);
+    }
+
+    #[test]
+    fn list_item_inside_section_is_hittable_and_hides_on_collapse() {
+        let (mut h, col) = harness();
+        let mut ids = None;
+        let mut f = Form::new(col);
+        let e = f.expander(&mut h.tree, "输出", true, |tree, f| {
+            ids = Some(f.list_item(tree, None, "扬声器", "已连接", ITEM_MB));
+        });
+        h.settle();
+        let (title, _secondary) = ids.expect("节内列表行应已建出");
+
+        let p = h.rect(title).center();
+        assert_eq!(
+            h.tree.hit(p),
+            Some(title),
+            "节内列表行在展开态可命中"
+        );
+
+        collapse(&mut h, e.expander);
+        assert_ne!(
+            h.tree.hit(p),
+            Some(title),
+            "收起后原内容位置不再命中列表行"
+        );
+    }
+
+    #[test]
+    fn two_sections_collapse_independently() {
+        let (mut h, col) = harness();
+        let mut f = Form::new(col);
+        let a = f.expander(&mut h.tree, "输出", true, |tree, f| {
+            f.note(tree, "输出说明");
+        });
+        let b = f.expander(&mut h.tree, "输入", true, |tree, f| {
+            f.note(tree, "输入说明");
+        });
+        h.settle();
+        let b_open_h = h.rect(b.expander).size.height;
+        let b_body_h = h.rect(b.body).size.height;
+        assert!(b_open_h > EXPANDER_HEADER_HEIGHT, "第二节默认展开");
+
+        collapse(&mut h, a.expander);
+        assert_eq!(h.rect(a.expander).size.height, EXPANDER_HEADER_HEIGHT);
+        assert_eq!(
+            h.rect(b.expander).size.height,
+            b_open_h,
+            "折叠第一节不得改第二节的量测高"
+        );
+        assert!((h.rect(b.body).size.height - b_body_h).abs() < 0.01);
+
+        collapse(&mut h, b.expander);
+        assert_eq!(h.rect(b.expander).size.height, EXPANDER_HEADER_HEIGHT);
+        assert_eq!(h.rect(a.expander).size.height, EXPANDER_HEADER_HEIGHT);
+    }
+
+    #[test]
+    fn element_order_and_ids_survive_collapse_and_interrupt() {
+        let (mut h, col) = harness();
+        let mut f = Form::new(col);
+        let a = f.expander(&mut h.tree, "输出", true, |tree, f| {
+            f.note(tree, "输出说明");
+        });
+        let b = f.expander(&mut h.tree, "输入", true, |tree, f| {
+            f.note(tree, "输入说明");
+        });
+        h.settle();
+        let top_level = h.tree.children(col).to_vec();
+        let a_body = h.tree.children(a.body).to_vec();
+        let b_body = h.tree.children(b.body).to_vec();
+        assert_eq!(top_level.len(), 2, "两个节各占一个顶层块");
+        assert_eq!(h.tree.parent(a.expander).map(|p| h.tree.parent(p)), Some(Some(col)));
+
+        // 收起动画进行到一半就反向展开：同一批节点 id 必须还在原位。
+        h.click_at(header_center(&h, a.expander));
+        h.frame();
+        assert!(
+            h.tree
+                .get::<MetroExpander>(a.expander)
+                .unwrap()
+                .is_animating(),
+            "点标题后应处于收起动画中"
+        );
+        h.click_at(header_center(&h, a.expander));
+        h.settle();
+        assert!(
+            h.tree.get::<MetroExpander>(a.expander).unwrap().expanded,
+            "中途反向应回到展开态"
+        );
+        assert_eq!(h.tree.children(col), top_level.as_slice(), "顶层序号不变");
+        assert_eq!(h.tree.children(a.body), a_body.as_slice(), "第一节子序号不变");
+        assert_eq!(h.tree.children(b.body), b_body.as_slice(), "第二节子序号不变");
+        assert!(h.rect(a.expander).size.height > EXPANDER_HEADER_HEIGHT);
+    }
 }
