@@ -13,6 +13,7 @@ pub mod id;
 pub mod ime;
 pub mod layer;
 pub mod props;
+pub mod scroll;
 pub mod testing;
 pub mod transitions;
 pub mod tree;
@@ -28,6 +29,7 @@ pub use event::{Event, Key, Modifiers, PointerButton, ScrollInput, ScrollPhase, 
 pub use id::WidgetId;
 pub use ime::{ImeContentHint, ImeContext};
 pub use layer::{LayerAnimSpec, LayerClipSpec, LayerInsets, LayerOp, ScrollerRequest, ScrollerSnapshot};
+pub use scroll::ScrollKinetics;
 pub use tree::{composed_scroll_enabled, set_composed_scroll_enabled};
 pub use props::{Align, FocusGroupAxis, FocusGroupSpec, Insets, LayoutProps, LayoutRole};
 pub use transitions::{
