@@ -245,6 +245,24 @@
 > Kanesumi 取值现与 UWP 一致（暗 0.6），故「调低一档」的旧说明作废；亮色 0.4 由
 > `MetroColors::selection_tint` 按方案给。
 
+### 列表行为（虚拟化 / 键盘 / 选择 / 滚动）
+
+行为核心在 `kanesumi-controls/src/list_view.rs`（纯状态与几何），控件仍是 `MetroList`。
+
+| 项 | 语义 | 来源 |
+|---|---|---|
+| 虚拟化窗口 | 可见行 + 每侧 overscan **2 行**（总预算 4）；1000 行 / 视口 300 / 行高 40 实测单帧量测 **10 行**（顶端只多出下方 2 行） | 本仓 `list_view.rs` 验收用例 |
+| ↑↓ / Home / End | 移动焦点行（lead），夹在首末项，最小滚动使其可见（`bring_into_view`） | INTERACTION_CANON §Ⅳ / §Ⅴ |
+| PageUp / PageDown | 步长 = 视口高 − 一行 | INTERACTION_CANON §Ⅴ |
+| type-ahead | 连续字符在 1000 ms 窗口内串成一个前缀（小写前缀匹配，从 lead 的下一项起回绕） | 临时值 **T27**（正典未规定） |
+| 单击 / Ctrl+点 / Shift+点 | 单选 + 设锚点 / 切换单项并把锚点移到点击项 / 从锚点连选 | INTERACTION_CANON §Ⅶ |
+| 悬停 vs 选中 | 悬停 = 中性 10%（`hover_tint`）；选中 = `selection_tint`；两者**并存**时先画选中底再叠悬停底（UWP `PointerOverSelected`） | 本文件 §7 视觉表 |
+| 滚轮 | 一格 = 3 行 × 16 = **48 px**；到端不消费，滚动链冒泡给外层容器 | INTERACTION_CANON §Ⅴ |
+| 内容变化锚定 | 换行数据时记下视口首行的标签并把它放回原处；锚行被删则夹到末尾（不空白、不回弹） | 本仓 `ScrollAnchor` |
+
+> 行的稳定身份：`rows: Vec<String>` 没有 id，锚定只能按行标签就近匹配（重名取最接近旧索引的一处）。
+> 需要「重排后同一项不跳」的调用方，应等列表行模型带稳定键（`ItemsRepeater` 的 `ItemFactory::key` 已有）。
+
 ### 多选（备） | 网格（备）
 - 多选：左侧 20×20、2px 边框勾选框，出现动画 X 位移 0↔−32，**0.333s**，spline `0.1,0.9,0.2,1`
 - 网格：右上 34×34 对勾角标
