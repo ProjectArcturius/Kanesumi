@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ab_glyph_rasterizer::{Rasterizer, point};
-use kanesumi_core::typography::FontWeight;
+use kanesumi_core::geometry::Rect;
+use kanesumi_core::typography::{FontWeight, TextStyle};
 use rustybuzz::ttf_parser;
 use rustybuzz::{Direction, Face, UnicodeBuffer};
 use unicode_bidi::ParagraphBidiInfo;
@@ -212,6 +213,50 @@ struct VisualCluster {
     x0: f32,
     x1: f32,
     rtl: bool,
+}
+
+/// 单行文本的墨迹量测（逻辑 pt，Y 向下，坐标相对行盒顶）。
+///
+/// 与 [`TextLayout`] 的分工：排版给「行盒」几何（宽 / 行高 / 换行），本结构给**实际字形
+/// 轮廓包围盒**在行盒里的上下沿 —— 后者才是眼睛读到的墨迹。单行文字要在盒内光学居中
+/// 必须用它：字体 ascent 居中会让只有 x-height / cap-height 的字（数字、大写、汉字）
+/// 偏下，带下伸部的字（g / y / p）又偏上。
+///
+/// 量测走 `ttf_parser::Face::glyph_bounding_box`（字形轮廓的实测包围盒），不是按字号
+/// 乘一个比例常数。参 `settings/src/topbar/align.rs` 的迁移。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineBox {
+    /// 塑形宽度（含字距）。
+    pub width: f32,
+    /// 行盒高（调用方样式里的 `line_height`）。
+    pub line_height: f32,
+    /// 基线距行盒顶。
+    pub baseline: f32,
+    /// 墨迹上沿距行盒顶（可能为负：重音 / 上伸部超出行盒）。
+    pub ink_top: f32,
+    /// 墨迹下沿距行盒顶（无墨迹时 = `line_height`）。
+    pub ink_bottom: f32,
+}
+
+impl LineBox {
+    /// 墨迹高（上沿到下沿）。
+    pub fn ink_height(&self) -> f32 {
+        self.ink_bottom - self.ink_top
+    }
+
+    /// 墨迹中线距行盒顶。
+    pub fn ink_center_y(&self) -> f32 {
+        (self.ink_top + self.ink_bottom) / 2.0
+    }
+
+    /// 行盒顶对齐 `rect` 顶边时，把墨迹中线移到 `rect` 中线所需的竖向偏移。
+    ///
+    /// 返回值直接加到行盒顶 y（或作为 `TextVAlign::Center` 之后的修正量）。它只取决于
+    /// 墨迹盒与 `rect` 高，与 `rect` 的绝对 y 无关；`rect` 高等于 `line_height` 时就是
+    /// 「行盒居中后再抬多少」。
+    pub fn optical_center_offset(&self, rect: Rect) -> f32 {
+        rect.size.height / 2.0 - self.ink_center_y()
+    }
 }
 
 /// 单行塑形几何。光标和选区由视觉 cluster 推导，不再按标量字符宽度近似。
@@ -1736,6 +1781,44 @@ impl TextEngine {
     pub fn ascent(&self, size: f32) -> f32 {
         let (a, _) = self.fonts[0].line_metrics(size);
         if a > 0.0 { a } else { size * 0.8 }
+    }
+
+    /// 单行文本的墨迹量测（字形轮廓包围盒，非字号比例常数）。
+    ///
+    /// 基线取本引擎主字面的 ascent（与 `glyph_layout` 的放字公式同一口径），墨迹上 / 下沿
+    /// 取每个塑形字形的 `glyph_bounding_box`。字形的 `y_offset`（上标 / 组合）一并计入。
+    /// 空串 / 纯空白 / 字体缺该字形时没有墨迹，退回「行盒 = 墨迹盒」（偏移 0）。
+    pub fn line_box(&self, text: &str, style: TextStyle) -> LineBox {
+        let size = style.size.max(0.0);
+        let line_height = style.line_height.max(0.0);
+        let glyphs = self.shape_line_weighted(text, size, style.letter_spacing_em, style.weight);
+        let (mut above, mut below) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+        for glyph in &glyphs {
+            let Some(face) = self.fonts.get(glyph.font_id as usize) else {
+                continue;
+            };
+            let face = face.parser();
+            let Some(bb) = face.glyph_bounding_box(ttf_parser::GlyphId(glyph.glyph_id)) else {
+                continue;
+            };
+            let scale = size / f32::from(face.units_per_em()).max(1.0);
+            // y_offset 已由塑形换算成逻辑像素；把轮廓包围盒也换到同一坐标（Y+ 向上）。
+            above = above.max(glyph.y_offset + f32::from(bb.y_max) * scale);
+            below = below.max(-(glyph.y_offset + f32::from(bb.y_min) * scale));
+        }
+        let baseline = self.ascent(size);
+        let (ink_top, ink_bottom) = if above.is_finite() && below.is_finite() {
+            (baseline - above, baseline + below)
+        } else {
+            (0.0, line_height)
+        };
+        LineBox {
+            width: glyphs.iter().map(|g| g.x_advance).sum::<f32>().abs(),
+            line_height,
+            baseline,
+            ink_top,
+            ink_bottom,
+        }
     }
 
     /// 兼容单字符光标估算；真实段落绘制必须走 `shape_line`。
@@ -4273,5 +4356,88 @@ fn system_font_chain_matches_candidates() {
             "id_cand mode={mode} run={run} bytes={bytes_total} io={:.3} cur={cur_ms:.3} a={a_ms:.3} b1={b1_ms:.3} b2={b2_ms:.3} a_match={a_match}",
             io.get().as_secs_f64() * 1000.0
         );
+    }
+
+    // ── LineBox：单行墨迹光学居中（x-height / cap-height 边界）──────────────
+
+    fn line_style() -> TextStyle {
+        // 15/22 是顶栏正文口径；换成别的字号不影响下面两条边界判据。
+        TextStyle::new(15.0, 22.0, FontWeight::Normal)
+    }
+
+    /// 无下伸部的字（大写）：墨迹下沿 = 基线，中线应落在行盒中线之上，
+    /// 因此光学偏移为负（把行盒整体上提）。
+    #[test]
+    fn line_box_without_descenders_ends_at_baseline() {
+        let Some(engine) = engine() else {
+            return;
+        };
+        let b = engine.line_box("ETHER", line_style());
+        assert!(
+            (b.ink_bottom - b.baseline).abs() < 0.01,
+            "无下伸部墨迹下沿应贴基线：ink_bottom={} baseline={}",
+            b.ink_bottom,
+            b.baseline
+        );
+        assert!(b.ink_top < b.baseline, "墨迹上沿应在基线上方");
+        assert!(b.ink_height() > 0.0);
+        let offset = b.optical_center_offset(Rect::new(0.0, 0.0, 0.0, b.line_height));
+        assert!(offset < 0.0, "cap 高墨迹在行盒里偏下，须上提：{offset}");
+    }
+
+    /// 有下伸部的字（g / y / p）：墨迹下沿落到基线以下，墨迹中线比无下伸部更低，
+    /// 需要更大的上提量 —— 这正是「按字符串实测包围盒」与「按字体 ascent 猜」的区别。
+    #[test]
+    fn line_box_with_descenders_extends_below_baseline() {
+        let Some(engine) = engine() else {
+            return;
+        };
+        let style = line_style();
+        let without = engine.line_box("ETHER", style);
+        let with = engine.line_box("gyp", style);
+        assert!(
+            with.ink_bottom > with.baseline,
+            "有下伸部墨迹下沿应低于基线：ink_bottom={} baseline={}",
+            with.ink_bottom,
+            with.baseline
+        );
+        let probe = Rect::new(0.0, 0.0, 0.0, style.line_height);
+        assert!(
+            with.optical_center_offset(probe) < without.optical_center_offset(probe),
+            "带下伸部的行需要更大的上提量：with={} without={}",
+            with.optical_center_offset(probe),
+            without.optical_center_offset(probe)
+        );
+    }
+
+    /// `optical_center_offset` 的定义自证：把行盒顶放在 rect 顶边再加偏移，
+    /// 墨迹中线恰好落在 rect 中线（任意 rect 高位成立，不依赖 22 这个行高）。
+    #[test]
+    fn optical_center_offset_puts_ink_midline_on_rect_midline() {
+        let Some(engine) = engine() else {
+            return;
+        };
+        let b = engine.line_box("Ether 1920", line_style());
+        for h in [18.0, 22.0, 30.0, 44.0] {
+            let rect = Rect::new(100.0, 7.0, 240.0, h);
+            let dy = b.optical_center_offset(rect);
+            let ink_center = rect.origin.y + b.ink_center_y() + dy;
+            assert!(
+                (ink_center - (rect.origin.y + h / 2.0)).abs() < 1e-4,
+                "h={h}: 墨迹中线 {ink_center} 应等于 rect 中线 {}",
+                rect.origin.y + h / 2.0
+            );
+        }
+    }
+
+    /// 空串没有墨迹：退回「行盒即墨迹盒」，偏移为 0（不因缺字而乱抬）。
+    #[test]
+    fn empty_line_has_no_optical_offset() {
+        let Some(engine) = engine() else {
+            return;
+        };
+        let b = engine.line_box("", line_style());
+        assert_eq!((b.ink_top, b.ink_bottom), (0.0, b.line_height));
+        assert_eq!(b.optical_center_offset(Rect::new(0.0, 5.0, 10.0, 22.0)), 0.0);
     }
 }
