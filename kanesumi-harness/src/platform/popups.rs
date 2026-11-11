@@ -36,6 +36,20 @@ use crate::cpu_raster::CpuRenderer;
 use crate::renderer_policy::{RendererKind, SurfaceClass, choose_renderer, default_expected_hz};
 use crate::role::SurfaceKind;
 
+/// `Shell::popup_bounds` 的纯算术部分：把「本条表面在输出上的位置」折成主表面局部坐标的
+/// workarea。不碰 Wayland，边界可以直接钉测试。
+///
+/// 顶条：可用区从条的下缘开始（局部 y = height）；底条：条在屏幕最下，局部坐标往屏幕上方
+/// 是负 y，可用区从 `-(oh - height)` 到 `0`（条的上缘）。两者高度都是 `oh - height`。
+fn popup_area(kind: SurfaceKind, ow: f32, oh: f32, height: f32) -> Option<Rect> {
+    let room = (oh - height).max(0.0);
+    match kind {
+        SurfaceKind::LayerTop => Some(Rect::new(0.0, height, ow, room)),
+        SurfaceKind::LayerBottom => Some(Rect::new(0.0, -room, ow, room)),
+        _ => None,
+    }
+}
+
 /// 一个已开出的子弹层表面。
 pub(super) struct HostedPopup {
     pub(super) key: u64,
@@ -220,16 +234,17 @@ impl Shell {
         self.popups.iter().any(|p| p.grab)
     }
 
-    /// 放置区（主表面局部坐标）：主表面在输出上的位置可由角色推出时 = 整个输出。
-    /// 目前只为顶 / 底条（TopBar、Dock）开放 —— 窗口不知道自己在屏幕何处，弹层仍留在窗口内。
+    /// 放置区（主表面局部坐标）= 锚点所在输出的 **workarea**：输出整块减去本条自己占的
+    /// 排他区（TopBar 30pt / Dock 76pt，取自身高度，不写死）。弹层的定位规则见
+    /// `kanesumi_element::placement`（参 ELEMENT_TREE §Ⅴ.2-bis）：面板一律夹进这个矩形。
+    ///
+    /// 为什么只扣自己那条：客户端看不到别的层表面自报的排他区（协议不给），能确定的只有
+    /// 自身高度。其余排他区由合成器兜底 —— layer 弹层的约束区按父表面所在输出算
+    /// （`compositor/src/state/popup.rs` `popup_constraint_target`），positioner 再做
+    /// flip / slide。窗口（xdg toplevel）仍然不知道自己在屏幕何处，弹层留在窗口内。
     fn popup_bounds(&self) -> Option<Rect> {
         let (ow, oh) = self.output_logical_size()?;
-        let (ow, oh) = (ow as f32, oh as f32);
-        match self.role.surface_kind() {
-            SurfaceKind::LayerTop => Some(Rect::new(0.0, 0.0, ow, oh)),
-            SurfaceKind::LayerBottom => Some(Rect::new(0.0, -(oh - self.height), ow, oh)),
-            _ => None,
-        }
+        popup_area(self.role.surface_kind(), ow as f32, oh as f32, self.height)
     }
 
     /// 每迭代：放置区告知 App；按 `App::popups` 增删弹层表面。
@@ -1057,5 +1072,43 @@ mod tests {
         let plan = PopupSync::plan(&[h], &r);
         assert_eq!(plan.keep, 1, "退场是同一表面上的动画");
         assert!(plan.enters.is_empty());
+    }
+
+    /// 顶条 / 底条的放置区各扣自己那条（k-popup-placement 的「不得超出 workarea」）：
+    /// TopBar 之下的菜单即使上翻也不许盖住 TopBar；Dock 之上的菜单到条的上缘为止。
+    #[test]
+    fn popup_area_excludes_own_bar() {
+        let top = popup_area(SurfaceKind::LayerTop, 1280.0, 800.0, 30.0).unwrap();
+        assert_eq!(top, Rect::new(0.0, 30.0, 1280.0, 770.0));
+        let p =
+            kanesumi_element::placement::place(kanesumi_element::placement::PlacementRequest::new(
+                Rect::new(900.0, 780.0, 200.0, 20.0),
+                Size::new(240.0, 200.0),
+                top,
+            ));
+        assert!(
+            p.rect.origin.y >= 30.0 - 0.01,
+            "上翻不得盖住 TopBar：{:?}",
+            p.rect
+        );
+        assert!(
+            p.rect.bottom() <= 800.0 + 0.01,
+            "不得越出输出：{:?}",
+            p.rect
+        );
+
+        let bottom = popup_area(SurfaceKind::LayerBottom, 1280.0, 800.0, 76.0).unwrap();
+        assert_eq!(bottom, Rect::new(0.0, -724.0, 1280.0, 724.0));
+        assert_eq!(bottom.bottom(), 0.0, "到 Dock 上缘为止");
+    }
+
+    /// 非条状表面（窗口 / 全屏 overlay）不给放置区 —— 弹层留在表面内，行为不变；
+    /// 条比输出还高（configure 异常）时高度折 0，不出现负高度。
+    #[test]
+    fn popup_area_only_for_bars() {
+        assert!(popup_area(SurfaceKind::XdgShell, 1280.0, 800.0, 700.0).is_none());
+        assert!(popup_area(SurfaceKind::LayerOverlay, 1280.0, 800.0, 800.0).is_none());
+        let degenerate = popup_area(SurfaceKind::LayerTop, 1280.0, 800.0, 900.0).unwrap();
+        assert_eq!(degenerate.size.height, 0.0);
     }
 }
