@@ -6,7 +6,7 @@
 > 本文是「能不能动接口」的唯一判据。与 `docs/CANON_VS_TEMPORARY.md`（临时**数值**登记）互补：
 > 那份管数值，这份管**签名**。
 
-## §一 三条硬规矩
+## §一 四条硬规矩
 
 1. **先设计后落地**：新能力先写清「谁消费、怎么用、失败怎么表现」，再写实现。
    没有消费方的 API 不加（现在缺的是消费方，不是 API 数量）。
@@ -15,13 +15,24 @@
 3. **变更必须过闸门**：`docs/API_SURFACE.txt` 是公共签名的快照，
    `cargo test -p kanesumi-element --test api_surface` 会红。红了只有两种处理：
    改回去，或**显式重新生成 + 逐行 review + 在提交信息里说明为什么可以对外**。
+4. **进 harness 与进 controls 同价**：往 `kanesumi-harness` 加 `pub` 项，与往
+   `kanesumi-controls` 加 `pub` 项走同一道门 —— 同样先写清「谁消费、怎么用、失败怎么表现」，
+   再写实现。理由：harness 的 `TreeHost` / `App` / `platform` 就是三个真应用
+   （settings / launcher / librarian）直接绑的壳，多一个 `pub` 方法就多一条应用侧要长期
+   兼容的契约；「它在壳里、不在控件库里」不是随手加的理由。
 
 ## §二 哪些算公共接口
 
-`kanesumi-core` / `kanesumi-canvas` / `kanesumi-element` / `kanesumi-controls` 的
-`pub fn` / `pub struct` / `pub enum` / `pub trait` 全部算（快照里 4 节，约 1300 条）。
-`kanesumi-harness` / `kanesumi-gallery` 目前只有内部消费方，**暂不计入**；接第一个外部应用时
-一并纳入。
+`kanesumi-core` / `kanesumi-canvas` / `kanesumi-element` / `kanesumi-controls` /
+`kanesumi-a11y` 五个核心 crate，加上应用壳 `kanesumi-harness`，一共六节；它们的
+`pub fn` / `pub struct` / `pub enum` / `pub trait` 全部算（快照约 1.7k 条；2026-11-11 纳入时
+harness 一节 240 条）。
+
+harness 纳入的理由：settings / launcher / librarian 三个真应用绑的正是 harness 的
+`TreeHost` / `App` / `platform`，它从三个应用接线那天起就已经是应用侧契约。此前「harness
+暂不计入，接第一个外部应用时纳入」的前提那时就过期了 —— 闸门等于放养了最该管的一层。
+
+`kanesumi-gallery` 仍**不计入**：它是演示程序，没有下游消费方，它的 `pub` 项不构成契约。
 
 ## §三 兼容性对照表
 
