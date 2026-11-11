@@ -13,6 +13,16 @@
 
 ---
 
+## 〇、采纳口径（非临时值）
+
+> 与「临时项」相反：这些值已经定稿，是 Kanesumi 的既定尺度，**不是**「机制没做所以先写死」。
+> 它们不入下表、不需要「等权威值」；改动要走正式评审。
+
+| 项 | 口径 | 位置 | 权威来源 | 备注 |
+|---|---|---|---|---|
+| 尺度令牌（间距 / 字级 / 最小命中 / 控件内边距） | 间距 2/4/8/12/16/24/32；字级 caption 13/18、body 15/22、subtitle 20/28、title 22/28、display 46/56；最小命中指针 32、触控 44；控件内边距 8/5/8/6、文本行高 20 | `kanesumi-core/src/metrics.rs` | `docs/CONTROL_SPEC.md` §1/§7/§8/§18、`Ether/docs/INTERACTION_CANON.md` §Ⅱ「最小命中区」 | **采纳口径，不是临时值**。若与 `CONTROL_SPEC` 冲突，**以 SPEC 为准**并同步改本模块；字级与 `MetroTypography::metro()` 由单测钉死相等。 |
+| 单行文字盒内光学居中 | 按字形轮廓实测包围盒（`ttf_parser` bbox）算墨迹中线，不写手调 dy 常量 | `kanesumi-canvas/src/text.rs` `LineBox::optical_center_offset` | 字形轮廓（字体文件本身）；判门 `tools/perf/topbar_align.py` | **采纳口径**。原先的 −1.0pt 手调常量已删除；中 / 数字 / 带下伸部的字符串各自按实测盒居中。 |
+
 ## 一、当前登记在案的临时项
 
 | # | 项 | 现取值 | 位置 | 目标 / 正典 | 权威来源 | 状态 |
