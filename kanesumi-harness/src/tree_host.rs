@@ -268,6 +268,78 @@ struct FloatingTree {
     phases: kanesumi_element::FramePhases,
 }
 
+/// 外壳侧分段边界（`HostClock::mark` 的段）。与元素树内的 `Stage` 分开：这里量的是
+/// `render_into` 里 `Tree::frame_with_layout` **之外**的那些段。K1 实测树内六段只占
+/// 0.22 ms 而整段 68 ms，差额要么是树内未拆的尾段、要么就在这几段之间 —— 本表负责
+/// 把后半边钉死或排除。参 docs/ELEMENT_TREE.md §Ⅴ-bis。
+#[derive(Clone, Copy)]
+enum HostStage {
+    /// 出帧前准备（取走本帧 `dt`）。
+    Prep,
+    /// 弹层动画帧节拍记账。
+    PopupMotion,
+    /// 外层出帧调用全程（`frame_main` / `frame_with_layout`）。
+    Frame,
+    /// 内容就绪汇报。
+    Commit,
+    /// 无障碍快照发布（仅 `a11y` feature；未编译进时这条边界不存在，`host_a11y_ms` 恒 0）。
+    #[cfg(feature = "a11y")]
+    A11y,
+    /// 弹层分离记账。
+    PopupBook,
+    /// 损伤合并与 Scene 交付。
+    Deliver,
+}
+
+/// 外壳侧取时器。只在分段开关打开时实例化（`phases_on.then(HostClock::start)`）；
+/// 关闭时没有实例，热路径一次 `Instant::now()` 都不取 —— 与元素树 `PhaseClock` 同形。
+struct HostClock {
+    last: std::time::Instant,
+    phases: kanesumi_element::FramePhases,
+}
+
+impl HostClock {
+    fn start() -> Self {
+        Self {
+            last: std::time::Instant::now(),
+            phases: kanesumi_element::FramePhases::default(),
+        }
+    }
+
+    /// 结算自上次 `mark` 以来的墙钟到 `stage`，并重开表。
+    fn mark(&mut self, stage: HostStage) {
+        let now = std::time::Instant::now();
+        let ms = now.duration_since(self.last).as_secs_f32() * 1000.0;
+        self.last = now;
+        let p = &mut self.phases;
+        let slot = match stage {
+            HostStage::Prep => &mut p.host_prep_ms,
+            HostStage::PopupMotion => &mut p.host_popup_motion_ms,
+            HostStage::Frame => &mut p.host_frame_ms,
+            HostStage::Commit => &mut p.host_commit_ms,
+            #[cfg(feature = "a11y")]
+            HostStage::A11y => &mut p.host_a11y_ms,
+            HostStage::PopupBook => &mut p.host_popup_book_ms,
+            HostStage::Deliver => &mut p.host_deliver_ms,
+        };
+        *slot += ms;
+    }
+}
+
+/// 把外壳侧各段并进一帧的分段表（树内六段原样保留）。
+fn merge_host_phases(
+    dst: &mut kanesumi_element::FramePhases,
+    src: &kanesumi_element::FramePhases,
+) {
+    dst.host_prep_ms = src.host_prep_ms;
+    dst.host_popup_motion_ms = src.host_popup_motion_ms;
+    dst.host_frame_ms = src.host_frame_ms;
+    dst.host_commit_ms = src.host_commit_ms;
+    dst.host_a11y_ms = src.host_a11y_ms;
+    dst.host_popup_book_ms = src.host_popup_book_ms;
+    dst.host_deliver_ms = src.host_deliver_ms;
+}
+
 /// 外壳输入 → 树方法（主表面 / 浮层共用）。返回没有控件处理的按键（交给 App 加速键）。
 fn feed(t: &mut Tree, pointer: &mut Point, event: InputEvent) -> Option<(Key, Modifiers)> {
     match event {
@@ -811,16 +883,34 @@ impl<A: TreeApp> App for TreeHost<A> {
     }
 
     fn render_floating(&mut self, engine: &TextEngine, index: usize, size: Size) -> Scene {
+        // 先读开关再借浮层，避免与 `self.floating.get_mut` 的可变借用打架。
+        let phases_on = self.phases_on;
         let Some(f) = self.floating.get_mut(index) else {
             return Scene::default();
         };
+        let mut clock = phases_on.then(HostClock::start);
         let dt = std::mem::take(&mut f.pending_dt);
+        if let Some(c) = clock.as_mut() {
+            c.mark(HostStage::Prep);
+        }
         let app = &mut self.app;
         let out = f.tree.frame_with_layout(engine, size, dt, |tree| app.after_layout_floating(index, tree));
+        if let Some(c) = clock.as_mut() {
+            c.mark(HostStage::Frame);
+        }
         // 本帧产物即将提交：把进入提交的节点汇报给树（内容就绪门控就绪信号）。
         f.tree.report_content_committed(&out.painted);
+        if let Some(c) = clock.as_mut() {
+            c.mark(HostStage::Commit);
+        }
         f.damage = frame_damage(&out);
         f.phases = out.phases;
+        if let Some(c) = clock.as_mut() {
+            c.mark(HostStage::Deliver);
+        }
+        if let Some(c) = clock {
+            merge_host_phases(&mut f.phases, &c.phases);
+        }
         out.scene
     }
 
@@ -1296,18 +1386,33 @@ impl<A: TreeApp> App for TreeHost<A> {
             return;
         }
         crate::timeline::note_once("render_into_start");
+        // 外壳侧分段计时：开关关闭时 `clock` 为 `None`，下面每个 `if let` 都不取时钟。
+        // 量的是 K1 没覆盖到的部分（树内六段由 `Tree::frame_with_layout` 自己量）。
+        let mut clock = self.phases_on.then(HostClock::start);
         // 弹层表面动画的帧节拍：动画由合成器按 vsync 推进，客户端**不提交弹层帧**，
         // 所以只能按「主表面真实出帧」记（外壳每渲染一帧调一次本函数，渲染又受帧节流
         // 约束）。段名与 `platform/popups.rs` 的起 / 收一致，同一进程同一线程共享计数器。
         self.note_popup_motion_frames();
+        if let Some(c) = clock.as_mut() {
+            c.mark(HostStage::PopupMotion);
+        }
         let dt = std::mem::take(&mut self.pending_dt);
+        if let Some(c) = clock.as_mut() {
+            c.mark(HostStage::Prep);
+        }
         let frame = self.frame_main(engine, size, dt);
+        if let Some(c) = clock.as_mut() {
+            c.mark(HostStage::Frame);
+        }
         // 分段耗时随帧返回：外壳出帧后经 `App::take_frame_phases` 取走填 `FrameTiming`。
         self.main_phases = frame.phases;
         self.damage_full = frame.full;
         // 本帧产物即将由外壳提交：汇报进入提交的节点（内容就绪门控就绪信号）。
         // 平台提交点紧随本调用（platform.rs 主循环），故就绪与解挂同帧生效。
         self.tree.report_content_committed(&frame.painted);
+        if let Some(c) = clock.as_mut() {
+            c.mark(HostStage::Commit);
+        }
         // 无障碍：把本帧的元素树快照交给读屏。**必须在出帧之后**——布局与命中都已是本帧
         // 的结果，读屏拿到的矩形与用户看到的、鼠标点得到的完全一致（快照契约 2）。
         // 未装时只多一次 `is_none` 判断。
@@ -1318,6 +1423,11 @@ impl<A: TreeApp> App for TreeHost<A> {
         #[cfg(all(feature = "a11y", target_os = "linux"))]
         if let Some(bridge) = self.a11y_bridge.as_mut() {
             bridge.flush();
+        }
+        // 未编译进 a11y 时不取这一段：字段恒 0 表示「这段不存在」。
+        #[cfg(feature = "a11y")]
+        if let Some(c) = clock.as_mut() {
+            c.mark(HostStage::A11y);
         }
         // 弹层分离：判定本帧哪些弹层**参与**重画；画什么由 `render_popup` 的 Scene 差异定
         //（参 `scene_damage`）。弹层节点与主表面同树，但画在**自己的表面**上：主表面为什么
@@ -1341,6 +1451,9 @@ impl<A: TreeApp> App for TreeHost<A> {
                 }
             }
         }
+        if let Some(c) = clock.as_mut() {
+            c.mark(HostStage::PopupBook);
+        }
         // 外壳契约：None = 全量；零面积 = 本帧没变（外壳跳过光栅与提交）。多帧未被取走时并入（保守）。
         self.damage = match (self.damage.take(), frame_damage(&frame)) {
             (_, None) => None,
@@ -1348,6 +1461,13 @@ impl<A: TreeApp> App for TreeHost<A> {
             (Some(a), Some(b)) => Some(union(a, b)),
         };
         *out = frame.scene;
+        if let Some(c) = clock.as_mut() {
+            c.mark(HostStage::Deliver);
+        }
+        // 树内六段随帧返回，外壳侧七段在这里并进去：一张表即可分辨差额落在树内还是外壳侧。
+        if let Some(c) = clock {
+            merge_host_phases(&mut self.main_phases, &c.phases);
+        }
     }
 }
 
@@ -1737,6 +1857,26 @@ mod tests {
         frame(&mut h, &e);
         h.render_floating(&e, 0, Size::new(400.0, 300.0));
         assert_eq!(h.app.seen, [75.0, 90.0]);
+    }
+
+    /// 外壳侧分段（K1 续）：关着开关时没有取时（取不到分段，字段只能是 0）；打开后
+    /// `host_frame` 覆盖整段出帧、必然不小于树内六段之和 —— 68 ms 的差额靠这张表对账。
+    #[test]
+    fn host_phases_are_only_measured_when_enabled() {
+        let (mut h, e) = host();
+        frame(&mut h, &e);
+        assert!(h.take_frame_phases().is_none(), "开关关着不得返回分段");
+
+        h.set_phase_timing(true);
+        // 开关打开后的首帧：只要求量到东西，不钉绝对值（随机器与档位浮动）。
+        frame(&mut h, &e);
+        let p = h.take_frame_phases().expect("开着开关必须取到本帧分段");
+        assert!(p.host_frame_ms > 0.0, "出帧段没量到：{p:?}");
+        assert!(
+            p.host_frame_ms >= p.scene_sum_ms(),
+            "host_frame 含树内六段，不得小于它们的和：{p:?}"
+        );
+        assert!(p.is_sampled(), "外壳侧量到了，分段表不得仍报未采样");
     }
 
     struct Demo {

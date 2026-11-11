@@ -435,6 +435,7 @@ pub fn has_active_transition(&self, id: WidgetId) -> bool {
 pub fn hit(&self, pos: Point) -> Option<WidgetId> {
 pub fn horizontal() -> Self {
 pub fn horizontal(self) -> f32 {
+pub fn host_sum_ms(&self) -> f32 {
 pub fn id(&self) -> WidgetId {
 pub fn idle(&mut self, secs: f64) {
 pub fn ime_context(&self) -> Option<&ImeContext> {

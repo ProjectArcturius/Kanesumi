@@ -2002,6 +2002,14 @@ impl Shell {
             timing.arrange_ms = p.arrange_ms;
             timing.paint_ms = p.paint_ms;
             timing.compose_ms = p.compose_ms;
+            timing.host_prep_ms = p.host_prep_ms;
+            timing.host_popup_motion_ms = p.host_popup_motion_ms;
+            timing.host_frame_ms = p.host_frame_ms;
+            timing.host_commit_ms = p.host_commit_ms;
+            timing.host_a11y_ms = p.host_a11y_ms;
+            timing.host_popup_book_ms = p.host_popup_book_ms;
+            timing.host_deliver_ms = p.host_deliver_ms;
+            timing.phases_on = true;
         }
         timing.tick_ms = self.app.last_floating_tick_ms(idx);
         timing.scene_cmds = scene.commands.len() as u32;
@@ -2719,11 +2727,20 @@ impl Shell {
         let mut timing = gpu_timing.unwrap_or_default();
         timing.scene_ms = render_ms;
         // 场景四段（量测 / 排布 / 绘制 / 拼接）：开关关着时取不到，四者保持 0。
+        // 外壳侧七段同表：K1 实测树内四段只占 0.22 ms，68 ms 的差额在这里才看得见。
         if let Some(p) = self.app.take_frame_phases() {
             timing.measure_ms = p.measure_ms;
             timing.arrange_ms = p.arrange_ms;
             timing.paint_ms = p.paint_ms;
             timing.compose_ms = p.compose_ms;
+            timing.host_prep_ms = p.host_prep_ms;
+            timing.host_popup_motion_ms = p.host_popup_motion_ms;
+            timing.host_frame_ms = p.host_frame_ms;
+            timing.host_commit_ms = p.host_commit_ms;
+            timing.host_a11y_ms = p.host_a11y_ms;
+            timing.host_popup_book_ms = p.host_popup_book_ms;
+            timing.host_deliver_ms = p.host_deliver_ms;
+            timing.phases_on = true;
         }
         timing.tick_ms = self.app.last_tick_ms();
         timing.scene_cmds = self.scene_buf.commands.len() as u32;

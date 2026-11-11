@@ -232,11 +232,18 @@ pub struct FrameOutput {
     pub phases: FramePhases,
 }
 
-/// 一帧分段耗时（毫秒）：量测 / 排布 / 绘制 / 拼接，另附实现钩子与动画推进。
+/// 一帧分段耗时（毫秒）：量测 / 排布 / 绘制 / 拼接，另附实现钩子与动画推进，
+/// 以及**外壳侧**（`Tree::frame_with_layout` 之外）的几段。
 ///
 /// 为什么要有它：真机 Dock 冷启首帧 `scene_ms` 达 39~83 ms，外壳只有一个整段，分不出
 /// 是量测、排布、绘制还是拼接 —— 热点只能靠猜。分段在各段边界取时，由
 /// [`Tree::frame_with_layout`] 填进 [`FrameOutput::phases`]。
+///
+/// `host_*` 不由本树填：K1 实测元素树六段合计仅 0.22 ms，而外壳的 `render_ms` 有 68 ms，
+/// 差额不在本树的分段里 —— 它要么是 `frame_with_layout` 内 realize/animate 与拼接后尾段的
+/// 零头，要么落在 `TreeHost::render_into` 的段边界之间。后者只有外壳看得见，故由外壳在
+/// `render_into` / `render_floating` 的段边界取时后**并进同一个结构**，日志才能一张表对账。
+/// 字段语义见各字段注释；开关关闭时它们与树内六段一样恒 0（**没有量**，不是零耗时）。
 ///
 /// **只在被读时才计时**：外壳显式调 [`Tree::set_phase_timing`]`(true)` 才开；关闭时
 /// 热路径一次 `Instant::now()` 都不取（见该方法的实现）。缺省关闭。
@@ -255,6 +262,25 @@ pub struct FramePhases {
     pub realize_ms: f32,
     /// 动画推进（`update` tick）累计毫秒。
     pub animate_ms: f32,
+    /// 外壳侧：出帧前准备（外壳取走本帧 `dt` 等）累计毫秒。
+    /// 开关关闭时恒 0 —— **没有量**。
+    pub host_prep_ms: f32,
+    /// 外壳侧：弹层动画帧节拍记账（`note_popup_motion_frames`）累计毫秒。
+    /// 开关关闭时恒 0。
+    pub host_popup_motion_ms: f32,
+    /// 外壳侧：外层出帧调用全程（`TreeHost::frame_main`，含树内六段与树的帧外工作）。
+    /// 与四段之和的差含 realize/animate 与拼接后尾段（`sync_layers` / IME 上下文 / 记账），
+    /// 故它是「树内还没拆开的部分」的上界，不是树内段外的精确值。
+    pub host_frame_ms: f32,
+    /// 外壳侧：内容就绪汇报（`report_content_committed`）累计毫秒。
+    pub host_commit_ms: f32,
+    /// 外壳侧：无障碍快照发布 + AT-SPI flush 累计毫秒。
+    /// 未编译进 `a11y` feature 时恒 0（这段不存在，不是量到零）。
+    pub host_a11y_ms: f32,
+    /// 外壳侧：弹层分离记账（判定本帧哪些弹层参与重画）累计毫秒。
+    pub host_popup_book_ms: f32,
+    /// 外壳侧：损伤合并与 Scene 交付（`*out = frame.scene`）累计毫秒。
+    pub host_deliver_ms: f32,
 }
 
 impl FramePhases {
@@ -267,6 +293,20 @@ impl FramePhases {
     /// 全 0 = 未采样（开关关闭或尚未出帧）。四段真的都取到 0.000 ms 的概率不足为凭。
     pub fn is_sampled(&self) -> bool {
         *self != Self::default()
+    }
+
+    /// 外壳侧各段之和（准备 + 弹层节拍 + 出帧 + 汇报 + 无障碍 + 弹层记账 + 交付）。
+    ///
+    /// 它与 `host_frame_ms` 不是「总和 = 整帧」的关系：`host_frame_ms` 已含树内六段，
+    /// 两者相加才是外壳 `render_into` 的耗时（另有未分段的 `note_once` 等零头）。
+    pub fn host_sum_ms(&self) -> f32 {
+        self.host_prep_ms
+            + self.host_popup_motion_ms
+            + self.host_frame_ms
+            + self.host_commit_ms
+            + self.host_a11y_ms
+            + self.host_popup_book_ms
+            + self.host_deliver_ms
     }
 }
 

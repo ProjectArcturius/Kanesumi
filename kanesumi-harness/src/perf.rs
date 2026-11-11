@@ -84,15 +84,17 @@ impl Ring {
 /// 一个总和，看不出是画得慢、等缓冲，还是别的表面的首帧把同一条 GPU 队列堵住。这里把一帧
 /// 拆成场景 / 构造 / 提交 / 取缓冲 / 呈现，并单独记上传量，尖峰才能归到具体那一段。
 ///
-/// `scene_ms` = 元素树 `frame()`（量测 + 排布 + 绘制 + 拼接）的整段。它**没有**再拆
-/// layout / paint：两者在 `kanesumi-element::Tree::frame` 内部相邻，拆开需要元素树埋点，
-/// 超出本件允许改动的路径（只动 kanesumi-harness）。`scene_cmds` 记本帧场景命令数，
-/// 用来区分「场景很小但还是慢」与「场景巨大」。
+/// `scene_ms` = 外壳 `App::render_into` 整段（`platform.rs` 的 `t_render`），不只是
+/// 元素树 `frame()`。K1 把树内拆成量测 / 排布 / 绘制 / 拼接后发现四段只占 0.22 ms，
+/// 68 ms 的差额既可能在树内未拆的尾段、也可能在树外 —— 故本表另有 `host_*` 七段
+/// （`TreeHost::render_into` 的段边界），由外壳侧取时后并进同一张表。`scene_cmds`
+/// 记本帧场景命令数，用来区分「场景很小但还是慢」与「场景巨大」。
 ///
 /// 分段已补（`t-frame-phases`）：元素树按 `KANESUMI_FRAME_PHASES=1` 打开分段计时后，
 /// `measure_ms` / `arrange_ms` / `paint_ms` / `compose_ms` 由外壳取回填在这四个字段里；
-/// 开关关闭时四者恒 0（表示**没有量**），`scene_ms` 语义不变。四段之和必然 ≤ `scene_ms`
-/// （帧内还有 tick、焦点校验、IME 上下文等段外工作）。参 docs/ELEMENT_TREE.md §Ⅴ-bis。
+/// 开关关闭时四者恒 0（表示**没有量**），`scene_ms` 语义不变。四段之和必然 ≤
+/// `host_frame_ms` ≤ `scene_ms`（`host_frame_ms` 还含 realize/animate 与 IME 上下文等
+/// 树内未拆部分）。参 docs/ELEMENT_TREE.md §Ⅴ-bis。
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct FrameTiming {
     /// 本帧之前的 App update（定时器 + App::tick + 各浮层 tick），毫秒。
@@ -107,6 +109,24 @@ pub struct FrameTiming {
     pub paint_ms: f32,
     /// 场景内的拼接段（含遮罩 / 图层内容 / 转场起播；未开分段计时 → 0）。
     pub compose_ms: f32,
+    /// 外壳侧：出帧前准备（取走本帧 `dt`）；未开分段计时 → 0。
+    pub host_prep_ms: f32,
+    /// 外壳侧：弹层动画帧节拍记账；未开分段计时 → 0。
+    pub host_popup_motion_ms: f32,
+    /// 外壳侧：外层出帧调用全程（含树内六段）；未开分段计时 → 0。
+    /// `scene_ms - host_frame_ms` = 外壳在 `render_into` 里树之外、本表未单独分段的零头。
+    pub host_frame_ms: f32,
+    /// 外壳侧：内容就绪汇报；未开分段计时 → 0。
+    pub host_commit_ms: f32,
+    /// 外壳侧：无障碍快照发布；未开分段计时或未编译 a11y → 0。
+    pub host_a11y_ms: f32,
+    /// 外壳侧：弹层分离记账；未开分段计时 → 0。
+    pub host_popup_book_ms: f32,
+    /// 外壳侧：损伤合并与 Scene 交付；未开分段计时 → 0。
+    pub host_deliver_ms: f32,
+    /// 本帧是否开着分段计时。`false` 时上面的 `scene_*` / `host_*` 全 0 表示**没有量**
+    /// （不是耗时为零）；尖峰行据此写 `host_phases=off`。
+    pub phases_on: bool,
     /// GPU：Scene → 顶点（build_frame）。CPU：CpuRenderer 光栅化。
     pub encode_ms: f32,
     /// GPU：字形 / 图像上传 + 命令编码 + queue.submit。CPU：写 SHM / dmabuf 缓冲。
@@ -336,7 +356,7 @@ pub fn spike_line(proc: &str, role: &str, surface: &str, t: &FrameTiming) -> Str
         .map(|d| d.as_millis())
         .unwrap_or(0);
     format!(
-        "t={ms} proc={proc} role={role} surface={surface} total_ms={:.2} tick={:.2} scene={:.2} encode={:.2} acquire={:.2} submit={:.2} present={:.2} cmds={} up_bytes={} up_images={} up_glyphs={} new_surface={} content_ms={:.2} rows={} scene_measure={:.2} scene_arrange={:.2} scene_paint={:.2} scene_compose={:.2}\n",
+        "t={ms} proc={proc} role={role} surface={surface} total_ms={:.2} tick={:.2} scene={:.2} encode={:.2} acquire={:.2} submit={:.2} present={:.2} cmds={} up_bytes={} up_images={} up_glyphs={} new_surface={} content_ms={:.2} rows={} scene_measure={:.2} scene_arrange={:.2} scene_paint={:.2} scene_compose={:.2} host_phases={} host_popup_motion={:.2} host_prep={:.2} host_frame={:.2} host_commit={:.2} host_a11y={:.2} host_popup_book={:.2} host_deliver={:.2}\n",
         t.total_ms(),
         t.tick_ms,
         t.scene_ms,
@@ -355,6 +375,15 @@ pub fn spike_line(proc: &str, role: &str, surface: &str, t: &FrameTiming) -> Str
         t.arrange_ms,
         t.paint_ms,
         t.compose_ms,
+        // `off` = 没有量：其后的 host_* 恒 0 不得读作「零耗时」。
+        if t.phases_on { "on" } else { "off" },
+        t.host_popup_motion_ms,
+        t.host_prep_ms,
+        t.host_frame_ms,
+        t.host_commit_ms,
+        t.host_a11y_ms,
+        t.host_popup_book_ms,
+        t.host_deliver_ms,
     )
 }
 
@@ -1194,6 +1223,14 @@ mod tests {
             arrange_ms: 0.4,
             paint_ms: 0.7,
             compose_ms: 0.3,
+            host_prep_ms: 0.2,
+            host_popup_motion_ms: 0.1,
+            host_frame_ms: 2.1,
+            host_commit_ms: 0.15,
+            host_a11y_ms: 0.05,
+            host_popup_book_ms: 0.3,
+            host_deliver_ms: 0.4,
+            phases_on: true,
         }
     }
 
@@ -1237,6 +1274,43 @@ mod tests {
         assert!(line.contains("scene_compose=0.30"), "{line}");
         // 四段是 `scene_ms` 的一部分，绝不进总耗时（否则尖峰基准被双重计入）。
         assert!((t.total_ms() - 7.25).abs() < 1e-5, "分段不得加进 total_ms");
+    }
+
+    /// 尖峰行带外壳侧七段：K1 实测树内只 0.22 ms，差额在这几段里归位。
+    #[test]
+    fn spike_line_reports_host_split() {
+        let line = spike_line("ether-launcher", "Dock", "main", &timing_sample());
+        for key in [
+            "host_phases=on",
+            "host_popup_motion=0.10",
+            "host_prep=0.20",
+            "host_frame=2.10",
+            "host_commit=0.15",
+            "host_a11y=0.05",
+            "host_popup_book=0.30",
+            "host_deliver=0.40",
+        ] {
+            assert!(line.contains(key), "缺 {key}: {line}");
+        }
+    }
+
+    /// 开关关着：外壳七段恒 0，并写 `host_phases=off` 注明「没有量」。
+    #[test]
+    fn spike_line_marks_host_phases_off_when_disabled() {
+        let t = FrameTiming { scene_ms: SPIKE_MS + 1.0, ..Default::default() };
+        let line = spike_line("ether-launcher", "Dock", "main", &t);
+        assert!(line.contains("host_phases=off"), "{line}");
+        for key in [
+            "host_popup_motion=0.00",
+            "host_prep=0.00",
+            "host_frame=0.00",
+            "host_commit=0.00",
+            "host_a11y=0.00",
+            "host_popup_book=0.00",
+            "host_deliver=0.00",
+        ] {
+            assert!(line.contains(key), "缺 {key}: {line}");
+        }
     }
 
     /// 周期行尾追加 content_p99；无内容入场时为 0.00。

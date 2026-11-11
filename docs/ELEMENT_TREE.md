@@ -286,6 +286,18 @@ pub trait Widget {
   `scene_measure` / `scene_arrange` / `scene_paint` / `scene_compose`。开关关闭时四者为 0，
   含义是**没有量**，不是「很快」。弹层表面与 IME 候选窗的 Scene 来自已缓存的子树拼接
   （不经整帧），故它们的分段恒 0。
+- 外壳侧七段（2026-11-10 补，`t-shell-phases`）：K1 实测元素树六段合计仅 0.22 ms，而外壳
+  `render_ms` 有 68 ms —— 差额不在元素树已分出的段里。故 `FramePhases` 增 `host_*` 七段，
+  由 `TreeHost` 在自己的段边界取时（`HostClock`，同样是
+  `Option` 形态，开关关闭时不实例化），出帧后并进同一张分段表。七段是
+  `host_popup_motion`（弹层帧节拍记账）/ `host_prep`（取本帧 `dt`）/ `host_frame`
+  （`frame_main` 全程，**含**树内六段）/ `host_commit`（内容就绪汇报）/ `host_a11y`
+  （无障碍快照发布，未编 `a11y` 则恒 0）/ `host_popup_book`（弹层分离记账）/
+  `host_deliver`（损伤合并与 Scene 交付）。尖峰行对应字段同名，并以 `host_phases=on|off`
+  标注有没有量：`off` 时七者恒 0 表示**没有量**。`host_frame` 与树内六段不是并列关系
+  （前者已含后者），故 `host_frame − 四段之和` 是「树内还没拆开的部分」的上界
+  （含 realize/animate 与 `sync_layers` / IME 上下文 / 帧记账），`render_ms` 减去七段才是
+  树外、且本表未单独分段的零头。
 
 ## §Ⅴ-ter 主题转场（`transitions.rs`，2026-10-07）
 
