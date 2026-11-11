@@ -431,10 +431,13 @@ pub fn animate_layer_gated_on(&mut self, id: WidgetId, gate: WidgetId, spec: Lay
 4. 焦点可见性：Tab / 程序化 `focus(id, true)` → `state.keyboard_focused=1`；
    指针点击取焦 → 0，框架因此不画焦点框（GTK4 `focus-visible` / UWP `FocusState`）。
 
-轻量关闭的单一入口是 `Tree::dismiss_top_popup`：`Esc` 只关最内层可轻触弹层（控件先处理则
-不关）；弹层外按下关掉并**吞掉整次点击**（按下与释放都不投下层）；表面失焦走
-`Tree::dismiss_popups`（非模态全关，模态保留）。悬停提示按 500 ms 静止触发，指针移出
-4×4 px 容差框即撤回并重新计时；时刻一律由 `tick_timers(dt)` 注入，不读系统钟。
+轻量关闭的单一入口是 `Tree::dismiss_top_popup`，优先级固定为
+**`Esc` → 外点 → 失焦 → 再次右键打开**：`Esc` 只关最内层可轻触弹层（控件先处理则不关，
+关掉才算消费）；弹层外按下关掉并**吞掉整次点击**（按下与释放都不投下层，模态只吞不关）；
+表面失焦走 `Tree::dismiss_popups`（非模态全关，模态保留；不是输入事件，无消费语义）；
+再次右键按同一锚点重开（新弹层 id，层数回到 1）。四步顺序由
+`interaction::tests::transcript_light_dismiss_order` 一条转录钉死。悬停提示按 500 ms 静止
+触发，指针移出 4×4 px 容差框即撤回并重新计时；时刻一律由 `tick_timers(dt)` 注入，不读系统钟。
 
 状态转录格式（测试与报告共用）：一行 = 一次合成输入 + 该输入后的可观察状态，
 `序号 输入 -> hover=… pressed=… focus_visible=…`（弹层 / 提示用 `popups=…` / `tip=…`）。
