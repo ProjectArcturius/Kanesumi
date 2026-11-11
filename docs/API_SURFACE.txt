@@ -682,6 +682,11 @@ pub enum DeclChange {
 pub enum DialogButton {
 pub enum DialogDefaultButton {
 pub enum DialogState {
+pub enum DockChipDirection {
+pub enum DockDirection {
+pub enum DockHit {
+pub enum DockIndicatorKind {
+pub enum DockZone {
 pub enum ExpandDirection {
 pub enum IconButtonSize {
 pub enum IconDirection {
@@ -729,6 +734,7 @@ pub fn accent_button(label: impl Into<String>, action: DeclAction) -> Self {
 pub fn action_rect(&self) -> Option<Rect> {
 pub fn actions(&mut self, tree: &mut Tree, labels: &[&str]) -> Vec<WidgetId> {
 pub fn activate_at(&mut self, ctx: &mut kanesumi_element::EventCtx, path: MenuPath) {
+pub fn activated(mut self, on: bool) -> Self {
 pub fn activated_button(&self) -> Option<DialogButton> {
 pub fn actual_initials(&self) -> String {
 pub fn add_days(self, delta: i64) -> Self {
@@ -811,6 +817,7 @@ pub fn display_chars(&self) -> Vec<char> {
 pub fn display_text(&self) -> Option<String> {
 pub fn display_text(&self) -> String {
 pub fn display_value(&self) -> f32 {
+pub fn dock_height(self) -> f32 {
 pub fn dot() -> Self {
 pub fn down_button_rect(&self, theme: &MetroTheme, rect: Rect) -> Rect {
 pub fn drag_to(&mut self, pos: Point) {
@@ -874,6 +881,7 @@ pub fn hit(&self, engine: &TextEngine, rect: Rect, pos: Point) -> InfoBarClick {
 pub fn hit(&self, engine: &TextEngine, rect: Rect, pos: Point) -> NavigationAction {
 pub fn hit(&self, engine: &TextEngine, rect: Rect, pos: Point) -> Option<usize> {
 pub fn hit(&self, engine: &TextEngine, rect: Rect, pos: Point) -> PagerAction {
+pub fn hit(&self, pos: Point) -> Option<DockHit> {
 pub fn hit(&self, pos: Point) -> TeachingTipClick {
 pub fn hit(&self, rect: Rect, pos: Point) -> SplitButtonPart {
 pub fn hit(&self, rect: Rect, pos: Point) -> SwipeAction {
@@ -944,6 +952,7 @@ pub fn labeled(
 pub fn layout(&self, engine: &TextEngine, rect: Rect) -> (Size, Vec<Rect>) {
 pub fn layout(&self, engine: &TextEngine, rect: Rect) -> BreadcrumbLayout {
 pub fn layout(&self, rect: Rect) -> (Size, Vec<Rect>) {
+pub fn layout(input: &DockRailInput) -> DockLayout {
 pub fn left_width(&self) -> f32 {
 pub fn len(&self) -> usize {
 pub fn line_rect(&self, theme: &MetroTheme, body: Rect) -> Rect {
@@ -981,10 +990,12 @@ pub fn new(columns: impl IntoIterator<Item = Column>) -> Self {
 pub fn new(commands: Vec<CommandButton>) -> Self {
 pub fn new(content: Size, viewport: Size) -> Self {
 pub fn new(content: impl Into<String>, style: TextStyle, color: Color) -> Self {
+pub fn new(entries: Vec<DockRailEntry>, available: Rect) -> Self {
 pub fn new(glyph: impl Into<String>, name: impl Into<String>, action: CommandBarAction) -> Self {
 pub fn new(header: &str, width: ColumnWidth) -> Self {
 pub fn new(header: impl Into<String>) -> Self {
 pub fn new(icon: impl Into<String>) -> Self {
+pub fn new(id: impl Into<String>, icon: impl Into<String>) -> Self {
 pub fn new(items: Vec<MenuBarItem>) -> Self {
 pub fn new(items: Vec<MenuItem>) -> Self {
 pub fn new(items: Vec<NavigationViewItem>) -> Self {
@@ -1041,6 +1052,7 @@ pub fn panel_size(&self, engine: &TextEngine) -> kanesumi_core::Size {
 pub fn password(&self) -> String {
 pub fn path_at(&self, pos: Point) -> Option<MenuPath> {
 pub fn picker_cell_rect(rect: Rect, idx: usize) -> Rect {
+pub fn pinned(mut self, on: bool) -> Self {
 pub fn pip_hit_size(&self) -> (f32, f32) {
 pub fn pip_rects(&self, rect: Rect) -> impl Iterator<Item = (usize, Rect)> + '_ {
 pub fn place(&self, anchor: Rect, screen: Rect) -> Rect {
@@ -1098,10 +1110,12 @@ pub fn row(children: Vec<Decl>) -> Self {
 pub fn row_block(&mut self, tree: &mut Tree, mb: f32) -> WidgetId {
 pub fn row_button(
 pub fn row_height(&self, theme: &MetroTheme) -> f32 {
+pub fn running(mut self, on: bool) -> Self {
 pub fn s_label() -> TextStyle {
 pub fn s_page_title() -> TextStyle {
 pub fn s_section() -> TextStyle {
 pub fn scale_value(&self) -> f64 {
+pub fn scaled(scale: f32) -> Self {
 pub fn scroll(&mut self, dy: f32) -> CalendarResponse {
 pub fn scroll_by(&mut self, delta: f32) {
 pub fn scroll_by(&mut self, delta: f32, avail_w: f32) {
@@ -1174,6 +1188,7 @@ pub fn single_line(mut self) -> Self {
 pub fn size() -> Size {
 pub fn slider(
 pub fn slider_rect(&self, rect: Rect, k: usize) -> Rect {
+pub fn slot(&self, display: usize) -> Option<&DockSlotLayout> {
 pub fn snap_edge(v: f32) -> f32 {
 pub fn spacer(grow: f32) -> Self {
 pub fn spectrum_rect(&self, rect: Rect) -> Option<Rect> {
@@ -1218,6 +1233,7 @@ pub fn toggle_desc(
 pub fn toggle_ellipsis(&mut self, engine: &TextEngine, rect: Rect, screen: Rect) {
 pub fn toggle_flyout(&mut self, engine: &TextEngine, rect: Rect, screen: Rect) {
 pub fn toggle_rect(&self, rect: Rect) -> Rect {
+pub fn token(self) -> ThemeColor {
 pub fn top_item_rects(&self, engine: &TextEngine, rect: Rect) -> Vec<Rect> {
 pub fn total_width(&self, avail_w: f32) -> f32 {
 pub fn total_width(&self, engine: &TextEngine) -> f32 {
@@ -1281,6 +1297,7 @@ pub fn with_text(mut self, text: impl Into<String>) -> Self {
 pub fn with_text(text: impl Into<String>) -> Self {
 pub fn with_week_start(mut self, start: u8) -> Self {
 pub fn year_at(&self, rect: Rect, pos: Point) -> Option<i32> {
+pub fn zone_at(&self, pos: Point) -> Option<DockZone> {
 pub struct BreadcrumbClicked {
 pub struct BreadcrumbLayout {
 pub struct ButtonClicked;
@@ -1299,6 +1316,14 @@ pub struct DeclHit {
 pub struct DeclPath(pub Vec<usize>);
 pub struct DialogButtons {
 pub struct DialogResult(pub DialogButton);
+pub struct DockChipLayout {
+pub struct DockLayout {
+pub struct DockMetrics {
+pub struct DockRail;
+pub struct DockRailEntry {
+pub struct DockRailInput {
+pub struct DockSlotLayout {
+pub struct DockZoneLayout {
 pub struct ExpanderToggled(pub bool);
 pub struct FocusId(pub u64);
 pub struct FocusRing {

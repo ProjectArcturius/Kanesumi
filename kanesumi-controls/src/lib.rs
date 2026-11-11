@@ -36,6 +36,7 @@ pub mod list;
 pub mod menu_bar;
 pub mod menu_flyout;
 pub mod metro_tile;
+pub mod navigation;
 pub mod navigation_view;
 pub mod number_box;
 pub mod pager_control;
@@ -131,6 +132,10 @@ pub use list::{ListSelectionChanged, MetroList};
 pub use menu_bar::{MenuBarItem, MetroMenuBar};
 pub use menu_flyout::{MenuFlyout, MenuInvoked};
 pub use metro_tile::{MetroTile, TileClicked, TileLive, TileSize};
+pub use navigation::{
+    DockChipDirection, DockChipLayout, DockDirection, DockHit, DockIndicatorKind, DockLayout,
+    DockMetrics, DockRail, DockRailEntry, DockRailInput, DockSlotLayout, DockZone, DockZoneLayout,
+};
 pub use navigation_view::{
     MetroNavigationView, NavigationAction, NavigationItemInvoked, NavigationPaneMode,
     NavigationViewItem,
