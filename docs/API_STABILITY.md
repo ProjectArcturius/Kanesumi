@@ -35,11 +35,15 @@
 | 收紧参数校验（原先接受、现在拒绝） | 半破坏 | 同上；宁可新增严格版本，不悄悄收紧 |
 | 删除 `pub` 项 | **破坏** | 先 `deprecated`，再删 |
 
-### 已标 `#[non_exhaustive]` 的枚举（2026-11-07）
+### 已标 `#[non_exhaustive]` 的枚举（2026-11-07 / 2026-11-11 补）
 
 `AccessRole`（无障碍角色，已从 5 个长到 12 个）与 `LayoutRole`（布局角色，将来可能加页脚 / 侧栏）
 都已标注。下游必须留 `_ => …` 兜底，代价是一行 match；换来的是「框架加角色不会让应用编译失败」。
 新加的**可扩展**枚举一律从第一天就这么标，别等落地后再补（补的那次本身就是破坏）。
+
+2026-11-11 补：harness 的表面角色 `EtherRole` 与表面类型 `SurfaceKind` 也已标注（§五）。
+它们是合成器与五个应用（settings / launcher / librarian / apps/lock / ceyboard）之间的协议面，
+标注后「通知表面」「系统对话框表面」只能以**新增变体**进来。
 
 ## §四 闸门怎么跑
 
@@ -64,6 +68,8 @@ git diff --stat docs/API_SURFACE.txt
 | 画布路径能力 | 闭集图元（无任意路径）；`SceneCommand` **已标 `#[non_exhaustive]`**（2026-11-07） | 若加 `Scene::fill_path`，属**新增**：加图元不再破坏下游穷举 `match`（下游写 `_ => {}` 即可）。四个消费方（`kanesumi-render` CPU/GPU、harness 损伤、element 夹具）都已补显式兜底并留了「新图元必须在此实现」的警告 |
 | 命名遗留 | ✅ **三条已收敛**（2026-11-07）：`overflowing` → `has_overflow`、`visible_rows` → `compute_visible_rows`、`path_at` → `try_path_at`；旧名一律 `#[deprecated]` 转发，`tests/deprecated_names.rs` 挡着「旧名坏了没人知道」 | 剩下的只有 `visible_rows` **要不要缓存**（纯性能，不动签名，可落地后再做）。`try_*` 约定成为新代码硬规矩，见 `docs/DEV_GUIDE.md` §八·五 |
 | `EventCtx` 的读查询 | `children` / `child_props` / `parent` / `focus_id`（2026-11-07 补齐） | 只读、纯新增。组合型控件要按角色分区、在子节点间挪焦点就必须能读结构；不加则会各自另存一份「当前项」与框架焦点打架 |
+| 表面角色 `EtherRole`（`kanesumi-harness/src/role.rs`） | ✅ **已定型（本班）**：8 个变体（`desktop` / `browser` / `topbar` / `dock` / `launcher` / `candidate` / `lock` / `shot-select`）加 `#[non_exhaustive]`（2026-11-11）。五个消费方（settings / launcher / librarian / apps/lock / ceyboard）的角色分派处已补显式降级分支 | 已定型（本班）。角色字符串（`app_id` / namespace）是协议面，不再改；加「通知」「系统对话框」角色只许**新增变体**，下游 `_` 兜底保证不编译失败 |
+| 表面类型 `SurfaceKind`（`kanesumi-harness/src/role.rs`） | ✅ **已定型（本班）**：6 个变体加 `#[non_exhaustive]`（2026-11-11）；`EtherRole::surface_kind()` 的现有映射逐条钉死（`role.rs` 单测） | 已定型（本班）。现有映射语义冻结；新增表面类型只加变体，外壳分派与弹层放置对未知类型必须显式降级 |
 
 ## §六 判定流程（每次想动接口时照走）
 
