@@ -126,21 +126,50 @@ pub fn command_is_finite(cmd: &SceneCommand) -> bool {
         SceneCommand::StrokeRect { color, rect, thickness, corner_radius } => {
             rect_ok(rect) && color_ok(color) && finite(*thickness) && finite(*corner_radius)
         }
-        // 其余图元（文本 / 图像 / 弧 / 线）走保守路径：字段随画布扩展而变，
-        // 用穷举 match 会逼着每次加图元都改这里 —— 先只校公共的矩形与颜色。
-        other => command_extras_finite(other),
+        SceneCommand::Text { rect, color, style, .. } => {
+            rect_ok(rect)
+                && color_ok(color)
+                && finite(style.size)
+                && finite(style.line_height)
+                && finite(style.letter_spacing_em)
+        }
+        SceneCommand::Arc { center, radius, thickness, color, start_deg, end_deg } => {
+            finite(center.x)
+                && finite(center.y)
+                && finite(*radius)
+                && finite(*thickness)
+                && color_ok(color)
+                && finite(*start_deg)
+                && finite(*end_deg)
+        }
+        SceneCommand::Triangle { p0, p1, p2, color } => {
+            finite(p0.x)
+                && finite(p0.y)
+                && finite(p1.x)
+                && finite(p1.y)
+                && finite(p2.x)
+                && finite(p2.y)
+                && color_ok(color)
+        }
+        SceneCommand::Image { rect, tint, opacity, width, height, .. } => {
+            rect_ok(rect)
+                && finite(*opacity)
+                && *width > 0
+                && *height > 0
+                && tint.as_ref().is_none_or(color_ok_default)
+        }
+        // 画布新增图元时落到这里：宁可漏报也不能在这里分配 —— 严格模式若自己分配，
+        // 就把「帧分配预算」这项测量本身污染了（实测过：全页扫描下每帧多 7 次）。
+        _ => true,
     }
 }
 
-/// 非穷举图元的兜底校验：`SceneCommand` 是 `#[non_exhaustive]`，新图元至少要能过这里。
-///
-/// 用 `Debug` 文本扫一遍 `NaN` / `inf` 不是严谨做法，但它**不会漏**非有限值（最坏是多报），
-/// 且只在本函数被调用时（严格模式）付出代价。真正的逐字段校验等画布提供
-/// `SceneCommand::bounds()` 一类公共访问器后再补。
-fn command_extras_finite(cmd: &SceneCommand) -> bool {
-    let text = format!("{cmd:?}");
-    !text.contains("NaN") && !text.contains("inf")
+/// `Option<Color>` 的默认分支（`is_none_or` 要一个 `FnOnce(&Color)`）。
+fn color_ok_default(c: &Color) -> bool {
+    c.r.is_finite() && c.g.is_finite() && c.b.is_finite() && c.a.is_finite()
 }
+
+
 
 #[cfg(test)]
 mod tests {
