@@ -336,11 +336,18 @@ mod tests {
 
         let start = k.offset();
         let tau = INERTIA_TAU_S;
+        let mut trace = vec![start];
         for step in 1..=20 {
             assert!(k.tick(16.0), "第 {step} 拍应仍在滑行");
             let t = step as f32 * 0.016;
             let expected = start + 1250.0 * tau * (1.0 - (-t / tau).exp());
             assert_close(k.offset(), expected, "滑行位置");
+            trace.push(k.offset());
+        }
+        // 交件核对用：`KANESUMI_SCROLL_TRACE=1 cargo test … glide_positions -- --nocapture`
+        // 打出逐拍实测位置，报告里的序列抄这里，不手推。
+        if std::env::var_os("KANESUMI_SCROLL_TRACE").is_some() {
+            println!("glide trace: {trace:?}");
         }
         assert!(k.is_gliding(), "20 拍（320 ms）后速度仍有 ~479 px/s");
 
