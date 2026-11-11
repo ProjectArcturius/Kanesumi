@@ -14,19 +14,20 @@
 //   5. 交叉轴按 `align` 对齐锚点，越界则**整体滑移**（`slid = true`）；
 //   6. 收尾**夹紧**到可用区。
 //
-// 成熟做法对照（同一条规则在别处长什么样）：
-// - Qt：`QMenuPrivate::popup()` 在 qmenu.cpp:2469-2516 把「右缘越界 → 收拢 / 左侧越界 →
-//   推回」「下缘越界 → 翻上（`pos.y() - height`）」「仍超高 → 滚动或贴底」按此顺序写死；
-//   可用区取 `screen->availableGeometry()`（qmenu.cpp:292 `QMenuPrivate::popupGeometry`，
-//   即扣掉任务栏 / 面板的 workarea）。象限归属按**锚点所在屏幕**定：
-//   `QGuiApplication::screenAt(p)`（qmenu.cpp:2309）、`QPlatformWindow::screenForGeometry`
-//   用 `geometry().contains(center)`（qplatformwindow.cpp:552-570）。
-// - GTK3：`gtk_popover_update_position()`（gtkpopover.c:1068）先算四向 `overshoot`，
-//   `overshoot[pos] <= 0` 用首选向、对侧不越界则翻向对侧、都不行则四向取 overshoot 最小；
-//   交叉轴落点由 `popover_get_rect()`（gtkwindow.c:6659）用 `CLAMP` 夹进窗口。
-// - GTK4：位置交给 `GdkPopupLayout`（flip / slide 约束由 GDK 执行），弹层自己只回读
-//   「实际有没有翻」来画箭头方向 —— `did_flip_horizontally` / `did_flip_vertically`
-//   （gtkpopover.c:349-380、408-438）。本模块的 `Placement::side` 就是同一个用途。
+// 成熟做法对照（同一条规则在别处长什么样；行号按本机精读子集 `~/refs-src` 逐条核对）：
+// - Qt：`QMenuPrivate::popup()` 的 `// handle popup falling "off screen"` 一段
+//   （qmenu.cpp:2457-2498）按此顺序写死：「右缘越界 → 左移收拢 / 左缘越界 → 推回」
+//   （2474-2477）、「下缘越界 → 翻上 `pos.y() - height`，仍越顶 → 夹到 screen.top()」
+//   （2479-2487）、「比屏还高 → 滚动条或贴底」（2489-2495）。
+//   可用区取 `availableGeometry()`（`QMenuPrivate::popupGeometry`，qmenu.cpp:293-306），
+//   即扣掉任务栏 / 面板的 workarea；屏幕按锚点 `QGuiApplication::screenAt(p)` 选
+//   （qmenu.cpp:2317、2383）。RTL 镜像在同一段（2459-2472），我们**未实现**（见 RTL TODO）。
+// - GTK4：本机子集是 GTK4，**没有** GTK3 的 `gtk_popover_update_position` —— 位置交给
+//   `GdkPopupLayout`：`create_popup_layout()` 对下方 / 上方弹层只声明两条约束
+//   `GDK_ANCHOR_FLIP_Y | GDK_ANCHOR_SLIDE_X`（gtkpopover.c:526-660，见 :616 / :641），
+//   `gdk_popup_present()` 把约束交合成器执行（:707-713）；弹层事后回读「实际有没有翻」
+//   来定箭头方向（`did_flip_*`，:356-445）。菜单超高时自己套 `GtkScrolledWindow`
+//   （gtkpopovermenu.c:329-339）。本模块的 `Placement::side` 就是同一个「回读实际方向」的用途。
 //
 // 坐标口径：`anchor` / `bounds` / 输出矩形必须**同一坐标系**。元素树里是表面局部坐标，
 // 多输出时是桌面全局坐标（`place_on_outputs` 按锚点选输出，见下）。
@@ -245,12 +246,12 @@ fn clamp_axis(v: f32, len: f32, lo: f32, hi: f32) -> f32 {
     v.clamp(lo, (hi - len).max(lo))
 }
 
-/// 锚点落在哪个输出：以**锚点中心**为准（Qt `QGuiApplication::screenAt(p)` /
-/// `QPlatformWindow::screenForGeometry` 的 `geometry().contains(center)`，
-/// qplatformwindow.cpp:552-570）；中心不在任何输出内（锚点跨缝）时取与锚点重叠最多的。
+/// 锚点落在哪个输出：以**锚点中心**为准。Qt 是把锚点**点**直接交给
+/// `QGuiApplication::screenAt(p)`（qmenu.cpp:2317、2383）；我们拿的是矩形锚点，
+/// 取中心是本模块的取舍（不是迁自 Qt）。中心不在任何输出内（锚点跨缝）时取与锚点重叠最多的。
 ///
 /// 为什么以中心为准而不是「重叠最多」：弹层挂在锚点旁，锚点在哪块屏上，人就看着哪块屏。
-/// 若按重叠面积选，一个贴缝的输入框会把菜单扔到隔壁屏去（Qt 同样先看中心）。
+/// 若按重叠面积选，一个贴缝的输入框会把菜单扔到隔壁屏去。
 pub fn output_for_anchor(anchor: Rect, outputs: &[OutputArea]) -> Option<OutputArea> {
     let center = anchor.center();
     if let Some(o) = outputs.iter().find(|o| o.geometry.contains(center)) {
@@ -308,7 +309,8 @@ mod tests {
         assert!(!p.slid);
     }
 
-    /// 判据 2：锚点贴底边 → 上翻（Qt qmenu.cpp:2495 / GTK gtkpopover.c:1130 同款）。
+    /// 判据 2：锚点贴底边 → 上翻（Qt qmenu.cpp:2479-2483 的 `pos.y() - height`；
+    /// GTK4 gtkpopover.c:616 / :641 的 `GDK_ANCHOR_FLIP_Y`，同一判据）。
     #[test]
     fn flips_up_at_bottom_edge() {
         let anchor = Rect::new(100.0, 540.0, 200.0, 32.0);
@@ -484,10 +486,11 @@ mod tests {
 
     /// 判据 10：RTL —— **未支持**，此处只钉住现状（`Start` 恒等于左缘 / 上缘）。
     ///
-    /// TODO(rtl): Qt 在 RTL 下把菜单右缘对齐指针并反向镜像（qmenu.cpp:2470-2490
-    /// `q->isRightToLeft()` 分支），本模块尚无 `direction` 入参，故 RTL 环境下的菜单
-    /// 仍按 LTR 放置。支持时给 `PlacementRequest` 加 `rtl: bool`，`align_x` 里把
-    /// `Start`/`End` 对调 —— 调用点（控件库 / 元素树）目前都拿不到书写方向，故不在本次做。
+    /// TODO(rtl): Qt 在 RTL 下把菜单右缘对齐指针并反向镜像（qmenu.cpp:2459-2472 的
+    /// `q->isRightToLeft()` 分支，GTK4 在 gtkpopover.c:536 取 `ltr` 再选 anchor），
+    /// 本模块尚无 `direction` 入参，故 RTL 环境下的菜单仍按 LTR 放置。支持时给
+    /// `PlacementRequest` 加 `rtl: bool`，`align_x` 里把 `Start`/`End` 对调 ——
+    /// 调用点（控件库 / 元素树）目前都拿不到书写方向，故不在本次做。
     #[test]
     fn rtl_not_supported_yet() {
         let anchor = Rect::new(600.0, 100.0, 160.0, 20.0);

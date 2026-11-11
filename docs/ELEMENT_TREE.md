@@ -684,21 +684,25 @@ E5 结束后统一删除并记入 `CANON_VS_TEMPORARY`。
    （旧命令条「宽保持、画出屏外」的行为随之取消）。
 2. **下方优先**：首选方向放得下就用首选方向。
 3. **上翻**：放不下 → 翻到对侧。
-4. 两侧都放不下 → 取空间更大的一侧（GTK 四向 `overshoot` 最小）。
+4. 两侧都放不下 → 取空间更大的一侧（Qt 在两面都越界时也偏向翻上并夹紧，
+   `qmenu.cpp:2483`；「取更大一侧」这条本身是我们的取舍）。
 5. **左右滑移**：交叉轴按 `align` 对齐锚点，越界则整体推开（`slid = true`）。
 6. **夹紧**：收尾一律夹进可用区 —— 弹层不得超出锚点所在输出的 workarea。
 
 边界口径：`bounds` 必须是**锚点所在输出的 workarea**（已扣 TopBar / Dock 排他区）。
-多输出走 `place_on_outputs(req, outputs)`：先按锚点**中心**选输出（Qt
-`QGuiApplication::screenAt` / `QPlatformWindow::screenForGeometry` 同款），再用该输出的
+多输出走 `place_on_outputs(req, outputs)`：先按锚点**中心**选输出，再用该输出的
 workarea 定位 —— 弹层跨到相邻输出时以锚点所在输出为准，不跟着指针漂到隔壁屏。
 
-成熟做法对照：Qt `QMenuPrivate::popup()`（qmenu.cpp:2469-2516，越界收拢 → 上翻 → 贴底）、
-`popupGeometry()` 取 `availableGeometry()`（qmenu.cpp:292）；GTK3
-`gtk_popover_update_position()`（gtkpopover.c:1068，`overshoot` 判据）与
-`popover_get_rect()`（gtkwindow.c:6659，交叉轴 `CLAMP`）；GTK4 回读实际翻边方向
-（gtkpopover.c:408-438）。
+成熟做法对照（行号按 `~/refs-src` 精读子集核对）：Qt `QMenuPrivate::popup()` 的
+`// handle popup falling "off screen"` 段（`qmenu.cpp:2457-2498`：右缘越界左移 2474-2477、
+下缘越界上翻 2479-2483、仍越顶夹紧 2486-2487、比屏还高则滚动 2489-2492），可用区取
+`availableGeometry()`（`QMenuPrivate::popupGeometry`，`qmenu.cpp:293-306`），屏幕按锚点
+`QGuiApplication::screenAt(p)` 选（`qmenu.cpp:2317`、`2383`）。GTK：本机子集是 GTK4，
+**没有** GTK3 的 `gtk_popover_update_position`；`create_popup_layout()` 只声明
+`GDK_ANCHOR_FLIP_Y | GDK_ANCHOR_SLIDE_X`（`gtkpopover.c:526-660`，见 `:616` / `:641`），
+`gdk_popup_present()` 交合成器执行（`:707-713`），事后回读实际翻边方向（`:356-445`），
+菜单超高套 `GtkScrolledWindow`（`gtkpopovermenu.c:329-339`）。
 
 已知缺口：**RTL 未支持**（`align` 恒按 LTR 左缘 / 上缘解释，Qt 在 RTL 下镜像对齐与翻边，
-qmenu.cpp:2470-2490）。支持时给 `PlacementRequest` 加书写方向入参，`align_x` 里把
-`Start` / `End` 对调即可，调用点需先拿得到书写方向。
+`qmenu.cpp:2459-2472`；GTK4 见 `gtkpopover.c:536`）。支持时给 `PlacementRequest` 加书写
+方向入参，`align_x` 里把 `Start` / `End` 对调即可，调用点需先拿得到书写方向。
