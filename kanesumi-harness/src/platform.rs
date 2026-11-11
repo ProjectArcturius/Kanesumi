@@ -703,21 +703,21 @@ pub fn find_font_source() -> Option<kanesumi_canvas::text::FontSource> {
             return Some(FontSource { path: p, collection_tag: None });
         }
     }
-    let chosen = regular_candidates()
+    // 走生产同款字体链（`system_font_chain` → 主字面 + 附加字面）；主字面即 chain[0]。
+    let source = system_font_chain().into_iter().next()?;
+    // 是否正体：与候选表逐条对照（表很小，且只在启动时走一次）。
+    let canonical = regular_candidates()
         .into_iter()
-        .find(|(s, _)| s.path.exists());
-    if let Some((source, canonical)) = chosen {
-        // 字体缺失回退：正体（思源 / Noto CJK）不在场时链会落到繁体、错字重或拉丁字面 ——
-        // 界面「看起来正常」，中文却是方框 / 字形不对。严格模式下改成硬失败。
-        crate::strict::require(canonical, || {
-            format!(
-                "主字体回退：正体（思源黑体 / Noto CJK SC）全部缺席，回退到 {}（CJK 可能渲染为方框）",
-                source.path.display()
-            )
-        });
-        return Some(source);
-    }
-    None
+        .any(|(s, ok)| ok && s.path == source.path);
+    // 字体缺失回退：正体（思源 / Noto CJK）不在场时链会落到繁体、错字重或拉丁字面 ——
+    // 界面「看起来正常」，中文却是方框 / 字形不对。严格模式下改成硬失败。
+    crate::strict::require(canonical, || {
+        format!(
+            "主字体回退：正体（思源黑体 / Noto CJK SC）全部缺席，回退到 {}（CJK 可能渲染为方框）",
+            source.path.display()
+        )
+    });
+    Some(source)
 }
 
 /// 主字面候选（按优先级）：`bool` = 是否属于「正体」组（思源 / Noto CJK SC 的常规字重）。
