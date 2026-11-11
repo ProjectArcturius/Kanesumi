@@ -730,7 +730,9 @@ pub fn action_rect(&self) -> Option<Rect> {
 pub fn actions(&mut self, tree: &mut Tree, labels: &[&str]) -> Vec<WidgetId> {
 pub fn activate_at(&mut self, ctx: &mut kanesumi_element::EventCtx, path: MenuPath) {
 pub fn activated_button(&self) -> Option<DialogButton> {
+pub fn active(&self, now_ms: u64) -> bool {
 pub fn actual_initials(&self) -> String {
+pub fn add(&self, rows: usize) {
 pub fn add_days(self, delta: i64) -> Self {
 pub fn add_months(self, delta: i32) -> Self {
 pub fn add_rect(&self, rect: Rect) -> Option<Rect> {
@@ -750,10 +752,12 @@ pub fn border_thickness(&self) -> f32 {
 pub fn box_rect(&self, rect: Rect) -> Rect {
 pub fn box_rect(&self, screen: Rect) -> Rect {
 pub fn bring_into_view_index(&mut self, index: usize) {
+pub fn buffer(&self) -> &str {
 pub fn button(
 pub fn button(label: impl Into<String>, action: DeclAction) -> Self {
 pub fn can_undo(&self) -> bool {
 pub fn cancel(&mut self) {
+pub fn capture_anchor(&self, row_h: f32) -> ScrollAnchor {
 pub fn caret_rect_absolute(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> Rect {
 pub fn caret_visible(&self) -> bool {
 pub fn caret_x(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> f32 {
@@ -763,10 +767,13 @@ pub fn chevron_rect(&self, rect: Rect) -> Rect {
 pub fn circle_rect(rect: Rect) -> Rect {
 pub fn clamp_offset(&self, o: f32) -> f32 {
 pub fn clamp_selection(&mut self) {
+pub fn clear(&mut self) {
 pub fn clear_preedit(&mut self) {
+pub fn click(&mut self, index: usize, ctrl: bool, shift: bool, len: usize) -> Option<usize> {
 pub fn click(&mut self, rect: Rect, pos: Point) -> CalendarResponse {
 pub fn click(&mut self, rect: Rect, pos: Point) -> Option<f64> {
 pub fn click(&self, rect: Rect, pos: Point) -> PipsAction {
+pub fn click_row(&mut self, index: usize, ctrl: bool, shift: bool) -> bool {
 pub fn close(&mut self) {
 pub fn close_all(&mut self) {
 pub fn close_rect(&self) -> Option<Rect> {
@@ -781,6 +788,7 @@ pub fn column_rects(columns: &ColumnSet, area: Rect) -> Vec<Rect> {
 pub fn commands(&self) -> &[SceneCommand] {
 pub fn commit_ime(&mut self, s: &str) -> bool {
 pub fn compute_visible_rows(&self) -> Vec<TreeRow> {
+pub fn contains(&self, index: usize) -> bool {
 pub fn content_area(&self, box_rect: Rect) -> Rect {
 pub fn content_clip(&self, rect: Rect) -> Option<Rect> {
 pub fn content_cross(&self) -> f32 {
@@ -827,6 +835,7 @@ pub fn estimated_velocity(&self) -> f32 {
 pub fn factory(&self) -> Option<&dyn ItemFactory> {
 pub fn field(&self) -> &TextField {
 pub fn field_mut(&mut self) -> &mut TextField {
+pub fn find_anchor(rows: &[String], label: &str, near: usize) -> Option<usize> {
 pub fn flyout_height(&self, engine: &TextEngine) -> f32 {
 pub fn flyout_panel_rect(&self) -> Option<Rect> {
 pub fn focus(&mut self) {
@@ -840,6 +849,7 @@ pub fn fraction(&self) -> f32 {
 pub fn from_epoch_days(days: i64) -> Self {
 pub fn from_text(text: impl Into<String>) -> Self {
 pub fn gap(mut self) -> Self {
+pub fn get(&self) -> usize {
 pub fn get(&self, index: usize) -> Option<&Column> {
 pub fn grid(cell: Size, spacing: f32) -> Self {
 pub fn grid(cell: Size, spacing: f32, factory: impl ItemFactory) -> Self {
@@ -855,6 +865,7 @@ pub fn handle_click(&mut self, rect: Rect, pos: Point) -> SwipeAction {
 pub fn handle_click(&mut self, rect: Rect, pos: Point) -> TabViewAction {
 pub fn handle_click(&mut self, rect: Rect, pos: Point) -> TitleBarClick {
 pub fn handle_click(&mut self, rect: Rect, pos: Point) -> TreeAction {
+pub fn handle_key(
 pub fn handle_key(&mut self, key: TextInputKey) -> Option<AutoSuggestAction> {
 pub fn handle_key(&mut self, key: TextInputKey) -> bool {
 pub fn has_content(children: usize) -> bool {
@@ -924,6 +935,7 @@ pub fn is_open(&self) -> bool {
 pub fn is_realized(&self, index: usize) -> bool {
 pub fn is_registered(&self, id: FocusId) -> bool {
 pub fn is_scrollable(&self) -> bool {
+pub fn is_selected(&self, index: usize) -> bool {
 pub fn is_submenu(&self) -> bool {
 pub fn is_submenu_parent(&self, path: &[usize]) -> bool {
 pub fn is_top(self) -> bool {
@@ -936,6 +948,7 @@ pub fn item_rect(&self, index: usize, viewport: Size, offset: f32) -> Rect {
 pub fn item_rect(&self, rect: Rect, i: usize) -> Rect {
 pub fn item_style() -> TextStyle {
 pub fn item_width(&self, i: usize) -> f32 {
+pub fn items(&self) -> &[usize] {
 pub fn items_changed(&mut self) {
 pub fn iter(&self) -> std::slice::Iter<'_, Column> {
 pub fn key(&mut self, key: kanesumi_element::Key) -> CalendarResponse {
@@ -949,12 +962,15 @@ pub fn len(&self) -> usize {
 pub fn line_rect(&self, theme: &MetroTheme, body: Rect) -> Rect {
 pub fn link(&mut self, tree: &mut Tree, text: &str, target: &str) -> WidgetId {
 pub fn list_item(
+pub fn list_window(
 pub fn mask(&self) -> Option<char> {
+pub fn matching(&self, rows: &[String], after: Option<usize>) -> Option<usize> {
 pub fn max_offset(&self) -> f32 {
 pub fn max_scroll(&self) -> f32 {
 pub fn max_scroll(&self, avail_w: f32) -> f32 {
 pub fn max_scroll(&self, engine: &TextEngine, rect: Rect) -> f32 {
 pub fn max_scroll(&self, theme: &MetroTheme, viewport_h: f32) -> f32 {
+pub fn max_scroll_with(&self, row_h: f32, viewport_h: f32) -> f32 {
 pub fn max_shift(&self) -> f32 {
 pub fn measure(&self) -> (f32, f32) {
 pub fn measure(&self) -> Size {
@@ -965,6 +981,8 @@ pub fn measure(&self, engine: &TextEngine, max_width: f32) -> Size {
 pub fn measure(&self, engine: &TextEngine, style: TextStyle) -> Size {
 pub fn measure(&self, engine: &TextEngine, style: TextStyle) -> kanesumi_core::Size {
 pub fn measure(&self, width: f32) -> Size {
+pub fn measure_window(&self, row_h: f32, viewport_h: f32) -> Option<ListWindow> {
+pub fn measures_last_frame(&self) -> usize {
 pub fn mode(&self, rect: Rect) -> TwoPaneMode {
 pub fn month_at(rect: Rect, pos: Point) -> Option<u8> {
 pub fn month_grid(&self) -> Vec<Date> {
@@ -1022,6 +1040,7 @@ pub fn open_submenu(&mut self, engine: &TextEngine, screen: Rect, idx: usize) {
 pub fn overflow_buttons(&self, engine: &TextEngine, rect: Rect) -> Option<(Rect, Rect)> {
 pub fn overflowing(&self, engine: &TextEngine, rect: Rect) -> bool {
 pub fn overlay_alpha(&self) -> f32 {
+pub fn page_rows(row_h: f32, viewport_h: f32) -> usize {
 pub fn page_title(&mut self, tree: &mut Tree, text: &str) -> WidgetId {
 pub fn paint_at(
 pub fn paint_row(scene: &mut Scene, theme: &kanesumi_core::MetroTheme, rect: Rect, look: &RowLook<'_>) {
@@ -1066,6 +1085,7 @@ pub fn prev_rect(&self, rect: Rect) -> Option<Rect> {
 pub fn preview_rect(&self, rect: Rect) -> Rect {
 pub fn primary_rect(&self, rect: Rect) -> Rect {
 pub fn progress(&self) -> f32 {
+pub fn push(&mut self, ch: char, now_ms: u64) -> &str {
 pub fn radio(mut self, group: impl Into<String>) -> Self {
 pub fn realized_count(&self) -> usize {
 pub fn realized_node(&self, index: usize) -> Option<WidgetId> {
@@ -1093,11 +1113,16 @@ pub fn render_overlay(theme: &MetroTheme, anim: &PopupAnim, screen: Rect, scene:
 pub fn render_panel(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
 pub fn render_panel_base(theme: &MetroTheme, rect: Rect, progress: f64, scene: &mut Scene) {
 pub fn render_submenu(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
+pub fn reset(&mut self) {
+pub fn reset(&self) {
+pub fn restore_anchor(&mut self, anchor: &ScrollAnchor, row_h: f32, viewport_h: f32) {
+pub fn retain_within(&mut self, len: usize) {
 pub fn right_width(&self) -> f32 {
 pub fn row(children: Vec<Decl>) -> Self {
 pub fn row_block(&mut self, tree: &mut Tree, mb: f32) -> WidgetId {
 pub fn row_button(
 pub fn row_height(&self, theme: &MetroTheme) -> f32 {
+pub fn rows(&self) -> usize {
 pub fn s_label() -> TextStyle {
 pub fn s_page_title() -> TextStyle {
 pub fn s_section() -> TextStyle {
@@ -1120,6 +1145,7 @@ pub fn scroll_page(&mut self, dir: f32) {
 pub fn scroll_to(&mut self, offset: f32, animate: bool) {
 pub fn scroll_to(&mut self, theme: &MetroTheme, viewport_h: f32, offset: f32) {
 pub fn scroll_wheel(&mut self, dy: f32) {
+pub fn scroll_wheel(&mut self, dy: f32, steps: f32, row_h: f32, viewport_h: f32) -> bool {
 pub fn scrollbar_thumb_rect(&self) -> Rect {
 pub fn scrollbar_track_rect(&self) -> Rect {
 pub fn scrollbar_visible(&self) -> bool {
@@ -1131,13 +1157,18 @@ pub fn select(&mut self, index: usize) -> bool {
 pub fn select(&mut self, index: usize) {
 pub fn select(&mut self, path: MenuPath) -> bool {
 pub fn select_all(&mut self) {
+pub fn select_all(&mut self, len: usize) {
 pub fn select_item(&mut self, index: usize) -> Option<String> {
+pub fn select_only(&mut self, index: usize) {
+pub fn select_range(&mut self, from: usize, to: usize) {
 pub fn select_submenu(&mut self, path: MenuPath) -> bool {
+pub fn selected_indices(&self) -> &[usize] {
 pub fn selected_item_index(&self) -> Option<usize> {
 pub fn selection(&self) -> Option<(usize, usize)> {
 pub fn selection_progress(&self) -> f32 {
 pub fn separator(mut self) -> Self {
 pub fn separator_rect(&self, rect: Rect) -> Rect {
+pub fn set_anchor_if_none(&mut self, anchor: usize) {
 pub fn set_checked(&mut self, checked: bool) {
 pub fn set_cluster_boundaries_override(&mut self, boundaries: Option<Vec<usize>>) {
 pub fn set_composed_scroll(&mut self, on: bool) {
@@ -1153,6 +1184,7 @@ pub fn set_mask(&mut self, c: Option<char>) {
 pub fn set_pane_expanded(&mut self, expanded: bool) {
 pub fn set_pane_progress(&mut self, progress: f32) {
 pub fn set_preedit(&mut self, text: &str, cursor_byte: Option<usize>) {
+pub fn set_rows(&mut self, rows: Vec<String>, row_h: f32, viewport_h: f32) {
 pub fn set_scroll_offset(&mut self, v: f32) {
 pub fn set_selected(&mut self, date: Date) {
 pub fn set_selected(&mut self, selected: bool) {
@@ -1176,6 +1208,7 @@ pub fn slider(
 pub fn slider_rect(&self, rect: Rect, k: usize) -> Rect {
 pub fn snap_edge(v: f32) -> f32 {
 pub fn spacer(grow: f32) -> Self {
+pub fn span(&self) -> RangeInclusive<usize> {
 pub fn spectrum_rect(&self, rect: Rect) -> Option<Rect> {
 pub fn stack(item_extent: f32) -> Self {
 pub fn stack(item_extent: f32, factory: impl ItemFactory) -> Self {
@@ -1238,7 +1271,11 @@ pub fn visible_count(&self) -> usize {
 pub fn visible_range(&self, viewport_len: f32, offset: f32) -> Option<(usize, usize)> {
 pub fn visible_rects(&self, viewport: Size, offset: f32) -> Vec<Rect> {
 pub fn visible_rows(&self) -> Vec<TreeRow> {
+pub fn visible_rows(&self) -> usize {
+pub fn visible_span(&self) -> RangeInclusive<usize> {
 pub fn weekday(self) -> u8 {
+pub fn wheel_step_px(dy: f32, steps: f32) -> f32 {
+pub fn window(&self, row_h: f32, viewport_h: f32) -> Option<ListWindow> {
 pub fn with_action(label: impl Into<String>, action: SwipeItemAction) -> Self {
 pub fn with_align(mut self, align: TextAlign) -> Self {
 pub fn with_checked(mut self, checked: bool) -> Self {
@@ -1307,7 +1344,11 @@ pub struct FormLinkClicked {
 pub struct IconButtonClicked;
 pub struct InfoBarClosed;
 pub struct ItemsRepeater {
+pub struct KeyOutcome {
+pub struct ListSelection {
 pub struct ListSelectionChanged(pub usize);
+pub struct ListWindow {
+pub struct MeasureCounter(Cell<usize>);
 pub struct MenuBarItem {
 pub struct MenuFlyout {
 pub struct MenuInvoked {
@@ -1380,6 +1421,7 @@ pub struct RatingValueChanged(pub f64);
 pub struct RetainedScene {
 pub struct RowButtonClicked(pub usize);
 pub struct RowLook<'a> {
+pub struct ScrollAnchor {
 pub struct ScrollOffsetChanged(pub f32);
 pub struct SelectorSelectionChanged(pub usize);
 pub struct SliderValueChanged(pub f64);
@@ -1411,6 +1453,7 @@ pub struct TitleBarAction(pub TitleBarClick);
 pub struct TreeItemInvoked(pub Vec<usize>);
 pub struct TreeRow {
 pub struct TreeViewNode {
+pub struct TypeAhead {
 pub trait ItemFactory: 'static {
 
 ## kanesumi-harness
