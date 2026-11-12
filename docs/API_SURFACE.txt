@@ -747,6 +747,8 @@ pub enum InfoBarSeverity {
 pub enum ItemLayout {
 pub enum NavigationAction {
 pub enum NavigationPaneMode {
+pub enum NotificationEvent {
+pub enum NotificationState {
 pub enum PagerAction {
 pub enum PagerHover {
 pub enum PagerItem {
@@ -877,6 +879,7 @@ pub fn delete_surrounding(&mut self, before_bytes: u32, after_bytes: u32) -> boo
 pub fn depth(mut self, depth: u8) -> Self {
 pub fn diff_decl(old: &Decl, new: &Decl) -> Vec<DeclChange> {
 pub fn disabled(mut self) -> Self {
+pub fn dismiss(&mut self, id: u64) -> bool {
 pub fn display_chars(&self) -> Vec<char> {
 pub fn display_text(&self) -> Option<String> {
 pub fn display_text(&self) -> String {
@@ -916,6 +919,7 @@ pub fn from_epoch_days(days: i64) -> Self {
 pub fn from_text(text: impl Into<String>) -> Self {
 pub fn gap(mut self) -> Self {
 pub fn get(&self) -> usize {
+pub fn get(&self, id: u64) -> Option<&Notification> {
 pub fn get(&self, index: usize) -> Option<&Column> {
 pub fn get(&self, name: &str) -> Option<&VisualStateDecl> {
 pub fn grid(cell: Size, spacing: f32) -> Self {
@@ -1044,6 +1048,7 @@ pub fn max_scroll(&self, engine: &TextEngine, rect: Rect) -> f32 {
 pub fn max_scroll(&self, theme: &MetroTheme, viewport_h: f32) -> f32 {
 pub fn max_scroll_with(&self, row_h: f32, viewport_h: f32) -> f32 {
 pub fn max_shift(&self) -> f32 {
+pub fn max_visible(&self) -> usize {
 pub fn measure(&self) -> (f32, f32) {
 pub fn measure(&self) -> Size {
 pub fn measure(&self) -> kanesumi_core::Size {
@@ -1092,6 +1097,7 @@ pub fn new(label: impl Into<String>, items: Vec<MenuItem>) -> Self {
 pub fn new(label: impl Into<String>, size: TileSize, base_color: Color) -> Self {
 pub fn new(label: impl Into<String>, width: f32) -> Self {
 pub fn new(layout: ItemLayout, factory: impl ItemFactory) -> Self {
+pub fn new(max_visible: usize) -> Self {
 pub fn new(name_width: f32) -> Self {
 pub fn new(owner: WidgetId, items: Vec<MenuItem>) -> Self {
 pub fn new(parent: WidgetId) -> Self {
@@ -1145,6 +1151,7 @@ pub fn panel_size(&self, engine: &TextEngine) -> kanesumi_core::Size {
 pub fn password(&self) -> String {
 pub fn path_at(&self, pos: Point) -> Option<MenuPath> {
 pub fn path_bar_layout(input: &PathBarInput) -> PathBarLayout {
+pub fn persistent(&self) -> bool {
 pub fn picker_cell_rect(rect: Rect, idx: usize) -> Rect {
 pub fn pinned(mut self, on: bool) -> Self {
 pub fn pip_hit_size(&self) -> (f32, f32) {
@@ -1172,6 +1179,7 @@ pub fn prev_rect(&self, rect: Rect) -> Option<Rect> {
 pub fn preview_rect(&self, rect: Rect) -> Rect {
 pub fn primary_rect(&self, rect: Rect) -> Rect {
 pub fn progress(&self) -> f32 {
+pub fn push(
 pub fn push(&mut self, ch: char, now_ms: u64) -> &str {
 pub fn radio(mut self, group: impl Into<String>) -> Self {
 pub fn realized_count(&self) -> usize {
@@ -1181,6 +1189,7 @@ pub fn related(
 pub fn release(
 pub fn release(&mut self) -> bool {
 pub fn release(&mut self) {
+pub fn remove(&mut self, id: u64) -> bool {
 pub fn render(
 pub fn render(&mut self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
 pub fn render(&self, _engine: &TextEngine, block: Rect, scene: &mut Scene) {
@@ -1272,6 +1281,7 @@ pub fn set_delete_icon(&mut self, icon: Option<Icon>) {
 pub fn set_delete_icon(&mut self, icon: Option<kanesumi_canvas::Icon>) {
 pub fn set_expanded(&mut self, expanded: bool) {
 pub fn set_factory(&mut self, factory: impl ItemFactory) {
+pub fn set_hover(&mut self, id: Option<u64>) {
 pub fn set_item_submenu(&mut self, index: usize, items: Vec<MenuItem>) {
 pub fn set_layout(&mut self, layout: ItemLayout) {
 pub fn set_mask(&mut self, c: Option<char>) {
@@ -1295,6 +1305,7 @@ pub fn show(&mut self) {
 pub fn show(&self, ctx: &mut EventCtx, target: WidgetId) -> WidgetId {
 pub fn show_modal(&mut self, ctx: &mut EventCtx) -> WidgetId {
 pub fn show_modal_with(
+pub fn shown(&mut self, id: u64) {
 pub fn side(rect: Rect) -> f32 {
 pub fn sidebar_layout(input: &SidebarInput) -> SidebarLayout {
 pub fn single_line(mut self) -> Self {
@@ -1339,6 +1350,7 @@ pub fn text_input_content_rect(body: Rect, border: f32) -> Rect {
 pub fn text_input_inner_rect(body: Rect, border: f32) -> Rect {
 pub fn text_input_line_rect(content: Rect, inner: Rect, line_height: f32) -> Rect {
 pub fn text_rect(&self, theme: &MetroTheme, rect: Rect) -> Rect {
+pub fn tick(&mut self, dt_ms: f64) -> Vec<NotificationEvent> {
 pub fn title_rect(&self, rect: Rect) -> Rect {
 pub fn title_style() -> TextStyle {
 pub fn toggle(
@@ -1367,6 +1379,7 @@ pub fn value(&self) -> Option<f64> {
 pub fn value(value: i32) -> Self {
 pub fn value_style() -> TextStyle {
 pub fn virtualizer(&self, theme: &MetroTheme) -> MetroRepeater {
+pub fn visible(&self) -> impl Iterator<Item = &Notification> {
 pub fn visible_content_height(&self) -> f32 {
 pub fn visible_count(&self) -> usize {
 pub fn visible_range(&self, viewport_len: f32, offset: f32) -> Option<(usize, usize)> {
@@ -1531,6 +1544,8 @@ pub struct MetroTreeView {
 pub struct MetroTwoPaneView {
 pub struct NavigationItemInvoked(pub usize);
 pub struct NavigationViewItem {
+pub struct Notification {
+pub struct NotificationStack {
 pub struct NumberValueChanged(pub f64);
 pub struct PagerPageChanged(pub usize);
 pub struct Paint {

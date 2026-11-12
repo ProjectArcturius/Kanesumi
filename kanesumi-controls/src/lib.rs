@@ -39,6 +39,7 @@ pub mod menu_flyout;
 pub mod metro_tile;
 pub mod navigation;
 pub mod navigation_view;
+pub mod notification;
 pub mod number_box;
 pub mod pager_control;
 pub mod parallax_view;
