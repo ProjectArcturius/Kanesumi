@@ -417,6 +417,11 @@ pub fn animate_layer_gated_on(&mut self, id: WidgetId, gate: WidgetId, spec: Lay
 常量集中在 `kanesumi-core/src/interaction.rs`，衰减原语为 `kanesumi-anim` 的 `FrictionAnim`
 （WinUI `InteractionTracker` 一阶指数衰减）。
 
+上述语义在元素层的无时钟实现是 `kanesumi-element/src/scroll.rs` 的 `ScrollKinetics`
+（速度采样 / 惯性 / 按下瞬停 / 越界夹紧；dt 一律由调用方传入，测试按固定 dt 序列逐点复算）。
+现状是**两份状态机并存**：`MetroScrollView` 仍持自己的采样 + `FrictionAnim`，`MetroList` 尚未接
+`ScrollKinetics`（`Event::Scroll` 不带 dt，接线方案与缺口记在 `docs/SCROLL_PHYSICS.md` §六）。
+
 **焦点**（`ROADMAP` M3-1）：Tab 顺序 = 树的先序中 `focusable && !disabled && visible` 的节点，
 **由树派生，不需要每帧登记**；覆盖层有模态内容时 Tab 被限制在覆盖层内（焦点陷阱）。
 点击可聚焦控件即聚焦；焦点节点被移除/隐藏/禁用时焦点移到下一个可聚焦节点。
