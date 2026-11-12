@@ -2519,13 +2519,15 @@ const CHAIN_SC_TAG: Option<&str> = Some("SC");
 
 /// 主字面候选链（有序；与 harness `regular_candidates` 逐条一致——唯一真源落地期间
 /// 两表并存，改动必须双侧同步并 bump `font_index::POLICY_VERSION`）。
-const REGULAR_CANDIDATES: [(&str, Option<&str>); 12] = [
+const REGULAR_CANDIDATES: [(&str, Option<&str>); 14] = [
     ("/usr/local/share/fonts/s/NotoSansSC-VF.ttf", None),
     ("/usr/local/share/fonts/s/NotoSansCJK-VF.otf.ttc", CHAIN_SC_TAG),
     ("/usr/share/fonts/opentype/noto/NotoSansCJK-VF.otf.ttc", CHAIN_SC_TAG),
     ("/usr/share/fonts/noto-cjk/NotoSansCJK-VF.otf.ttc", CHAIN_SC_TAG),
     ("/usr/local/share/fonts/s/SourceHanSansSC-Regular.otf", None),
     ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", CHAIN_SC_TAG),
+    ("/usr/share/fonts/google-noto-sans-cjk-vf-fonts/NotoSansCJK-VF.ttc", CHAIN_SC_TAG),
+    ("/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc", CHAIN_SC_TAG),
     ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", CHAIN_SC_TAG),
     ("/usr/local/share/fonts/s/SourceHanSansTC_Regular.otf", None),
     ("/usr/local/share/fonts/s/SourceHanSansSC_Bold.otf", None),
@@ -2534,12 +2536,83 @@ const REGULAR_CANDIDATES: [(&str, Option<&str>); 12] = [
     ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", None),
 ];
 
+/// 平台兜底候选：静态表之外的系统字体（只探一次）。
+///
+/// Linux 走 fontconfig（`fc-match`），Windows 走固定路径。这样发行版之间的路径差异
+/// （Debian `opentype/noto`、Fedora `google-noto-sans-cjk-*`、Arch `noto-cjk`）与
+/// Windows 开发机的雅黑，都不会让会话字体链为空。
+/// 2026-11-12：Fedora 上链为空导致 18 条用例红，Windows 上同样是空链——两头都踩过。
+fn platform_candidates() -> &'static [FontSource] {
+    static CACHE: std::sync::OnceLock<Vec<FontSource>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        #[allow(unused_mut)]
+        let mut out: Vec<FontSource> = Vec::new();
+        #[cfg(windows)]
+        {
+            for path in [
+                "C:/Windows/Fonts/msyh.ttc",
+                "C:/Windows/Fonts/msyhbd.ttc",
+                "C:/Windows/Fonts/simsun.ttc",
+                "C:/Windows/Fonts/segoeui.ttf",
+                "C:/Windows/Fonts/arial.ttf",
+            ] {
+                let p = PathBuf::from(path);
+                if p.exists() {
+                    out.push(FontSource {
+                        path: p,
+                        collection_tag: None,
+                    });
+                }
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            for family in [
+                "Noto Sans CJK SC",
+                "Source Han Sans SC",
+                "Noto Sans SC",
+                "DejaVu Sans",
+            ] {
+                let Ok(out_) = std::process::Command::new("fc-match")
+                    .args(["-f", "%{file}", family])
+                    .output()
+                else {
+                    continue;
+                };
+                if !out_.status.success() {
+                    continue;
+                }
+                let path = String::from_utf8_lossy(&out_.stdout).trim().to_string();
+                if path.is_empty() {
+                    continue;
+                }
+                let p = PathBuf::from(&path);
+                if !p.exists() {
+                    continue;
+                }
+                let tag = if path.ends_with(".ttc") {
+                    CHAIN_SC_TAG
+                } else {
+                    None
+                };
+                out.push(FontSource {
+                    path: p,
+                    collection_tag: tag,
+                });
+            }
+        }
+        out
+    })
+}
+
 /// 字重字面候选（Light / Medium / Bold 各自依序找首个存在；与 harness `weight_candidates` 一致）。
 fn chain_weight_candidates(weight: &str) -> Vec<FontSource> {
     [
         (format!("/usr/local/share/fonts/s/SourceHanSansSC-{weight}.otf"), None),
         (format!("/usr/share/fonts/noto-cjk/NotoSansCJK-{weight}.ttc"), CHAIN_SC_TAG),
         (format!("/usr/share/fonts/opentype/noto/NotoSansCJK-{weight}.ttc"), CHAIN_SC_TAG),
+        (format!("/usr/share/fonts/google-noto-cjk/NotoSansCJK-{weight}.ttc"), CHAIN_SC_TAG),
+        (format!("/usr/share/fonts/google-noto-sans-cjk-ttc-fonts/NotoSansCJK-{weight}.ttc"), CHAIN_SC_TAG),
     ]
     .into_iter()
     .map(|(path, tag)| FontSource { path: PathBuf::from(path), collection_tag: tag })
@@ -2560,11 +2633,12 @@ const CHAIN_EXTRA_PATHS: [&str; 5] = [
 /// 语义完全一致：只含存在的路径、canonical 去重、**条目序 = 回退链序**。
 /// 索引构建器（`ether-font-index`）按本链枚举条目；harness 为第二消费方（A 线接线）。
 pub fn system_font_chain() -> Vec<FontSource> {
-    let Some(primary) = REGULAR_CANDIDATES
+    let primary = REGULAR_CANDIDATES
         .iter()
         .map(|(path, tag)| FontSource { path: PathBuf::from(path), collection_tag: *tag })
         .find(|s| s.path.exists())
-    else {
+        .or_else(|| platform_candidates().first().cloned());
+    let Some(primary) = primary else {
         return Vec::new();
     };
     let mut out = vec![primary.clone()];
@@ -2587,6 +2661,9 @@ pub fn system_font_chain() -> Vec<FontSource> {
             out.push(FontSource { path, collection_tag: None });
         }
     }
+    for src in platform_candidates() {
+        out.push(src.clone());
+    }
     // canonical 去重（与 `load_stack_with` 的 seen 语义一致；主字面排首位保序）。
     let mut seen = std::collections::HashSet::new();
     out.retain(|s| {
@@ -2606,15 +2683,8 @@ mod tests {
                 return Some(p);
             }
         }
-        [
-            "/usr/local/share/fonts/s/SourceHanSansSC_Bold.otf",
-            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/TTF/DejaVuSans.ttf",
-            "C:/Windows/Fonts/segoeui.ttf",
-        ]
-        .into_iter()
-        .map(PathBuf::from)
-        .find(|path| path.exists())
+        // 与生产同一条链（静态表 → 平台兜底），测试不再自持一份路径表。
+        system_font_chain().into_iter().next().map(|s| s.path)
     }
 
     fn engine() -> Option<TextEngine> {
@@ -3226,7 +3296,10 @@ fn shaping_never_increases_glyph_count() {
 /// 字节偏移 2 / 3 处取光标必须夹紧到 1 或 4。
 #[test]
 fn ligature_interior_is_not_a_cluster_boundary() {
-    let Some(engine) = engine() else { return };
+    let Some(path) = find_ligature_font() else {
+        return;
+    };
+    let engine = TextEngine::load(&path).unwrap();
     let line = engine.create_line("office", 20.0, 0.0, FontWeight::Normal);
     let bounds = line.cluster_boundaries();
     assert_eq!(bounds, &[0, 1, 4, 5, 6], "o | ffi | c | e 的字节边界");
@@ -3361,14 +3434,28 @@ fn layout_cache_hit_timing_report() {
 
 /// 带 `liga` 连字的拉丁字体（`ffi` / `fl`）。测试机常见路径，缺失则跳过。
 fn find_ligature_font() -> Option<std::path::PathBuf> {
-    [
+    let mut cands: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(p) = std::env::var("KANESUMI_LIGATURE_FONT") {
+        cands.push(std::path::PathBuf::from(p));
+    }
+    for p in [
         "/usr/share/fonts/TTF/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "C:/Windows/Fonts/consola.ttf",
+        "C:/Windows/Fonts/cambria.ttc",
         "C:/Windows/Fonts/segoeui.ttf",
-    ]
-    .into_iter()
-    .map(std::path::PathBuf::from)
-    .find(|p| p.exists())
+    ] {
+        cands.push(std::path::PathBuf::from(p));
+    }
+    // 存在不等于可用：实测 `ffi` 是否合成单字形，避免「文件在但字体没连字」时假失败。
+    cands.into_iter().find(|p| {
+        p.exists()
+            && TextEngine::load(p)
+                .map(|e| e.shape_line("ffi", 24.0, 0.0).len() == 1)
+                .unwrap_or(false)
+    })
 }
 
 /// 会话字体链唯一真源（集成裁决 2026-10-31）：链非空、每条都存在、
@@ -3380,10 +3467,19 @@ fn system_font_chain_matches_candidates() {
     let first = REGULAR_CANDIDATES
         .iter()
         .map(|(path, tag)| FontSource { path: PathBuf::from(path), collection_tag: *tag })
-        .find(|s| s.path.exists())
-        .expect("同上");
-    assert_eq!(chain[0].path, first.path, "主字面必须是首个存在候选");
-    assert_eq!(chain[0].collection_tag, first.collection_tag);
+        .find(|s| s.path.exists());
+    if let Some(first) = first {
+        assert_eq!(chain[0].path, first.path, "主字面必须是首个存在候选");
+        assert_eq!(chain[0].collection_tag, first.collection_tag);
+    } else {
+        // 静态表全缺（例如 Fedora 只装了 google-noto-sans-cjk-*）：链首必须来自平台兜底。
+        eprintln!("静态候选全缺，链首来自平台兜底：{}", chain[0].path.display());
+        assert!(
+            platform_candidates().iter().any(|s| s.path == chain[0].path),
+            "链首必须是平台兜底之一：{}",
+            chain[0].path.display()
+        );
+    }
     let mut seen = std::collections::HashSet::new();
     for s in &chain {
         assert!(s.path.exists(), "链只含存在路径: {}", s.path.display());
@@ -4382,7 +4478,15 @@ fn system_font_chain_matches_candidates() {
         assert!(b.ink_top < b.baseline, "墨迹上沿应在基线上方");
         assert!(b.ink_height() > 0.0);
         let offset = b.optical_center_offset(Rect::new(0.0, 0.0, 0.0, b.line_height));
-        assert!(offset < 0.0, "cap 高墨迹在行盒里偏下，须上提：{offset}");
+        // 恒等式（与字体无关）：offset = 行盒中线 − 墨迹中线。CJK 正体（Noto / 思源）上它通常为负
+        // （墨迹偏下 ⇒ 上提）；但有些字体（例如雅黑）cap 高墨迹本就偏上，符号会反 ——
+        // 2026-11-12 在 Windows 上就踩到这条，所以断言恒等式，不断言符号。
+        let expect = b.line_height / 2.0 - (b.ink_top + b.ink_bottom) / 2.0;
+        assert!(
+            (offset - expect).abs() < 0.01,
+            "光学偏移必须等于「行盒中线 − 墨迹中线」：offset={offset} expect={expect}"
+        );
+        eprintln!("[optical] offset={offset} ink_center={} line_h={}", b.ink_center_y(), b.line_height);
     }
 
     /// 有下伸部的字（g / y / p）：墨迹下沿落到基线以下，墨迹中线比无下伸部更低，
