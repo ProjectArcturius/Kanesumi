@@ -18,6 +18,13 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# 嵌套子模块（assets/kanesumi-assets）没初始化时，`include_str!` 会在编译期报
+# 「couldn't read ...glyphs/xxx.svg」—— 报错不指向真正的病因，所以先拦一道。
+if [ ! -f assets/kanesumi-assets/glyphs/chevron-down.svg ]; then
+  echo "缺 assets/kanesumi-assets（控件底纹图形真源）：先跑 git submodule update --init --recursive" >&2
+  exit 1
+fi
+
 BASELINE="scripts/clippy-baseline.txt"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/kanesumi"
 DIFF_OUT="$STATE_DIR/clippy-diff.txt"
