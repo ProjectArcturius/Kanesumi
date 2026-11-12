@@ -753,6 +753,9 @@ pub enum NotificationState {
 pub enum PagerAction {
 pub enum PagerHover {
 pub enum PagerItem {
+pub enum PanelRowHit {
+pub enum PanelRowKind {
+pub enum PanelRowState {
 pub enum PipsAction {
 pub enum PipsOrientation {
 pub enum PopupDirection {
@@ -787,6 +790,7 @@ pub enum TwoPaneWideConfig {
 pub enum WallRelease {
 pub fn accent(label: impl Into<String>) -> Self {
 pub fn accent_button(label: impl Into<String>, action: DeclAction) -> Self {
+pub fn action(id: impl Into<String>, title: impl Into<String>) -> Self {
 pub fn action_at(&self, pos: Point) -> Option<usize> {
 pub fn action_rect(&self) -> Option<Rect> {
 pub fn actions(&mut self, tree: &mut Tree, labels: &[&str]) -> Vec<WidgetId> {
@@ -886,6 +890,7 @@ pub fn delete_surrounding(&mut self, before_bytes: u32, after_bytes: u32) -> boo
 pub fn depth(mut self, depth: u8) -> Self {
 pub fn diff_decl(old: &Decl, new: &Decl) -> Vec<DeclChange> {
 pub fn disabled(mut self) -> Self {
+pub fn disabled(mut self, on: bool) -> Self {
 pub fn dismiss(&mut self, id: u64) -> bool {
 pub fn display_chars(&self) -> Vec<char> {
 pub fn display_text(&self) -> Option<String> {
@@ -973,6 +978,7 @@ pub fn hit(&self, engine: &TextEngine, rect: Rect, pos: Point) -> Option<usize> 
 pub fn hit(&self, engine: &TextEngine, rect: Rect, pos: Point) -> PagerAction {
 pub fn hit(&self, pos: Point) -> Option<&TileWallSlot> {
 pub fn hit(&self, pos: Point) -> Option<DockHit> {
+pub fn hit(&self, pos: Point) -> Option<PanelRowHit> {
 pub fn hit(&self, pos: Point) -> TeachingTipClick {
 pub fn hit(&self, rect: Rect, pos: Point) -> SplitButtonPart {
 pub fn hit(&self, rect: Rect, pos: Point) -> SwipeAction {
@@ -993,6 +999,7 @@ pub fn hits_close(&self, pos: Point) -> bool {
 pub fn hover(&mut self, engine: &TextEngine, rect: Rect, pos: Point) {
 pub fn hover(&mut self, engine: &TextEngine, rect: Rect, screen: Rect, p: Point) {
 pub fn hover(&mut self, engine: &TextEngine, screen: Rect, pos: Point) -> bool {
+pub fn hover(&mut self, on: bool) {
 pub fn hover(&mut self, pos: Point) -> bool {
 pub fn hover(&mut self, pos: Point) {
 pub fn hover(&mut self, rect: Rect, pos: Point) -> bool {
@@ -1084,6 +1091,7 @@ pub fn measure(&self, engine: &TextEngine, max_width: f32) -> Size {
 pub fn measure(&self, engine: &TextEngine, style: TextStyle) -> Size {
 pub fn measure(&self, engine: &TextEngine, style: TextStyle) -> kanesumi_core::Size {
 pub fn measure(&self, width: f32) -> Size {
+pub fn measure(engine: &TextEngine, row: &PanelRow, origin: Point, width: f32) -> Self {
 pub fn measure_window(&self, row_h: f32, viewport_h: f32) -> Option<ListWindow> {
 pub fn measures_last_frame(&self) -> usize {
 pub fn meta(&self) -> &[ListRowMeta] {
@@ -1130,6 +1138,7 @@ pub fn new(name_width: f32) -> Self {
 pub fn new(owner: WidgetId, items: Vec<MenuItem>) -> Self {
 pub fn new(parent: WidgetId) -> Self {
 pub fn new(root: TreeViewNode) -> Self {
+pub fn new(row: PanelRow) -> Self {
 pub fn new(rows: Vec<String>) -> Self {
 pub fn new(slot: DialogButton, label: impl Into<String>) -> Self {
 pub fn new(tabs: Vec<MetroTab>) -> Self {
@@ -1198,6 +1207,7 @@ pub fn popup_size(&self) -> Size {
 pub fn preedit(&self) -> &str {
 pub fn preedit_cursor(&self) -> Option<usize> {
 pub fn preedit_display(&self) -> String {
+pub fn press(&mut self) -> bool {
 pub fn press(&mut self, engine: &TextEngine, rect: Rect, p: Point) -> bool {
 pub fn press(&mut self, pos: Point) -> bool {
 pub fn press(&mut self, pos: Point) {
@@ -1221,6 +1231,7 @@ pub fn relayout(&mut self, viewport: Rect) {
 pub fn release(
 pub fn release(&mut self) -> bool {
 pub fn release(&mut self) {
+pub fn release(&mut self, hit: Option<PanelRowHit>) -> Option<bool> {
 pub fn release(&mut self, pos: Point) -> Option<DockActivated> {
 pub fn release(&mut self, pos: Point) -> WallRelease {
 pub fn remove(&mut self, id: u64) -> bool {
@@ -1230,6 +1241,7 @@ pub fn render(&self, _engine: &TextEngine, block: Rect, scene: &mut Scene) {
 pub fn render(&self, rect: Rect, scene: &mut Scene) {
 pub fn render(&self, theme: &MetroTheme, _engine: &TextEngine, rect: Rect, scene: &mut Scene) {
 pub fn render(&self, theme: &MetroTheme, _engine: &TextEngine, scene: &mut Scene) {
+pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, geo: &PanelRowGeometry, scene: &mut Scene) {
 pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
 pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
 pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, screen: Rect, scene: &mut Scene) {
@@ -1250,6 +1262,7 @@ pub fn resolve(style: &ControlStyle, state: &str) -> Paint {
 pub fn restore_anchor(&mut self, anchor: &ScrollAnchor, row_h: f32, viewport_h: f32) {
 pub fn retain_within(&mut self, len: usize) {
 pub fn right_width(&self) -> f32 {
+pub fn row(&self) -> &PanelRow {
 pub fn row(children: Vec<Decl>) -> Self {
 pub fn row_at(&self, pos: Point) -> Option<usize> {
 pub fn row_block(&mut self, tree: &mut Tree, mb: f32) -> WidgetId {
@@ -1365,6 +1378,7 @@ pub fn stack_vertical(count: usize, item_height: f32) -> Self {
 pub fn star_rect(&self, rect: Rect, k: usize) -> Rect {
 pub fn star_style(&self) -> TextStyle {
 pub fn state(&self) -> ControlState {
+pub fn state(&self) -> PanelRowState {
 pub fn state(&self) -> PopupState {
 pub fn state_for(states: kanesumi_element::ControlStates) -> &'static str {
 pub fn state_name(state: ControlState) -> &'static str {
@@ -1399,6 +1413,7 @@ pub fn toggle(&mut self) -> CheckState {
 pub fn toggle(&mut self) {
 pub fn toggle(&mut self, at: Rect) {
 pub fn toggle(&mut self, engine: &TextEngine, rect: Rect, screen: Rect) {
+pub fn toggle(id: impl Into<String>, title: impl Into<String>, on: bool) -> Self {
 pub fn toggle_desc(
 pub fn toggle_ellipsis(&mut self, engine: &TextEngine, rect: Rect, screen: Rect) {
 pub fn toggle_flyout(&mut self, engine: &TextEngine, rect: Rect, screen: Rect) {
@@ -1417,6 +1432,7 @@ pub fn update(&mut self, _dt: f64) {}
 pub fn update(&mut self, dt: f64) {
 pub fn update_submenu(&mut self, dt: f64) {
 pub fn urgent(mut self, on: bool) -> Self {
+pub fn value(
 pub fn value(&self) -> Option<f64> {
 pub fn value(value: i32) -> Self {
 pub fn value_style() -> TextStyle {
@@ -1564,6 +1580,7 @@ pub struct MetroMenuBar {
 pub struct MetroNavigationView {
 pub struct MetroNumberBox {
 pub struct MetroPagerControl {
+pub struct MetroPanelRow {
 pub struct MetroParallaxView {
 pub struct MetroPasswordBox {
 pub struct MetroPersonPicture {
@@ -1601,6 +1618,8 @@ pub struct NotificationStack {
 pub struct NumberValueChanged(pub f64);
 pub struct PagerPageChanged(pub usize);
 pub struct Paint {
+pub struct PanelRow {
+pub struct PanelRowGeometry {
 pub struct PathBarInput {
 pub struct PathBarLayout {
 pub struct PathBarMetrics {
