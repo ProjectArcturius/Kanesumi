@@ -1204,6 +1204,7 @@ pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene:
 pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
 pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, screen: Rect, scene: &mut Scene) {
 pub fn render(&self, theme: &MetroTheme, rect: Rect, scene: &mut Scene) {
+pub fn render_card(
 pub fn render_chrome(
 pub fn render_chrome(&self, theme: &MetroTheme, rect: Rect, scene: &mut Scene) {
 pub fn render_content(&self, theme: &MetroTheme, rect: Rect, scene: &mut Scene) {
@@ -1443,7 +1444,9 @@ pub struct BreadcrumbClicked {
 pub struct BreadcrumbLayout {
 pub struct ButtonClicked;
 pub struct CandidateChosen(pub usize);
+pub struct CardContent<'a> {
 pub struct CardGeometry {
+pub struct CardVisual {
 pub struct CheckToggled(pub CheckState);
 pub struct ColorChanged(pub Color);
 pub struct Column {

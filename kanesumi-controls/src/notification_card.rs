@@ -11,31 +11,15 @@
 
 use std::sync::Arc;
 
-use kanesumi_canvas::{TextEngine, TextLayout, TextLayoutOptions, TextOverflow};
+use kanesumi_canvas::{Scene, TextAlign, TextEngine, TextLayout, TextLayoutOptions, TextOverflow};
 use kanesumi_core::sizes::{ICON_16, ICON_32};
 use kanesumi_core::typography::{MetroTypography, TextStyle, base_weight};
-use kanesumi_core::{Point, Rect};
+use kanesumi_core::{MetroTheme, Point, Rect};
 
 /// 正文最多两行（Win10 通知卡；超出截断加省略号）。
 pub const CARD_BODY_MAX_LINES: usize = 2;
-/// 卡片内边距。
-pub const CARD_PAD: f32 = 16.0;
-/// 图标与文字之间。
-pub const CARD_ICON_GAP: f32 = 12.0;
-/// 标题与正文之间。
-pub const CARD_TITLE_GAP: f32 = 4.0;
-/// 正文与动作行之间。
-pub const CARD_ACTION_GAP: f32 = 12.0;
-/// 动作按钮高（最小命中 32，参 INTERACTION_CANON §Ⅱ）。
-pub const CARD_ACTION_H: f32 = 32.0;
-/// 动作按钮左右内边距。
-pub const CARD_ACTION_PAD_X: f32 = 12.0;
-/// 动作按钮之间。
-pub const CARD_ACTION_SPACING: f32 = 8.0;
-/// 关闭钮边长（32；触控档 44 由外壳整块放大）。
+/// 关闭钮边长（引用尺寸表 `ICON_32`；触控档 44 由外壳整块放大）。
 pub const CARD_CLOSE: f32 = ICON_32;
-/// 关闭钮距卡右 / 上边。
-pub const CARD_CLOSE_MARGIN: f32 = 8.0;
 
 /// 标题字体：14/20、基础字重（与 `MetroInfoBar` 同档）。
 fn title_style() -> TextStyle {
@@ -72,12 +56,12 @@ pub struct CardGeometry {
 
 /// 文本区左边界（图标右缘 + 间距）。
 fn text_left(card: Rect) -> f32 {
-    card.origin.x + CARD_PAD + ICON_16 + CARD_ICON_GAP
+    card.origin.x + 16.0 + ICON_16 + 12.0
 }
 
 /// 文本区可用宽（右侧让开关闭钮）。
 fn text_width(card: Rect) -> f32 {
-    (card.right() - CARD_CLOSE_MARGIN - CARD_CLOSE - CARD_CLOSE_MARGIN - text_left(card)).max(0.0)
+    (card.right() - 8.0 - CARD_CLOSE - 8.0 - text_left(card)).max(0.0)
 }
 
 impl CardGeometry {
@@ -92,7 +76,7 @@ impl CardGeometry {
         let tw = text_width(card);
         let title_style = title_style();
         let body_style = body_style();
-        let title_y = card.origin.y + CARD_PAD;
+        let title_y = card.origin.y + 16.0;
 
         let title_layout = engine.layout_box(
             title,
@@ -110,7 +94,7 @@ impl CardGeometry {
         );
         let title_rect = Rect::new(text_left(card), title_y, tw, title_style.line_height);
 
-        let body_y = title_rect.bottom() + CARD_TITLE_GAP;
+        let body_y = title_rect.bottom() + 4.0;
         let body_layout = engine.layout_box(
             body,
             body_style.size,
@@ -129,23 +113,23 @@ impl CardGeometry {
         let body_rect = Rect::new(text_left(card), body_y, tw, body_h);
 
         let mut action_rects = Vec::with_capacity(actions.len());
-        let mut y = body_rect.bottom() + CARD_PAD;
+        let mut y = body_rect.bottom() + 16.0;
         if !actions.is_empty() {
-            let ay = body_rect.bottom() + CARD_ACTION_GAP;
+            let ay = body_rect.bottom() + 12.0;
             let mut x = text_left(card);
             for a in actions {
-                let w = engine.measure(a, body_style.size) + CARD_ACTION_PAD_X * 2.0;
-                action_rects.push(Rect::new(x, ay, w, CARD_ACTION_H));
-                x += w + CARD_ACTION_SPACING;
+                let w = engine.measure(a, body_style.size) + 12.0 * 2.0;
+                action_rects.push(Rect::new(x, ay, w, 32.0));
+                x += w + 8.0;
             }
-            y = ay + CARD_ACTION_H + CARD_PAD;
+            y = ay + 32.0 + 16.0;
         }
 
         Self {
             card,
             icon: Rect::new(
-                card.origin.x + CARD_PAD,
-                card.origin.y + CARD_PAD,
+                card.origin.x + 16.0,
+                card.origin.y + 16.0,
                 ICON_16,
                 ICON_16,
             ),
@@ -155,8 +139,8 @@ impl CardGeometry {
             body_layout,
             actions: action_rects,
             close: Rect::new(
-                card.right() - CARD_CLOSE_MARGIN - CARD_CLOSE,
-                card.origin.y + CARD_CLOSE_MARGIN,
+                card.right() - 8.0 - CARD_CLOSE,
+                card.origin.y + 8.0,
                 CARD_CLOSE,
                 CARD_CLOSE,
             ),
@@ -234,14 +218,14 @@ mod tests {
             &[],
         );
         assert_eq!(g.title.size.height, title_style().line_height);
-        assert!(g.title.right() <= g.card.right() - CARD_CLOSE_MARGIN - CARD_CLOSE);
+        assert!(g.title.right() <= g.card.right() - 8.0 - CARD_CLOSE);
     }
 
     #[test]
     fn icon_sits_at_padding_and_is_16() {
         let g = geo("t", "b", &[]);
-        assert_eq!(g.icon.origin.x, CARD_PAD);
-        assert_eq!(g.icon.origin.y, CARD_PAD);
+        assert_eq!(g.icon.origin.x, 16.0);
+        assert_eq!(g.icon.origin.y, 16.0);
         assert_eq!(g.icon.size.width, ICON_16);
     }
 
@@ -252,7 +236,7 @@ mod tests {
         assert_eq!(with.actions.len(), 2);
         assert!(with.height > without.height, "有动作行的卡更高");
         assert!(with.actions[0].origin.x < with.actions[1].origin.x);
-        assert_eq!(with.actions[0].size.height, CARD_ACTION_H);
+        assert_eq!(with.actions[0].size.height, 32.0);
         for a in &with.actions {
             assert!(a.right() <= with.card.right(), "动作不得溢出卡片：{a:?}");
         }
@@ -313,4 +297,112 @@ mod tests {
             g.body.size.height
         );
     }
+}
+
+// ── 渲染：几何 → Scene（只发命令，不做像素） ────────────────────────────────
+
+/// 卡片要显示的内容（字符串由调用方持有，渲染不复制）。
+pub struct CardContent<'a> {
+    /// 应用名（标题行上方的小字；空则不出）。
+    pub app_name: &'a str,
+    /// 标题。
+    pub title: &'a str,
+    /// 正文（渲染侧按两行截断）。
+    pub body: &'a str,
+    /// 动作按钮标签。
+    pub actions: &'a [String],
+}
+
+/// 交互态（只影响颜色，不改几何 —— 元素数稳定，损伤判定才稳）。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CardVisual {
+    /// 悬停中的动作序号。
+    pub hovered_action: Option<usize>,
+    /// 关闭钮是否悬停。
+    pub close_hovered: bool,
+    /// 卡片整体是否悬停（悬停时底色抬一档）。
+    pub hovered: bool,
+}
+
+/// 把一张卡画进场景。**直角**（`fill_rect` 不带圆角）、单一强调色、无阴影 —— 参 `KANESUMI_DESIGN.md` §Ⅲ。
+pub fn render_card(
+    theme: &MetroTheme,
+    geo: &CardGeometry,
+    content: &CardContent<'_>,
+    visual: CardVisual,
+    scene: &mut Scene,
+) {
+    let c = &theme.colors;
+    let bg = if visual.hovered { c.surface_variant } else { c.surface };
+    scene.fill_rect(bg, geo.card);
+    // 底边 1pt 分隔线：贴边、直角（通知之间不靠阴影分层）。
+    scene.fill_rect(
+        c.divider,
+        Rect::new(geo.card.origin.x, geo.card.bottom() - 1.0, geo.card.size.width, 1.0),
+    );
+    // 应用图标位（真实图标由外壳提供；这里给一块底，避免文字悬空）。
+    scene.fill_rect(c.surface_variant, geo.icon);
+    if !content.app_name.is_empty() {
+        scene.text(
+            content.app_name.to_string(),
+            Rect::new(geo.title.origin.x, geo.title.origin.y, geo.title.size.width, 16.0),
+            c.on_surface_variant,
+            TextStyle::new(11.0, 16.0, base_weight()),
+            TextAlign::Left,
+        );
+    }
+    // 标题：几何已按单行 + 省略号量过；命令侧同样限制单行，保证两处一致。
+    scene.text_with_options(
+        content.title.to_string(),
+        geo.title,
+        c.on_surface,
+        title_style(),
+        TextAlign::Left,
+        false,
+        Some(1),
+        TextOverflow::Ellipsis,
+    );
+    // 正文：两行截断（与几何同一组参数）。
+    scene.text_with_options(
+        content.body.to_string(),
+        geo.body,
+        c.on_surface_variant,
+        body_style(),
+        TextAlign::Left,
+        true,
+        Some(CARD_BODY_MAX_LINES),
+        TextOverflow::Ellipsis,
+    );
+    // 动作按钮：底色 + 居中文字；悬停换 surface_variant。
+    for (i, r) in geo.actions.iter().enumerate() {
+        let fill = if visual.hovered_action == Some(i) {
+            c.surface_variant
+        } else {
+            c.divider
+        };
+        scene.fill_rect(fill, *r);
+        let label = content.actions.get(i).cloned().unwrap_or_default();
+        scene.text(
+            label,
+            *r,
+            c.on_surface,
+            body_style(),
+            TextAlign::Center,
+        );
+    }
+    // 关闭钮：只在悬停时给底，字形始终存在（元素数稳定）。
+    if visual.close_hovered {
+        scene.fill_rect(c.surface_variant, geo.close);
+    }
+    scene.text(
+        "✕".to_string(),
+        geo.close,
+        if visual.close_hovered {
+            c.on_surface
+        } else {
+            c.on_surface_variant
+        },
+        TextStyle::new(12.0, 16.0, base_weight()),
+        TextAlign::Center,
+    );
 }
