@@ -33,6 +33,7 @@ pub mod info_badge;
 pub mod info_bar;
 pub mod items_repeater;
 pub mod list;
+pub mod list_view;
 pub mod menu_bar;
 pub mod menu_flyout;
 pub mod metro_tile;
@@ -130,6 +131,10 @@ pub use info_badge::{InfoBadgeKind, MetroInfoBadge};
 pub use info_bar::{InfoBarClosed, InfoBarClick, InfoBarSeverity, MetroInfoBar};
 pub use items_repeater::{ItemFactory, ItemLayout, ItemsRepeater};
 pub use list::{ListSelectionChanged, MetroList};
+pub use list_view::{
+    KeyOutcome, LIST_OVERSCAN_ROWS, ListSelection, ListWindow, MeasureCounter, ScrollAnchor,
+    TYPE_AHEAD_TIMEOUT_MS, TypeAhead,
+};
 pub use menu_bar::{MenuBarItem, MetroMenuBar};
 pub use menu_flyout::{MenuFlyout, MenuInvoked};
 pub use metro_tile::{MetroTile, TileClicked, TileLive, TileSize};

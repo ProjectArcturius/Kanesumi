@@ -475,7 +475,8 @@ impl GalleryApp {
             "dropdown" => self.dropdown.toggle(self.dropdown_panel()),
             "selector" => self.selector.toggle(self.selector_panel()),
             "list-selected" => {
-                self.list.selected = Some(2);
+                // 走 `select()`：`selected` 只是 lead 的镜像，选中集合才是绘制依据。
+                self.list.select(Some(2));
                 self.list.hovered = Some(5);
             }
             "switch-on" => {
