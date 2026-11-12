@@ -104,8 +104,17 @@ macro_rules! glyph_suite {
                     let mut covered = false;
                     for command in &scene.commands {
                         match command {
-                            SceneCommand::Image { rect: drawn, .. } => {
+                            SceneCommand::Image { rect: drawn, rgba, .. } => {
                                 assert_eq!(*drawn, target, "位图必须画在给定矩形内");
+                                // 「有命令」不等于「画出了东西」：坏的 path 会光栅成一张全透明图，
+                                // 所以这里直接查覆盖。
+                                let painted =
+                                    rgba.chunks_exact(4).filter(|pixel| pixel[3] > 0).count();
+                                assert!(
+                                    painted > 0,
+                                    "{} 光栅成了全透明图（path 写坏了？）",
+                                    GlyphName::$variant.file()
+                                );
                                 covered = true;
                             }
                             SceneCommand::Triangle { p0, p1, p2, .. } => {
