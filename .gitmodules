@@ -1,0 +1,3 @@
+[submodule "assets/kanesumi-assets"]
+	path = assets/kanesumi-assets
+	url = git@github.com:ProjectArcturius/Kanesumi-assets.git

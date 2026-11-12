@@ -12,6 +12,7 @@ pub mod font_index;
 pub mod geometry;
 pub mod glyph;
 pub mod icon;
+pub mod icons;
 pub mod layout;
 pub mod scale;
 pub mod scene;

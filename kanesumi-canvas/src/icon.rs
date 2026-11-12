@@ -206,12 +206,7 @@ fn decode_jpeg(data: &[u8], target: Option<(u32, u32)>) -> Option<Icon> {
 /// 失败（文件缺失 / 解析错误）返回 `None` —— 图标缺失不 panic（SD §IX 只约束字体）。
 pub fn rasterize_svg(path: impl AsRef<Path>, target_size: u32) -> Option<Icon> {
     let data = std::fs::read(path).ok()?;
-    let tree = parse_svg(&data)?;
-    let svg_size = tree.size();
-    let scale = target_size as f32 / svg_size.width().max(svg_size.height());
-    let px_w = (svg_size.width() * scale).round() as u32;
-    let px_h = (svg_size.height() * scale).round() as u32;
-    let icon = render_svg_scaled(&tree, px_w, px_h, scale);
+    let icon = rasterize_svg_bytes(&data, target_size);
     // B0 归因：最长边入口不经过 `rasterize_image_kind`（控件图标直解路径），单独记一行。
     if let Some(icon) = &icon {
         crate::census::record(
@@ -224,6 +219,18 @@ pub fn rasterize_svg(path: impl AsRef<Path>, target_size: u32) -> Option<Icon> {
         );
     }
     icon
+}
+
+/// 从**字节**栅格化 SVG（最长边 `target_size` 像素）。参 `rasterize_svg`。
+///
+/// 供 `icons::draw` 消费编译期内嵌的资产用：不碰文件系统，打包成库之后同样可用。
+pub fn rasterize_svg_bytes(data: &[u8], target_size: u32) -> Option<Icon> {
+    let tree = parse_svg(data)?;
+    let svg_size = tree.size();
+    let scale = target_size as f32 / svg_size.width().max(svg_size.height());
+    let px_w = (svg_size.width() * scale).round() as u32;
+    let px_h = (svg_size.height() * scale).round() as u32;
+    render_svg_scaled(&tree, px_w, px_h, scale)
 }
 
 /// 统一入口 SVG 分支：`target` 给定时按物理像素 **Cover** 光栅（等比放大铺满 + 居中裁剪），
