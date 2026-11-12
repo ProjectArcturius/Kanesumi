@@ -1809,7 +1809,14 @@ impl Tree {
         // 图层 / 滚动器子树的内容不进主场景（compose 剔除），重画只更新其内容缓冲，
         // 不得记入主表面损伤——否则滚动期间每帧虚报半幅，主表面无谓整段重传（fp4b）。
         let in_layer_subtree = self.enclosing_composited_root(id).is_some();
-        if !in_layer_subtree {
+        // 纯容器（自己一笔不画、上一帧也没画）不算损伤来源：覆盖层 / 根容器覆盖整表面，
+        // 只要它被重画就把整表面记成损伤 —— 弹层一开就退化成全量帧。2026-11-12 实测：
+        // 420×320 表面 + 120×40 弹层 ⇒ damage 整表面。子节点各自的绘制范围仍照记。
+        let own_empty = scene.commands.is_empty() && after.commands.is_empty();
+        let prev_empty = self
+            .node(id)
+            .is_none_or(|n| n.paint.is_empty() && n.paint_after.is_empty());
+        if !in_layer_subtree && !(own_empty && prev_empty) {
             let old = self.node(id).and_then(|n| n.painted_bounds);
             if let Some(o) = old {
                 self.add_damage(o);
