@@ -15,6 +15,7 @@ pub mod diagnostics;
 pub mod event;
 pub mod id;
 pub mod ime;
+pub mod interaction;
 pub mod layer;
 pub mod placement;
 pub mod props;

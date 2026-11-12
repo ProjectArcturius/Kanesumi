@@ -1,6 +1,6 @@
 use kanesumi_canvas::Scene;
 use kanesumi_canvas::text::TextEngine;
-use kanesumi_core::{InteractionSettings, MetroTheme, Rect, Size};
+use kanesumi_core::{MetroTheme, Rect, Size};
 
 use crate::appmenu::{AppMenuHandle, MenuTree};
 use crate::role::EtherRole;
@@ -868,61 +868,16 @@ impl ImeReconcileGate {
     }
 }
 
-/// 双击检测器 —— 记录每次指针按下，判定「同按钮、间隔 ≤ 双击时长、位移在 4×4 px 框内」为双击。
+/// 双击检测器 —— 定义在元素树（`kanesumi_element::interaction::ClickTracker`）。
 ///
-/// 数值取自交互正典（参 Ether docs/INTERACTION_CANON.md §Ⅱ）：500 ms / 4×4 px 容差框；
-/// 时长可由 `input.toml` 覆盖（[`InteractionSettings`]）。
-///
-/// 语义：第二次按下判定为双击（外壳随后下发 `InputEvent::DoubleClick`）；判定后复位，
-/// 故三次快速点击 = 单击 + 双击 + 单击（第三次重新开始计数，Windows 惯例）。
-#[derive(Debug, Clone, Default)]
-pub struct ClickTracker {
-    last_button: Option<PointerButton>,
-    last_time_ms: u32,
-    last_x: f32,
-    last_y: f32,
-    /// 可覆盖的双击时长（`input.toml`）。
-    settings: InteractionSettings,
-}
-
-impl ClickTracker {
-    /// 应用用户覆盖（`input.toml` 变更时由外壳调用）。
-    pub fn set_settings(&mut self, settings: InteractionSettings) {
-        self.settings = settings;
-    }
-
-    /// 记录一次按下（`time_ms` 为事件时间戳，同序单调）。返回 true = 构成双击。
-    pub fn record(&mut self, button: PointerButton, x: f32, y: f32, time_ms: u32) -> bool {
-        let tolerance = kanesumi_core::interaction::DOUBLE_CLICK_TOLERANCE_PX;
-        let double = self.last_button == Some(button)
-            && time_ms >= self.last_time_ms
-            && time_ms.saturating_sub(self.last_time_ms) <= self.settings.double_click_ms
-            && (x - self.last_x).abs() <= tolerance
-            && (y - self.last_y).abs() <= tolerance;
-        if double {
-            // 判定后复位：第三次快速点击视为新单击（Windows 双击语义）。
-            self.last_button = None;
-            self.last_time_ms = 0;
-            self.last_x = 0.0;
-            self.last_y = 0.0;
-        } else {
-            self.last_button = Some(button);
-            self.last_time_ms = time_ms;
-            self.last_x = x;
-            self.last_y = y;
-        }
-        double
-    }
-
-    /// 指针离开表面时复位（跨表面的快速点击不算双击）。
-    pub fn reset(&mut self) {
-        *self = Self::default();
-    }
-}
+/// 双击窗口（500 ms / 4×4 px）是交互正典的数值，框架与应用不能各写一份；本仓只重导出，
+/// 既有 `App` / `ClickTracker` 调用点不变（参 INTERACTION_CANON §Ⅱ）。
+pub use kanesumi_element::interaction::ClickTracker;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kanesumi_core::InteractionSettings;
 
     #[test]
     fn key_maps_to_text_input() {

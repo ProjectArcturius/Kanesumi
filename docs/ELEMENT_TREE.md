@@ -427,6 +427,27 @@ pub fn animate_layer_gated_on(&mut self, id: WidgetId, gate: WidgetId, spec: Lay
 点击可聚焦控件即聚焦；焦点节点被移除/隐藏/禁用时焦点移到下一个可聚焦节点。
 `FocusRing` 保留给未迁移的旧 App，迁移完成后删除。
 
+**指针 / 焦点四语义**（`kanesumi-element/src/interaction.rs`，判据见该文件测试）：
+
+1. 进入 / 离开：命中链差集维护 `state.hovered`；子节点间移动时父级留在链里，不发 Leave。
+2. 按下 / 取消：左键按下给交互祖先 `pressed`；移出边界 `pressed=0` 且 `hover=0`；
+   在边界外释放不合成 `Click`（`PointerUp` 仍投给捕获者）。
+3. 循环回调：按住移出再移回原元素，`pressed` 恢复 1（Qt `QAbstractButton`）。
+4. 焦点可见性：Tab / 程序化 `focus(id, true)` → `state.keyboard_focused=1`；
+   指针点击取焦 → 0，框架因此不画焦点框（GTK4 `focus-visible` / UWP `FocusState`）。
+
+轻量关闭的单一入口是 `Tree::dismiss_top_popup`，优先级固定为
+**`Esc` → 外点 → 失焦 → 再次右键打开**：`Esc` 只关最内层可轻触弹层（控件先处理则不关，
+关掉才算消费）；弹层外按下关掉并**吞掉整次点击**（按下与释放都不投下层，模态只吞不关）；
+表面失焦走 `Tree::dismiss_popups`（非模态全关，模态保留；不是输入事件，无消费语义）；
+再次右键按同一锚点重开（新弹层 id，层数回到 1）。四步顺序由
+`interaction::tests::transcript_light_dismiss_order` 一条转录钉死。悬停提示按 500 ms 静止
+触发，指针移出 4×4 px 容差框即撤回并重新计时；时刻一律由 `tick_timers(dt)` 注入，不读系统钟。
+
+状态转录格式（测试与报告共用）：一行 = 一次合成输入 + 该输入后的可观察状态，
+`序号 输入 -> hover=… pressed=… focus_visible=…`（弹层 / 提示用 `popups=…` / `tip=…`）。
+同一输入序列必须产出逐字节相同的转录；手感问题不接受截图当判据。
+
 **IME**：焦点节点的 `ime(rect)` 返回 `Some` → 外壳开 text-input，caret 矩形由节点 `rect` 派生。
 
 ## §Ⅶ 视觉状态（对应 `VisualStateManager`）

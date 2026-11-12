@@ -16,6 +16,7 @@ use kanesumi_core::{MetroTheme, Point, Rect, Size};
 use crate::diagnostics;
 use crate::event::{Event, Key, Modifiers, PointerButton, ScrollInput};
 use crate::id::WidgetId;
+use crate::interaction::{DismissCause, moved_beyond_tolerance};
 use crate::layer::{
     LayerAnimSpec, LayerClipSpec, LayerInsets, LayerOp, LayerState, ScrollerRequest, ScrollerState,
 };
@@ -577,6 +578,13 @@ pub struct Tree {
     tooltip_popup: Option<WidgetId>,
     /// 正在显示的提示距自动消失（5 s）的剩余秒数。
     tooltip_hide: Option<f64>,
+    /// 提示计时器的「静止参考点」：指针在容差框内（4×4 px，正典 §Ⅲ）移动不算重新计时。
+    /// `None` = 没有待显示的提示。
+    tooltip_still: Option<Point>,
+    /// 轻量关闭（点弹层外部）吞掉的那次释放。按下已在 `pointer_down` 里消费，
+    /// 释放若照常投给下层，菜单项这类「释放时激活」的控件会被误触 —— 正典 §Ⅵ 要求
+    /// 这次点击**不传给下层**。
+    swallow_up: Option<PointerButton>,
     /// 等待解码完成的节点登记表（键 → 节点 id 列表，一对多）。参 SMOOTHNESS_PLAN §Ⅲ-3、裁定 §122。
     decode_waiters: std::collections::HashMap<DecodeKey, Vec<WidgetId>>,
 }
@@ -637,6 +645,8 @@ impl Tree {
             tooltip_anchor: None,
             tooltip_popup: None,
             tooltip_hide: None,
+            tooltip_still: None,
+            swallow_up: None,
             decode_waiters: std::collections::HashMap::new(),
         };
         tree.root = tree.alloc(Box::new(ZStack), None, LayoutProps::default());
@@ -833,6 +843,7 @@ impl Tree {
         if self.tooltip_pending.is_some_and(|t| !self.contains(t)) {
             self.tooltip_pending = None;
             self.tooltip_delay = None;
+            self.tooltip_still = None;
         }
         if self.tooltip_popup.is_some_and(|p| !self.contains(p)) {
             self.tooltip_popup = None;
@@ -2057,9 +2068,9 @@ impl Tree {
         })
     }
 
-    /// 更新悬停链并刷新提示目标。`moved` = 指针位置较上次确有变化（提示要求指针静止
-    /// 满延迟，移动会重置计时）。
-    fn update_hover(&mut self, pos: Option<Point>, moved: bool) {
+    /// 更新悬停链并刷新提示目标。`beyond` = 指针已移出 4×4 px 静止容差框（正典 §Ⅲ）；
+    /// 容差内的抖动不重置提示计时，超出则视为「动了」。
+    fn update_hover(&mut self, pos: Option<Point>, beyond: bool) {
         let mut chain = pos
             .and_then(|p| self.hit(p))
             .map(|t| self.ancestors_inclusive(t))
@@ -2079,7 +2090,7 @@ impl Tree {
             }
         }
         self.hover_chain = chain;
-        self.refresh_tooltip(moved);
+        self.refresh_tooltip(beyond);
     }
 
     /// 最近一次指针位置（首次指针事件前为 None）。
@@ -2089,9 +2100,14 @@ impl Tree {
 
     pub fn pointer_move(&mut self, pos: Point) {
         self.diagnose_empty_hit_table("pointer_move");
-        let moved = self.pointer != Some(pos);
+        // 静止容差以「提示计时起点」为参照，不是上一次事件：连续 1 px 抖动累计超过
+        // 2 px 也应视为动了（否则慢慢漂移永远不重置）。
+        let beyond = self
+            .tooltip_still
+            .or(self.pointer)
+            .is_some_and(|from| moved_beyond_tolerance(from, pos));
         self.pointer = Some(pos);
-        self.update_hover(Some(pos), moved);
+        self.update_hover(Some(pos), beyond);
         // 按下期间，「按下」外观跟随指针是否仍在交互目标上（UWP Button 移出即恢复）。
         if let Some(p) = self.press_target {
             let inside = self
@@ -2108,16 +2124,19 @@ impl Tree {
     pub fn pointer_down(&mut self, pos: Point, button: PointerButton, modifiers: Modifiers) {
         self.diagnose_empty_hit_table("pointer_down");
         self.pointer = Some(pos);
+        // 上一次外点若留下未配对的释放（例如在表面外松手），不能吞掉这一次。
+        self.swallow_up = None;
         // 按下即消失：提示在指针按下时立刻收起（正典 §Ⅲ，UWP 行为）。
         self.hide_tooltip();
         // 覆盖层有弹层时：点在所有弹层之外 → LightDismiss（模态则只吞不关）。
         // 提示层是 passthrough 弹层，不参与顶层判定（否则会把点击吞掉）。
-        if let Some((top, spec)) = self.top_popup() {
+        if self.top_popup().is_some() {
             let inside = self.hit_rec(self.overlay, pos, None).is_some();
             if !inside {
-                if spec.light_dismiss && !spec.modal {
-                    self.dismiss_popup(top);
-                }
+                self.dismiss_top_popup(DismissCause::OutsideClick);
+                // 外点整次点击（按下 + 释放）都不传给下层：菜单项在释放时激活，
+                // 只吞按下会把动作漏给底下的控件（正典 §Ⅵ「防误触」）。
+                self.swallow_up = Some(button);
                 self.mark_dirty();
                 return;
             }
@@ -2162,6 +2181,12 @@ impl Tree {
     pub fn pointer_up(&mut self, pos: Point, button: PointerButton, modifiers: Modifiers) {
         self.diagnose_empty_hit_table("pointer_up");
         self.pointer = Some(pos);
+        // 轻量关闭吞掉的那次释放：不投递、不合成 Click，只更新悬停。
+        if self.swallow_up == Some(button) {
+            self.swallow_up = None;
+            self.update_hover(Some(pos), false);
+            return;
+        }
         if let Some(t) = self.captured.take().or_else(|| self.hit(pos)) {
             // 右键菜单在**释放**时弹出（INTERACTION_CANON §Ⅱ/§Ⅵ，Win32 `WM_CONTEXTMENU`）：
             // 目标 = 按下瞬间命中的元素（按下即捕获），位置 = 松开点。
@@ -2246,16 +2271,34 @@ impl Tree {
             Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End => {
                 self.focus_group_move(key)
             }
-            Key::Escape => {
-                if let Some((top, spec)) = self.top_popup()
-                    && spec.light_dismiss
-                {
-                    self.dismiss_popup(top);
-                    return true;
-                }
-                false
-            }
+            Key::Escape => self.dismiss_top_popup(DismissCause::Escape),
             _ => false,
+        }
+    }
+
+    /// 轻量关闭的单一入口（Esc / 弹层外按下）。返回「这次输入是否被吞掉」。
+    ///
+    /// 优先级：焦点控件先处理 Esc（逐层回退，`key_down_ex` 先投递）→ 本方法 → 应用。
+    /// 外点**总是**吞掉（无论弹层是否真的关闭）：模态弹层只吞不关；正典 §Ⅵ 要求
+    /// 关闭用的那次点击不落到底下的控件。Esc 只在真的关掉弹层时算消费。
+    pub(crate) fn dismiss_top_popup(&mut self, cause: DismissCause) -> bool {
+        let Some((top, spec)) = self.top_popup() else {
+            return false;
+        };
+        match cause {
+            DismissCause::Escape => {
+                if !spec.light_dismiss {
+                    return false;
+                }
+                self.dismiss_popup(top);
+                true
+            }
+            DismissCause::OutsideClick => {
+                if spec.light_dismiss && !spec.modal {
+                    self.dismiss_popup(top);
+                }
+                true
+            }
         }
     }
 
@@ -3135,17 +3178,25 @@ impl Tree {
     fn arm_tooltip(&mut self, target: WidgetId, reshow: bool) {
         self.tooltip_pending = Some(target);
         self.tooltip_delay = Some(Self::tooltip_delay_ms(reshow));
+        self.tooltip_still = self.pointer;
     }
 
-    /// 悬停 / 焦点变化后重算提示目标与计时。`moved` = 指针移动过（重置静止计时）。
-    fn refresh_tooltip(&mut self, moved: bool) {
+    /// 悬停 / 焦点变化后重算提示目标与计时。`beyond` = 指针移出了 4×4 px 静止容差框
+    /// （正典 §Ⅲ）：容差内的抖动继续走原计时，超出则撤回提示（显示中的收起后重新计时）。
+    fn refresh_tooltip(&mut self, beyond: bool) {
         // 指针按下期间不开始新提示（捕获中），避免「按下又冒出来」。
         if self.captured.is_some() {
             return;
         }
         let target = self.tooltip_candidate();
         match (self.tooltip_anchor, target) {
-            (Some(a), Some(t)) if a == t => {}
+            // 同一目标：只有真的动了才处理 —— 显示中的提示被移动撤回，等待中的重新计时。
+            (Some(a), Some(t)) if a == t => {
+                if beyond {
+                    self.hide_tooltip();
+                    self.arm_tooltip(t, false);
+                }
+            }
             // 已在显示、目标改变：收起旧提示，对相邻目标用再现延迟（100 ms）。
             (Some(_), Some(t)) => {
                 self.hide_tooltip();
@@ -3154,9 +3205,10 @@ impl Tree {
             (Some(_), None) => self.hide_tooltip(),
             (None, Some(t)) => {
                 if self.tooltip_pending == Some(t) {
-                    if moved {
+                    if beyond {
                         // 指针又动了 —— 静止计时从头来（正典 §Ⅲ）。
                         self.tooltip_delay = Some(Self::tooltip_delay_ms(false));
+                        self.tooltip_still = self.pointer;
                     }
                 } else {
                     self.arm_tooltip(t, false);
@@ -3165,6 +3217,7 @@ impl Tree {
             (None, None) => {
                 self.tooltip_pending = None;
                 self.tooltip_delay = None;
+                self.tooltip_still = None;
             }
         }
     }
@@ -3200,6 +3253,7 @@ impl Tree {
         self.tooltip_anchor = Some(target);
         self.tooltip_popup = Some(id);
         self.tooltip_hide = Some(kanesumi_core::interaction::TOOLTIP_HIDE_MS as f64 / 1000.0);
+        self.tooltip_still = self.pointer;
     }
 
     /// 立即收起提示（不影响其他弹层）。
@@ -3208,6 +3262,7 @@ impl Tree {
         self.tooltip_delay = None;
         self.tooltip_hide = None;
         self.tooltip_anchor = None;
+        self.tooltip_still = None;
         if let Some(p) = self.tooltip_popup.take()
             && self.contains(p)
         {
