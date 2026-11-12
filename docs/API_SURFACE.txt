@@ -736,6 +736,7 @@ pub enum DockChipDirection {
 pub enum DockDirection {
 pub enum DockHit {
 pub enum DockIndicatorKind {
+pub enum DockItemState {
 pub enum DockZone {
 pub enum ExpandDirection {
 pub enum FileListColumn {
@@ -980,10 +981,12 @@ pub fn hits_close(&self, pos: Point) -> bool {
 pub fn hover(&mut self, engine: &TextEngine, rect: Rect, pos: Point) {
 pub fn hover(&mut self, engine: &TextEngine, rect: Rect, screen: Rect, p: Point) {
 pub fn hover(&mut self, engine: &TextEngine, screen: Rect, pos: Point) -> bool {
+pub fn hover(&mut self, pos: Point) -> bool {
 pub fn hover(&mut self, pos: Point) {
 pub fn hover(&mut self, rect: Rect, pos: Point) -> bool {
 pub fn hover(&mut self, rect: Rect, pos: Point) {
 pub fn hover_edge(&mut self, last: bool) {
+pub fn hovered(&self) -> Option<usize> {
 pub fn hovered_item(&self) -> Option<(usize, Option<usize>)> {
 pub fn hovered_path(&self) -> Option<MenuPath> {
 pub fn hovered_rects(&self) -> Vec<Rect> {
@@ -993,6 +996,7 @@ pub fn icon_rect(&self, rect: Rect) -> Option<Rect> {
 pub fn ime_context(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> ImeContext {
 pub fn indeterminate() -> Self {
 pub fn index(&self) -> usize {
+pub fn indicator_rect(slot: &DockSlotLayout) -> Rect {
 pub fn info_item(
 pub fn initials_from_display_name(name: &str) -> String {
 pub fn initials_style(side: f32) -> TextStyle {
@@ -1024,6 +1028,7 @@ pub fn item_rect(&self, index: usize, viewport: Size, offset: f32) -> Rect {
 pub fn item_rect(&self, rect: Rect, i: usize) -> Rect {
 pub fn item_style() -> TextStyle {
 pub fn item_width(&self, i: usize) -> f32 {
+pub fn items(&self) -> &[DockItem] {
 pub fn items(&self) -> &[usize] {
 pub fn items_changed(&mut self) {
 pub fn iter(&self) -> std::slice::Iter<'_, Column> {
@@ -1032,6 +1037,7 @@ pub fn knob_rect(&self, rect: Rect, theme: &MetroTheme) -> Rect {
 pub fn labeled(
 pub fn last_page(&self) -> usize {
 pub fn layout(
+pub fn layout(&self) -> &DockLayout {
 pub fn layout(&self, engine: &TextEngine, rect: Rect) -> (Size, Vec<Rect>) {
 pub fn layout(&self, engine: &TextEngine, rect: Rect) -> BreadcrumbLayout {
 pub fn layout(&self, rect: Rect) -> (Size, Vec<Rect>) {
@@ -1174,6 +1180,7 @@ pub fn preedit(&self) -> &str {
 pub fn preedit_cursor(&self) -> Option<usize> {
 pub fn preedit_display(&self) -> String {
 pub fn press(&mut self, engine: &TextEngine, rect: Rect, p: Point) -> bool {
+pub fn press(&mut self, pos: Point) -> bool {
 pub fn press(&mut self, pos: Point) {
 pub fn press(&mut self, rect: Rect, pos: Point) -> Option<f64> {
 pub fn press(&mut self, rect: Rect, pos: Point) -> bool {
@@ -1190,9 +1197,11 @@ pub fn realized_count(&self) -> usize {
 pub fn realized_node(&self, index: usize) -> Option<WidgetId> {
 pub fn register(&mut self, id: FocusId, tab_stop: bool, enabled: bool) {
 pub fn related(
+pub fn relayout(&mut self, available: Rect) {
 pub fn release(
 pub fn release(&mut self) -> bool {
 pub fn release(&mut self) {
+pub fn release(&mut self, pos: Point) -> Option<DockActivated> {
 pub fn remove(&mut self, id: u64) -> bool {
 pub fn render(
 pub fn render(&mut self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
@@ -1288,6 +1297,7 @@ pub fn set_expanded(&mut self, expanded: bool) {
 pub fn set_factory(&mut self, factory: impl ItemFactory) {
 pub fn set_hover(&mut self, id: Option<u64>) {
 pub fn set_item_submenu(&mut self, index: usize, items: Vec<MenuItem>) {
+pub fn set_items(&mut self, items: Vec<DockItem>, available: Rect) {
 pub fn set_layout(&mut self, layout: ItemLayout) {
 pub fn set_mask(&mut self, c: Option<char>) {
 pub fn set_pane_expanded(&mut self, expanded: bool) {
@@ -1333,6 +1343,7 @@ pub fn state(&self) -> ControlState {
 pub fn state(&self) -> PopupState {
 pub fn state_for(states: kanesumi_element::ControlStates) -> &'static str {
 pub fn state_name(state: ControlState) -> &'static str {
+pub fn state_of(&self, source: usize) -> DockItemState {
 pub fn step_button(&mut self, delta: isize) {
 pub fn step_down(&mut self) -> Option<f64> {
 pub fn step_hover(&mut self, delta: isize) {
@@ -1380,6 +1391,7 @@ pub fn update(
 pub fn update(&mut self, _dt: f64) {}
 pub fn update(&mut self, dt: f64) {
 pub fn update_submenu(&mut self, dt: f64) {
+pub fn urgent(mut self, on: bool) -> Self {
 pub fn value(&self) -> Option<f64> {
 pub fn value(value: i32) -> Self {
 pub fn value_style() -> TextStyle {
@@ -1395,6 +1407,7 @@ pub fn visible_span(&self) -> RangeInclusive<usize> {
 pub fn weekday(self) -> u8 {
 pub fn wheel_step_px(dy: f32, steps: f32) -> f32 {
 pub fn window(&self, row_h: f32, viewport_h: f32) -> Option<ListWindow> {
+pub fn windows(mut self, n: u32) -> Self {
 pub fn with_action(label: impl Into<String>, action: SwipeItemAction) -> Self {
 pub fn with_align(mut self, align: TextAlign) -> Self {
 pub fn with_checked(mut self, checked: bool) -> Self {
@@ -1462,7 +1475,9 @@ pub struct DeclHit {
 pub struct DeclPath(pub Vec<usize>);
 pub struct DialogButtons {
 pub struct DialogResult(pub DialogButton);
+pub struct DockActivated {
 pub struct DockChipLayout {
+pub struct DockItem {
 pub struct DockLayout {
 pub struct DockMetrics {
 pub struct DockRail;
@@ -1509,6 +1524,7 @@ pub struct MetroCommandBarFlyout {
 pub struct MetroContextMenu {
 pub struct MetroDialog {
 pub struct MetroDialogButton {
+pub struct MetroDock {
 pub struct MetroDropDownButton {
 pub struct MetroDropdownMenu {
 pub struct MetroExpander {

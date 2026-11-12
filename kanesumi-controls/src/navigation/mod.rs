@@ -5,10 +5,12 @@
 // 裁剪 / 槽位的快照。不持有交互状态，也不画。
 // 参 docs/supply/DOCK_RAIL.md、docs/supply/TILE_WALL_FILE_VIEWS.md。
 
+pub mod dock;
 pub mod dock_rail;
 pub mod file_views;
 pub mod tile_wall;
 
+pub use dock::{DockActivated, DockItem, DockItemState, MetroDock, indicator_rect};
 pub use dock_rail::{
     DockChipDirection, DockChipLayout, DockDirection, DockHit, DockIndicatorKind, DockLayout,
     DockMetrics, DockRail, DockRailEntry, DockRailInput, DockSlotLayout, DockZone, DockZoneLayout,
