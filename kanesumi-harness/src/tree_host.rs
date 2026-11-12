@@ -426,6 +426,13 @@ pub struct TreeHost<A: TreeApp> {
     phases_on: bool,
     /// 主表面最近一帧的分段耗时（`phases_on` 为假时不写）。
     main_phases: kanesumi_element::FramePhases,
+    /// 最近一帧主表面的命令摘要（诊断用：panic 日志的 `last_cmds`）。
+    ///
+    /// 只存条数与首/末命令的矩形：存整条命令要 clone 文本（每帧一次分配），而这条信息
+    /// 只在真出事时才有用。矩形用 `[f32; 4]` 存，格式化留到 [`App::panic_context`]。
+    last_cmd_count: usize,
+    last_cmd_first: Option<[f32; 4]>,
+    last_cmd_last: Option<[f32; 4]>,
     /// 无障碍快照槽（feature `a11y`）。`Some` = 每帧把元素树快照发布进去。
     ///
     /// 为什么不直接持有 `AtspiBridge`：发布（快照 → `TreeUpdate`）是跨平台且可单测的一步，
@@ -483,6 +490,9 @@ impl<A: TreeApp> TreeHost<A> {
             last_floating_tick_ms: Vec::new(),
             phases_on: false,
             main_phases: Default::default(),
+            last_cmd_count: 0,
+            last_cmd_first: None,
+            last_cmd_last: None,
             #[cfg(feature = "a11y")]
             a11y_slot: None,
             #[cfg(all(feature = "a11y", target_os = "linux"))]
@@ -764,6 +774,19 @@ impl<A: TreeApp> TreeHost<A> {
         self.tree.frame_with_layout(engine, size, dt, |tree| app.after_layout(tree))
     }
 
+    /// 同 [`Self::frame_main`]，但场景写进调用方缓冲（主表面路径用，稳态帧零分配）。
+    fn frame_main_into(
+        &mut self,
+        engine: &TextEngine,
+        size: Size,
+        dt: f64,
+        out: &mut Scene,
+    ) -> kanesumi_element::FrameOutput {
+        let app = &mut self.app;
+        self.tree
+            .frame_with_layout_into(engine, size, dt, |tree| app.after_layout(tree), out)
+    }
+
     /// 开 / 关分段计时：主树与各浮层树同步（浮层的 `scene_ms` 与主表面同口径）。
     ///
     /// 关闭时 `Tree` 内部不建取时器，因此热路径不多一次 `Instant::now()`
@@ -836,6 +859,25 @@ impl<A: TreeApp> TreeHost<A> {
 impl<A: TreeApp> App for TreeHost<A> {
     fn config(&self) -> &AppConfig {
         self.app.config()
+    }
+
+    /// panic 上下文：最近命中的元素路径 + 最近一帧的命令摘要。
+    ///
+    /// 这里会分配字符串 —— 它只在错误边界捕获 panic 后被调一次，稳态帧零成本。
+    /// `tree_path` 取元素树记下的 `last_hit`（Dock / 空界面还没点过 → `-`）。
+    fn panic_context(&self) -> crate::errors::PanicContext {
+        let tree_path = self.tree.last_hit().map(|id| self.tree.path_of(id));
+        let mut last_cmds = Vec::new();
+        if self.last_cmd_count > 0 {
+            last_cmds.push(format!("{} 条", self.last_cmd_count));
+            if let Some(r) = self.last_cmd_first {
+                last_cmds.push(format!("首 {}", fmt_rect4(r)));
+            }
+            if let Some(r) = self.last_cmd_last {
+                last_cmds.push(format!("末 {}", fmt_rect4(r)));
+            }
+        }
+        crate::errors::PanicContext { tree_path, last_cmds }
     }
 
     fn initial_backdrop_probe(&self) -> bool { self.app.initial_backdrop_probe() }
@@ -1400,10 +1442,15 @@ impl<A: TreeApp> App for TreeHost<A> {
         if let Some(c) = clock.as_mut() {
             c.mark(HostStage::Prep);
         }
-        let frame = self.frame_main(engine, size, dt);
+        // 出帧进调用方缓冲：稳态帧（内容没变）不重组、不分配（参 BEHAVIOR_CORPUS §一-3）。
+        // 缓冲若被外壳叠过命令（右键菜单），树内的指纹会对不上并自动退化为重组。
+        let frame = self.frame_main_into(engine, size, dt, out);
         if let Some(c) = clock.as_mut() {
             c.mark(HostStage::Frame);
         }
+        self.last_cmd_count = out.commands.len();
+        self.last_cmd_first = out.commands.first().and_then(cmd_rect4);
+        self.last_cmd_last = out.commands.last().and_then(cmd_rect4);
         // 分段耗时随帧返回：外壳出帧后经 `App::take_frame_phases` 取走填 `FrameTiming`。
         self.main_phases = frame.phases;
         self.damage_full = frame.full;
@@ -1460,7 +1507,6 @@ impl<A: TreeApp> App for TreeHost<A> {
             (None, Some(d)) => Some(d),
             (Some(a), Some(b)) => Some(union(a, b)),
         };
-        *out = frame.scene;
         if let Some(c) = clock.as_mut() {
             c.mark(HostStage::Deliver);
         }
@@ -1469,6 +1515,36 @@ impl<A: TreeApp> App for TreeHost<A> {
             merge_host_phases(&mut self.main_phases, &c.phases);
         }
     }
+}
+
+/// 取命令的包围矩形（`[x, y, w, h]`）。无几何的命令（`PopClip`）→ `None`。
+fn cmd_rect4(cmd: &SceneCommand) -> Option<[f32; 4]> {
+    use SceneCommand as C;
+    let r = match cmd {
+        C::PushClip { rect } => *rect,
+        C::PopClip => return None,
+        C::FillRect { rect, .. }
+        | C::StrokeRect { rect, .. }
+        | C::Text { rect, .. }
+        | C::Image { rect, .. } => *rect,
+        C::Arc { center, radius, .. } => {
+            Rect::new(center.x - radius, center.y - radius, radius * 2.0, radius * 2.0)
+        }
+        C::Triangle { p0, p1, p2, .. } => {
+            let x0 = p0.x.min(p1.x).min(p2.x);
+            let y0 = p0.y.min(p1.y).min(p2.y);
+            let x1 = p0.x.max(p1.x).max(p2.x);
+            let y1 = p0.y.max(p1.y).max(p2.y);
+            Rect::new(x0, y0, x1 - x0, y1 - y0)
+        }
+        _ => return None,
+    };
+    Some([r.origin.x, r.origin.y, r.size.width, r.size.height])
+}
+
+/// 命令矩形的人类可读形式（只在写错误日志时调）。
+fn fmt_rect4(r: [f32; 4]) -> String {
+    format!("({:.1},{:.1} {:.1}x{:.1})", r[0], r[1], r[2], r[3])
 }
 
 /// 本帧主表面损伤是否碰到该弹层 —— 只决定「参与不参与判定」。
@@ -2059,6 +2135,35 @@ mod tests {
         assert!(!h.tree.content_ready(node), "不可用时仍等 CPU 内容");
         h.report_backdrop_ready(&LayerEvent::BackdropAvailability { target: BackdropTarget::Layer(id), available: true });
         assert!(h.tree.content_ready(node), "合成器材质是可见内容，应放行门控动画");
+    }
+
+    /// 结构化错误日志的上下文：最近命中的元素路径 + 最近一帧命令摘要。
+    ///
+    /// 这两个字段是「真机上点了没反应」唯一能落进日志的线索，必须真的取得到；
+    /// 取不到时日志写 `-`，等同于回到立件前的状态。
+    #[test]
+    fn panic_context_carries_hit_path_and_command_summary() {
+        let mut h = TreeHost::new(AnimApp {
+            config: AppConfig::new("org.ether.test", "panic-ctx", EtherRole::Browser, 400.0, 300.0),
+            id: None,
+        });
+        let e = test_engine();
+        let _ = frame(&mut h, &e);
+        // 还没点过 → 没有路径，但有命令摘要（首帧已出）。
+        let before = App::panic_context(&h);
+        assert!(before.tree_path.is_none(), "未命中时不得编造路径");
+
+        h.tree.pointer_move(Point::new(10.0, 10.0));
+        let ctx = App::panic_context(&h);
+        let path = ctx.tree_path.expect("命中后必须有元素路径");
+        assert!(path.starts_with('/'), "路径必须从根开始：{path}");
+        assert!(path.contains("TreeAnim"), "路径必须带控件类型名：{path}");
+        assert!(!ctx.last_cmds.is_empty(), "最近一帧的命令摘要不能为空");
+        assert!(
+            ctx.last_cmds[0].ends_with("条"),
+            "摘要首项应为命令条数：{:?}",
+            ctx.last_cmds
+        );
     }
 
     fn frame<A: TreeApp>(h: &mut TreeHost<A>, e: &TextEngine) -> Scene {

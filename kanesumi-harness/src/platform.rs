@@ -287,6 +287,23 @@ fn write_diag(name: &str, content: &str) {
     let _ = std::fs::write(std::path::Path::new(&session_dir).join(name), content);
 }
 
+/// 错误边界捕获 panic 后写结构化日志（`kanesumi-errors.log`）。
+///
+/// 为什么要有：旧实现只写一行 `App::update panic，跳过本迭代` —— 没有 app、没有帧号、
+/// 没有当时命中的元素、没有最近的命令，真机现象（TopBar 少一半 / 点了没反应）定不到位。
+/// 参 BEHAVIOR_CORPUS §一-1。只在出错后调用，稳态帧零成本。
+fn report_panic(
+    app: &dyn App,
+    phase: crate::errors::Phase,
+    event: &str,
+    frame_seq: u64,
+    payload: &(dyn std::any::Any + Send),
+) {
+    let message = crate::errors::payload_message(payload);
+    let ctx = app.panic_context();
+    crate::errors::report(phase, app.config().app_id, event, &ctx, &message, frame_seq);
+}
+
 /// 把字节下标向下夹到最近的 UTF-8 字符边界。
 ///
 /// IME 协议里的光标/删除偏移来自客户端，可能落在多字节字符中间；直接切片会 panic
@@ -666,7 +683,7 @@ fn weight_candidates(weight: &str) -> Vec<kanesumi_canvas::text::FontSource> {
 /// 复用 regular_candidates/extra_sources 原逻辑逐字节一致，**不另造第二套链**。
 fn system_font_chain() -> Vec<kanesumi_canvas::text::FontSource> {
     let mut chain = Vec::new();
-    if let Some(primary) = regular_candidates().into_iter().find(|s| s.path.exists()) {
+    if let Some((primary, _)) = regular_candidates().into_iter().find(|(s, _)| s.path.exists()) {
         chain.push(primary.clone());
         chain.extend(extra_sources(&primary.path));
     }
@@ -686,10 +703,30 @@ pub fn find_font_source() -> Option<kanesumi_canvas::text::FontSource> {
             return Some(FontSource { path: p, collection_tag: None });
         }
     }
-    system_font_chain().into_iter().next()
+    // 走生产同款字体链（`system_font_chain` → 主字面 + 附加字面）；主字面即 chain[0]。
+    let source = system_font_chain().into_iter().next()?;
+    // 是否正体：与候选表逐条对照（表很小，且只在启动时走一次）。
+    let canonical = regular_candidates()
+        .into_iter()
+        .any(|(s, ok)| ok && s.path == source.path);
+    // 字体缺失回退：正体（思源 / Noto CJK）不在场时链会落到繁体、错字重或拉丁字面 ——
+    // 界面「看起来正常」，中文却是方框 / 字形不对。严格模式下改成硬失败。
+    crate::strict::require(canonical, || {
+        format!(
+            "主字体回退：正体（思源黑体 / Noto CJK SC）全部缺席，回退到 {}（CJK 可能渲染为方框）",
+            source.path.display()
+        )
+    });
+    Some(source)
 }
 
-fn regular_candidates() -> Vec<kanesumi_canvas::text::FontSource> {
+/// 主字面候选（按优先级）：`bool` = 是否属于「正体」组（思源 / Noto CJK SC 的常规字重）。
+///
+/// 为什么标出来：回退组（繁体 / 错字重 / 拉丁）只保证「能跑」，不保证「画对」。
+/// 生产里沿用旧行为（静默取第一个在场者），`KANESUMI_STRICT=1` 时据此判失败
+/// （参 BEHAVIOR_CORPUS §一-2）。
+fn regular_candidates() -> Vec<(kanesumi_canvas::text::FontSource, bool)> {
+    // `true` = 正体；`false` = 只为「能跑」的回退字面。
     [
         // §112 可变字体优先：带 wght 轴，按请求字重（300 / 400 / 800）实例化；
         // 在场时静态字重字面不再加载（见 extra_sources）。
@@ -717,9 +754,16 @@ fn regular_candidates() -> Vec<kanesumi_canvas::text::FontSource> {
         ),
     ]
     .into_iter()
-    .map(|(path, collection_tag)| kanesumi_canvas::text::FontSource {
-        path: std::path::PathBuf::from(path),
-        collection_tag,
+    // 正体组 = 思源 / Noto CJK 的常规字重（含可变字体）；TC 与 Bold 是「能跑」的替身。
+    .map(|(path, collection_tag)| {
+        let canonical = !path.contains("TC_Regular") && !path.contains("SC_Bold");
+        (
+            kanesumi_canvas::text::FontSource {
+                path: std::path::PathBuf::from(path),
+                collection_tag,
+            },
+            canonical,
+        )
     })
     .collect()
 }
@@ -742,6 +786,10 @@ fn extra_sources(primary: &std::path::Path) -> Vec<kanesumi_canvas::text::FontSo
         for weight in ["Light", "Medium", "Bold"] {
             let Some(src) = weight_candidates(weight).into_iter().find(|s| s.path.exists())
             else {
+                // 静默回退：缺字重 → 该字重画成 Regular，视觉上「有点不对」但没人知道为什么。
+                crate::strict::require(false, || {
+                    format!("字重 {weight} 字面缺失（思源 SC / Noto CJK 均不在场），将回落 Regular")
+                });
                 log::warn!("字重 {weight} 字面缺失（思源 SC / Noto CJK 均不在场），该字重将渲染为 Regular");
                 continue;
             };
@@ -2039,12 +2087,24 @@ impl Shell {
     /// 浮层输入事件错误边界。事件到达即置脏（I-4）。
     fn emit_floating_input(&mut self, idx: usize, event: InputEvent) {
         let is_move = matches!(event, InputEvent::PointerMoved { .. });
+        let kind = event.kind();
+        let pos = event.position();
         let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.app.floating_input(idx, event);
-        }))
-        .is_ok();
-        if !ok {
+        }));
+        if let Err(payload) = ok {
             log::error!("App::floating_input panic，已隔离");
+            let event_text = match pos {
+                Some((x, y)) => format!("floating{idx}:{kind}@({x:.1},{y:.1})"),
+                None => format!("floating{idx}:{kind}"),
+            };
+            report_panic(
+                self.app,
+                crate::errors::Phase::HandleInput,
+                &event_text,
+                self.frame_count,
+                &*payload,
+            );
         }
         // 纯指针移动：App 说浮层没变就不重画（同主表面 S1 悬停门控）。此前每次移动都整屏重画 Launcher 浮层。
         // 旧 App 的 floating_needs_redraw 默认 true，行为不变。
@@ -2361,10 +2421,16 @@ impl Shell {
             self.app.update(clock_dt);
             // 主题变更检测（节流）：Chorus 改了 accent / scheme 后自动跟随。
             self.maybe_reload_system_theme();
-        }))
-        .is_ok();
-        if !update_ok {
+        }));
+        if let Err(payload) = update_ok {
             log::error!("App::update panic，跳过本迭代");
+            report_panic(
+                self.app,
+                crate::errors::Phase::Update,
+                "-",
+                self.frame_count,
+                &*payload,
+            );
             return;
         }
         // 合成图层命令（G3-b）：App 本帧推的建层 / 内容 / 动画请求。
@@ -2609,8 +2675,15 @@ impl Shell {
         let scene_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.app.render_into(&self.engine, size, &mut scene_buf)
         }));
-        if scene_result.is_err() {
+        if let Err(payload) = scene_result {
             log::error!("App::render panic，跳过本帧");
+            report_panic(
+                self.app,
+                crate::errors::Phase::Render,
+                "-",
+                self.frame_count,
+                &*payload,
+            );
             self.scene_buf = scene_buf;
             return;
         }
@@ -3006,12 +3079,26 @@ impl Shell {
         match action {
             ContextMenuAction::PassThrough => {
                 // 未消费 → 正常投递 App（错误边界隔离）。
+                // 事件种类 / 坐标先取出来（不分配）：panic 后 `event` 已被 move 走，
+                // 而结构化日志的 `event` 字段要写明当时是哪种事件、在哪个位置。
+                let kind = event.kind();
+                let pos = event.position();
                 let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     self.app.handle_input(event);
-                }))
-                .is_ok();
-                if !ok {
+                }));
+                if let Err(payload) = ok {
                     log::error!("App::handle_input panic，已隔离");
+                    let event_text = match pos {
+                        Some((x, y)) => format!("{kind}@({x:.1},{y:.1})"),
+                        None => kind.to_string(),
+                    };
+                    report_panic(
+                        self.app,
+                        crate::errors::Phase::HandleInput,
+                        &event_text,
+                        self.frame_count,
+                        &*payload,
+                    );
                 }
             }
             ContextMenuAction::Consumed => {}

@@ -1473,10 +1473,18 @@ impl Renderer {
             return;
         }
         let Some((metrics, bitmap)) = self.glyph_bitmaps.get(&key) else {
+            // 静默回退：字形位图缺失 = 这个字**不会出现在画面上**（常见成因是字体栈里
+            // 没有该字形，且没有可回退的字面）。严格模式下改成硬失败（参 BEHAVIOR_CORPUS §一-2）。
+            crate::strict::require(false, || {
+                format!("字形纹理缺失（该字不会渲染）glyph={key:?}")
+            });
             return;
         };
         let (w, h) = (metrics.width as u32, metrics.height as u32);
         if w == 0 || h == 0 {
+            crate::strict::require(false, || {
+                format!("字形纹理尺寸为零（该字不会渲染）glyph={key:?} {w}x{h}")
+            });
             return;
         }
         let texture = self.ctx.device.create_texture(&wgpu::TextureDescriptor {
@@ -1549,8 +1557,19 @@ impl Renderer {
             return;
         }
         if width == 0 || height == 0 {
+            crate::strict::require(false, || {
+                format!("图标 / 图像纹理尺寸为零（不会绘制）key={key:#x} {width}x{height}")
+            });
             return;
         }
+        // 字节数不够时 `write_texture` 只会让 wgpu 报一条异步校验错误 —— 画面静默少一块。
+        let need = width as usize * height as usize * 4;
+        crate::strict::require(rgba.len() >= need, || {
+            format!(
+                "纹理上传失败：RGBA 字节不足 key={key:#x} {width}x{height} 需 {need} 实 {}",
+                rgba.len()
+            )
+        });
         let texture = self.ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("kanesumi-image"),
             size: wgpu::Extent3d {

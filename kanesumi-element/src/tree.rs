@@ -13,6 +13,7 @@ use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, SceneCommand};
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
+use crate::diagnostics;
 use crate::event::{Event, Key, Modifiers, PointerButton, ScrollInput};
 use crate::id::WidgetId;
 use crate::layer::{
@@ -216,7 +217,14 @@ impl Default for PopupSpec {
 /// 一帧产物。
 #[derive(Debug, Clone, Default)]
 pub struct FrameOutput {
+    /// 本帧场景。`frame_into`（复用缓冲）路径下**恒为空** —— 场景写在调用方给的缓冲里，
+    /// 由 [`FrameOutput::reused`] 说明那份缓冲是否仍是上一帧内容。
     pub scene: Scene,
+    /// 本帧是否**没有重组**场景（稳态帧）：`true` 时调用方的 Scene 缓冲原样未动。
+    ///
+    /// 只可能出现在 `frame_into` 路径；`Tree::frame` 每次都返回真实场景（`reused == false`）。
+    /// 参 BEHAVIOR_CORPUS §一-3「稳态帧零分配」。
+    pub reused: bool,
     /// 本帧变化区域；`None` = 全量重绘（首帧 / 尺寸变化 / 主题变化）**或本帧什么都没变** —— 二者用 `full` 区分。
     pub damage: Option<Rect>,
     /// 本帧是否整幅重绘。`!full && damage == None` = 什么都没变（外壳可跳过光栅与提交）。
@@ -510,6 +518,9 @@ pub struct Tree {
     invalidate_epoch: u64,
     /// 最近一次指针位置（`Click` 等不带坐标的事件里，控件经 `EventCtx::pointer` 取用）。
     pointer: Option<Point>,
+    /// 最近一次命中的元素（诊断用：App 回调 panic 时外壳据此写 `tree_path`）。
+    /// 只记 id 不记字符串 —— 格式化留到真出事那一刻，稳态帧零分配。
+    last_hit: Option<WidgetId>,
     /// 焦点控件本帧的 IME 上下文（`frame` 末尾计算，外壳查询时直接返回）。
     ime: Option<ImeContext>,
     /// 上一帧的排版引擎（`TextEngine` clone 为零拷贝）。事件处理里的文本命中
@@ -550,6 +561,14 @@ pub struct Tree {
     phase_timing: bool,
     /// 最近一帧的分段耗时（未开计时 / 尚未出帧 → 全 0）。参 `FramePhases`。
     frame_phases: FramePhases,
+    /// 最近一次真正重组时写进调用方缓冲的命令条数与矩形指纹。
+    ///
+    /// 用途只有一个：判断「调用方的缓冲还是不是我上次写的那个」—— 外壳会在 `render_into`
+    /// 返回后往同一份 Scene 上叠右键菜单，那种帧不得复用（否则菜单会残留）。指纹只覆盖
+    /// 各命令的矩形（O(n)、零分配）；同长度且矩形全同却被换掉的缓冲属于不会出现的用法，
+    /// 真的发生时代价是**多重组一帧**而不是画错。
+    composed_len: usize,
+    composed_fingerprint: u64,
     /// 转场动画序号（外壳按此回报 Done / Cancelled）。
     pub(crate) next_layer_serial: u32,
     /// compose 时允许进入的图层根：拼某图层内容时 = 该图层；拼主场景时 = None（跳过所有图层子树）。
@@ -607,6 +626,8 @@ impl Tree {
             frame_content: std::collections::BTreeMap::new(),
             phase_timing: false,
             frame_phases: FramePhases::default(),
+            composed_len: 0,
+            composed_fingerprint: 0,
             next_layer_serial: 1,
             compose_layer: std::cell::Cell::new(None),
             full_repaint: true,
@@ -616,6 +637,7 @@ impl Tree {
             ime: None,
             engine: None,
             pointer: None,
+            last_hit: None,
             popup_bounds: None,
             detached_popups: false,
             tooltip_pending: None,
@@ -850,6 +872,70 @@ impl Tree {
 
     pub fn children(&self, id: WidgetId) -> &[WidgetId] {
         self.node(id).map(|n| n.children.as_slice()).unwrap_or(&[])
+    }
+
+    /// 元素路径（诊断用）：`/ZStack[0]/Stack[1]/Label[2]`，从根往下按子索引。
+    ///
+    /// 为什么要带类型名：只给 id 的日志在几百个节点的页面上等于没写；只给类型名又分不清
+    /// 兄弟。索引 + 类型名能让人直接在 `pages/xxx.rs` 里数到那一行。
+    /// 只在出错 / panic 路径调用（会分配字符串），不进稳态帧。
+    pub fn path_of(&self, id: WidgetId) -> String {
+        let mut segs: Vec<String> = Vec::new();
+        let mut cur = Some(id);
+        // 深度上限防环（父子链由框架维护，正常不会成环；这里只是不让诊断本身挂死）。
+        for _ in 0..256 {
+            let Some(c) = cur else { break };
+            let Some(n) = self.node(c) else { break };
+            let name = n
+                .widget
+                .as_ref()
+                .map(|w| w.type_name().rsplit("::").next().unwrap_or("?"))
+                .unwrap_or("?");
+            match n.parent.and_then(|p| self.node(p)) {
+                Some(p) => {
+                    let idx = p.children.iter().position(|x| *x == c).unwrap_or(0);
+                    segs.push(format!("{name}[{idx}]"));
+                }
+                None => segs.push(name.to_string()),
+            }
+            cur = n.parent;
+        }
+        segs.reverse();
+        format!("/{}", segs.join("/"))
+    }
+
+    /// 最近一次命中的元素（诊断用；尚未有过指针事件 → `None`）。
+    pub fn last_hit(&self) -> Option<WidgetId> {
+        self.last_hit
+    }
+
+    /// 命中表是否为空 —— 除两个根容器外，没有任何可见且占面积的节点。
+    ///
+    /// 用来抓「界面根本没建起来，指针事件照样打进来」：这种树里所有点击都会命中根容器，
+    /// 表现为「点了没反应」，从日志上看不出异常。参 BEHAVIOR_CORPUS §一-2。
+    /// 只在严格模式调用（O(节点数)）。
+    pub fn hit_table_is_empty(&self) -> bool {
+        self.nodes.iter().flatten().all(|n| {
+            let is_root = n.parent.is_none();
+            if is_root {
+                return true;
+            }
+            !(n.props.visible
+                && n.rect.size.width > 0.0
+                && n.rect.size.height > 0.0)
+        })
+    }
+
+    /// 严格模式下的「空命中表 + 指针事件」检查（每个指针入口调一次）。
+    fn diagnose_empty_hit_table(&self, what: &str) {
+        if !diagnostics::strict() {
+            return;
+        }
+        diagnostics::require(!self.hit_table_is_empty(), || {
+            format!(
+                "{what} 收到指针事件，但命中表为空（除根容器外没有可见且占面积的节点）—— 界面没建起来？"
+            )
+        });
     }
 
     pub fn parent(&self, id: WidgetId) -> Option<WidgetId> {
@@ -1345,12 +1431,49 @@ impl Tree {
 
     /// 当前帧布局完成后、绘制及图层同步前同步依赖几何的视觉属性。
     /// 回调不得重建树、失效量测或执行 I/O。参 ELEMENT_TREE §Ⅰ「当前帧布局后的视觉同步」。
+    ///
+    /// 返回的场景归调用方所有（每次新建 `Scene`，会分配）；外壳请用 [`Tree::frame_into`]
+    /// 复用缓冲 —— 稳态帧在那条路上是**零分配**的（参 BEHAVIOR_CORPUS §一-3）。
     pub fn frame_with_layout(
         &mut self,
         engine: &TextEngine,
         size: Size,
         dt: f64,
         after_layout: impl FnOnce(&mut Self),
+    ) -> FrameOutput {
+        let mut scene = Scene::default();
+        let mut out = self.frame_with_layout_into(engine, size, dt, after_layout, &mut scene);
+        out.scene = scene;
+        // 调用方拿到的是这一帧的真实场景：即便内部判定「内容没变」没有重组，
+        // 交出去的也必须是完整的一份（`out` 里的旧内容已经被搬过来了）。
+        out.reused = false;
+        out
+    }
+
+    /// 出帧到调用方自持的 `Scene` 缓冲（外壳复用同一份缓冲，稳态帧零分配）。
+    ///
+    /// 约定：`out` 应当是**上一次本树写出的同一份缓冲**。稳态（无失效 / 无损伤 / 尺寸不变 /
+    /// 动画空）时本函数**不碰** `out`，并在返回值里用 [`FrameOutput::reused`] 说明这一点；
+    /// 否则 `out` 被清空重写（保留容量）。缓冲被别人追加过（外壳叠右键菜单）时指纹对不上，
+    /// 会退化成正常重组 —— 宁可多算一帧，不能把菜单残留画到下一帧。
+    pub fn frame_into(
+        &mut self,
+        engine: &TextEngine,
+        size: Size,
+        dt: f64,
+        out: &mut Scene,
+    ) -> FrameOutput {
+        self.frame_with_layout_into(engine, size, dt, |_| {}, out)
+    }
+
+    /// [`Tree::frame_into`] + 布局后视觉同步回调。
+    pub fn frame_with_layout_into(
+        &mut self,
+        engine: &TextEngine,
+        size: Size,
+        dt: f64,
+        after_layout: impl FnOnce(&mut Self),
+        out: &mut Scene,
     ) -> FrameOutput {
         let epoch0 = self.invalidate_epoch;
         // 分段计时器：开关关闭时为 `None`，下面的每个 `if let` 都不取时钟（热路径零开销）。
@@ -1453,18 +1576,24 @@ impl Tree {
             Some(d) if self.damage_cull => d.intersect(surface),
             _ => Some(surface),
         };
-        let mut scene = Scene::default();
-        self.compose(self.root, &mut scene, cull);
-        // 遮罩：任一打开的弹层要求时，在覆盖层之前整面压暗（弹层自身画在遮罩之上）。
-        // 分离模式下弹层在别的表面上，主表面不压暗也不画覆盖层。
-        if !self.detached_popups && self.popups.iter().any(|(_, s)| s.scrim) {
-            scene.fill_rect(
-                self.theme.overlay_color,
-                Rect::new(0.0, 0.0, size.width, size.height),
-            );
-        }
-        if !self.detached_popups {
-            self.compose(self.overlay, &mut scene, cull);
+        // 稳态判定在布局之后：布局 / 绘制里若又产生了失效，这里必须重组。
+        let reused = self.can_reuse_scene(out, epoch0);
+        if !reused {
+            out.commands.clear();
+            self.compose(self.root, out, cull);
+            // 遮罩：任一打开的弹层要求时，在覆盖层之前整面压暗（弹层自身画在遮罩之上）。
+            // 分离模式下弹层在别的表面上，主表面不压暗也不画覆盖层。
+            if !self.detached_popups && self.popups.iter().any(|(_, s)| s.scrim) {
+                out.fill_rect(
+                    self.theme.overlay_color,
+                    Rect::new(0.0, 0.0, size.width, size.height),
+                );
+            }
+            if !self.detached_popups {
+                self.compose(self.overlay, out, cull);
+            }
+            self.composed_len = out.commands.len();
+            self.composed_fingerprint = rect_fingerprint(out);
         }
 
         // 5b. 图层：逐个拼子树内容，变了才产出 Content（内容只在真变化时重新提交）。
@@ -1491,13 +1620,30 @@ impl Tree {
         self.publish_content_stats();
         self.frame_phases = clock.map_or(FramePhases::default(), |c| c.phases);
         FrameOutput {
-            scene,
+            // 场景在调用方缓冲里（`frame_with_layout` 会把 `out` 搬进来并清掉 reused）。
+            scene: Scene::default(),
+            reused,
             damage: frame_damage,
             full,
             animating: !self.anim.is_empty(),
             painted: std::mem::take(&mut self.frame_painted),
             phases: self.frame_phases,
         }
+    }
+
+    /// 稳态帧判定：本帧一个失效都没有，且调用方缓冲还是本树上次写出的那份。
+    ///
+    /// 判据宁可**偏保守**（少复用一帧），也不能把旧内容当新内容交出去 —— 复用的代价是
+    /// 一次错误的整屏重绘，不复用的代价只是这一帧多分配几百字节。
+    fn can_reuse_scene(&self, out: &Scene, epoch0: u64) -> bool {
+        !self.dirty
+            && !self.full_repaint
+            && self.damage.is_none()
+            && self.paint_queue.is_empty()
+            && self.anim.is_empty()
+            && self.invalidate_epoch == epoch0
+            && self.composed_len == out.commands.len()
+            && self.composed_fingerprint == rect_fingerprint(out)
     }
 
     pub(crate) fn measure_node(
@@ -1578,6 +1724,11 @@ impl Tree {
             props.v_align,
         );
         let rect = Rect::new(x, y, w, h);
+        // 几何不变量（参 BEHAVIOR_CORPUS §一-4）：debug 构建下任何 LayoutProps 产出的矩形
+        // 都不得为负尺寸 / 含 NaN。默认只打印元素路径；`KANESUMI_STRICT=1` 下 panic。
+        if cfg!(debug_assertions) {
+            diagnostics::check_rect("arrange", rect, || self.path_of(id));
+        }
         let (rect_changed, arrange_pending) = {
             let Some(n) = self.node_mut(id) else { return };
             (n.rect != rect, n.flags.needs_arrange)
@@ -1713,6 +1864,12 @@ impl Tree {
         let Some(n) = self.node(id) else { return };
         if !n.props.visible {
             return;
+        }
+        // 严格模式：命令里的浮点必须有限（NaN 会让光栅器静默丢图元）。只在这一支付代价。
+        if diagnostics::strict() {
+            for c in n.paint.iter().chain(n.paint_after.iter()) {
+                diagnostics::check_command(c, || self.path_of(id));
+            }
         }
         // 图层 / 滚动器子树由合成器子表面承载，不进入外层场景（拼该图层自身内容时除外）。参 layer.rs。
         if self.layers.contains_key(&id) && self.compose_layer.get() != Some(id) {
@@ -1939,6 +2096,7 @@ impl Tree {
     }
 
     pub fn pointer_move(&mut self, pos: Point) {
+        self.diagnose_empty_hit_table("pointer_move");
         let moved = self.pointer != Some(pos);
         self.pointer = Some(pos);
         self.update_hover(Some(pos), moved);
@@ -1950,11 +2108,13 @@ impl Tree {
             self.set_state(p, |s| s.pressed = inside);
         }
         if let Some(t) = self.captured.or_else(|| self.hit(pos)) {
+            self.last_hit = Some(t);
             self.deliver(t, &Event::PointerMove { pos });
         }
     }
 
     pub fn pointer_down(&mut self, pos: Point, button: PointerButton, modifiers: Modifiers) {
+        self.diagnose_empty_hit_table("pointer_down");
         self.pointer = Some(pos);
         // 按下即消失：提示在指针按下时立刻收起（正典 §Ⅲ，UWP 行为）。
         self.hide_tooltip();
@@ -1971,6 +2131,7 @@ impl Tree {
             }
         }
         let Some(target) = self.hit(pos) else { return };
+        self.last_hit = Some(target);
         self.captured = Some(target);
         if let Some(f) = self
             .ancestors_inclusive(target)
@@ -2007,6 +2168,7 @@ impl Tree {
     }
 
     pub fn pointer_up(&mut self, pos: Point, button: PointerButton, modifiers: Modifiers) {
+        self.diagnose_empty_hit_table("pointer_up");
         self.pointer = Some(pos);
         if let Some(t) = self.captured.take().or_else(|| self.hit(pos)) {
             // 右键菜单在**释放**时弹出（INTERACTION_CANON §Ⅱ/§Ⅵ，Win32 `WM_CONTEXTMENU`）：
@@ -2054,7 +2216,9 @@ impl Tree {
     /// 带来源 / 阶段的滚动输入（触控板跟手 + 松手惯性、高精度滚轮）。命中目标后路由。
     /// 派发路径与旧 `scroll` 完全一致（命中 → 冒泡 → 首个处理者截停）。
     pub fn scroll_ex(&mut self, pos: Point, input: ScrollInput) {
+        self.diagnose_empty_hit_table("scroll");
         if let Some(t) = self.hit(pos) {
+            self.last_hit = Some(t);
             self.deliver(
                 t,
                 &Event::Scroll {
@@ -3683,6 +3847,46 @@ pub(crate) fn union(a: Rect, b: Rect) -> Rect {
     let x1 = a.right().max(b.right());
     let y1 = a.bottom().max(b.bottom());
     Rect::new(x0, y0, x1 - x0, y1 - y0)
+}
+
+/// 场景缓冲的矩形指纹（FNV-1a over 每条的变体标签 + 矩形）。
+///
+/// 只用来回答「这份缓冲还是不是我上次写的那份」，所以只需覆盖外壳会动的部分（条数已被
+/// 单独比较）与命令的几何；不碰文本内容与位图字节 —— 那是 O(内容) 的活，且与本判定无关。
+fn rect_fingerprint(scene: &Scene) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut mix = |v: u64| {
+        h ^= v;
+        h = h.wrapping_mul(0x1000_0000_01b3);
+    };
+    for c in &scene.commands {
+        let (tag, rect) = match c {
+            SceneCommand::PushClip { rect } => (1u64, *rect),
+            SceneCommand::PopClip => (2, Rect::new(0.0, 0.0, 0.0, 0.0)),
+            SceneCommand::FillRect { rect, .. } => (3, *rect),
+            SceneCommand::StrokeRect { rect, .. } => (4, *rect),
+            SceneCommand::Text { rect, .. } => (5, *rect),
+            SceneCommand::Image { rect, .. } => (6, *rect),
+            SceneCommand::Arc { center, .. } => (7, Rect::new(center.x, center.y, 0.0, 0.0)),
+            SceneCommand::Triangle { p0, p1, p2, .. } => (
+                8,
+                Rect::new(
+                    p0.x.min(p1.x).min(p2.x),
+                    p0.y.min(p1.y).min(p2.y),
+                    0.0,
+                    0.0,
+                ),
+            ),
+            // 画布新增图元时这里跟不上的代价 = 少一层指纹保护（长度比较仍在）。
+            _ => (0, Rect::new(0.0, 0.0, 0.0, 0.0)),
+        };
+        mix(tag);
+        mix(rect.origin.x.to_bits() as u64);
+        mix(rect.origin.y.to_bits() as u64);
+        mix(rect.size.width.to_bits() as u64);
+        mix(rect.size.height.to_bits() as u64);
+    }
+    h
 }
 
 fn rect_within(inner: Rect, outer: Rect) -> bool {

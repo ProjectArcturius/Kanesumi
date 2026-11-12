@@ -121,6 +121,37 @@ impl AppConfig {
 /// 可打印字符（含 shift 符号 / 小键盘）→ `Key::Char`；控制键 → 具名变体；未分类 → `Unknown`。
 pub use kanesumi_element::{Key, Modifiers, PointerButton, ScrollInput, ScrollPhase, ScrollSource};
 
+impl InputEvent {
+    /// 事件种类（诊断用；**不分配**）。结构化错误日志的 `event` 字段取它。
+    pub fn kind(&self) -> &'static str {
+        match self {
+            InputEvent::PointerMoved { .. } => "pointer_moved",
+            InputEvent::PointerPressed { .. } => "pointer_pressed",
+            InputEvent::PointerReleased { .. } => "pointer_released",
+            InputEvent::DoubleClick { .. } => "double_click",
+            InputEvent::Scroll { .. } => "scroll",
+            InputEvent::ScrollInput(_) => "scroll_input",
+            InputEvent::KeyPressed { .. } => "key_pressed",
+            InputEvent::PointerLeft => "pointer_left",
+            InputEvent::Preedit { .. } => "preedit",
+            InputEvent::Commit { .. } => "commit",
+            InputEvent::DeleteSurrounding { .. } => "delete_surrounding",
+        }
+    }
+
+    /// 指针类事件的表面坐标（其余事件 / 无坐标 → `None`）。同样不分配。
+    pub fn position(&self) -> Option<(f32, f32)> {
+        match self {
+            InputEvent::PointerMoved { x, y }
+            | InputEvent::PointerPressed { x, y, .. }
+            | InputEvent::PointerReleased { x, y, .. }
+            | InputEvent::DoubleClick { x, y, .. }
+            | InputEvent::Scroll { x, y, .. } => Some((*x, *y)),
+            _ => None,
+        }
+    }
+}
+
 /// 输入事件 —— 纯数据、跨平台。`x/y` 为表面本地逻辑坐标（指针进入表面后有效）。
 /// 非 Copy（IME 变体含 `String`）；App 消费时按值 move。
 #[derive(Debug, Clone, PartialEq)]
@@ -642,6 +673,17 @@ pub trait App {
     /// 取走第 `index` 个浮层最近一帧的分段耗时。未开计时 / 无此浮层 → `None`。
     fn take_floating_frame_phases(&mut self, _index: usize) -> Option<kanesumi_element::FramePhases> {
         None
+    }
+
+    // ── panic 上下文（诊断口，只在出错后取一次） ───────────────────────────────
+
+    /// 错误边界捕获 panic 后要写进结构化日志的上下文：最近一次命中的元素路径 + 最近
+    /// 一帧的命令摘要。参 BEHAVIOR_CORPUS §一-1。
+    ///
+    /// **只在 panic 之后调用**，所以实现里可以自由分配字符串；稳态帧一次都不走。
+    /// 默认空（旧式 `App` 没有元素树）。
+    fn panic_context(&self) -> crate::errors::PanicContext {
+        crate::errors::PanicContext::default()
     }
 
     // ── 锁屏表面（session_lock 外壳；非锁屏应用用默认实现，行为不变） ──────────

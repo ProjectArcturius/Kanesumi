@@ -7,6 +7,7 @@
 pub mod app;
 pub mod appmenu;
 pub mod context_menu;
+pub mod errors;
 pub mod frame_clock;
 pub mod idle;
 pub mod input_config;
@@ -17,6 +18,7 @@ pub mod perf;
 mod pixel_copy;
 pub mod renderer_policy;
 pub mod role;
+pub mod strict;
 pub mod system_theme;
 pub mod timeline;
 // ── K4 旧应用模型（`App`）的豁免（参 docs/PIPELINE_PLAN.md §Ⅳ-K4）─────────────
