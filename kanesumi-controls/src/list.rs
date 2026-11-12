@@ -1,6 +1,6 @@
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::{MetroTheme, Point, Rect};
+use kanesumi_core::{MetroTheme, Point, Rect, sizes};
 
 use crate::list_view::{
     KeyOutcome, ListSelection, ListWindow, MeasureCounter, ScrollAnchor, TYPE_AHEAD_TIMEOUT_MS,
@@ -19,6 +19,8 @@ use crate::repeater::{MetroRepeater, RepeaterOrientation};
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetroList {
     pub rows: Vec<String>,
+    /// 行附加信息（图标 / 次要文字 / 多列）。空 = 纯文字列表，与旧行为一致。
+    pub rows_meta: Vec<ListRowMeta>,
     /// 焦点行（lead）：键盘光标与最后点击项。单选时它同时是选中项；Ctrl+点到已选项
     /// 会把它从 [`MetroList::selection`] 里去掉而保留焦点（Windows 资源管理器同款）。
     pub selected: Option<usize>,
@@ -50,6 +52,7 @@ impl MetroList {
             scroll: 0.0,
             padding_x: 12.0,
             selection: ListSelection::default(),
+            rows_meta: Vec::new(),
             type_ahead: TypeAhead::default(),
             typeahead_armed: false,
             measures: MeasureCounter::default(),
@@ -378,13 +381,45 @@ impl MetroList {
                 colors.on_surface_variant
             };
             let fg = base.with_alpha(base.a * alpha);
-            let label_rect = Rect::new(
-                rect.origin.x + self.padding_x,
-                y + 8.0,
-                rect.size.width - self.padding_x * 2.0,
-                style.line_height,
-            );
+            let meta = self.rows_meta.get(i);
+            let mut text_x = rect.origin.x + self.padding_x;
+            let mut text_w = rect.size.width - self.padding_x * 2.0;
+            if meta.is_some_and(|m| m.icon.is_some()) {
+                let icon = sizes::ICON_16;
+                scene.fill_rect(
+                    colors.divider.with_alpha(colors.divider.a * alpha),
+                    Rect::new(text_x, y + (row_height - icon) / 2.0, icon, icon),
+                );
+                text_x += icon + 8.0;
+                text_w -= icon + 8.0;
+            }
+            let label_rect = Rect::new(text_x, y + 8.0, text_w.max(0.0), style.line_height);
             scene.label(self.rows[i].clone(), label_rect, fg, style, TextAlign::Left);
+            // 次要文字：右对齐、弱化色；多列依次左移（只画一行，不换行）。
+            if let Some(m) = meta {
+                if !m.secondary.is_empty() {
+                    let w = (_engine.measure(&m.secondary, style.size) + 8.0).min(text_w);
+                    scene.label(
+                        m.secondary.clone(),
+                        Rect::new(label_rect.right() - w, label_rect.origin.y, w, style.line_height),
+                        colors.on_surface_variant.with_alpha(colors.on_surface_variant.a * alpha),
+                        style,
+                        TextAlign::Right,
+                    );
+                }
+                let mut cx = label_rect.right();
+                for cell in m.cells.iter().rev() {
+                    let w = (_engine.measure(cell, style.size) + 16.0).min(text_w / 3.0);
+                    cx -= w;
+                    scene.label(
+                        cell.clone(),
+                        Rect::new(cx, label_rect.origin.y, w, style.line_height),
+                        colors.on_surface_variant.with_alpha(colors.on_surface_variant.a * alpha),
+                        style,
+                        TextAlign::Right,
+                    );
+                }
+            }
         }
 
         scene.pop_clip();
@@ -1252,5 +1287,67 @@ mod tests {
             fills.iter().any(|c| near(*c, theme.indication.hover_tint)),
             "另一层是中性悬停底"
         );
+    }
+}
+
+// ── 行模型扩展（2026-11-13，只增不改）────────────────────────────────────────
+//
+// 供应门 §Ⅰ「文件列表 / 侧栏」两格的缺口：`MetroList` 的行只有 `Vec<String>`，没有图标、
+// 没有次要文字、没有多列 —— 于是 librarian 只能自己画列表。这里补一层**并行**的行元数据：
+// `rows: Vec<String>` 原样保留（旧 App 不受影响），`rows_meta` 按需提供图标与次要文字；
+// 两者长度不一致时渲染侧按 `min` 截断，不 panic。
+
+/// 一行的附加信息（可选）。缺省全空 = 与旧行为逐像素一致。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ListRowMeta {
+    /// 图标名（主题图标名；渲染侧只留出图标位并填底，取图归外壳）。
+    pub icon: Option<String>,
+    /// 次要文字（右侧弱化色；空 = 不画）。
+    pub secondary: String,
+    /// 多列文字（文件列表的大小 / 时间等；空 = 不画）。
+    pub cells: Vec<String>,
+}
+
+impl ListRowMeta {
+    /// 带图标。
+    pub fn icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    /// 带次要文字。
+    pub fn secondary(mut self, text: impl Into<String>) -> Self {
+        self.secondary = text.into();
+        self
+    }
+
+    /// 带多列。
+    pub fn cells(mut self, cells: Vec<String>) -> Self {
+        self.cells = cells;
+        self
+    }
+}
+
+impl MetroList {
+    /// 行元数据（与 `rows` 并行；长度不齐时缺的当空）。
+    pub fn meta(&self) -> &[ListRowMeta] {
+        &self.rows_meta
+    }
+
+    /// 设置行元数据；长度不齐时渲染侧截断。
+    pub fn set_meta(&mut self, meta: Vec<ListRowMeta>) {
+        self.rows_meta = meta;
+    }
+
+    /// 带元数据构造。
+    pub fn with_meta(rows: Vec<String>, meta: Vec<ListRowMeta>) -> Self {
+        let mut list = Self::new(rows);
+        list.rows_meta = meta;
+        list
+    }
+
+    /// 某行的元数据。
+    pub fn row_meta(&self, index: usize) -> Option<&ListRowMeta> {
+        self.rows_meta.get(index)
     }
 }

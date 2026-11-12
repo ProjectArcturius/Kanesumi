@@ -827,6 +827,7 @@ pub fn capture_anchor(&self, row_h: f32) -> ScrollAnchor {
 pub fn caret_rect_absolute(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> Rect {
 pub fn caret_visible(&self) -> bool {
 pub fn caret_x(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> f32 {
+pub fn cells(mut self, cells: Vec<String>) -> Self {
 pub fn check_gutter(&self) -> f32 {
 pub fn chevron_progress(&self) -> f32 {
 pub fn chevron_rect(&self, rect: Rect) -> Rect {
@@ -1003,6 +1004,7 @@ pub fn hovered_item(&self) -> Option<(usize, Option<usize>)> {
 pub fn hovered_path(&self) -> Option<MenuPath> {
 pub fn hovered_rects(&self) -> Vec<Rect> {
 pub fn icon(glyph: impl Into<String>) -> Self {
+pub fn icon(mut self, icon: impl Into<String>) -> Self {
 pub fn icon_glyph(self) -> &'static str {
 pub fn icon_rect(&self, rect: Rect) -> Option<Rect> {
 pub fn ime_context(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> ImeContext {
@@ -1084,6 +1086,7 @@ pub fn measure(&self, engine: &TextEngine, style: TextStyle) -> kanesumi_core::S
 pub fn measure(&self, width: f32) -> Size {
 pub fn measure_window(&self, row_h: f32, viewport_h: f32) -> Option<ListWindow> {
 pub fn measures_last_frame(&self) -> usize {
+pub fn meta(&self) -> &[ListRowMeta] {
 pub fn missing_brush_fallbacks() -> u64 {
 pub fn mode(&self, rect: Rect) -> TwoPaneMode {
 pub fn month_at(rect: Rect, pos: Point) -> Option<u8> {
@@ -1252,6 +1255,7 @@ pub fn row_at(&self, pos: Point) -> Option<usize> {
 pub fn row_block(&mut self, tree: &mut Tree, mb: f32) -> WidgetId {
 pub fn row_button(
 pub fn row_height(&self, theme: &MetroTheme) -> f32 {
+pub fn row_meta(&self, index: usize) -> Option<&ListRowMeta> {
 pub fn row_rect(&self, index: usize) -> Option<Rect> {
 pub fn rows(&self) -> usize {
 pub fn running(mut self, on: bool) -> Self {
@@ -1282,6 +1286,7 @@ pub fn scroll_wheel(&mut self, dy: f32, steps: f32, row_h: f32, viewport_h: f32)
 pub fn scrollbar_thumb_rect(&self) -> Rect {
 pub fn scrollbar_track_rect(&self) -> Rect {
 pub fn scrollbar_visible(&self) -> bool {
+pub fn secondary(mut self, text: impl Into<String>) -> Self {
 pub fn secondary_rect(&self, rect: Rect) -> Rect {
 pub fn section(&mut self, tree: &mut Tree, text: &str, first: bool) -> WidgetId {
 pub fn segment_at(&self, pos: Point) -> Option<&PathBarSegmentSlot> {
@@ -1319,6 +1324,7 @@ pub fn set_item_submenu(&mut self, index: usize, items: Vec<MenuItem>) {
 pub fn set_items(&mut self, items: Vec<DockItem>, available: Rect) {
 pub fn set_layout(&mut self, layout: ItemLayout) {
 pub fn set_mask(&mut self, c: Option<char>) {
+pub fn set_meta(&mut self, meta: Vec<ListRowMeta>) {
 pub fn set_pane_expanded(&mut self, expanded: bool) {
 pub fn set_pane_progress(&mut self, progress: f32) {
 pub fn set_preedit(&mut self, text: &str, cursor_byte: Option<usize>) {
@@ -1447,6 +1453,7 @@ pub fn with_label(icon: impl Into<String>, label: impl Into<String>) -> Self {
 pub fn with_label(label: impl Into<String>) -> Self {
 pub fn with_max(mut self, max: f64) -> Self {
 pub fn with_max_lines(mut self, max_lines: usize) -> Self {
+pub fn with_meta(rows: Vec<String>, meta: Vec<ListRowMeta>) -> Self {
 pub fn with_min(mut self, min: f64) -> Self {
 pub fn with_name(name: impl Into<String>) -> Self {
 pub fn with_overflow(mut self, overflow: TextOverflow) -> Self {
@@ -1521,6 +1528,7 @@ pub struct IconButtonClicked;
 pub struct InfoBarClosed;
 pub struct ItemsRepeater {
 pub struct KeyOutcome {
+pub struct ListRowMeta {
 pub struct ListSelection {
 pub struct ListSelectionChanged(pub usize);
 pub struct ListWindow {
