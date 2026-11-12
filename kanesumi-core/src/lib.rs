@@ -12,6 +12,7 @@ pub mod colors;
 pub mod geometry;
 pub mod indicator;
 pub mod interaction;
+pub mod metrics;
 pub mod scroll_tracker;
 pub mod sizes;
 pub mod snap_tracker;

@@ -30,8 +30,8 @@ pub use layout::{
 };
 pub use scene::{Scene, SceneCommand, TextAlign};
 pub use text::{
-    Line, ShapedGlyph, TextEngine, TextLayout, TextLayoutOptions, TextLineGeometry, TextLoadError,
-    TextOverflow,
+    Line, LineBox, ShapedGlyph, TextEngine, TextLayout, TextLayoutOptions, TextLineGeometry,
+    TextLoadError, TextOverflow,
 };
 /// 再导出 rustybuzz 自带的 ttf-parser：依赖方（如 `ether-font-index` 读回对拍）
 /// 无需新增外部依赖即可独立复核覆盖判定。零实现代码。
