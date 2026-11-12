@@ -40,6 +40,7 @@ pub mod metro_tile;
 pub mod navigation;
 pub mod navigation_view;
 pub mod notification;
+pub mod notification_card;
 pub mod number_box;
 pub mod pager_control;
 pub mod parallax_view;
