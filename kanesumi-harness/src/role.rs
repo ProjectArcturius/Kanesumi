@@ -28,6 +28,13 @@ pub enum EtherRole {
     /// 截图选区覆盖层（layer-shell OVERLAY，四边锚定铺满，**独占键盘**）。
     /// 参 docs/SCREENSHOT_DESIGN.md §Ⅱ：冻结帧铺满 + 拖选 / 单击整窗，Esc 取消。
     ShotSelect,
+    /// 通知表面（layer-shell OVERLAY，贴右上或指定角，**不抢键盘**）。
+    ///
+    /// 供应门 §Ⅰ 判据之一：通知这一格原先在框架里「一格都没有」。卡片本体在
+    /// `kanesumi-controls::notification(_card)`，本角色只解决「它挂在哪一层」。
+    /// 刻意**不新增** `SurfaceKind` 变体：表面类型是协议选择，通知用 OVERLAY 即正确；
+    /// 新增变体只会让外壳多一条「未知类型显式降级」的路径，得不偿失。
+    Notification,
 }
 
 /// layer-shell 键盘交互模式（与 `zwlr_layer_surface_v1.set_keyboard_interactivity` 同义）。
@@ -61,6 +68,7 @@ impl FromStr for EtherRole {
             "candidate" => Ok(EtherRole::Candidate),
             "lock" => Ok(EtherRole::Lock),
             "shot-select" => Ok(EtherRole::ShotSelect),
+            "notification" => Ok(EtherRole::Notification),
             _ => Err(RoleParseError),
         }
     }
@@ -110,6 +118,8 @@ impl EtherRole {
             EtherRole::Candidate => SurfaceKind::LayerOverlay,
             EtherRole::ShotSelect => SurfaceKind::LayerOverlay,
             EtherRole::Lock => SurfaceKind::SessionLock,
+            // 通知落在 OVERLAY：在所有窗口之上、不需要独占层，且不参与窗口管理。
+            EtherRole::Notification => SurfaceKind::LayerOverlay,
         }
     }
 
@@ -124,6 +134,9 @@ impl EtherRole {
     pub fn keyboard_interactivity(self) -> LayerKeyboardInteractivity {
         match self {
             EtherRole::ShotSelect => LayerKeyboardInteractivity::Exclusive,
+            // 通知条**永不**取键盘：Win10 的 toast 不抢焦点，用户正在打的字不能被打断。
+            // 键盘关闭走外壳的全局热键，不靠给表面焦点。
+            EtherRole::Notification => LayerKeyboardInteractivity::None,
             EtherRole::Desktop
             | EtherRole::Browser
             | EtherRole::TopBar
@@ -140,6 +153,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn notification_role_is_overlay_and_never_steals_keyboard() {
+        assert_eq!(EtherRole::Notification.surface_kind(), SurfaceKind::LayerOverlay);
+        assert_eq!(
+            EtherRole::Notification.keyboard_interactivity(),
+            LayerKeyboardInteractivity::None,
+            "通知永不取键盘（Win10 toast 不抢焦点）"
+        );
+        // 与既有 OVERLAY 角色对比：候选窗 / 启动器都是 OnDemand，只有通知是 None。
+        assert_eq!(
+            EtherRole::Candidate.keyboard_interactivity(),
+            LayerKeyboardInteractivity::OnDemand
+        );
+        assert_eq!(
+            EtherRole::Launcher.keyboard_interactivity(),
+            LayerKeyboardInteractivity::OnDemand
+        );
+    }
+
+    #[test]
     fn parse_all_roles() {
         assert_eq!("desktop".parse(), Ok(EtherRole::Desktop));
         assert_eq!("browser".parse(), Ok(EtherRole::Browser));
@@ -149,6 +181,7 @@ mod tests {
         assert_eq!("candidate".parse(), Ok(EtherRole::Candidate));
         assert_eq!("lock".parse(), Ok(EtherRole::Lock));
         assert_eq!("shot-select".parse(), Ok(EtherRole::ShotSelect));
+        assert_eq!("notification".parse(), Ok(EtherRole::Notification));
     }
 
     #[test]
