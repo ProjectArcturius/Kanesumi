@@ -73,6 +73,19 @@ impl MetroExpander {
         }
     }
 
+    /// 以指定展开态**直接入树**（不播开场动画）。
+    ///
+    /// `Form::expander` 要「默认展开」：页面首次出帧时内容必须已经就位，若走
+    /// `set_expanded` 的 0.333s 过渡，首帧量测只能拿到标题高，整页会在打开时抖一下。
+    /// 动画仍由后续 `set_expanded` / `toggle` 负责，可随时打断。
+    pub fn with_expanded(mut self, expanded: bool) -> Self {
+        self.expanded = expanded;
+        let steady = if expanded { 1.0 } else { 0.0 };
+        self.content.jump_to(steady);
+        self.chevron.jump_to(steady);
+        self
+    }
+
     /// 折叠/展开切换（等价 UWP IsExpanded 翻转）。
     pub fn toggle(&mut self) {
         self.set_expanded(!self.expanded);
@@ -84,14 +97,22 @@ impl MetroExpander {
             return;
         }
         self.expanded = expanded;
-        self.content = if expanded {
+        let target = if expanded { 1.0 } else { 0.0 };
+        // 换预设是为换时长（展开 0.333s / 收起 0.167s），但**不能丢当前进度**：
+        // 旧写法直接换成从 0 起步的新动画，收起时 `set_target(0)` 见「已在目标」即无操作，
+        // 内容瞬间消失、0.167s 收起动画从未真正播过（2026-11-11 由 Form 折叠态用例发现）。
+        let mut content = if expanded {
             MetroPresets::expander_expand()
         } else {
             MetroPresets::expander_collapse()
         };
-        self.content.set_target(if expanded { 1.0 } else { 0.0 });
-        self.chevron = MetroPresets::expander_chevron();
-        self.chevron.set_target(if expanded { 1.0 } else { 0.0 });
+        content.jump_to(self.content.value());
+        content.set_target(target);
+        self.content = content;
+        let mut chevron = MetroPresets::expander_chevron();
+        chevron.jump_to(self.chevron.value());
+        chevron.set_target(target);
+        self.chevron = chevron;
     }
 
     /// 每帧推进内容/chevron 动画。
@@ -226,30 +247,40 @@ impl MetroExpander {
             TextAlign::Left,
         );
 
-        // Chevron —— 朝下/朝上之间按进度插值（0.1s 旋转的几何近似）。
-        let chevron = self.chevron_rect(rect);
-        let p = self.chevron_progress();
-        // 三角形顶点按进度从「下」翻到「上」。
-        let cx = chevron.origin.x + chevron.size.width / 2.0;
-        let top_y = chevron.origin.y + chevron.size.height * (0.25 + 0.25 * p);
-        let bottom_y = chevron.origin.y + chevron.size.height * (0.75 - 0.25 * p);
-        let w = chevron.size.width * 0.4;
-        // p=0（下）：base 在上、tip 在下；p=1（上）：base 在下、tip 在上。
-        let (left, right, tip) = if p < 0.5 {
-            (
-                Point::new(cx - w, top_y),
-                Point::new(cx + w, top_y),
-                Point::new(cx, bottom_y),
-            )
-        } else {
-            (
-                Point::new(cx - w, bottom_y),
-                Point::new(cx + w, bottom_y),
-                Point::new(cx, top_y),
-            )
-        };
+        // Chevron —— 朝下 / 朝上两个稳态之间翻转（0.1s）。
+        let (left, right, tip) = self.chevron_triangle(rect);
         scene.triangle(left, right, tip, colors.on_surface);
         let _ = engine;
+    }
+
+    /// Chevron 三角形的三个顶点（`progress` 0 = 朝下，1 = 朝上）。
+    ///
+    /// 旧写法让上下两条边同时向中线收：p=1 时两边撞在一起，三角形高度归零 ——
+    /// 展开态的箭头整个消失（2026-11-11 audio 页折叠态截图比对发现；折叠态的 p=0
+    /// 恰好满尺寸，所以一直没被测出来）。稳态必须都是满尺寸，中点翻转即可：
+    /// chevron 动画只有 0.1s，离散翻转看不出来。
+    pub fn chevron_triangle(&self, rect: Rect) -> (Point, Point, Point) {
+        let chevron = self.chevron_rect(rect);
+        let p = self.chevron_progress();
+        let cx = chevron.origin.x + chevron.size.width / 2.0;
+        let cy = chevron.origin.y + chevron.size.height / 2.0;
+        let w = chevron.size.width * 0.4;
+        let h = chevron.size.height * 0.25;
+        if p < 0.5 {
+            // 朝下：base 在上、tip 在下。
+            (
+                Point::new(cx - w, cy - h),
+                Point::new(cx + w, cy - h),
+                Point::new(cx, cy + h),
+            )
+        } else {
+            // 朝上：base 在下、tip 在上。
+            (
+                Point::new(cx - w, cy + h),
+                Point::new(cx + w, cy + h),
+                Point::new(cx, cy - h),
+            )
+        }
     }
 
     /// 渲染 Content 底 + 边框（`progress` 高度）。宿主内容画在 `content_rect` 上。
@@ -385,7 +416,8 @@ impl kanesumi_element::Widget for MetroExpander {
                 ..
             } => self.hit_header(rect, *pos),
             Event::KeyDown { key: Key::Enter, .. }
-            | Event::KeyDown { key: Key::Char(' '), .. } => true,
+            | Event::KeyDown { key: Key::Char(' '), .. }
+            | Event::KeyDown { key: Key::Space, .. } => true,
             _ => false,
         };
         if !toggled {
@@ -781,5 +813,28 @@ mod tests {
         let min_y = p0.y.min(p1.y).min(p2.y);
         assert!(max_y > cy, "收起 → 尖端朝下");
         assert!(min_y < cy);
+    }
+
+    /// 两个稳态的箭头都必须满尺寸：旧写法展开到 p=1 时三角形高度归零（箭头消失）。
+    #[test]
+    fn chevron_keeps_full_size_at_both_steady_states() {
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+        let e = MetroExpander::new("网络");
+        let chevron_h = e.chevron_rect(rect).size.height;
+        // (竖直跨度, 尖端相对底边的方向)
+        let span = |e: &MetroExpander| {
+            let (a, b, tip) = e.chevron_triangle(rect);
+            let min = a.y.min(b.y).min(tip.y);
+            let max = a.y.max(b.y).max(tip.y);
+            (max - min, tip.y - a.y)
+        };
+        let (h0, tip0) = span(&e);
+        assert!(h0 >= chevron_h * 0.45, "收起态箭头高度 {h0}");
+        assert!(tip0 > 0.0, "收起态尖端朝下");
+
+        let e = expanded_to_steady(e);
+        let (h1, tip1) = span(&e);
+        assert!(h1 >= chevron_h * 0.45, "展开态箭头高度 {h1}（旧写法为 0）");
+        assert!(tip1 < 0.0, "展开态尖端朝上");
     }
 }
