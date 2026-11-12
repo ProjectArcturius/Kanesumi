@@ -11,26 +11,26 @@
 // 形状冻结约定（参 Kanesumi docs/API_STABILITY.md §三）：现有字段不改名、不改语义；
 // 新增字段必须带 `Default` 或由 `DockRailInput::new` 填好，枚举只许加变体。
 
-use kanesumi_core::{Point, Rect, ThemeColor};
+use kanesumi_core::{Point, Rect, ThemeColor, sizes};
 
 /// 图标边长（§158：48 为 200% 输出的最终值）。
-pub const DOCK_ICON_SIZE: f32 = 48.0;
+pub const DOCK_ICON_SIZE: f32 = sizes::DOCK_ICON;
 /// 槽宽（图标居中，槽间无缝）。
-pub const DOCK_SLOT_WIDTH: f32 = 60.0;
+pub const DOCK_SLOT_WIDTH: f32 = sizes::DOCK_SLOT;
 /// 板高 = 图标 + 板内上下各 10。
-pub const DOCK_PLATE_HEIGHT: f32 = 68.0;
+pub const DOCK_PLATE_HEIGHT: f32 = sizes::DOCK_PLATE_HEIGHT;
 /// 悬浮：板底距屏底 8；这 8 pt 仍属 Dock 表面，命中延伸到屏幕底边（§158）。
-pub const DOCK_FLOAT_GAP: f32 = 8.0;
+pub const DOCK_FLOAT_GAP: f32 = sizes::DOCK_FLOAT_GAP;
 /// 悬浮档的 Dock 主表面高（板 + 间隙），与合成器 `dock_visibility::DOCK_HEIGHT` 一致。
 pub const DOCK_SURFACE_HEIGHT: f32 = DOCK_PLATE_HEIGHT + DOCK_FLOAT_GAP;
 /// 定位线高（每槽一段、贴板内底沿）。
-pub const DOCK_LINE_HEIGHT: f32 = 3.0;
+pub const DOCK_LINE_HEIGHT: f32 = sizes::DOCK_LINE;
 /// 底板左右内边距（居中直角底板只包图标区）。
-pub const DOCK_PLATE_PAD: f32 = 12.0;
+pub const DOCK_PLATE_PAD: f32 = sizes::DOCK_PLATE_PAD;
 /// 溢出判定：可用宽 = 输出逻辑宽 − 2 × 72（§186）。
-pub const DOCK_SIDE_MARGIN: f32 = 72.0;
+pub const DOCK_SIDE_MARGIN: f32 = sizes::DOCK_SIDE_MARGIN;
 /// 计数格宽（§186：「‹ N」/「N ›」）。
-pub const DOCK_CHIP_WIDTH: f32 = 36.0;
+pub const DOCK_CHIP_WIDTH: f32 = sizes::DOCK_CHIP_WIDTH;
 
 /// 一档缩放后的全部长度。
 ///

@@ -54,6 +54,45 @@ pub const DOCK_LINE: f32 = 3.0;
 /// 独立令牌，不得互相替代。
 pub const DOCK_ACRYLIC_BLUR: f32 = 30.0;
 
+/// Dock 溢出判定的屏幕左右留白 72（可用宽 = 输出逻辑宽 − 2 × 72）。来源：§186；
+/// 现值 `kanesumi-controls/src/navigation/dock_rail.rs`（`DOCK_SIDE_MARGIN`）。
+pub const DOCK_SIDE_MARGIN: f32 = 72.0;
+
+/// Dock 计数格宽 36（§186「‹ N」/「N ›」）。现值同上（`DOCK_CHIP_WIDTH`）。
+pub const DOCK_CHIP_WIDTH: f32 = 36.0;
+
+/// 文件列表名称列最小宽 120：再窄就丢弃右侧次要列（多列自适应）。
+/// 现值 `kanesumi-controls/src/navigation/file_views.rs`（`FILE_MIN_NAME_W`）。
+pub const FILE_MIN_NAME_W: f32 = 120.0;
+
+/// 文件侧栏行高 32 / 表头高 32。现值 `file_views.rs`（`SIDEBAR_ROW_H` / `SIDEBAR_HEADER_H`）。
+pub const SIDEBAR_ROW_H: f32 = 32.0;
+pub const SIDEBAR_HEADER_H: f32 = 32.0;
+
+/// 文件侧栏左内边距 16。现值 `file_views.rs`（`SIDEBAR_PAD_L`）。
+pub const SIDEBAR_PAD_L: f32 = 16.0;
+
+/// 文件侧栏图文间距 12。现值 `file_views.rs`（`SIDEBAR_GAP`）。
+pub const SIDEBAR_GAP: f32 = 12.0;
+
+/// 文件侧栏选中条：宽 4 / 高 16 / 距顶 8。现值 `file_views.rs`（`SIDEBAR_SEL_BAR_*`）。
+pub const SIDEBAR_SEL_BAR_W: f32 = 4.0;
+pub const SIDEBAR_SEL_BAR_H: f32 = 16.0;
+pub const SIDEBAR_SEL_BAR_TOP: f32 = 8.0;
+
+/// 文件侧栏弹出钮：宽 24 / 右内边距 8。现值 `file_views.rs`（`SIDEBAR_EJECT_*`）。
+pub const SIDEBAR_EJECT_W: f32 = 24.0;
+pub const SIDEBAR_EJECT_PAD_R: f32 = 8.0;
+
+/// 路径栏高 28 / 左右内边距 12 / 段间距 4。现值 `file_views.rs`（`PATH_BAR_*`）。
+pub const PATH_BAR_H: f32 = 28.0;
+pub const PATH_BAR_PAD_H: f32 = 12.0;
+pub const PATH_BAR_GAP: f32 = 4.0;
+
+/// 路径栏段最小宽 24（再窄就折叠成省略号）/ 省略号宽 12。
+pub const PATH_BAR_MIN_SEGMENT_W: f32 = 24.0;
+pub const PATH_BAR_ELLIPSIS_W: f32 = 12.0;
+
 /// 列表行高下限 40。来源：UWP `ListViewItem` MinHeight（一手源，参
 /// `docs/UWP_PRIMARY_SOURCES.md`）。现值 `kanesumi-controls/src/list.rs:63` 的
 /// `.max(40.0)`。注意 Launcher「所有应用」行高 56 是该页自定的行高（`all_apps.rs:19`），
@@ -298,6 +337,18 @@ mod tests {
         assert_eq!(TABLE_ICON, 16.0);
         assert_eq!(TABLE_INDENT, 20.0);
         assert_eq!(TABLE_SORT_TRI, 10.0);
+        assert_eq!(DOCK_SIDE_MARGIN, 72.0);
+        assert_eq!(DOCK_CHIP_WIDTH, 36.0);
+        assert_eq!(FILE_MIN_NAME_W, 120.0);
+        assert_eq!((SIDEBAR_ROW_H, SIDEBAR_HEADER_H), (32.0, 32.0));
+        assert_eq!((SIDEBAR_PAD_L, SIDEBAR_GAP), (16.0, 12.0));
+        assert_eq!(
+            (SIDEBAR_SEL_BAR_W, SIDEBAR_SEL_BAR_H, SIDEBAR_SEL_BAR_TOP),
+            (4.0, 16.0, 8.0)
+        );
+        assert_eq!((SIDEBAR_EJECT_W, SIDEBAR_EJECT_PAD_R), (24.0, 8.0));
+        assert_eq!((PATH_BAR_H, PATH_BAR_PAD_H, PATH_BAR_GAP), (28.0, 12.0, 4.0));
+        assert_eq!((PATH_BAR_MIN_SEGMENT_W, PATH_BAR_ELLIPSIS_W), (24.0, 12.0));
         let s = Spacing::base4();
         assert_eq!((s.s4, s.s8, s.s12, s.s16, s.s24, s.s32), (4.0, 8.0, 12.0, 16.0, 24.0, 32.0));
     }

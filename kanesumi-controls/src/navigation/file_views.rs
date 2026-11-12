@@ -11,24 +11,24 @@
 // 形状冻结（参 Kanesumi docs/API_STABILITY.md §三）：现有字段不改名、不改语义；新增
 // 字段必须带 `Default`，枚举只许加变体（`FileListColumn` 已标 `#[non_exhaustive]`）。
 
-use kanesumi_core::{Point, Rect};
+use kanesumi_core::{Point, Rect, sizes};
 
 /// 列表行高（librarian `spec::ROW_H`）。
-pub const FILE_ROW_H: f32 = 28.0;
+pub const FILE_ROW_H: f32 = sizes::TABLE_ROW_H;
 /// 列表表头高（librarian `spec::LIST_HEADER_H`）。
-pub const FILE_HEADER_H: f32 = 28.0;
+pub const FILE_HEADER_H: f32 = sizes::TABLE_HEADER_H;
 /// 列表左右内边距（librarian `spec::ROW_PAD_H`）。
-pub const FILE_PAD_H: f32 = 12.0;
+pub const FILE_PAD_H: f32 = sizes::TABLE_PAD_H;
 /// 行内图标边长（librarian `spec::ROW_ICON`）。
-pub const FILE_ICON: f32 = 16.0;
+pub const FILE_ICON: f32 = sizes::TABLE_ICON;
 /// 行内图文间距（librarian `spec::ROW_GAP`）。
-pub const FILE_GAP: f32 = 8.0;
+pub const FILE_GAP: f32 = sizes::TABLE_GAP;
 /// 展开三角宽（librarian `spec::TRI_W`）。
-pub const FILE_TRI_W: f32 = 12.0;
+pub const FILE_TRI_W: f32 = sizes::TABLE_TRI_W;
 /// 子项每层缩进（librarian `spec::INDENT`）。
-pub const FILE_INDENT: f32 = 20.0;
+pub const FILE_INDENT: f32 = sizes::TABLE_INDENT;
 /// 名称列至少留多宽；再窄就丢掉右侧次要列（多列自适应）。
-pub const FILE_MIN_NAME_W: f32 = 120.0;
+pub const FILE_MIN_NAME_W: f32 = sizes::FILE_MIN_NAME_W;
 
 /// 列表列身份。顺序即从右往左的丢弃顺序：`Kind` 先让位，`Name` 永不丢。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -411,22 +411,22 @@ pub fn file_list_layout(input: &FileListInput) -> FileListLayout {
 }
 
 /// 侧栏行高（librarian `spec::SB_ROW_H`）。
-pub const SIDEBAR_ROW_H: f32 = 32.0;
+pub const SIDEBAR_ROW_H: f32 = sizes::SIDEBAR_ROW_H;
 /// 侧栏分组头高（上 12 + 16 行 + 下 4，librarian `spec::SB_HEADER_*`）。
-pub const SIDEBAR_HEADER_H: f32 = 32.0;
+pub const SIDEBAR_HEADER_H: f32 = sizes::SIDEBAR_HEADER_H;
 /// 侧栏左内边距（librarian `spec::SB_PAD_L`）。
-pub const SIDEBAR_PAD_L: f32 = 16.0;
+pub const SIDEBAR_PAD_L: f32 = sizes::SIDEBAR_PAD_L;
 /// 侧栏图标边长（librarian `spec::SB_ICON`）。
-pub const SIDEBAR_ICON: f32 = 16.0;
+pub const SIDEBAR_ICON: f32 = sizes::ICON_16;
 /// 侧栏图文间距（librarian `spec::SB_GAP`）。
-pub const SIDEBAR_GAP: f32 = 12.0;
+pub const SIDEBAR_GAP: f32 = sizes::SIDEBAR_GAP;
 /// 选中条尺寸与上距（librarian `spec::SB_SEL_BAR_*`）。
-pub const SIDEBAR_SEL_BAR_W: f32 = 4.0;
-pub const SIDEBAR_SEL_BAR_H: f32 = 16.0;
-pub const SIDEBAR_SEL_BAR_TOP: f32 = 8.0;
+pub const SIDEBAR_SEL_BAR_W: f32 = sizes::SIDEBAR_SEL_BAR_W;
+pub const SIDEBAR_SEL_BAR_H: f32 = sizes::SIDEBAR_SEL_BAR_H;
+pub const SIDEBAR_SEL_BAR_TOP: f32 = sizes::SIDEBAR_SEL_BAR_TOP;
 /// 设备行尾弹出钮（librarian `spec::SB_EJECT_*`）。
-pub const SIDEBAR_EJECT_W: f32 = 24.0;
-pub const SIDEBAR_EJECT_PAD_R: f32 = 8.0;
+pub const SIDEBAR_EJECT_W: f32 = sizes::SIDEBAR_EJECT_W;
+pub const SIDEBAR_EJECT_PAD_R: f32 = sizes::SIDEBAR_EJECT_PAD_R;
 
 /// 侧栏度量。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -696,17 +696,17 @@ pub fn sidebar_layout(input: &SidebarInput) -> SidebarLayout {
 }
 
 /// 路径栏高（librarian `spec::PATH_H`）。
-pub const PATH_BAR_H: f32 = 28.0;
+pub const PATH_BAR_H: f32 = sizes::PATH_BAR_H;
 /// 路径栏左右内边距（librarian `spec::PATH_PAD_H`）。
-pub const PATH_BAR_PAD_H: f32 = 12.0;
+pub const PATH_BAR_PAD_H: f32 = sizes::PATH_BAR_PAD_H;
 /// 段与分隔符的间距（librarian `spec::PATH_GAP`）。
-pub const PATH_BAR_GAP: f32 = 4.0;
+pub const PATH_BAR_GAP: f32 = sizes::PATH_BAR_GAP;
 /// 盘符图标边长（librarian `spec::PATH_ICON`）。
-pub const PATH_BAR_ICON: f32 = 12.0;
+pub const PATH_BAR_ICON: f32 = sizes::ICON_12;
 /// 段最小宽：再窄就丢前导段，用省略号代替。
-pub const PATH_BAR_MIN_SEGMENT_W: f32 = 24.0;
+pub const PATH_BAR_MIN_SEGMENT_W: f32 = sizes::PATH_BAR_MIN_SEGMENT_W;
 /// 前导省略号宽（「…」占位）。
-pub const PATH_BAR_ELLIPSIS_W: f32 = 12.0;
+pub const PATH_BAR_ELLIPSIS_W: f32 = sizes::PATH_BAR_ELLIPSIS_W;
 
 /// 路径栏度量。
 #[derive(Debug, Clone, Copy, PartialEq)]
