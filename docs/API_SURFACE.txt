@@ -784,6 +784,7 @@ pub enum TwoPaneMode {
 pub enum TwoPanePriority {
 pub enum TwoPaneTallConfig {
 pub enum TwoPaneWideConfig {
+pub enum WallRelease {
 pub fn accent(label: impl Into<String>) -> Self {
 pub fn accent_button(label: impl Into<String>, action: DeclAction) -> Self {
 pub fn action_at(&self, pos: Point) -> Option<usize> {
@@ -802,6 +803,7 @@ pub fn add_rect(&self, rect: Rect) -> Option<Rect> {
 pub fn align(mut self, align: ColumnAlign) -> Self {
 pub fn alpha(&self) -> f32 {
 pub fn anchor(&self) -> Option<usize> {
+pub fn apply_move(&mut self, m: &WallRelease, viewport: Rect) -> bool {
 pub fn back_rect(&self, rect: Rect) -> Option<Rect> {
 pub fn background(&self, theme: &MetroTheme) -> kanesumi_core::Color {
 pub fn backspace(&mut self) -> bool {
@@ -872,6 +874,7 @@ pub fn control_state(s: kanesumi_element::ControlStates) -> ControlState {
 pub fn current_mode(&self) -> TwoPaneMode {
 pub fn cursor(&self) -> usize {
 pub fn cursor_byte(&self) -> usize {
+pub fn cycle_size(&mut self, group: usize, index: usize, viewport: Rect) -> Option<TileWallSize> {
 pub fn day_at(&self, rect: Rect, pos: Point) -> Option<Date> {
 pub fn day_rect(&self, rect: Rect, date: Date) -> Option<Rect> {
 pub fn decade_base(&self) -> i32 {
@@ -890,10 +893,13 @@ pub fn display_value(&self) -> f32 {
 pub fn dock_height(self) -> f32 {
 pub fn dot() -> Self {
 pub fn down_button_rect(&self, theme: &MetroTheme, rect: Rect) -> Rect {
+pub fn drag(&mut self, pos: Point) -> bool {
 pub fn drag_to(&mut self, pos: Point) {
 pub fn drag_to(&mut self, rect: Rect, pos: Point) -> Option<f64> {
 pub fn drag_to(&mut self, rect: Rect, pos: Point) {
+pub fn dragging(&self) -> bool {
 pub fn draw_focus_ring(
+pub fn drop_target(&self) -> Option<(usize, usize)> {
 pub fn effective_pane_width(&self, rect: Rect) -> f32 {
 pub fn ellipsis_rect(&self, engine: &TextEngine, rect: Rect) -> Option<Rect> {
 pub fn end_frame(&mut self) {
@@ -912,7 +918,9 @@ pub fn flyout_height(&self, engine: &TextEngine) -> f32 {
 pub fn flyout_panel_rect(&self) -> Option<Rect> {
 pub fn focus(&mut self) {
 pub fn focus(&mut self, id: FocusId) -> bool {
+pub fn focus_by(&mut self, delta: i32) -> Option<(usize, usize)> {
 pub fn focus_next(&mut self, backward: bool) -> Option<FocusId> {
+pub fn focused(&self) -> Option<(usize, usize)> {
 pub fn focused(&self) -> Option<FocusId> {
 pub fn focused(&self) -> bool {
 pub fn for_tree(owner: WidgetId, items: Vec<MenuItem>) -> Self {
@@ -928,6 +936,8 @@ pub fn get(&self, name: &str) -> Option<&VisualStateDecl> {
 pub fn grid(cell: Size, spacing: f32) -> Self {
 pub fn grid(cell: Size, spacing: f32, factory: impl ItemFactory) -> Self {
 pub fn grid(count: usize, cell: f32, columns: usize, spacing: f32) -> Self {
+pub fn group_layout(layout: &TileWallLayout, group: usize) -> Option<&TileWallGroupLayout> {
+pub fn groups(&self) -> &[WallGroup] {
 pub fn handle_click(
 pub fn handle_click(&mut self, engine: &TextEngine, rect: Rect, pos: Point) -> InfoBarClick {
 pub fn handle_click(&mut self, engine: &TextEngine, rect: Rect, pos: Point) -> Option<usize> {
@@ -987,6 +997,7 @@ pub fn hover(&mut self, pos: Point) {
 pub fn hover(&mut self, rect: Rect, pos: Point) -> bool {
 pub fn hover(&mut self, rect: Rect, pos: Point) {
 pub fn hover_edge(&mut self, last: bool) {
+pub fn hovered(&self) -> Option<(usize, usize)> {
 pub fn hovered(&self) -> Option<usize> {
 pub fn hovered_item(&self) -> Option<(usize, Option<usize>)> {
 pub fn hovered_path(&self) -> Option<MenuPath> {
@@ -1033,12 +1044,14 @@ pub fn items(&self) -> &[DockItem] {
 pub fn items(&self) -> &[usize] {
 pub fn items_changed(&mut self) {
 pub fn iter(&self) -> std::slice::Iter<'_, Column> {
+pub fn jump_to_group(&self, group: usize) -> Option<f32> {
 pub fn key(&mut self, key: kanesumi_element::Key) -> CalendarResponse {
 pub fn knob_rect(&self, rect: Rect, theme: &MetroTheme) -> Rect {
 pub fn labeled(
 pub fn last_page(&self) -> usize {
 pub fn layout(
 pub fn layout(&self) -> &DockLayout {
+pub fn layout(&self) -> &TileWallLayout {
 pub fn layout(&self, engine: &TextEngine, rect: Rect) -> (Size, Vec<Rect>) {
 pub fn layout(&self, engine: &TextEngine, rect: Rect) -> BreadcrumbLayout {
 pub fn layout(&self, rect: Rect) -> (Size, Vec<Rect>) {
@@ -1098,6 +1111,7 @@ pub fn new(header: &str, width: ColumnWidth) -> Self {
 pub fn new(header: impl Into<String>) -> Self {
 pub fn new(icon: impl Into<String>) -> Self {
 pub fn new(id: impl Into<String>, icon: impl Into<String>) -> Self {
+pub fn new(id: impl Into<String>, label: impl Into<String>, size: TileWallSize) -> Self {
 pub fn new(id: impl Into<String>, size: TileWallSize) -> Self {
 pub fn new(items: Vec<MenuBarItem>) -> Self {
 pub fn new(items: Vec<MenuItem>) -> Self {
@@ -1120,6 +1134,7 @@ pub fn new(tabs: Vec<String>) -> Self {
 pub fn new(text: &str, target: &str) -> Self {
 pub fn new(title: impl Into<String>) -> Self {
 pub fn new(title: impl Into<String>, content: impl Into<String>) -> Self {
+pub fn new(title: impl Into<String>, tiles: Vec<WallTile>) -> Self {
 pub fn new(today: Date) -> Self {
 pub fn next(self) -> Self {
 pub fn next_cluster_boundary(&self, cursor: usize) -> usize {
@@ -1199,10 +1214,12 @@ pub fn realized_node(&self, index: usize) -> Option<WidgetId> {
 pub fn register(&mut self, id: FocusId, tab_stop: bool, enabled: bool) {
 pub fn related(
 pub fn relayout(&mut self, available: Rect) {
+pub fn relayout(&mut self, viewport: Rect) {
 pub fn release(
 pub fn release(&mut self) -> bool {
 pub fn release(&mut self) {
 pub fn release(&mut self, pos: Point) -> Option<DockActivated> {
+pub fn release(&mut self, pos: Point) -> WallRelease {
 pub fn remove(&mut self, id: u64) -> bool {
 pub fn render(
 pub fn render(&mut self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
@@ -1296,6 +1313,7 @@ pub fn set_delete_icon(&mut self, icon: Option<Icon>) {
 pub fn set_delete_icon(&mut self, icon: Option<kanesumi_canvas::Icon>) {
 pub fn set_expanded(&mut self, expanded: bool) {
 pub fn set_factory(&mut self, factory: impl ItemFactory) {
+pub fn set_groups(&mut self, groups: Vec<WallGroup>, viewport: Rect) {
 pub fn set_hover(&mut self, id: Option<u64>) {
 pub fn set_item_submenu(&mut self, index: usize, items: Vec<MenuItem>) {
 pub fn set_items(&mut self, items: Vec<DockItem>, available: Rect) {
@@ -1564,6 +1582,7 @@ pub struct MetroTeachingTip {
 pub struct MetroText {
 pub struct MetroTextBox {
 pub struct MetroTile {
+pub struct MetroTileWall {
 pub struct MetroTitleBar {
 pub struct MetroTreeView {
 pub struct MetroTwoPaneView {
@@ -1637,6 +1656,8 @@ pub struct TreeViewNode {
 pub struct TypeAhead {
 pub struct VisualStateDecl {
 pub struct VisualStates {
+pub struct WallGroup {
+pub struct WallTile {
 pub trait ItemFactory: 'static {
 
 ## kanesumi-harness

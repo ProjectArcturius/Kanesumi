@@ -9,6 +9,7 @@ pub mod dock;
 pub mod dock_rail;
 pub mod file_views;
 pub mod tile_wall;
+pub mod tile_wall_control;
 
 pub use dock::{DockActivated, DockItem, DockItemState, MetroDock, indicator_rect};
 pub use dock_rail::{
@@ -20,6 +21,9 @@ pub use file_views::{
     FileListLayout, FileListMetrics, FileListRowSlot, PathBarInput, PathBarLayout, PathBarMetrics,
     PathBarSegment, PathBarSegmentSlot, SidebarEntry, SidebarInput, SidebarLayout, SidebarMetrics,
     SidebarSlot, file_list_layout, path_bar_layout, sidebar_layout,
+};
+pub use tile_wall_control::{
+    MetroTileWall, WallGroup, WallRelease, WallTile, group_layout,
 };
 pub use tile_wall::{
     TileWallGroup, TileWallGroupLayout, TileWallInput, TileWallLayout, TileWallMetrics,
