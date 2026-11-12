@@ -16,6 +16,7 @@ pub mod event;
 pub mod id;
 pub mod ime;
 pub mod layer;
+pub mod placement;
 pub mod props;
 pub mod scroll;
 pub mod testing;
@@ -34,6 +35,9 @@ pub use event::{Event, Key, Modifiers, PointerButton, ScrollInput, ScrollPhase, 
 pub use id::WidgetId;
 pub use ime::{ImeContentHint, ImeContext};
 pub use layer::{LayerAnimSpec, LayerClipSpec, LayerInsets, LayerOp, ScrollerRequest, ScrollerSnapshot};
+pub use placement::{
+    OutputArea, Placement, PlacementRequest, PopupSide, output_for_anchor, place, place_on_outputs,
+};
 pub use scroll::ScrollKinetics;
 pub use tree::{composed_scroll_enabled, set_composed_scroll_enabled};
 pub use props::{Align, FocusGroupAxis, FocusGroupSpec, Insets, LayoutProps, LayoutRole};
@@ -43,7 +47,7 @@ pub use transitions::{
 };
 pub use tree::{
     Action, EditCtx, FrameOutput, FramePhases, PopupDismissed, PopupMotion, PopupMotionPlan,
-    PopupSide, PopupSpec, Tree,
+    PopupSpec, Tree,
 };
 pub use visual_state::VisualState;
 pub use widget::{

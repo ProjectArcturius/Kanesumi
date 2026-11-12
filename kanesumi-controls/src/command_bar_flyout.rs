@@ -12,6 +12,8 @@
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::{MetroTheme, Point, Rect};
+use kanesumi_element::placement::{self, PopupSide};
+use kanesumi_element::props::Align;
 
 use crate::popup::{PopupAnim, PopupState, popup_gap};
 
@@ -129,26 +131,19 @@ impl MetroCommandBarFlyout {
     }
 
     /// 定位：命令条在选中矩形**上方**（TextCommandBarFlyout 默认贴选区上缘），
-    /// 水平居中于选区；左右收拢不越出屏幕。上方空间不足则翻到下方。
+    /// 水平居中于选区；越缘则滑移 / 翻边 —— 判据全在 [`kanesumi_element::placement`]。
+    ///
+    /// 旧实现自带一套算术，其中「上方够不够」用的是**绝对 y** 与面板高比较（`above >= h`）：
+    /// 副屏 y≠0、或工作区被 TopBar 排他区下移时判据整体偏移，命令条会盖住选区。
+    /// 统一后判据是「选区上缘到工作区上缘的**空间**够不够」，与屏幕原点无关。
     pub fn place(&self, anchor: Rect, screen: Rect) -> Rect {
-        let size = self.panel_size();
-        let gap = 4.0;
-        let above = anchor.origin.y - gap;
-        let y = if above >= size.height {
-            above - size.height
-        } else {
-            anchor.bottom() + gap
-        };
-        // 水平居中，收拢到屏幕内
-        let center_x = anchor.origin.x + anchor.size.width / 2.0;
-        let mut x = center_x - size.width / 2.0;
-        if x < screen.origin.x {
-            x = screen.origin.x;
-        }
-        if x + size.width > screen.right() {
-            x = (screen.right() - size.width).max(screen.origin.x);
-        }
-        Rect::new(x, y, size.width, size.height)
+        placement::place(placement::PlacementRequest {
+            side: PopupSide::Top,
+            align: Align::Center,
+            gap: 4.0,
+            ..placement::PlacementRequest::new(anchor, self.panel_size(), screen)
+        })
+        .rect
     }
 
     pub fn update(&mut self, dt: f64) {
@@ -610,7 +605,8 @@ mod tests {
         assert_eq!(r.origin.x, 0.0, "贴屏左");
     }
 
-    /// 屏幕比面板窄：min-clamp 生效（origin.x = screen.origin.x），面板宽保持。
+    /// 屏幕比面板窄：面板宽收缩到可用区（旧行为是「宽保持、画出屏外」，由宿主自行裁剪 ——
+    /// 统一规则不再允许弹层画到工作区外，内容超出由弹层自己裁剪）。
     #[test]
     fn place_clamps_when_panel_wider_than_screen() {
         let bar = MetroCommandBarFlyout::text_commands();
@@ -619,7 +615,8 @@ mod tests {
         let anchor = Rect::new(20.0, 300.0, 40.0, 20.0);
         let r = bar.place(anchor, screen);
         assert_eq!(r.origin.x, 0.0, "面板宽 > 屏 → 靠左夹紧");
-        assert_eq!(r.size.width, bar.panel_size().width, "宽保持（宿主负责裁剪 / 缩放）");
+        assert_eq!(r.size.width, 100.0, "宽收缩到可用区，不画出屏外");
+        assert!(r.right() <= screen.right() + 0.01);
     }
 
     /// 多按钮布局（8 个自定义命令）—— panel_size 线性增长，命中覆盖全部按钮。

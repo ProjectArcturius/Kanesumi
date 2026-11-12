@@ -483,6 +483,7 @@ pub fn move_to(&mut self, pos: Point) {
 pub fn needs_frame(&self) -> bool {
 pub fn new(
 pub fn new() -> Self {
+pub fn new(anchor: Rect, size: Size, bounds: Rect) -> Self {
 pub fn new(enter_secs: f64, exit_secs: f64) -> Self {
 pub fn new(max_offset: f32) -> Self {
 pub fn new(min_cell: f32, max_columns: usize) -> Self {
@@ -501,10 +502,14 @@ pub fn on_popup_motion_done(&mut self, id: WidgetId) {
 pub fn opacity(mut self, o: f32) -> Self {
 pub fn open_popup(&mut self, widget: impl Widget, mut spec: PopupSpec) -> WidgetId {
 pub fn open_popup(&mut self, widget: impl Widget, spec: PopupSpec) -> WidgetId {
+pub fn opposite(self) -> Self {
+pub fn output_for_anchor(anchor: Rect, outputs: &[OutputArea]) -> Option<OutputArea> {
 pub fn padding(mut self, p: Insets) -> Self {
 pub fn painted(&self, id: WidgetId) -> &[SceneCommand] {
 pub fn parent(&self) -> Option<WidgetId> {
 pub fn parent(&self, id: WidgetId) -> Option<WidgetId> {
+pub fn place(req: PlacementRequest) -> Placement {
+pub fn place_on_outputs(req: PlacementRequest, outputs: &[OutputArea]) -> Placement {
 pub fn play_transition(
 pub fn play_transition_gated_on(
 pub fn pointer(&self) -> Option<Point> {
@@ -647,7 +652,10 @@ pub struct LayerInsets {
 pub struct LayoutProps {
 pub struct MeasureCtx<'a> {
 pub struct Modifiers {
+pub struct OutputArea {
 pub struct PaintCtx<'a> {
+pub struct Placement {
+pub struct PlacementRequest {
 pub struct PopupDismissed;
 pub struct PopupMotionPlan {
 pub struct PopupSpec {

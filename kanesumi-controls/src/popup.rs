@@ -1,6 +1,7 @@
 use kanesumi_anim::{FlyoutTrack, MetroPresets};
 use kanesumi_canvas::Scene;
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
+use kanesumi_element::placement::{self, PopupSide};
 
 /// 弹层展开方向。参 CONTROL_SPEC §8（ComboBoxHelper 判据：弹出容器相对触发器 Top>0 即向下）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,52 +27,28 @@ pub const fn popup_gap() -> f32 {
 
 /// 计算面板位置：优先向下（触发器下方空间足够）；不足则向上翻转。
 ///
-/// 判据（ComboBoxHelper）：触发器下缘到屏幕底的空间 ≥ 面板高 + 间隙 → Down；否则 Up。
-/// 水平方向：面板与触发器左缘对齐（右缘超出屏幕时收拢）。
+/// 判据全部委托 [`kanesumi_element::placement::place`]（框架内唯一的定位实现）：
+/// 下方优先 → 上翻 → 左右滑移 → 夹紧到 `screen`（= 锚点所在输出的 workarea）。
+/// 本函数只剩「控件参数 → 定位请求」的翻译；签名与 M5-3 口径（面板不得画到屏外）不变。
 ///
 /// 用于 ComboBox/DropDownButton/MenuBar 顶级 flyout —— 触发器 vs 面板是「下方 or 上方」二择。
 /// 子菜单（父项右侧展开）请用 [`place_submenu`]。
 #[must_use]
 pub fn place_popup(trigger: Rect, panel_size: Size, screen: Rect, gap: f32) -> PopupPlacement {
-    // 面板夹紧到屏幕（M5-3）：**不改签名**，只在内部收敛 —— 契约的「签名冻结」说的是
-    // 调用形状，不是允许把面板画到屏幕外。旧实现直接用 panel_size，超长菜单的 y 可为负。
-    let panel_h = panel_size.height.min(screen.size.height.max(0.0));
-    let panel_w = panel_size.width.min(screen.size.width.max(0.0));
-    let below = screen.bottom() - trigger.bottom();
-    let direction = if below >= panel_h + gap {
-        PopupDirection::Down
-    } else {
-        PopupDirection::Up
-    };
-    let x = {
-        let left = trigger.origin.x;
-        if left + panel_w > screen.right() {
-            (screen.right() - panel_w).max(screen.origin.x)
-        } else {
-            left.max(screen.origin.x)
-        }
-    };
-    let y = match direction {
-        PopupDirection::Down => trigger.bottom() + gap,
-        PopupDirection::Up => trigger.origin.y - panel_h - gap,
-    };
-    // 纵向兜底：上方放不下时贴屏顶，绝不为负。
-    let y = y.clamp(
-        screen.origin.y,
-        (screen.bottom() - panel_h).max(screen.origin.y),
-    );
+    let p = placement::place(placement::PlacementRequest {
+        gap,
+        ..placement::PlacementRequest::new(trigger, panel_size, screen)
+    });
     PopupPlacement {
-        direction,
-        rect: Rect::new(x, y, panel_w, panel_h),
+        direction: match p.side {
+            // 左右 / 居中不在本函数的语义里（触发器对齐弹层只有上下两择），按下方报。
+            PopupSide::Top => PopupDirection::Up,
+            _ => PopupDirection::Down,
+        },
+        rect: p.rect,
     }
 }
 
-/// 右键菜单定位：锚定指针点，四象限翻折，始终屏内。参 CONTEXT_MENU_SPEC §Ⅲ。
-///
-/// 锚点 = 指针坐标（无触发器）；面板右上角即指针位置，四个方向都翻折：
-/// 1. 右下（默认）→ 2. 左移（右侧不够）→ 3. 上移（下方不够）→ 4. 左上（两向不够），
-/// 每步后按屏幕夹紧。面板宽/高超过屏幕时贴屏边（以屏为基准不裁内容）。
-#[must_use]
 /// 把坐标吸附到**物理像素网格**（1/scale）。
 ///
 /// 相邻背景块（菜单栏标题、下拉菜单项）共用吸附后的边缘，2× 缩放下就不会互相露出一条
@@ -81,56 +58,33 @@ pub fn snap_edge(v: f32) -> f32 {
     (v * s).round() / s
 }
 
+/// 右键菜单定位：锚定指针点，四象限翻折，始终屏内。参 CONTEXT_MENU_SPEC §Ⅲ。
+///
+/// 锚点 = 指针坐标（无触发器）；面板左上角即指针位置。下方放不下翻上；越右缘时**滑移**
+/// 回屏内（不再镜像翻左 —— 统一规则见 [`kanesumi_element::placement`]，与 Qt
+/// `QMenuPrivate::popup`「右缘越界 → 收拢」一致）。面板大于屏幕时贴屏边（不裁内容）。
 pub fn place_context_menu(anchor: Point, panel_size: Size, screen: Rect) -> Rect {
-    let w = panel_size.width.min(screen.size.width);
-    let h = panel_size.height.min(screen.size.height);
-    let mut x = anchor.x;
-    let mut y = anchor.y;
-    // 水平：右侧不够 → 翻左。
-    if x + w > screen.right() {
-        x = anchor.x - w;
-    }
-    // 垂直：下方不够 → 翻上。
-    if y + h > screen.bottom() {
-        y = anchor.y - h;
-    }
-    // 夹紧（面板大于屏幕时贴边）。
-    x = x.clamp(screen.origin.x, (screen.right() - w).max(screen.origin.x));
-    y = y.clamp(screen.origin.y, (screen.bottom() - h).max(screen.origin.y));
-    Rect::new(x, y, w, h)
+    placement::place(placement::PlacementRequest::new(
+        Rect::new(anchor.x, anchor.y, 0.0, 0.0),
+        panel_size,
+        screen,
+    ))
+    .rect
 }
 
 /// 子菜单（父菜单某项右侧展开）横向定位：优先父项右侧；右缘越屏 → 翻到父项左侧；
-/// 若翻左后左缘仍越屏（父项贴左）→ 收拢到屏幕左缘。纵向以父项顶为准，下缘越屏时上移。
+/// 两侧都放不下 → 取空间更大的一侧并夹紧。纵向以父项顶对齐，下缘越屏时上移（夹进屏内）。
 ///
 /// UWP MenuFlyoutSubItem 行为参考：子面板不覆盖父项、遇边翻转、始终屏内。
 /// 参 CONTROL_SPEC §39（MenuFlyoutSubItem）。
 #[must_use]
 pub fn place_submenu(parent: Rect, panel_size: Size, screen: Rect, gap: f32) -> Rect {
-    let w = panel_size.width.min(screen.size.width);
-    let h = panel_size.height.min(screen.size.height);
-    // 横向：右优先，越屏则翻左，仍越屏则贴屏边。
-    let right_x = parent.right() + gap;
-    let x = if right_x + w <= screen.right() {
-        right_x
-    } else {
-        let left_x = parent.origin.x - gap - w;
-        if left_x >= screen.origin.x {
-            left_x
-        } else {
-            // 两侧都放不下 —— 靠屏右夹紧（保面板可见，允许轻微遮父项）。
-            (screen.right() - w).max(screen.origin.x)
-        }
-    };
-    // 纵向：与父项顶对齐；下缘越屏 → 上移；再越顶 → 贴屏顶。
-    let mut y = parent.origin.y;
-    if y + h > screen.bottom() {
-        y = screen.bottom() - h;
-    }
-    if y < screen.origin.y {
-        y = screen.origin.y;
-    }
-    Rect::new(x, y, panel_size.width, panel_size.height)
+    placement::place(placement::PlacementRequest {
+        side: PopupSide::Right,
+        gap,
+        ..placement::PlacementRequest::new(parent, panel_size, screen)
+    })
+    .rect
 }
 
 /// 弹层状态机。参 CONTROL_SPEC §8/§9：
@@ -394,13 +348,15 @@ mod tests {
     }
 
     #[test]
-    fn place_context_menu_flips_left_when_no_room_right() {
-        // 右侧只剩 40px < 160 → 翻左到锚点左侧。
+    fn place_context_menu_slides_left_when_no_room_right() {
+        // 右侧只剩 40px < 160 → 滑移回屏内（统一规则：滑移而不是镜像翻左；
+        // 旧行为锚点右侧只剩 40px，面板会贴到 600，指针落在面板最后 40px 里）。
         let anchor = Point::new(760.0, 300.0);
         let size = Size::new(160.0, 120.0);
         let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
         let r = place_context_menu(anchor, size, screen);
-        assert_eq!(r.origin.x, 760.0 - 160.0);
+        assert_eq!(r.right(), screen.right());
+        assert_eq!(r.origin.x, 800.0 - 160.0);
     }
 
     #[test]
@@ -414,13 +370,13 @@ mod tests {
     }
 
     #[test]
-    fn place_context_menu_flips_upper_left_when_no_room() {
-        // 右下两向都不够 → 左上。
+    fn place_context_menu_flips_up_and_slides_left_when_no_room() {
+        // 右下两向都不够 → 上翻 + 左滑（y 翻到锚点上方，x 滑到屏右缘内）。
         let anchor = Point::new(780.0, 590.0);
         let size = Size::new(160.0, 120.0);
         let screen = Rect::new(0.0, 0.0, 800.0, 600.0);
         let r = place_context_menu(anchor, size, screen);
-        assert_eq!(r.origin, Point::new(780.0 - 160.0, 590.0 - 120.0));
+        assert_eq!(r.origin, Point::new(800.0 - 160.0, 590.0 - 120.0));
     }
 
     #[test]
