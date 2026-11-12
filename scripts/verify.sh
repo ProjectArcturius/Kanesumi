@@ -45,6 +45,12 @@ if [ "$FAILED_SUITES" != "0" ]; then
   echo "✗ 有 $FAILED_SUITES 个测试目标失败："
   printf '%s\n' "$TEST_OUT" | grep -E 'test result: FAILED|^test .* FAILED' | head -20
   FAILED=1
+elif [ "$PASSED" -eq 0 ]; then
+  # 编译失败时一个 `test result` 都不会产出：这是「静默全绿」最危险的形状，
+  # 曾被误用系统 cargo（1.85 编不过 let-chains）触发过一次，必须拦住。
+  echo "✗ 一个测试都没跑成（编译失败？）—— 末尾 20 行："
+  printf '%s\n' "$TEST_OUT" | tail -20
+  FAILED=1
 else
   echo "✓ 全部通过，合计 $PASSED 项"
 fi
