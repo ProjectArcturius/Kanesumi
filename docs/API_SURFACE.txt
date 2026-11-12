@@ -750,6 +750,7 @@ pub enum NavigationAction {
 pub enum NavigationPaneMode {
 pub enum NotificationEvent {
 pub enum NotificationState {
+pub enum OsdKind {
 pub enum PagerAction {
 pub enum PagerHover {
 pub enum PagerItem {
@@ -939,6 +940,7 @@ pub fn get(&self) -> usize {
 pub fn get(&self, id: u64) -> Option<&Notification> {
 pub fn get(&self, index: usize) -> Option<&Column> {
 pub fn get(&self, name: &str) -> Option<&VisualStateDecl> {
+pub fn glyph(&self) -> &'static str {
 pub fn grid(cell: Size, spacing: f32) -> Self {
 pub fn grid(cell: Size, spacing: f32, factory: impl ItemFactory) -> Self {
 pub fn grid(count: usize, cell: f32, columns: usize, spacing: f32) -> Self {
@@ -959,6 +961,7 @@ pub fn handle_key(
 pub fn handle_key(&mut self, key: TextInputKey) -> Option<AutoSuggestAction> {
 pub fn handle_key(&mut self, key: TextInputKey) -> bool {
 pub fn has_content(children: usize) -> bool {
+pub fn has_level(&self) -> bool {
 pub fn has_overflow(&self, engine: &TextEngine, rect: Rect) -> bool {
 pub fn has_preedit(&self) -> bool {
 pub fn header_at(&self, engine: &TextEngine, rect: Rect, p: Point) -> Option<usize> {
@@ -1012,6 +1015,7 @@ pub fn hovered_path(&self) -> Option<MenuPath> {
 pub fn hovered_rects(&self) -> Vec<Rect> {
 pub fn icon(glyph: impl Into<String>) -> Self {
 pub fn icon(mut self, icon: impl Into<String>) -> Self {
+pub fn icon_center(&self, engine: &TextEngine, viewport: Rect) -> Option<Point> {
 pub fn icon_glyph(self) -> &'static str {
 pub fn icon_rect(&self, rect: Rect) -> Option<Rect> {
 pub fn ime_context(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> ImeContext {
@@ -1055,7 +1059,9 @@ pub fn items_changed(&mut self) {
 pub fn iter(&self) -> std::slice::Iter<'_, Column> {
 pub fn jump_to_group(&self, group: usize) -> Option<f32> {
 pub fn key(&mut self, key: kanesumi_element::Key) -> CalendarResponse {
+pub fn kind(&self) -> Option<&OsdKind> {
 pub fn knob_rect(&self, rect: Rect, theme: &MetroTheme) -> Rect {
+pub fn label(&self) -> String {
 pub fn labeled(
 pub fn last_page(&self) -> usize {
 pub fn layout(
@@ -1068,6 +1074,7 @@ pub fn layout(input: &DockRailInput) -> DockLayout {
 pub fn layout(input: &TileWallInput) -> TileWallLayout {
 pub fn left_width(&self) -> f32 {
 pub fn len(&self) -> usize {
+pub fn level(&self) -> f32 {
 pub fn line_rect(&self, theme: &MetroTheme, body: Rect) -> Rect {
 pub fn link(&mut self, tree: &mut Tree, text: &str, target: &str) -> WidgetId {
 pub fn list_item(
@@ -1091,6 +1098,7 @@ pub fn measure(&self, engine: &TextEngine, max_width: f32) -> Size {
 pub fn measure(&self, engine: &TextEngine, style: TextStyle) -> Size {
 pub fn measure(&self, engine: &TextEngine, style: TextStyle) -> kanesumi_core::Size {
 pub fn measure(&self, width: f32) -> Size {
+pub fn measure(engine: &TextEngine, kind: &OsdKind, viewport: Rect) -> Self {
 pub fn measure(engine: &TextEngine, row: &PanelRow, origin: Point, width: f32) -> Self {
 pub fn measure_window(&self, row_h: f32, viewport_h: f32) -> Option<ListWindow> {
 pub fn measures_last_frame(&self) -> usize {
@@ -1165,6 +1173,7 @@ pub fn open_at(
 pub fn open_at(ctx: &mut EventCtx, items: Vec<MenuItem>, at: Point, keyboard: bool) -> WidgetId {
 pub fn open_below(
 pub fn open_submenu(&mut self, engine: &TextEngine, screen: Rect, idx: usize) {
+pub fn osd_text_style() -> TextStyle {
 pub fn overflow_buttons(&self, engine: &TextEngine, rect: Rect) -> Option<(Rect, Rect)> {
 pub fn overflowing(&self, engine: &TextEngine, rect: Rect) -> bool {
 pub fn overlay_alpha(&self) -> f32 {
@@ -1234,6 +1243,7 @@ pub fn release(&mut self) {
 pub fn release(&mut self, hit: Option<PanelRowHit>) -> Option<bool> {
 pub fn release(&mut self, pos: Point) -> Option<DockActivated> {
 pub fn release(&mut self, pos: Point) -> WallRelease {
+pub fn remaining_ms(&self) -> f64 {
 pub fn remove(&mut self, id: u64) -> bool {
 pub fn render(
 pub fn render(&mut self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
@@ -1245,6 +1255,7 @@ pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, geo: &PanelRowGeom
 pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
 pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
 pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, screen: Rect, scene: &mut Scene) {
+pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, viewport: Rect, scene: &mut Scene) {
 pub fn render(&self, theme: &MetroTheme, rect: Rect, scene: &mut Scene) {
 pub fn render_card(
 pub fn render_chrome(
@@ -1355,6 +1366,7 @@ pub fn set_value(&mut self, v: f64) {
 pub fn set_value(&mut self, value: f32) {
 pub fn shift(&self, scroll_offset: f32) -> f32 {
 pub fn show(&mut self) {
+pub fn show(&mut self, kind: OsdKind) {
 pub fn show(&self, ctx: &mut EventCtx, target: WidgetId) -> WidgetId {
 pub fn show_modal(&mut self, ctx: &mut EventCtx) -> WidgetId {
 pub fn show_modal_with(
@@ -1406,6 +1418,7 @@ pub fn text_input_inner_rect(body: Rect, border: f32) -> Rect {
 pub fn text_input_line_rect(content: Rect, inner: Rect, line_height: f32) -> Rect {
 pub fn text_rect(&self, theme: &MetroTheme, rect: Rect) -> Rect {
 pub fn tick(&mut self, dt_ms: f64) -> Vec<NotificationEvent> {
+pub fn tick(&mut self, dt_ms: f64) -> bool {
 pub fn title_rect(&self, rect: Rect) -> Rect {
 pub fn title_style() -> TextStyle {
 pub fn toggle(
@@ -1437,6 +1450,7 @@ pub fn value(&self) -> Option<f64> {
 pub fn value(value: i32) -> Self {
 pub fn value_style() -> TextStyle {
 pub fn virtualizer(&self, theme: &MetroTheme) -> MetroRepeater {
+pub fn visible(&self) -> bool {
 pub fn visible(&self) -> impl Iterator<Item = &Notification> {
 pub fn visible_content_height(&self) -> f32 {
 pub fn visible_count(&self) -> usize {
@@ -1579,6 +1593,7 @@ pub struct MetroList {
 pub struct MetroMenuBar {
 pub struct MetroNavigationView {
 pub struct MetroNumberBox {
+pub struct MetroOsd {
 pub struct MetroPagerControl {
 pub struct MetroPanelRow {
 pub struct MetroParallaxView {
@@ -1616,6 +1631,7 @@ pub struct NavigationViewItem {
 pub struct Notification {
 pub struct NotificationStack {
 pub struct NumberValueChanged(pub f64);
+pub struct OsdGeometry {
 pub struct PagerPageChanged(pub usize);
 pub struct Paint {
 pub struct PanelRow {
