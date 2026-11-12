@@ -116,6 +116,7 @@ pub const fn tight(size: Size) -> Self {
 pub const fn unbounded() -> Self {
 pub enum CrossAlign {
 pub enum Event {
+pub enum GlyphName {
 pub enum ImageKind {
 pub enum IndexError {
 pub enum LaidKind<L: LayoutLeaf> {
@@ -133,6 +134,8 @@ pub fn backdrop(src: &Icon, width: f32, height: f32, spec: &Acrylic) -> Icon {
 pub fn backdrop_at(
 pub fn bytes(kind: ImageKind, data: &[u8]) -> Self {
 pub fn cache_cap_bytes(&self) -> u64 {
+pub fn cached_glyphs() -> usize {
+pub fn cached_pixels(name: GlyphName) -> Vec<u32> {
 pub fn caret_at_x(&self, x: f32) -> usize {
 pub fn caret_positions(&self) -> &[f32] {
 pub fn caret_x(&self, byte_offset: usize) -> f32 {
@@ -144,6 +147,7 @@ pub fn chevron_right(scene: &mut Scene, rect: Rect, color: Color) {
 pub fn chevron_up(scene: &mut Scene, rect: Rect, color: Color) {
 pub fn circle_crop(mut self) -> Self {
 pub fn clear(&self) {
+pub fn clear_cache() {
 pub fn clear_ready_hook(&self) {
 pub fn clear_ready_hook() {
 pub fn cluster_boundaries(&self) -> &[usize] {
@@ -163,6 +167,8 @@ pub fn default_tint(scheme: ColorScheme) -> f32 {
 pub fn diag_coverage_stats(&self) -> Vec<CoverageStat> {
 pub fn dirfps(&self) -> impl Iterator<Item = DirFingerprint<'_>> + '_ {
 pub fn dirfps(&self) -> impl Iterator<Item = DirFingerprint<'a>> + '_ {
+pub fn draw(scene: &mut Scene, name: GlyphName, rect: Rect, color: Color) {
+pub fn draw_scaled(scene: &mut Scene, name: GlyphName, rect: Rect, color: Color, scale: f32) {
 pub fn enable_perf_log(self: &Arc<Self>, proc: &'static str) {
 pub fn enabled() -> bool {
 pub fn entries(&self) -> impl Iterator<Item = FontEntry<'_>> + '_ {
@@ -176,6 +182,7 @@ pub fn face_build_tagged(bytes: &[u8], collection_tag: Option<&str>) -> Option<(
 pub fn face_parse_calls() -> u64 {
 pub fn faces_in_file(bytes: &[u8]) -> u32 {
 pub fn family_str(&self) -> Option<&'a str> {
+pub fn file(self) -> &'static str {
 pub fn fill_rect(&mut self, color: Color, rect: Rect) {
 pub fn fill_rounded_rect(&mut self, color: Color, rect: Rect, corner: CornerRadius) {
 pub fn flexible(child: LayoutNode<L>, grow: f32, shrink: f32, min_main: f32) -> Self {
@@ -205,6 +212,7 @@ pub fn ink_center_y(&self) -> f32 {
 pub fn ink_height(&self) -> f32 {
 pub fn is_absent_sentinel(&self) -> bool {
 pub fn is_empty(&self) -> bool {
+pub fn is_geometric(self) -> bool {
 pub fn label(
 pub fn layout(&self, text: &str, size: f32, max_width: f32) -> Vec<Line> {
 pub fn layout<L: LayoutLeaf>(
@@ -251,6 +259,7 @@ pub fn rasterize_image_bytes(data: &[u8], kind: ImageKind) -> Option<Icon> {
 pub fn rasterize_png(path: impl AsRef<Path>) -> Option<Icon> {
 pub fn rasterize_png_bytes(data: &[u8]) -> Option<Icon> {
 pub fn rasterize_svg(path: impl AsRef<Path>, target_size: u32) -> Option<Icon> {
+pub fn rasterize_svg_bytes(data: &[u8], target_size: u32) -> Option<Icon> {
 pub fn record(event: Event, use_: &str, fmt: &str, w: u32, h: u32, bytes: usize) {
 pub fn record_glyph(
 pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
@@ -276,6 +285,7 @@ pub fn stats(&self) -> DecodeStats {
 pub fn stroke_rect(&mut self, color: Color, rect: Rect, thickness: f32) {
 pub fn stroke_rounded_rect(
 pub fn surface_scale() -> f32 {
+pub fn svg(self) -> &'static str {
 pub fn svg_longest(&self, path: &Path, px: u32) -> Option<Arc<DecodeOutput>> {
 pub fn svg_longest(path: &Path, px: u32) -> Self {
 pub fn system_font_chain() -> Vec<FontSource> {
