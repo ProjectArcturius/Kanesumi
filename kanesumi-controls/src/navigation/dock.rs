@@ -34,6 +34,9 @@ pub struct DockItem {
     pub urgent: bool,
     /// 窗口数（>1 时出计数徽标）。
     pub windows: u32,
+    /// 是否有**活动窗口**（焦点在该应用上）。与 `urgent` 是两件事：
+    /// `active` = 你正在用它，`urgent` = 它需要你注意。
+    pub active: bool,
 }
 
 impl DockItem {
@@ -46,6 +49,7 @@ impl DockItem {
             running: false,
             urgent: false,
             windows: 0,
+            active: false,
         }
     }
 
@@ -70,6 +74,12 @@ impl DockItem {
     /// 窗口数。
     pub fn windows(mut self, n: u32) -> Self {
         self.windows = n;
+        self
+    }
+
+    /// 有活动窗口（焦点在本应用上）。
+    pub fn active(mut self, on: bool) -> Self {
+        self.active = on;
         self
     }
 }
@@ -232,9 +242,12 @@ impl MetroDock {
                 continue;
             }
             let state = self.state_of(slot.source);
+            let is_active = self.items.get(slot.source).is_some_and(|i| i.active);
             let fill = match state {
                 DockItemState::Pressed => c.primary,
                 DockItemState::Hovered => c.surface_variant,
+                // 有活动窗口的项静置时也抬一档：焦点应用一眼可辨（Win10 任务栏同款语义）。
+                DockItemState::Rest if is_active => c.surface_variant,
                 DockItemState::Rest => c.divider,
             };
             scene.fill_rect(fill, slot.icon_rect);

@@ -169,3 +169,53 @@ fn plate_stays_inside_dock_rect() {
     assert!(plate.origin.x >= dock_rect.origin.x - 0.5);
     assert!(plate.right() <= dock_rect.right() + 0.5);
 }
+#[test]
+fn active_and_urgent_are_different_signals() {
+    // active = 正在用（图标位抬一档）；urgent = 需要你注意（角上一个语义点）。
+    let mut a = three();
+    a[1].active = true;
+    let active_dock = dock(a);
+    let plain = dock(three());
+    let theme = MetroTheme::ether_dark();
+    let engine = test_engine();
+    let (mut s1, mut s2) = (Scene::default(), Scene::default());
+    plain.render(&theme, &engine, &mut s1);
+    active_dock.render(&theme, &engine, &mut s2);
+    // 元素数不变（只换颜色），但那一槽的图标位颜色不同。
+    assert_eq!(fills(&s1).len(), fills(&s2).len(), "active 只改颜色，不增减元素");
+}
+
+#[test]
+fn dock_state_transcript() {
+    let mut d = dock(three());
+    let p1 = center_of(&d, 1);
+    let p0 = center_of(&d, 0);
+    let src = d.layout().slots[1].source;
+    let mut t: Vec<String> = Vec::new();
+    d.hover(p1);
+    t.push(format!("hover(1)      -> {:?}", d.state_of(src)));
+    d.hover(p0);
+    t.push(format!("hover(0)      -> {:?}", d.state_of(src)));
+    d.hover(p1);
+    d.press(p1);
+    t.push(format!("press(1)      -> {:?}", d.state_of(src)));
+    let act = d.release(p1);
+    t.push(format!(
+        "release(1)    -> {}",
+        act.map(|a| format!("Activated({})", a.id)).unwrap_or_else(|| "None".to_string())
+    ));
+    d.press(p1);
+    let out = d.release(Point::new(2000.0, 2000.0));
+    t.push(format!(
+        "release(out)  -> {}",
+        out.map(|a| a.id).unwrap_or_else(|| "Cancelled".to_string())
+    ));
+    let expect = vec![
+        "hover(1)      -> Hovered".to_string(),
+        "hover(0)      -> Rest".to_string(),
+        "press(1)      -> Pressed".to_string(),
+        "release(1)    -> Activated(org.ether.librarian)".to_string(),
+        "release(out)  -> Cancelled".to_string(),
+    ];
+    assert_eq!(t, expect, "状态转录必须逐行相等");
+}

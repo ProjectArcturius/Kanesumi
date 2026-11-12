@@ -793,6 +793,7 @@ pub fn activate_at(&mut self, ctx: &mut kanesumi_element::EventCtx, path: MenuPa
 pub fn activated(mut self, on: bool) -> Self {
 pub fn activated_button(&self) -> Option<DialogButton> {
 pub fn active(&self, now_ms: u64) -> bool {
+pub fn active(mut self, on: bool) -> Self {
 pub fn actual_initials(&self) -> String {
 pub fn add(&self, rows: usize) {
 pub fn add_days(self, delta: i64) -> Self {
