@@ -107,6 +107,7 @@ pub struct StatusColors {
 pub struct TextStyle {
 pub struct Tokens {
 pub struct TrackerParams {
+pub struct TypeLevel {
 
 ## kanesumi-canvas
 pub const fn loose(max: Size) -> Self {
@@ -200,6 +201,8 @@ pub fn identity(&self) -> u64 {
 pub fn image(&mut self, icon: &super::icon::Icon, rect: Rect, tint: Option<Color>) {
 pub fn image(path: &Path, target: Option<(u32, u32)>) -> Self {
 pub fn image_with_opacity(
+pub fn ink_center_y(&self) -> f32 {
+pub fn ink_height(&self) -> f32 {
 pub fn is_absent_sentinel(&self) -> bool {
 pub fn is_empty(&self) -> bool {
 pub fn label(
@@ -211,6 +214,7 @@ pub fn layout_with_spacing_weighted(
 pub fn leaf(l: L) -> Self {
 pub fn leaves(&self) -> impl Iterator<Item = (Rect, &L)> {
 pub fn len(&self) -> usize {
+pub fn line_box(&self, text: &str, style: TextStyle) -> LineBox {
 pub fn line_geometry(&self, text: &str, size: f32, letter_spacing_em: f32) -> TextLineGeometry {
 pub fn line_height(&self, size: f32) -> f32 {
 pub fn load(path: impl AsRef<Path>) -> Result<Self, TextLoadError> {
@@ -228,6 +232,7 @@ pub fn new(p0: Point, p1: Point, p2: Point) -> Self {
 pub fn nodes(&self) -> &[LaidNode<L>] {
 pub fn normalized(self) -> Self {
 pub fn open(path: &std::path::Path) -> Result<Self, OpenError> {
+pub fn optical_center_offset(&self, rect: Rect) -> f32 {
 pub fn paragraph(
 pub fn parse(file: &'a [u8]) -> Result<Self, IndexError> {
 pub fn parse_enabled(v: Option<&str>) -> bool {
@@ -309,6 +314,7 @@ pub struct IndexHeader {
 pub struct LaidNode<L: LayoutLeaf> {
 pub struct LaidTree<L: LayoutLeaf> {
 pub struct Line {
+pub struct LineBox {
 pub struct OwnedCoverage {
 pub struct OwnedIndex {
 pub struct Scene {
@@ -384,6 +390,7 @@ pub fn color(mut self, color: impl Into<Brush>) -> Self {
 pub fn column() -> Self {
 pub fn columns(&self) -> usize {
 pub fn columns_for(available: f32, min_cell: f32, max_columns: usize, col_gap: f32) -> usize {
+pub fn command_is_finite(cmd: &SceneCommand) -> bool {
 pub fn commit(&mut self, text: String) -> bool {
 pub fn composed_scroll_enabled() -> bool {
 pub fn contains(&self, id: WidgetId) -> bool {
@@ -425,15 +432,18 @@ pub fn focused(&self) -> Option<WidgetId> {
 pub fn form(label_width: f32) -> Self {
 pub fn frame(&mut self) -> &FrameOutput {
 pub fn frame(&mut self, engine: &TextEngine, size: Size, dt: f64) -> FrameOutput {
+pub fn frame_into(
 pub fn frame_phases(&self) -> FramePhases {
 pub fn frame_with_layout(
 pub fn frame_with_layout(&mut self, after_layout: impl FnOnce(&mut Tree)) -> &FrameOutput {
+pub fn frame_with_layout_into(
 pub fn from_evdev(button: u32) -> Self {
 pub fn get<T: Widget>(&self, id: WidgetId) -> Option<&T> {
 pub fn grid(columns: usize) -> Self {
 pub fn grow(self, size: Size) -> Size {
 pub fn has_active_transition(&self, id: WidgetId) -> bool {
 pub fn hit(&self, pos: Point) -> Option<WidgetId> {
+pub fn hit_table_is_empty(&self) -> bool {
 pub fn horizontal() -> Self {
 pub fn horizontal(self) -> f32 {
 pub fn host_sum_ms(&self) -> f32 {
@@ -476,6 +486,7 @@ pub fn key_down(&mut self, key: Key, modifiers: Modifiers) -> bool {
 pub fn key_down_ex(&mut self, key: Key, modifiers: Modifiers, repeat: bool) -> bool {
 pub fn key_with(&mut self, key: Key, modifiers: Modifiers) -> bool {
 pub fn label(self) -> &'static str {
+pub fn last_hit(&self) -> Option<WidgetId> {
 pub fn max_offset(&self) -> f32 {
 pub fn measure_child(&mut self, child: WidgetId, available: Size) -> Size {
 pub fn min_width(props: &LayoutProps) -> f32 {
@@ -508,6 +519,7 @@ pub fn padding(mut self, p: Insets) -> Self {
 pub fn painted(&self, id: WidgetId) -> &[SceneCommand] {
 pub fn parent(&self) -> Option<WidgetId> {
 pub fn parent(&self, id: WidgetId) -> Option<WidgetId> {
+pub fn path_of(&self, id: WidgetId) -> String {
 pub fn place(req: PlacementRequest) -> Placement {
 pub fn place_on_outputs(req: PlacementRequest, outputs: &[OutputArea]) -> Placement {
 pub fn play_transition(
@@ -539,6 +551,7 @@ pub fn record(&mut self, button: PointerButton, x: f32, y: f32, time_ms: u32) ->
 pub fn rect(&self) -> Rect {
 pub fn rect(&self, id: WidgetId) -> Option<Rect> {
 pub fn rect(&self, id: WidgetId) -> Rect {
+pub fn rect_is_sane(rect: Rect) -> bool {
 pub fn release(&mut self) -> bool {
 pub fn release_at(&mut self, pos: Point, button: PointerButton) {
 pub fn remove(&mut self, id: WidgetId) {
@@ -579,6 +592,7 @@ pub fn set_phase_timing(&mut self, on: bool) {
 pub fn set_popup_bounds(&mut self, bounds: Option<Rect>) {
 pub fn set_scroller(&mut self, id: WidgetId, on: bool) -> bool {
 pub fn set_settings(&mut self, settings: InteractionSettings) {
+pub fn set_strict_for_test(on: Option<bool>) {
 pub fn set_theme(&mut self, theme: MetroTheme) {
 pub fn set_tooltip(&mut self, id: WidgetId, text: impl Into<String>) {
 pub fn settle(&mut self) {
@@ -589,6 +603,7 @@ pub fn spanning(mut self, row_span: usize, col_span: usize) -> Self {
 pub fn state(&self) -> ControlStates {
 pub fn states_of(&self, id: WidgetId) -> ControlStates {
 pub fn stretch(mut self, s: Stretch) -> Self {
+pub fn strict() -> bool {
 pub fn stroke(mut self, c: impl Into<Brush>, thickness: f32) -> Self {
 pub fn style(mut self, style: TextStyle) -> Self {
 pub fn surface(&self) -> Rect {
@@ -680,17 +695,28 @@ pub struct WidgetId {
 pub trait Widget: Any {
 
 ## kanesumi-controls
+pub const fn accent() -> Self {
 pub const fn cells(self) -> (usize, usize) {
 pub const fn days_in_month(year: i32, month: u8) -> u8 {
+pub const fn derived() -> Self {
+pub const fn ejectable(mut self, on: bool) -> Self {
+pub const fn group() -> Self {
+pub const fn indent(mut self, level: u8) -> Self {
 pub const fn is_leap(year: i32) -> bool {
 pub const fn min_height() -> f32 {
 pub const fn new(corner_radius: CornerRadius, background: Color) -> Self {
+pub const fn new(normal: ThemeColor) -> Self {
 pub const fn new(shape: ControlShape) -> Self {
+pub const fn new(token: ThemeColor) -> Self {
 pub const fn new(year: i32, month: u8, day: u8) -> Self {
 pub const fn popup_gap() -> f32 {
+pub const fn row() -> Self {
+pub const fn units(self) -> (usize, usize) {
+pub const fn with_opacity(token: ThemeColor, opacity: f32) -> Self {
 pub const fn with_tint(mut self, tint: Color) -> Self {
 pub enum AutoSuggestAction {
 pub enum BreadcrumbClick {
+pub enum BrushSlot {
 pub enum ButtonKind {
 pub enum CalendarDisplayMode {
 pub enum CalendarResponse {
@@ -706,7 +732,13 @@ pub enum DeclChange {
 pub enum DialogButton {
 pub enum DialogDefaultButton {
 pub enum DialogState {
+pub enum DockChipDirection {
+pub enum DockDirection {
+pub enum DockHit {
+pub enum DockIndicatorKind {
+pub enum DockZone {
 pub enum ExpandDirection {
+pub enum FileListColumn {
 pub enum IconButtonSize {
 pub enum IconDirection {
 pub enum InfoBadgeKind {
@@ -742,6 +774,7 @@ pub enum TeachingTipSide {
 pub enum TextInputKey {
 pub enum TileLive {
 pub enum TileSize {
+pub enum TileWallSize {
 pub enum TitleBarClick {
 pub enum TreeAction {
 pub enum TwoPaneMode {
@@ -753,6 +786,7 @@ pub fn accent_button(label: impl Into<String>, action: DeclAction) -> Self {
 pub fn action_rect(&self) -> Option<Rect> {
 pub fn actions(&mut self, tree: &mut Tree, labels: &[&str]) -> Vec<WidgetId> {
 pub fn activate_at(&mut self, ctx: &mut kanesumi_element::EventCtx, path: MenuPath) {
+pub fn activated(mut self, on: bool) -> Self {
 pub fn activated_button(&self) -> Option<DialogButton> {
 pub fn active(&self, now_ms: u64) -> bool {
 pub fn actual_initials(&self) -> String {
@@ -776,6 +810,7 @@ pub fn border_thickness(&self) -> f32 {
 pub fn box_rect(&self, rect: Rect) -> Rect {
 pub fn box_rect(&self, screen: Rect) -> Rect {
 pub fn bring_into_view_index(&mut self, index: usize) {
+pub fn brush(&self, slot: BrushSlot) -> Option<StyleBrush> {
 pub fn buffer(&self) -> &str {
 pub fn button(
 pub fn button(label: impl Into<String>, action: DeclAction) -> Self {
@@ -788,6 +823,7 @@ pub fn caret_x(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> f3
 pub fn check_gutter(&self) -> f32 {
 pub fn chevron_progress(&self) -> f32 {
 pub fn chevron_rect(&self, rect: Rect) -> Rect {
+pub fn chevron_triangle(&self, rect: Rect) -> (Point, Point, Point) {
 pub fn circle_rect(rect: Rect) -> Rect {
 pub fn clamp_offset(&self, o: f32) -> f32 {
 pub fn clamp_selection(&mut self) {
@@ -806,6 +842,7 @@ pub fn close_rect(rect: Rect) -> Rect {
 pub fn close_submenu(&mut self) {
 pub fn cluster_boundaries(&self) -> Vec<usize> {
 pub fn collect_hits(
+pub fn color(self, theme: &MetroTheme) -> Color {
 pub fn column(children: Vec<Decl>) -> Self {
 pub fn column_at(columns: &ColumnSet, rect: Rect, x: f32) -> usize {
 pub fn column_rects(columns: &ColumnSet, area: Rect) -> Vec<Rect> {
@@ -837,12 +874,14 @@ pub fn default_button(mut self, is_default: bool) -> Self {
 pub fn delete(&mut self) -> bool {
 pub fn delete_button_rect(&self, _theme: &MetroTheme, body: Rect) -> Rect {
 pub fn delete_surrounding(&mut self, before_bytes: u32, after_bytes: u32) -> bool {
+pub fn depth(mut self, depth: u8) -> Self {
 pub fn diff_decl(old: &Decl, new: &Decl) -> Vec<DeclChange> {
 pub fn disabled(mut self) -> Self {
 pub fn display_chars(&self) -> Vec<char> {
 pub fn display_text(&self) -> Option<String> {
 pub fn display_text(&self) -> String {
 pub fn display_value(&self) -> f32 {
+pub fn dock_height(self) -> f32 {
 pub fn dot() -> Self {
 pub fn down_button_rect(&self, theme: &MetroTheme, rect: Rect) -> Rect {
 pub fn drag_to(&mut self, pos: Point) {
@@ -856,9 +895,12 @@ pub fn ensure_selected_visible(&mut self, engine: &TextEngine, rect: Rect) {
 pub fn epoch_days(self) -> i64 {
 pub fn error(title: impl Into<String>, message: impl Into<String>) -> Self {
 pub fn estimated_velocity(&self) -> f32 {
+pub fn expandable(mut self, on: bool) -> Self {
+pub fn expander(
 pub fn factory(&self) -> Option<&dyn ItemFactory> {
 pub fn field(&self) -> &TextField {
 pub fn field_mut(&mut self) -> &mut TextField {
+pub fn file_list_layout(input: &FileListInput) -> FileListLayout {
 pub fn find_anchor(rows: &[String], label: &str, near: usize) -> Option<usize> {
 pub fn flyout_height(&self, engine: &TextEngine) -> f32 {
 pub fn flyout_panel_rect(&self) -> Option<Rect> {
@@ -875,6 +917,7 @@ pub fn from_text(text: impl Into<String>) -> Self {
 pub fn gap(mut self) -> Self {
 pub fn get(&self) -> usize {
 pub fn get(&self, index: usize) -> Option<&Column> {
+pub fn get(&self, name: &str) -> Option<&VisualStateDecl> {
 pub fn grid(cell: Size, spacing: f32) -> Self {
 pub fn grid(cell: Size, spacing: f32, factory: impl ItemFactory) -> Self {
 pub fn grid(count: usize, cell: f32, columns: usize, spacing: f32) -> Self {
@@ -909,6 +952,8 @@ pub fn hit(&self, engine: &TextEngine, rect: Rect, pos: Point) -> InfoBarClick {
 pub fn hit(&self, engine: &TextEngine, rect: Rect, pos: Point) -> NavigationAction {
 pub fn hit(&self, engine: &TextEngine, rect: Rect, pos: Point) -> Option<usize> {
 pub fn hit(&self, engine: &TextEngine, rect: Rect, pos: Point) -> PagerAction {
+pub fn hit(&self, pos: Point) -> Option<&TileWallSlot> {
+pub fn hit(&self, pos: Point) -> Option<DockHit> {
 pub fn hit(&self, pos: Point) -> TeachingTipClick {
 pub fn hit(&self, rect: Rect, pos: Point) -> SplitButtonPart {
 pub fn hit(&self, rect: Rect, pos: Point) -> SwipeAction {
@@ -978,9 +1023,12 @@ pub fn iter(&self) -> std::slice::Iter<'_, Column> {
 pub fn key(&mut self, key: kanesumi_element::Key) -> CalendarResponse {
 pub fn knob_rect(&self, rect: Rect, theme: &MetroTheme) -> Rect {
 pub fn labeled(
+pub fn last_page(&self) -> usize {
 pub fn layout(&self, engine: &TextEngine, rect: Rect) -> (Size, Vec<Rect>) {
 pub fn layout(&self, engine: &TextEngine, rect: Rect) -> BreadcrumbLayout {
 pub fn layout(&self, rect: Rect) -> (Size, Vec<Rect>) {
+pub fn layout(input: &DockRailInput) -> DockLayout {
+pub fn layout(input: &TileWallInput) -> TileWallLayout {
 pub fn left_width(&self) -> f32 {
 pub fn len(&self) -> usize {
 pub fn line_rect(&self, theme: &MetroTheme, body: Rect) -> Rect {
@@ -1007,6 +1055,7 @@ pub fn measure(&self, engine: &TextEngine, style: TextStyle) -> kanesumi_core::S
 pub fn measure(&self, width: f32) -> Size {
 pub fn measure_window(&self, row_h: f32, viewport_h: f32) -> Option<ListWindow> {
 pub fn measures_last_frame(&self) -> usize {
+pub fn missing_brush_fallbacks() -> u64 {
 pub fn mode(&self, rect: Rect) -> TwoPaneMode {
 pub fn month_at(rect: Rect, pos: Point) -> Option<u8> {
 pub fn month_grid(&self) -> Vec<Date> {
@@ -1018,15 +1067,22 @@ pub fn nav_rects(&self, rect: Rect) -> (Rect, Rect, Rect) {
 pub fn nested(&self, parent: WidgetId) -> Self {
 pub fn new(
 pub fn new() -> Self {
+pub fn new(area: Rect, entries: Vec<SidebarEntry>) -> Self {
+pub fn new(area: Rect, items: Vec<FileListItem>) -> Self {
+pub fn new(area: Rect, segments: Vec<PathBarSegment>) -> Self {
 pub fn new(columns: ColumnSet) -> Self {
 pub fn new(columns: impl IntoIterator<Item = Column>) -> Self {
 pub fn new(commands: Vec<CommandButton>) -> Self {
 pub fn new(content: Size, viewport: Size) -> Self {
 pub fn new(content: impl Into<String>, style: TextStyle, color: Color) -> Self {
+pub fn new(entries: Vec<DockRailEntry>, available: Rect) -> Self {
 pub fn new(glyph: impl Into<String>, name: impl Into<String>, action: CommandBarAction) -> Self {
+pub fn new(groups: Vec<TileWallGroup>, viewport: Rect) -> Self {
 pub fn new(header: &str, width: ColumnWidth) -> Self {
 pub fn new(header: impl Into<String>) -> Self {
 pub fn new(icon: impl Into<String>) -> Self {
+pub fn new(id: impl Into<String>, icon: impl Into<String>) -> Self {
+pub fn new(id: impl Into<String>, size: TileWallSize) -> Self {
 pub fn new(items: Vec<MenuBarItem>) -> Self {
 pub fn new(items: Vec<MenuItem>) -> Self {
 pub fn new(items: Vec<NavigationViewItem>) -> Self {
@@ -1034,7 +1090,9 @@ pub fn new(items: Vec<String>) -> Self {
 pub fn new(label: impl Into<String>) -> Self {
 pub fn new(label: impl Into<String>, items: Vec<MenuItem>) -> Self {
 pub fn new(label: impl Into<String>, size: TileSize, base_color: Color) -> Self {
+pub fn new(label: impl Into<String>, width: f32) -> Self {
 pub fn new(layout: ItemLayout, factory: impl ItemFactory) -> Self {
+pub fn new(name_width: f32) -> Self {
 pub fn new(owner: WidgetId, items: Vec<MenuItem>) -> Self {
 pub fn new(parent: WidgetId) -> Self {
 pub fn new(root: TreeViewNode) -> Self {
@@ -1043,11 +1101,13 @@ pub fn new(slot: DialogButton, label: impl Into<String>) -> Self {
 pub fn new(tabs: Vec<MetroTab>) -> Self {
 pub fn new(tabs: Vec<String>) -> Self {
 pub fn new(text: &str, target: &str) -> Self {
+pub fn new(title: impl Into<String>) -> Self {
 pub fn new(title: impl Into<String>, content: impl Into<String>) -> Self {
 pub fn new(today: Date) -> Self {
 pub fn next(self) -> Self {
 pub fn next_cluster_boundary(&self, cursor: usize) -> usize {
 pub fn next_rect(&self, rect: Rect) -> Option<Rect> {
+pub fn normalized(self) -> Self {
 pub fn note(&mut self, tree: &mut Tree, text: &str) -> WidgetId {
 pub fn offset(&self) -> f32 {
 pub fn open(&mut self) {
@@ -1064,6 +1124,7 @@ pub fn open_submenu(&mut self, engine: &TextEngine, screen: Rect, idx: usize) {
 pub fn overflow_buttons(&self, engine: &TextEngine, rect: Rect) -> Option<(Rect, Rect)> {
 pub fn overflowing(&self, engine: &TextEngine, rect: Rect) -> bool {
 pub fn overlay_alpha(&self) -> f32 {
+pub fn page_of(&self, scroll: f32) -> usize {
 pub fn page_rows(row_h: f32, viewport_h: f32) -> usize {
 pub fn page_title(&mut self, tree: &mut Tree, text: &str) -> WidgetId {
 pub fn paint_at(
@@ -1083,7 +1144,9 @@ pub fn panel_size(&self) -> kanesumi_core::Size {
 pub fn panel_size(&self, engine: &TextEngine) -> kanesumi_core::Size {
 pub fn password(&self) -> String {
 pub fn path_at(&self, pos: Point) -> Option<MenuPath> {
+pub fn path_bar_layout(input: &PathBarInput) -> PathBarLayout {
 pub fn picker_cell_rect(rect: Rect, idx: usize) -> Rect {
+pub fn pinned(mut self, on: bool) -> Self {
 pub fn pip_hit_size(&self) -> (f32, f32) {
 pub fn pip_rects(&self, rect: Rect) -> impl Iterator<Item = (usize, Rect)> + '_ {
 pub fn place(&self, anchor: Rect, screen: Rect) -> Rect {
@@ -1139,18 +1202,23 @@ pub fn render_panel_base(theme: &MetroTheme, rect: Rect, progress: f64, scene: &
 pub fn render_submenu(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
 pub fn reset(&mut self) {
 pub fn reset(&self) {
+pub fn resolve(style: &ControlStyle, state: &str) -> Paint {
 pub fn restore_anchor(&mut self, anchor: &ScrollAnchor, row_h: f32, viewport_h: f32) {
 pub fn retain_within(&mut self, len: usize) {
 pub fn right_width(&self) -> f32 {
 pub fn row(children: Vec<Decl>) -> Self {
+pub fn row_at(&self, pos: Point) -> Option<usize> {
 pub fn row_block(&mut self, tree: &mut Tree, mb: f32) -> WidgetId {
 pub fn row_button(
 pub fn row_height(&self, theme: &MetroTheme) -> f32 {
+pub fn row_rect(&self, index: usize) -> Option<Rect> {
 pub fn rows(&self) -> usize {
+pub fn running(mut self, on: bool) -> Self {
 pub fn s_label() -> TextStyle {
 pub fn s_page_title() -> TextStyle {
 pub fn s_section() -> TextStyle {
 pub fn scale_value(&self) -> f64 {
+pub fn scaled(scale: f32) -> Self {
 pub fn scroll(&mut self, dy: f32) -> CalendarResponse {
 pub fn scroll_by(&mut self, delta: f32) {
 pub fn scroll_by(&mut self, delta: f32, avail_w: f32) {
@@ -1175,6 +1243,7 @@ pub fn scrollbar_track_rect(&self) -> Rect {
 pub fn scrollbar_visible(&self) -> bool {
 pub fn secondary_rect(&self, rect: Rect) -> Rect {
 pub fn section(&mut self, tree: &mut Tree, text: &str, first: bool) -> WidgetId {
+pub fn segment_at(&self, pos: Point) -> Option<&PathBarSegmentSlot> {
 pub fn select(&mut self, idx: usize) -> bool {
 pub fn select(&mut self, index: Option<usize>) {
 pub fn select(&mut self, index: usize) -> bool {
@@ -1192,6 +1261,7 @@ pub fn selection(&self) -> Option<(usize, usize)> {
 pub fn selection_progress(&self) -> f32 {
 pub fn separator(mut self) -> Self {
 pub fn separator_rect(&self, rect: Rect) -> Rect {
+pub fn set(&mut self, name: &str, properties: StateProperties) -> bool {
 pub fn set_anchor_if_none(&mut self, anchor: usize) {
 pub fn set_checked(&mut self, checked: bool) {
 pub fn set_cluster_boundaries_override(&mut self, boundaries: Option<Vec<usize>>) {
@@ -1226,10 +1296,13 @@ pub fn show(&self, ctx: &mut EventCtx, target: WidgetId) -> WidgetId {
 pub fn show_modal(&mut self, ctx: &mut EventCtx) -> WidgetId {
 pub fn show_modal_with(
 pub fn side(rect: Rect) -> f32 {
+pub fn sidebar_layout(input: &SidebarInput) -> SidebarLayout {
 pub fn single_line(mut self) -> Self {
 pub fn size() -> Size {
 pub fn slider(
 pub fn slider_rect(&self, rect: Rect, k: usize) -> Rect {
+pub fn slot(&self, display: usize) -> Option<&DockSlotLayout> {
+pub fn slot_rect(&self, index: usize) -> Option<Rect> {
 pub fn snap_edge(v: f32) -> f32 {
 pub fn spacer(grow: f32) -> Self {
 pub fn span(&self) -> RangeInclusive<usize> {
@@ -1242,6 +1315,8 @@ pub fn star_rect(&self, rect: Rect, k: usize) -> Rect {
 pub fn star_style(&self) -> TextStyle {
 pub fn state(&self) -> ControlState {
 pub fn state(&self) -> PopupState {
+pub fn state_for(states: kanesumi_element::ControlStates) -> &'static str {
+pub fn state_name(state: ControlState) -> &'static str {
 pub fn step_button(&mut self, delta: isize) {
 pub fn step_down(&mut self) -> Option<f64> {
 pub fn step_hover(&mut self, delta: isize) {
@@ -1275,12 +1350,14 @@ pub fn toggle_desc(
 pub fn toggle_ellipsis(&mut self, engine: &TextEngine, rect: Rect, screen: Rect) {
 pub fn toggle_flyout(&mut self, engine: &TextEngine, rect: Rect, screen: Rect) {
 pub fn toggle_rect(&self, rect: Rect) -> Rect {
+pub fn token(self) -> ThemeColor {
 pub fn top_item_rects(&self, engine: &TextEngine, rect: Rect) -> Vec<Rect> {
 pub fn total_width(&self, avail_w: f32) -> f32 {
 pub fn total_width(&self, engine: &TextEngine) -> f32 {
 pub fn track_rect(&self, rect: Rect, theme: &MetroTheme) -> Rect {
 pub fn try_path_at(&self, pos: Point) -> Option<MenuPath> {
 pub fn undo(&mut self) -> bool {
+pub fn unknown_state_fallbacks() -> u64 {
 pub fn up_button_rect(&self, theme: &MetroTheme, rect: Rect) -> Rect {
 pub fn update(
 pub fn update(&mut self, _dt: f64) {}
@@ -1308,6 +1385,7 @@ pub fn with_compact(mut self, compact: bool) -> Self {
 pub fn with_delete_icon(mut self, icon: Option<Icon>) -> Self {
 pub fn with_delete_icon(mut self, icon: Option<kanesumi_canvas::Icon>) -> Self {
 pub fn with_expandable(mut self, expanded: bool) -> Self {
+pub fn with_expanded(mut self, expanded: bool) -> Self {
 pub fn with_header(header: impl Into<String>) -> Self {
 pub fn with_header(mut self, header: impl Into<String>) -> Self {
 pub fn with_header(text: impl Into<String>) -> Self {
@@ -1340,8 +1418,10 @@ pub fn with_svg(
 pub fn with_svg(mut self, path: impl AsRef<std::path::Path>, target: u32) -> Self {
 pub fn with_text(mut self, text: impl Into<String>) -> Self {
 pub fn with_text(text: impl Into<String>) -> Self {
+pub fn with_tiles(mut self, tiles: Vec<TileWallTile>) -> Self {
 pub fn with_week_start(mut self, start: u8) -> Self {
 pub fn year_at(&self, rect: Rect, pos: Point) -> Option<i32> {
+pub fn zone_at(&self, pos: Point) -> Option<DockZone> {
 pub struct BreadcrumbClicked {
 pub struct BreadcrumbLayout {
 pub struct ButtonClicked;
@@ -1353,6 +1433,7 @@ pub struct ColumnSet(Arc<[Column]>);
 pub struct CommandButton {
 pub struct CommandInvoked {
 pub struct ControlShape {
+pub struct ControlStyle {
 pub struct Date {
 pub struct DatePicked {
 pub struct DateSelected(pub Date);
@@ -1360,10 +1441,26 @@ pub struct DeclHit {
 pub struct DeclPath(pub Vec<usize>);
 pub struct DialogButtons {
 pub struct DialogResult(pub DialogButton);
+pub struct DockChipLayout {
+pub struct DockLayout {
+pub struct DockMetrics {
+pub struct DockRail;
+pub struct DockRailEntry {
+pub struct DockRailInput {
+pub struct DockSlotLayout {
+pub struct DockZoneLayout {
 pub struct ExpanderToggled(pub bool);
+pub struct FileListColumnSlot {
+pub struct FileListColumns {
+pub struct FileListInput {
+pub struct FileListItem {
+pub struct FileListLayout {
+pub struct FileListMetrics {
+pub struct FileListRowSlot {
 pub struct FocusId(pub u64);
 pub struct FocusRing {
 pub struct Form {
+pub struct FormExpander {
 pub struct FormLinkClicked {
 pub struct IconButtonClicked;
 pub struct InfoBarClosed;
@@ -1436,6 +1533,12 @@ pub struct NavigationItemInvoked(pub usize);
 pub struct NavigationViewItem {
 pub struct NumberValueChanged(pub f64);
 pub struct PagerPageChanged(pub usize);
+pub struct Paint {
+pub struct PathBarInput {
+pub struct PathBarLayout {
+pub struct PathBarMetrics {
+pub struct PathBarSegment {
+pub struct PathBarSegmentSlot {
 pub struct PipsPageChanged(pub usize);
 pub struct PopupAnim {
 pub struct PopupPlacement {
@@ -1448,9 +1551,16 @@ pub struct RowLook<'a> {
 pub struct ScrollAnchor {
 pub struct ScrollOffsetChanged(pub f32);
 pub struct SelectorSelectionChanged(pub usize);
+pub struct SidebarEntry {
+pub struct SidebarInput {
+pub struct SidebarLayout {
+pub struct SidebarMetrics {
+pub struct SidebarSlot {
 pub struct SliderValueChanged(pub f64);
 pub struct SortRequested {
 pub struct SplitButtonInvoked;
+pub struct StateProperties {
+pub struct StyleBrush {
 pub struct SubmenuState {
 pub struct SuggestionChosen(pub String);
 pub struct SuggestionList {
@@ -1473,11 +1583,20 @@ pub struct TextChanged(pub String);
 pub struct TextField {
 pub struct TextSubmitted(pub String);
 pub struct TileClicked;
+pub struct TileWallGroup {
+pub struct TileWallGroupLayout {
+pub struct TileWallInput {
+pub struct TileWallLayout {
+pub struct TileWallMetrics {
+pub struct TileWallSlot {
+pub struct TileWallTile {
 pub struct TitleBarAction(pub TitleBarClick);
 pub struct TreeItemInvoked(pub Vec<usize>);
 pub struct TreeRow {
 pub struct TreeViewNode {
 pub struct TypeAhead {
+pub struct VisualStateDecl {
+pub struct VisualStates {
 pub trait ItemFactory: 'static {
 
 ## kanesumi-harness
@@ -1499,6 +1618,7 @@ pub enum LayerKeyboardInteractivity {
 pub enum LayerKind {
 pub enum LayerParent {
 pub enum LockEvent {
+pub enum Phase {
 pub enum RendererKind {
 pub enum SurfaceClass {
 pub enum SurfaceKind {
@@ -1512,6 +1632,7 @@ pub fn animate(&mut self, id: LayerId, anim: LayerAnim) {
 pub fn app(&self) -> &A {
 pub fn apply(&self) -> Vec<InputEvent> {
 pub fn apply_done(&self, serial: u32, current_serial: u32) -> ImeDoneOutcome {
+pub fn as_str(self) -> &'static str {
 pub fn begin(&mut self, name: &str, trigger: std::time::Instant) {
 pub fn callback_pending(&self) -> bool {
 pub fn can_render(&mut self, now: Instant, animating: bool) -> (bool, bool) {
@@ -1569,6 +1690,7 @@ pub fn key_id(key: &kanesumi_element::Key) -> u64 {
 pub fn key_to_text_input(key: Key) -> Option<kanesumi_controls::TextInputKey> {
 pub fn keyboard_interactivity(self) -> LayerKeyboardInteractivity {
 pub fn kill_switch_active(env_canesumi_gpu: Option<&str>, gpu_off_file: bool) -> bool {
+pub fn kind(&self) -> &'static str {
 pub fn last_c15_stats(&self) -> Option<(bool, f32, u32)> {
 pub fn last_draws(&self) -> Option<u32> {
 pub fn last_frame_full(&self) -> bool {
@@ -1577,6 +1699,7 @@ pub fn load() -> MetroTheme {
 pub fn load_backdrop() -> Backdrop {
 pub fn load_wallpaper() -> Option<kanesumi_canvas::Icon> {
 pub fn load_wallpaper_from(backdrop: &Backdrop) -> Option<kanesumi_canvas::Icon> {
+pub fn log_path() -> Option<PathBuf> {
 pub fn mark(
 pub fn max(&self) -> f32 {
 pub fn maybe_spike(proc: &str, role: &str, surface: &str, t: &FrameTiming) -> bool {
@@ -1621,11 +1744,13 @@ pub fn parse(raw: &str) -> InteractionSettings {
 pub fn parse(raw: &str) -> MetroTheme {
 pub fn parse_backdrop(raw: &str) -> Backdrop {
 pub fn parts_mut(&mut self) -> (&mut A, &mut Tree) {
+pub fn payload_message(payload: &(dyn std::any::Any + Send)) -> String {
 pub fn pending(&self) -> bool {
 pub fn percentile(&self, p: f32) -> f32 {
 pub fn period(&self) -> Duration {
 pub fn physical_size(&self) -> (u32, u32) {
 pub fn poll(&mut self, now: f64) -> Option<u64> {
+pub fn position(&self) -> Option<(f32, f32)> {
 pub fn predict_next_present(&mut self, now: Instant) -> Instant {
 pub fn press(&mut self, id: u64, now: f64, repeatable: bool) {
 pub fn probe_stage_name(code: u8) -> &'static str {
@@ -1633,7 +1758,6 @@ pub fn push(&mut self, c: LayerCommand) {
 pub fn push(&mut self, target: Option<usize>, event: InputEvent) {
 pub fn read_font_bytes(path: &Path) -> io::Result<FontBytes> {
 pub fn readback_slot_for(frame: u64, slots: u64, lag: u64) -> Option<usize> {
-pub fn record(&mut self, button: PointerButton, x: f32, y: f32, time_ms: u32) -> bool {
 pub fn record(&mut self, ms: f32) {
 pub fn record(&mut self, render_ms: f32, raster_ms: f32, commit_ms: f32) {
 pub fn record_acquire(&mut self, ms: f32) {
@@ -1652,7 +1776,10 @@ pub fn render_backends() -> Vec<wgpu::Backends> {
 pub fn render_png(
 pub fn render_with_damage(
 pub fn render_with_damage(&mut self, engine: &TextEngine, scene: &Scene, damage: Option<Rect>) {
+pub fn report(
 pub fn request() {
+pub fn require(ok: bool, what: impl FnOnce() -> String) {
+pub fn require_or_log(ok: bool, what: impl FnOnce() -> String) {
 pub fn reset(&mut self) {
 pub fn resize(&mut self, width: f32, height: f32, scale: f32) {
 pub fn route_main_event(
@@ -1662,14 +1789,16 @@ pub fn set_a11y_window_focused(&mut self, focused: bool) {
 pub fn set_config(&mut self, config: RepeatConfig) {
 pub fn set_content(&mut self, id: LayerId, scene: Scene) {
 pub fn set_hook(hook: Hook) {
+pub fn set_log_path_for_test(path: Option<PathBuf>) {
 pub fn set_period(&mut self, period: Duration) {
 pub fn set_refresh_period(&mut self, period_ms: f32) {
-pub fn set_settings(&mut self, settings: InteractionSettings) {
+pub fn set_strict_for_test(on: Option<bool>) {
 pub fn set_text_tuning(&mut self, tuning: TextRenderTuning) {
 pub fn signal_name(sig: i32) -> String {
 pub fn spike_line(proc: &str, role: &str, surface: &str, t: &FrameTiming) -> String {
 pub fn start(app_id: &str) {
 pub fn state_log_path(name: &str) -> Option<PathBuf> {
+pub fn strict() -> bool {
 pub fn supports_v3(proxy_version: u32) -> bool {
 pub fn surface_kind(self) -> SurfaceKind {
 pub fn take(&mut self) -> Vec<LayerCommand> {
@@ -1677,6 +1806,7 @@ pub fn take_acquire_ms(&mut self) -> Option<f32> {
 pub fn take_frame_timing(&mut self) -> crate::perf::FrameTiming {
 pub fn text_tuning(&self) -> TextRenderTuning {
 pub fn ticks_to_ms(start: u64, end: u64, period_ns: f32) -> f32 {
+pub fn timestamp_iso8601() -> String {
 pub fn timestamp_slot(frame: u64, slots: u64) -> usize {
 pub fn total(&self) -> u64 {
 pub fn total_ms(&self) -> f32 {
@@ -1689,7 +1819,6 @@ pub struct AppConfig {
 pub struct Backdrop {
 pub struct BackdropMaterial {
 pub struct CanvasV2(pub kanesumi_render::CanvasV2);
-pub struct ClickTracker {
 pub struct ContextMenuState {
 pub struct DmabufBuffers {
 pub struct DmabufDevice {
@@ -1709,6 +1838,7 @@ pub struct LayerQueue {
 pub struct MonoBase {
 pub struct PacingReport {
 pub struct PacingThrottle {
+pub struct PanicContext {
 pub struct PendingImeBatch {
 pub struct PopupRequest {
 pub struct PresentationFeedbackData {
