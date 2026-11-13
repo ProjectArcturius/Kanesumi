@@ -951,6 +951,7 @@ pub fn get(&self, id: u64) -> Option<&Notification> {
 pub fn get(&self, index: usize) -> Option<&Column> {
 pub fn get(&self, name: &str) -> Option<&VisualStateDecl> {
 pub fn glyph(&self) -> &'static str {
+pub fn glyph_name(self) -> GlyphName {
 pub fn grid(cell: Size, spacing: f32) -> Self {
 pub fn grid(cell: Size, spacing: f32, factory: impl ItemFactory) -> Self {
 pub fn grid(count: usize, cell: f32, columns: usize, spacing: f32) -> Self {
