@@ -7,11 +7,13 @@
 // - 悬停描边转 `on_surface`；按下填充转 `on_surface_variant`；禁用降透明度；
 // - 颜色硬切换（DiscreteObjectKeyFrame 0），无过渡动画。
 //
-// Kanesumi 适配：✓/— 用标准 Unicode（思源黑体包含，参 V7 不依赖 Segoe MDL2）；
-// 强调色前景恒白；禁用降 38%。
+// Kanesumi 适配：勾与减走 L0 图形层（`kanesumi_canvas::icons`），不依赖字体里有没有
+// `✓` / `—`（参 V7 与资产仓 docs/GLYPH_ASSETS.md）；强调色前景恒白；禁用降 38%。
 
+use kanesumi_canvas::icons::{self, GlyphName};
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
+use kanesumi_core::sizes::ICON_12;
 use kanesumi_core::{Color, CornerRadius, MetroTheme, Point, Rect};
 
 use crate::state::ControlState;
@@ -141,7 +143,6 @@ impl MetroCheckBox {
         scene: &mut Scene,
     ) {
         let colors = &theme.colors;
-        let style = theme.typography.body;
         let disabled = self.interact == ControlState::Disabled;
         let alpha = if disabled {
             theme.indication.disabled_opacity
@@ -197,19 +198,25 @@ impl MetroCheckBox {
             scene.stroke_rounded_rect(stroke, box_rect, CHECKBOX_STROKE, CornerRadius::Square);
         }
 
-        // 字形：✓ / —（白）
+        // 字形：勾 / 减（白）—— 走 L0 图形层，不再赌字体里有 ✓ / —。
+        // 12 pt 落在 20 pt 的框里（内缩 4），与 UWP 模板的视觉比重一致。
         if checked {
             let glyph = match self.state {
-                CheckState::Indeterminate => "—",
-                _ => "✓",
+                CheckState::Indeterminate => GlyphName::Minus,
+                _ => GlyphName::Check,
             };
             let fg = Color::WHITE.with_alpha(alpha);
-            scene.text(
-                glyph.into(),
-                box_rect,
+            let inset = (box_rect.size.width - ICON_12) / 2.0;
+            icons::draw(
+                scene,
+                glyph,
+                Rect::new(
+                    box_rect.origin.x + inset,
+                    box_rect.origin.y + (box_rect.size.height - ICON_12) / 2.0,
+                    ICON_12,
+                    ICON_12,
+                ),
                 fg,
-                style,
-                TextAlign::Center,
             );
         }
 
@@ -461,12 +468,20 @@ mod tests {
             .iter()
             .any(|c| matches!(c, SceneCommand::FillRect { color, .. } if *color == MetroTheme::ether_dark().colors.primary));
         assert!(accent, "Checked 应有强调色填充");
-        // ✓ 字形
-        let glyph = scene
+        // 勾：几何快路径的四条三角（不再写字体字形 —— 字体里有没有 ✓ 不该决定界面对不对）
+        let strokes = scene
             .commands
             .iter()
-            .any(|c| matches!(c, SceneCommand::Text { content, .. } if content == "✓"));
-        assert!(glyph, "Checked 渲染 ✓");
+            .filter(|c| matches!(c, SceneCommand::Triangle { .. }))
+            .count();
+        assert_eq!(strokes, 4, "Checked 的勾应是 4 条三角");
+        assert!(
+            !scene
+                .commands
+                .iter()
+                .any(|c| matches!(c, SceneCommand::Text { content, .. } if content == "✓")),
+            "不许再写字体字形 ✓"
+        );
     }
 
     #[test]
@@ -500,11 +515,21 @@ mod tests {
         let mut cb = MetroCheckBox::new("全选");
         cb.state = CheckState::Indeterminate;
         let scene = render(&cb);
-        let glyph = scene
-            .commands
-            .iter()
-            .any(|c| matches!(c, SceneCommand::Text { content, .. } if content == "—"));
-        assert!(glyph, "Indeterminate 渲染 —");
+        // 减号是位图 glyph（非几何快路径），按白色染色、12 pt 落格。
+        let dash = scene.commands.iter().find_map(|c| match c {
+            SceneCommand::Image { rect, tint, .. } => Some((*rect, *tint)),
+            _ => None,
+        });
+        let (rect, tint) = dash.expect("Indeterminate 应画出减号位图");
+        assert_eq!(tint, Some(Color::WHITE), "减号染白");
+        assert_eq!(rect.size.width, ICON_12, "12 pt 落格");
+        assert!(
+            !scene
+                .commands
+                .iter()
+                .any(|c| matches!(c, SceneCommand::Text { content, .. } if content == "—")),
+            "不许再写字体字形 —"
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@
 // - Severity 四色映射为深色纯色面板（铁律 6）。
 // 无开合动画（模板 Collapsed 直接改 Visibility）。
 
+use kanesumi_canvas::icons::{self, GlyphName};
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::sizes::ICON_16;
@@ -42,13 +43,25 @@ impl InfoBarSeverity {
         }
     }
 
-    /// 默认图标字形。
+    /// 默认图标字形（**保留**：`MetroInfoBar::icon_glyph` 注入路径的默认来源，旧调用方仍可读）。
+    ///
+    /// 绘制默认走 [`InfoBarSeverity::glyph_name`] 的图形；这里只在调用方显式注入文本时用作兜底。
     pub fn icon_glyph(self) -> &'static str {
         match self {
             InfoBarSeverity::Informational => "i",
             InfoBarSeverity::Success => "✓",
             InfoBarSeverity::Warning => "!",
             InfoBarSeverity::Error => "✕",
+        }
+    }
+
+    /// 默认图标（L0 图形层）。参资产仓 `docs/GLYPH_ASSETS.md`。
+    pub fn glyph_name(self) -> GlyphName {
+        match self {
+            InfoBarSeverity::Informational => GlyphName::Info,
+            InfoBarSeverity::Success => GlyphName::Check,
+            InfoBarSeverity::Warning => GlyphName::Warning,
+            InfoBarSeverity::Error => GlyphName::Error,
         }
     }
 }
@@ -279,25 +292,22 @@ impl MetroInfoBar {
         scene.fill_rect(bg, content);
         scene.stroke_rect(colors.divider, content, 1.0);
 
-        // 图标：方块 + 字形
+        // 图标：方块 + 图形。默认走 L0 图形层（不再写字体字形：字体里有没有 i / ✓ / ! / ✕
+        // 不该决定界面）；`icon_glyph` 注入仍留作逃生口，行为与旧版一致。
         if self.is_icon_visible {
             let icon_rect = Self::icon_rect(rect);
             scene.fill_rounded_rect(icon_color, icon_rect, kanesumi_core::CornerRadius::Slight);
-            let glyph = self
-                .icon_glyph
-                .clone()
-                .unwrap_or_else(|| self.severity.icon_glyph().to_string());
-            let style = TextStyle::new(11.0, 16.0, base_weight());
-            // 字形颜色**按对比度取**，不写死白色：方块底是语义色，暗色下 critical 为
+            // 颜色**按对比度取**，不写死白色：方块底是语义色，暗色下 critical 为
             // `#FF99A4`、success 为 `#6CCB5F` —— 白字在其上只有 1.6~1.9:1，等于看不见。
             // 取黑/白中对比度大者恒 ≥4.58:1（参 `Color::most_readable_on`）。
-            scene.text(
-                glyph,
-                icon_rect,
-                Color::most_readable_on(icon_color),
-                style,
-                TextAlign::Center,
-            );
+            let ink = Color::most_readable_on(icon_color);
+            match &self.icon_glyph {
+                Some(text) => {
+                    let style = TextStyle::new(11.0, 16.0, base_weight());
+                    scene.text(text.clone(), icon_rect, ink, style, TextAlign::Center);
+                }
+                None => icons::draw(scene, self.severity.glyph_name(), icon_rect, ink),
+            }
         }
 
         // Title
@@ -758,20 +768,19 @@ mod tests {
                         Rect::new(0.0, 0.0, 600.0, 48.0),
                         &mut scene,
                     );
-                    let glyph = severity.icon_glyph();
                     let (_, icon_color) = severity.colors(&theme);
+                    // 图标现在是一张按墨色染色的位图（Success 的勾例外：走几何三角）。
                     let drawn = scene.commands.iter().find_map(|c| match c {
-                        SceneCommand::Text { content, color, .. } if content == glyph => {
-                            Some(*color)
-                        }
+                        SceneCommand::Image { tint, .. } => *tint,
+                        SceneCommand::Triangle { color, .. } => Some(*color),
                         _ => None,
                     });
-                    let drawn =
-                        drawn.unwrap_or_else(|| panic!("{scheme:?}/{severity:?} 未见图标字形"));
+                    let drawn = drawn
+                        .unwrap_or_else(|| panic!("{scheme:?}/{severity:?} 未见图标图形"));
                     let ratio = drawn.contrast_ratio(icon_color);
                     assert!(
                         ratio >= 4.5,
-                        "{scheme:?}/{severity:?} 图标字形对比度仅 {ratio}（底色 {icon_color:?}）"
+                        "{scheme:?}/{severity:?} 图标对比度仅 {ratio}（底色 {icon_color:?}）"
                     );
                 }
             }

@@ -11,8 +11,9 @@
 
 use std::sync::Arc;
 
+use kanesumi_canvas::icons::{self, GlyphName};
 use kanesumi_canvas::{Scene, TextAlign, TextEngine, TextLayout, TextLayoutOptions, TextOverflow};
-use kanesumi_core::sizes::{ICON_16, ICON_32};
+use kanesumi_core::sizes::{ICON_12, ICON_16, ICON_32};
 use kanesumi_core::typography::{MetroTypography, TextStyle, base_weight};
 use kanesumi_core::{MetroTheme, Point, Rect};
 
@@ -390,19 +391,24 @@ pub fn render_card(
             TextAlign::Center,
         );
     }
-    // 关闭钮：只在悬停时给底，字形始终存在（元素数稳定）。
+    // 关闭钮：只在悬停时给底，图形始终存在（元素数稳定 —— 位图命令恒有一条）。
     if visual.close_hovered {
         scene.fill_rect(c.surface_variant, geo.close);
     }
-    scene.text(
-        "✕".to_string(),
-        geo.close,
+    // 图形 12 pt 落在 32 pt 的命中区里居中：命中区管手指，图形管观感，两者不同尺寸。
+    icons::draw(
+        scene,
+        GlyphName::Close,
+        Rect::new(
+            geo.close.origin.x + (geo.close.size.width - ICON_12) / 2.0,
+            geo.close.origin.y + (geo.close.size.height - ICON_12) / 2.0,
+            ICON_12,
+            ICON_12,
+        ),
         if visual.close_hovered {
             c.on_surface
         } else {
             c.on_surface_variant
         },
-        TextStyle::new(12.0, 16.0, base_weight()),
-        TextAlign::Center,
     );
 }

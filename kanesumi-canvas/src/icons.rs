@@ -195,9 +195,10 @@ fn pixels(rect: Rect, scale: f32) -> u32 {
 
 /// 在 `rect` 内画出 `name`，按 `color` 染色。
 ///
-/// **1× 用途**。2× / 3× 输出必须用 [`draw_scaled`]，否则位图被放大、边缘发虚。
+/// 光栅按**当前表面缩放**（`scale::surface_scale`，由外壳注入）出物理像素 —— 所以 2× 屏上
+/// 控件什么都不用做就是清的。要在别的缩放下出图（快照、导出）用 [`draw_scaled`]。
 pub fn draw(scene: &mut Scene, name: GlyphName, rect: Rect, color: Color) {
-    draw_scaled(scene, name, rect, color, 1.0);
+    draw_scaled(scene, name, rect, color, crate::scale::surface_scale());
 }
 
 /// 同 [`draw`]，但按 `scale`（逻辑点 → 物理像素倍率）光栅。

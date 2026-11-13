@@ -8,6 +8,7 @@
 //
 // Kanesumi 适配：深色桌面底色 `surface`；选区强调色 35%；光标 1px（正典 §Ⅳ）。
 
+use kanesumi_canvas::icons::{self, GlyphName};
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Icon, Scene, TextAlign};
 use kanesumi_core::sizes::ICON_16;
@@ -551,12 +552,12 @@ impl MetroTextBox {
                     Some(col),
                 );
             } else {
-                scene.text(
-                    "✕".into(),
+                // 未注入图标时走 L0 图形层（不写字体字形：字体里有没有 ✕ 不该决定界面）。
+                icons::draw(
+                    scene,
+                    GlyphName::Close,
                     Rect::new(c.x - ICON_16 / 2.0, c.y - ICON_16 / 2.0, ICON_16, ICON_16),
                     col,
-                    style,
-                    TextAlign::Center,
                 );
             }
         }
@@ -1629,5 +1630,40 @@ mod tests {
             .filter(|c| matches!(c, SceneCommand::Text { content, .. } if content == "✕"))
             .count();
         assert_eq!(glyph_x, 0, "不再画 ✕ 字体字形");
+    }
+
+    /// 未注入图标时，删除键画的是 L0 图形层的关闭叉（不是字体字形）。
+    #[test]
+    fn delete_button_falls_back_to_glyph_layer() {
+        if !font_available() {
+            return;
+        }
+        let e = engine();
+        let th = theme();
+        let mut tb = MetroTextBox::from_text("Ether");
+        tb.focus();
+        tb.show_delete = true;
+        let mut scene = Scene::default();
+        tb.render(&th, &e, Rect::new(0.0, 0.0, 200.0, 35.0), &mut scene);
+
+        let images: Vec<_> = scene
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                SceneCommand::Image { rect, tint, .. } => Some((*rect, *tint)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(images.len(), 1, "删除键恰好一张位图");
+        let (rect, tint) = images[0];
+        assert_eq!(rect.size.width, ICON_16, "16 pt 落格");
+        assert!(tint.is_some(), "按前景色染色（不是原色贴图）");
+        assert!(
+            !scene
+                .commands
+                .iter()
+                .any(|c| matches!(c, SceneCommand::Text { content, .. } if content == "✕")),
+            "不许再写字体字形 ✕"
+        );
     }
 }
