@@ -1778,6 +1778,7 @@ pub fn drain_gpu_samples(&mut self) -> Vec<f32> {
 pub fn each_frame(mut self, f: impl FnMut(&mut A) + 'static) -> Self {
 pub fn enable_a11y(&mut self) {
 pub fn ensure_started(app_id: &str) {
+pub fn external(&mut self, label: &str, f: impl FnOnce(&mut A)) {
 pub fn fallback_clip_events(id: LayerId, anim: &LayerClipAnim) -> [LayerEvent; 1] {
 pub fn fallback_events(id: LayerId, anim: &LayerAnim) -> [LayerEvent; 1] {
 pub fn fill_at(scene: &Scene, p: Point) -> Option<Color> {

@@ -277,6 +277,15 @@ impl<A: App> AppDriver<A> {
         self.record(&format!("wait({secs}s)"));
     }
 
+    /// 外部事件：不是指针 / 键盘的输入 —— 合成器发来的开合信号、sysstate 推送、通知到达。
+    /// 闭包只许做「外部世界会做的事」：调测试注入的假端口，或应用对外的事件入口
+    /// （如 launcher 的 `set_launcher_open`）；**不许**直接改控件状态 —— 那等于替应用把活干了。
+    pub fn external(&mut self, label: &str, f: impl FnOnce(&mut A)) {
+        self.start();
+        f(&mut self.app);
+        self.record(&format!("ext({label})"));
+    }
+
     /// 在转录里插一行注释（`# …`），给读转录的人看分段。
     pub fn note(&mut self, text: &str) {
         self.start();
@@ -875,6 +884,15 @@ mod tests {
             d.transcript().to_string()
         };
         assert_eq!(run(), run());
+    }
+
+    /// 外部事件记一行 `ext(名字)`，后面跟它造成的变化。
+    #[test]
+    fn external_event_is_recorded_with_its_effect() {
+        let (mut d, _, _) = driver();
+        d.external("bump", |h| h.parts_mut().0.clicks += 5);
+        let last = d.transcript().lines().last().unwrap().to_string();
+        assert!(last.starts_with("ext(bump)") && last.contains("clicks=5"), "{last}");
     }
 
     /// 每帧钩子逐帧调用（wait 0.5 s = 30 帧，外加首行与输入后的稳定帧）。
