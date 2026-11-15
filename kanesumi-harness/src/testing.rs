@@ -22,6 +22,7 @@ use kanesumi_core::{Color, Point, Rect, Size};
 use kanesumi_element::{Key, Modifiers, PointerButton};
 
 use crate::app::{App, InputEvent};
+use crate::layers::{LayerCommand, LayerEvent, LayerId, LayerInsets, LayerParent};
 
 /// 固定帧步长（秒）。与 `snapshot::render_png` 同值。
 pub const FRAME_DT: f64 = 1.0 / 60.0;
@@ -39,7 +40,9 @@ pub enum Surface {
     Floating(usize),
 }
 
-/// 一次出帧后各表面的完整 Scene（浮层每帧强制整幅重画，不受损伤剔除影响）。
+/// 一次出帧后各表面**合成后**的完整 Scene：表面自绘 + 挂在该表面上的合成图层
+/// （按位置 / 不透明度 / 裁剪拼回去）。Dock、Launcher 的内容大多在图层里，只看自绘会是空的。
+/// 浮层每帧强制整幅重画，不受损伤剔除影响。
 #[derive(Default)]
 pub struct Frames {
     main: Scene,
@@ -67,6 +70,9 @@ pub struct AppDriver<A: App> {
     size: Size,
     floating: BTreeMap<usize, Size>,
     frames: Frames,
+    raw_main: Scene,
+    raw_floating: BTreeMap<usize, Scene>,
+    layers: LayerModel,
     probes: Vec<(String, ProbeFn<A>)>,
     hooks: Vec<HookFn<A>>,
     last: Vec<String>,
@@ -84,6 +90,9 @@ impl<A: App> AppDriver<A> {
             size: Size::new(width, height),
             floating: BTreeMap::new(),
             frames: Frames::default(),
+            raw_main: Scene::default(),
+            raw_floating: BTreeMap::new(),
+            layers: LayerModel::default(),
             probes: Vec::new(),
             hooks: Vec::new(),
             last: Vec::new(),
@@ -320,24 +329,35 @@ impl<A: App> AppDriver<A> {
         }
     }
 
-    /// 出一帧：固定步长推进时钟与逻辑，主表面与已登记且可见的浮层各出一幅完整 Scene。
+    /// 出一帧：先回送上一帧到期的图层事件（合成器反馈在两帧之间到达），再固定步长推进时钟
+    /// 与逻辑，主表面与已登记且可见的浮层各出一幅整幅 Scene，最后收图层命令并合成。
     fn frame(&mut self) {
+        for ev in self.layers.advance(FRAME_DT) {
+            self.app.on_layer_event(ev);
+        }
         self.app.advance_clock(FRAME_DT);
         self.app.update(FRAME_DT);
         for hook in &mut self.hooks {
             hook(&mut self.app);
         }
-        self.app.render_into(&self.engine, self.size, &mut self.frames.main);
+        self.app.render_into(&self.engine, self.size, &mut self.raw_main);
         for (&i, &size) in &self.floating {
             if self.app.floating_visible(i) {
                 // 浮层恒开损伤剔除；探针要整幅，所以每帧请求整幅重画。
                 self.app.floating_full_repaint(i);
                 let scene = self.app.render_floating(&self.engine, i, size);
-                self.frames.floating.insert(i, scene);
+                self.raw_floating.insert(i, scene);
             } else {
-                self.frames.floating.remove(&i);
+                self.raw_floating.remove(&i);
             }
         }
+        self.layers.apply(self.app.take_layer_commands());
+        self.frames.main = self.layers.compose(&self.raw_main, LayerParent::Main);
+        self.frames.floating = self
+            .raw_floating
+            .iter()
+            .map(|(&i, sc)| (i, self.layers.compose(sc, LayerParent::Floating(i))))
+            .collect();
     }
 
     /// 至少一帧，然后跑到没有表面再要帧为止（上限 `SETTLE_FRAMES`）。
@@ -345,6 +365,7 @@ impl<A: App> AppDriver<A> {
         self.frame();
         for _ in 1..SETTLE_FRAMES {
             let busy = self.app.needs_redraw()
+                || self.layers.busy()
                 || self
                     .floating
                     .keys()
@@ -381,6 +402,236 @@ impl<A: App> AppDriver<A> {
             let _ = writeln!(self.transcript, "{input:<24}{}", changes.join(" "));
         }
     }
+}
+
+// ── 合成图层的最小合成器模型（代替真合成器：收命令、记状态、按时回送事件）────────────
+//
+// 只为「探针看到的就是屏幕上会有的」：位置 / 不透明度 / 裁剪内缩 / 内容 / 滚动器偏移。
+// 动画**不插值**：到点（delay + duration）一次跳到终值并回送 `Done`，同一图层同类动画
+// 未完又来新的 → 先回送旧的 `Cancelled`（与合成器打断语义一致）。所以转录里看到的是
+// 动画起止两端，中间帧不进转录 —— 中间帧的手感归真机，不归快照。背板材质忽略。
+
+#[derive(Clone)]
+struct LayerState {
+    parent: LayerParent,
+    rect: Rect,
+    x: f32,
+    y: f32,
+    opacity: f32,
+    clip: LayerInsets,
+    scene: Scene,
+    /// 滚动器：(内容坐标里 realized 区, 当前滚动偏移)。
+    scroller: Option<(Rect, f32)>,
+}
+
+impl LayerState {
+    fn new(parent: LayerParent, rect: Rect, scroller: bool) -> Self {
+        Self {
+            parent,
+            rect,
+            x: 0.0,
+            y: 0.0,
+            opacity: 1.0,
+            clip: LayerInsets::default(),
+            scene: Scene::default(),
+            scroller: scroller.then(|| (Rect::new(0.0, 0.0, 0.0, 0.0), 0.0)),
+        }
+    }
+}
+
+enum AnimEnd {
+    Props { x: f32, y: f32, opacity: f32 },
+    Clip(LayerInsets),
+}
+
+struct PendingAnim {
+    id: LayerId,
+    serial: u32,
+    remaining: f64,
+    end: AnimEnd,
+}
+
+#[derive(Default)]
+struct LayerModel {
+    layers: BTreeMap<u32, LayerState>,
+    pending: Vec<PendingAnim>,
+    events: Vec<LayerEvent>,
+}
+
+impl LayerModel {
+    fn busy(&self) -> bool {
+        !self.pending.is_empty() || !self.events.is_empty()
+    }
+
+    fn get(&mut self, id: LayerId) -> Option<&mut LayerState> {
+        self.layers.get_mut(&id.0)
+    }
+
+    /// 同图层同类动画打断：旧的回送 Cancelled。
+    fn start(&mut self, id: LayerId, serial: u32, ms: u32, end: AnimEnd) {
+        let clip = matches!(end, AnimEnd::Clip(_));
+        let mut cancelled = Vec::new();
+        self.pending.retain(|p| {
+            let same = p.id == id && matches!(p.end, AnimEnd::Clip(_)) == clip;
+            if same {
+                cancelled.push(LayerEvent::Cancelled { id, serial: p.serial });
+            }
+            !same
+        });
+        self.events.extend(cancelled);
+        self.pending.push(PendingAnim { id, serial, remaining: f64::from(ms) / 1000.0, end });
+    }
+
+    fn apply(&mut self, commands: Vec<LayerCommand>) {
+        for c in commands {
+            match c {
+                LayerCommand::Create { id, parent, rect } => {
+                    self.layers.insert(id.0, LayerState::new(parent, rect, false));
+                }
+                LayerCommand::CreateScroller { id, parent, viewport, .. } => {
+                    self.layers.insert(id.0, LayerState::new(parent, viewport, true));
+                }
+                LayerCommand::SetContent { id, scene } => {
+                    if let Some(l) = self.get(id) {
+                        l.scene = scene;
+                    }
+                }
+                LayerCommand::SetRect { id, rect } | LayerCommand::SetScrollerGeometry { id, viewport: rect, .. } => {
+                    if let Some(l) = self.get(id) {
+                        l.rect = rect;
+                    }
+                }
+                LayerCommand::RealizeScroller { id, realized, scene } => {
+                    if let Some(l) = self.get(id) {
+                        l.scene = scene;
+                        if let Some(s) = l.scroller.as_mut() {
+                            s.0 = realized;
+                        }
+                    }
+                }
+                LayerCommand::ScrollerScrollBy { id, dy, .. } => self.scroll(id, |y| y + dy),
+                LayerCommand::ScrollerScrollTo { id, y, .. } => self.scroll(id, |_| y),
+                LayerCommand::SetOffset { id, x, y } => {
+                    if let Some(l) = self.get(id) {
+                        (l.x, l.y) = (x, y);
+                    }
+                }
+                LayerCommand::SetOpacity { id, opacity } => {
+                    if let Some(l) = self.get(id) {
+                        l.opacity = opacity;
+                    }
+                }
+                LayerCommand::SetClip { id, insets } => {
+                    // 立即设裁剪会取消进行中的裁剪动画（ELEMENT_TREE 图层语义），不回送事件。
+                    self.pending.retain(|p| !(p.id == id && matches!(p.end, AnimEnd::Clip(_))));
+                    if let Some(l) = self.get(id) {
+                        l.clip = insets;
+                    }
+                }
+                LayerCommand::Animate { id, anim } => {
+                    let end = AnimEnd::Props { x: anim.to_x, y: anim.to_y, opacity: anim.to_opacity };
+                    self.start(id, anim.serial, anim.delay_ms + anim.duration_ms, end);
+                }
+                LayerCommand::AnimateClip { id, anim } => {
+                    self.start(id, anim.serial, anim.delay_ms + anim.duration_ms, AnimEnd::Clip(anim.to));
+                }
+                LayerCommand::Destroy { id } => {
+                    self.layers.remove(&id.0);
+                    self.pending.retain(|p| p.id != id);
+                }
+                LayerCommand::SetBackdrop { .. } => {}
+            }
+        }
+    }
+
+    /// 滚动立即生效并回送偏移（夹在 0 与 realized 底边之间 —— 保守的内容高）。
+    fn scroll(&mut self, id: LayerId, f: impl FnOnce(f32) -> f32) {
+        let Some(l) = self.layers.get_mut(&id.0) else { return };
+        let view_h = l.rect.size.height;
+        let Some(s) = l.scroller.as_mut() else { return };
+        let max = (s.0.origin.y + s.0.size.height - view_h).max(0.0);
+        s.1 = f(s.1).clamp(0.0, max);
+        let y = s.1;
+        self.events.push(LayerEvent::ScrollerOffset { id, x: 0.0, y, present_ns: 0 });
+    }
+
+    /// 推进 `dt`：到点的动画落到终值并回送 Done；连同排队的事件一起交出。
+    fn advance(&mut self, dt: f64) -> Vec<LayerEvent> {
+        let mut out = std::mem::take(&mut self.events);
+        let mut done = Vec::new();
+        self.pending.retain_mut(|p| {
+            p.remaining -= dt;
+            let fin = p.remaining <= 1e-9;
+            if fin {
+                let end = std::mem::replace(&mut p.end, AnimEnd::Clip(LayerInsets::default()));
+                done.push((p.id, p.serial, end));
+            }
+            !fin
+        });
+        for (id, serial, end) in done {
+            if let Some(l) = self.layers.get_mut(&id.0) {
+                match end {
+                    AnimEnd::Props { x, y, opacity } => (l.x, l.y, l.opacity) = (x, y, opacity),
+                    AnimEnd::Clip(c) => l.clip = c,
+                }
+            }
+            out.push(LayerEvent::Done { id, serial });
+        }
+        out
+    }
+
+    /// 表面自绘在下，图层按 LayerId 序（即创建序）叠在上面，各自裁到「矩形 − 内缩」。
+    fn compose(&self, base: &Scene, parent: LayerParent) -> Scene {
+        let mut out = base.clone();
+        for l in self.layers.values().filter(|l| l.parent == parent && l.opacity > 0.0) {
+            let (ox, oy) = (l.rect.origin.x + l.x, l.rect.origin.y + l.y);
+            let c = l.clip;
+            let w = l.rect.size.width - c.left - c.right;
+            let h = l.rect.size.height - c.top - c.bottom;
+            let vis = Rect::new(ox + c.left, oy + c.top, w.max(0.0), h.max(0.0));
+            let (dx, dy) = match l.scroller {
+                Some((realized, sy)) => (ox + realized.origin.x, oy + realized.origin.y - sy),
+                None => (ox, oy),
+            };
+            out.commands.push(SceneCommand::PushClip { rect: vis });
+            out.commands.extend(l.scene.commands.iter().map(|cmd| shift(cmd, dx, dy, l.opacity)));
+            out.commands.push(SceneCommand::PopClip);
+        }
+        out
+    }
+}
+
+/// 平移一条命令并乘上图层不透明度。
+fn shift(cmd: &SceneCommand, dx: f32, dy: f32, opacity: f32) -> SceneCommand {
+    let mv = |r: &Rect| Rect::new(r.origin.x + dx, r.origin.y + dy, r.size.width, r.size.height);
+    let pt = |p: &Point| Point::new(p.x + dx, p.y + dy);
+    let fade = |c: &Color| Color { a: c.a * opacity, ..*c };
+    let mut out = cmd.clone();
+    match &mut out {
+        SceneCommand::FillRect { color, rect, .. }
+        | SceneCommand::StrokeRect { color, rect, .. }
+        | SceneCommand::Text { color, rect, .. } => {
+            *rect = mv(rect);
+            *color = fade(color);
+        }
+        SceneCommand::Arc { center, color, .. } => {
+            *center = pt(center);
+            *color = fade(color);
+        }
+        SceneCommand::PushClip { rect } => *rect = mv(rect),
+        SceneCommand::PopClip => {}
+        SceneCommand::Image { rect, opacity: o, .. } => {
+            *rect = mv(rect);
+            *o *= opacity;
+        }
+        SceneCommand::Triangle { p0, p1, p2, color } => {
+            (*p0, *p1, *p2) = (pt(p0), pt(p1), pt(p2));
+            *color = fade(color);
+        }
+        // `SceneCommand` 是 non_exhaustive：新增变体先原样保留（不平移），加变体时补这里。
+        _ => {}
+    }
+    out
 }
 
 // ── Scene 读数（不光栅：直接按命令序合成，快且与字体光栅无关）──────────────
@@ -635,6 +886,39 @@ mod tests {
         let mut d = d.each_frame(move |_| seen.set(seen.get() + 1));
         d.wait(0.5);
         assert!(n.get() >= 30, "钩子帧数 {}", n.get());
+    }
+
+    /// 图层模型：内容按图层位置拼回表面；动画到点才落终值并回送 Done；未完再来 → Cancelled。
+    #[test]
+    fn layer_model_composes_and_reports_animation_ends() {
+        use crate::layers::LayerAnim;
+        let id = LayerId(7);
+        let red = Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
+        let mut content = Scene::default();
+        content.commands.push(SceneCommand::FillRect { color: red, rect: Rect::new(0.0, 0.0, 10.0, 10.0), corner_radius: 0.0 });
+        let mut m = LayerModel::default();
+        m.apply(vec![
+            LayerCommand::Create { id, parent: LayerParent::Main, rect: Rect::new(100.0, 50.0, 10.0, 10.0) },
+            LayerCommand::SetContent { id, scene: content },
+        ]);
+        let at = |m: &LayerModel, x, y| fill_at(&m.compose(&Scene::default(), LayerParent::Main), Point::new(x, y)).map(hex);
+        assert_eq!(at(&m, 105.0, 55.0).as_deref(), Some("#ff0000ff"), "图层内容按图层矩形平移");
+        assert_eq!(at(&m, 5.0, 5.0), None, "原点处没有内容");
+        assert_eq!(fill_at(&m.compose(&Scene::default(), LayerParent::Floating(0)), Point::new(105.0, 55.0)), None, "只拼到所属表面");
+
+        let anim = |serial| LayerAnim { serial, duration_ms: 100, delay_ms: 0, curve: crate::layers::CURVE_UWP_OPEN, to_x: 0.0, to_y: 0.0, to_opacity: 0.0 };
+        m.apply(vec![LayerCommand::Animate { id, anim: anim(1) }]);
+        m.apply(vec![LayerCommand::Animate { id, anim: anim(2) }]);
+        let first = m.advance(FRAME_DT);
+        assert_eq!(first, vec![LayerEvent::Cancelled { id, serial: 1 }], "同类动画打断回送旧序号");
+        assert!(at(&m, 105.0, 55.0).is_some(), "动画未到点不落终值");
+        let mut evs = Vec::new();
+        for _ in 0..10 {
+            evs.extend(m.advance(FRAME_DT));
+        }
+        assert_eq!(evs, vec![LayerEvent::Done { id, serial: 2 }]);
+        assert_eq!(at(&m, 105.0, 55.0), None, "淡出到 0 后不再可见");
+        assert!(!m.busy());
     }
 
     fn tmp(name: &str) -> std::path::PathBuf {
