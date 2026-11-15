@@ -1891,6 +1891,7 @@ pub fn probe_fill(self, name: &str, surface: Surface, at: Point) -> Self {
 pub fn probe_stage_name(code: u8) -> &'static str {
 pub fn probe_text(self, name: &str, surface: Surface, at: Point) -> Self {
 pub fn probe_texts(self, name: &str, surface: Surface) -> Self {
+pub fn probe_texts_in(self, name: &str, surface: Surface, region: Rect) -> Self {
 pub fn push(&mut self, c: LayerCommand) {
 pub fn push(&mut self, target: Option<usize>, event: InputEvent) {
 pub fn read_font_bytes(path: &Path) -> io::Result<FontBytes> {
@@ -1949,6 +1950,7 @@ pub fn take_frame_timing(&mut self) -> crate::perf::FrameTiming {
 pub fn text_at(scene: &Scene, p: Point) -> Option<&str> {
 pub fn text_tuning(&self) -> TextRenderTuning {
 pub fn texts(scene: &Scene) -> Vec<&str> {
+pub fn texts_in(scene: &Scene, region: Rect) -> Vec<&str> {
 pub fn ticks_to_ms(start: u64, end: u64, period_ns: f32) -> f32 {
 pub fn timestamp_iso8601() -> String {
 pub fn timestamp_slot(frame: u64, slots: u64) -> usize {

@@ -156,6 +156,12 @@ impl<A: App> AppDriver<A> {
         self.probe(name, move |_, f| texts(f.scene(surface)).join("|"))
     }
 
+    /// 探针：只读 `region` 内的可见文本（文本框与区域有交集即算）。表面上有时钟、日期这类
+    /// 随墙钟变化的文字时（TopBar 条、锁屏）用它避开，否则转录每分钟都不一样。
+    pub fn probe_texts_in(self, name: &str, surface: Surface, region: Rect) -> Self {
+        self.probe(name, move |_, f| texts_in(f.scene(surface), region).join("|"))
+    }
+
     pub fn app(&self) -> &A {
         &self.app
     }
@@ -808,10 +814,19 @@ pub fn text_at(scene: &Scene, p: Point) -> Option<&str> {
 
 /// 可见文本（与裁剪有交集、非空），按 (y, x) 排序。
 pub fn texts(scene: &Scene) -> Vec<&str> {
+    texts_where(scene, None)
+}
+
+/// 与 `region` 有交集的可见文本，按 (y, x) 排序。
+pub fn texts_in(scene: &Scene, region: Rect) -> Vec<&str> {
+    texts_where(scene, Some(region))
+}
+
+fn texts_where(scene: &Scene, region: Option<Rect>) -> Vec<&str> {
     let mut v: Vec<(f32, f32, &str)> = visible(scene)
         .filter_map(|(cmd, clip)| match cmd {
             SceneCommand::Text { content, rect, .. }
-                if !content.is_empty() && clip.is_none_or(|c| c.intersect(*rect).is_some_and(|r| r.size.width > 0.0 && r.size.height > 0.0)) =>
+                if !content.is_empty() && overlaps(clip, *rect) && overlaps(region, *rect) =>
             {
                 Some((rect.origin.y, rect.origin.x, content.as_str()))
             }
@@ -820,6 +835,11 @@ pub fn texts(scene: &Scene) -> Vec<&str> {
         .collect();
     v.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
     v.into_iter().map(|t| t.2).collect()
+}
+
+/// 矩形与区域（None = 无限）有正面积交集。
+fn overlaps(region: Option<Rect>, rect: Rect) -> bool {
+    region.is_none_or(|c| c.intersect(rect).is_some_and(|r| r.size.width > 0.0 && r.size.height > 0.0))
 }
 
 /// `#rrggbbaa`（8 位量化：低于 1/255 的浮点差异不进转录）。
@@ -1148,5 +1168,18 @@ mod tests {
         assert_eq!(fill_at(&clipped, p), None, "裁剪外不计");
         assert!(fill_at(&clipped, Point::new(55.0, 55.0)).is_some());
         assert_eq!(fill_at(&Scene::default(), p), None);
+    }
+
+    /// 按区域读文本：区域外（如条上的时钟）不进结果；全量 `texts` 不受影响。
+    #[test]
+    fn texts_in_filters_by_region() {
+        let mut sc = Scene::default();
+        let style = kanesumi_core::TextStyle::new(14.0, 20.0, kanesumi_core::FontWeight::Normal);
+        let white = Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+        let text = |sc: &mut Scene, content: &str, rect| sc.text(content.into(), rect, white, style, kanesumi_canvas::TextAlign::Left);
+        text(&mut sc, "12:34", Rect::new(1200.0, 4.0, 60.0, 20.0));
+        text(&mut sc, "Wi-Fi", Rect::new(1000.0, 40.0, 80.0, 20.0));
+        assert_eq!(texts(&sc), vec!["12:34", "Wi-Fi"]);
+        assert_eq!(texts_in(&sc, Rect::new(0.0, 30.0, 1280.0, 800.0)), vec!["Wi-Fi"]);
     }
 }
