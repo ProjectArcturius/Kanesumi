@@ -28,6 +28,9 @@ pub mod timeline;
 // 旧模型的边界实现，新应用一律用 `TreeApp`。
 #[allow(deprecated)]
 pub mod tree_host;
+// 应用级行为转录夹具（迁移前录快照、迁移后逐行比）。同上：按 `App` 驱动，旧新两版代码共用一份测试。
+#[allow(deprecated)]
+pub mod testing;
 pub mod wake;
 
 #[cfg(target_os = "linux")]

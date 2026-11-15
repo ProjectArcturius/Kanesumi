@@ -1735,6 +1735,7 @@ pub enum LayerParent {
 pub enum LockEvent {
 pub enum Phase {
 pub enum RendererKind {
+pub enum Surface {
 pub enum SurfaceClass {
 pub enum SurfaceKind {
 pub enum SurfaceRenderer {
@@ -1745,9 +1746,11 @@ pub fn after_done(&mut self, serial_matched: bool) -> bool {
 pub fn allows_context_update(&mut self, action: Option<ImeAction>) -> bool {
 pub fn animate(&mut self, id: LayerId, anim: LayerAnim) {
 pub fn app(&self) -> &A {
+pub fn app_mut(&mut self) -> &mut A {
 pub fn apply(&self) -> Vec<InputEvent> {
 pub fn apply_done(&self, serial: u32, current_serial: u32) -> ImeDoneOutcome {
 pub fn as_str(self) -> &'static str {
+pub fn assert_golden(&self, path: impl AsRef<Path>) {
 pub fn begin(&mut self, name: &str, trigger: std::time::Instant) {
 pub fn callback_pending(&self) -> bool {
 pub fn can_render(&mut self, now: Instant, animating: bool) -> (bool, bool) {
@@ -1756,6 +1759,7 @@ pub fn canvas_v2_active(env: Option<&str>) -> bool {
 pub fn canvas_v2_enabled() -> bool {
 pub fn capture() -> Self {
 pub fn choose_renderer(
+pub fn click(&mut self, label: &str, surface: Surface, at: Point) {
 pub fn close(&mut self) {
 pub fn compute_ime_action(
 pub fn config(&self) -> RepeatConfig {
@@ -1768,26 +1772,32 @@ pub fn default_expected_hz(class: SurfaceClass) -> f32 {
 pub fn default_repeatable(key: &kanesumi_element::Key) -> bool {
 pub fn diagnostics(&self) -> String {
 pub fn dmabuf_probe_entry() {
+pub fn double_click(&mut self, label: &str, surface: Surface, at: Point) {
 pub fn drain(&mut self) -> Vec<(Option<usize>, InputEvent)> {
 pub fn drain_gpu_samples(&mut self) -> Vec<f32> {
 pub fn enable_a11y(&mut self) {
 pub fn ensure_started(app_id: &str) {
 pub fn fallback_clip_events(id: LayerId, anim: &LayerClipAnim) -> [LayerEvent; 1] {
 pub fn fallback_events(id: LayerId, anim: &LayerAnim) -> [LayerEvent; 1] {
+pub fn fill_at(scene: &Scene, p: Point) -> Option<Color> {
 pub fn find_font() -> Option<std::path::PathBuf> {
 pub fn find_font_source() -> Option<kanesumi_canvas::text::FontSource> {
 pub fn fingerprint() -> Option<SystemTime> {
 pub fn finish(&mut self, name: &str, _now: std::time::Instant) -> Option<String> {
 pub fn floating_tree(&self, index: usize) -> Option<&Tree> {
+pub fn focus(&mut self, focused: bool) {
 pub fn format_header(
 pub fn format_line(proc: &str, role: &str, surface: &str, p: &SurfacePerf) -> String {
 pub fn format_pacing_line(r: &PacingReport) -> String {
 pub fn frame_phases_enabled() -> bool {
+pub fn frames(&self) -> &Frames {
 pub fn from_env() -> Self {
 pub fn gpu_kill_switch() -> bool {
 pub fn gpu_timing_supported(&self) -> bool {
 pub fn handle_pointer(
 pub fn held(&self) -> Option<u64> {
+pub fn hex(c: Color) -> String {
+pub fn hover(&mut self, label: &str, surface: Surface, at: Point) {
 pub fn hovered_rects(&self) -> Vec<kanesumi_core::Rect> {
 pub fn instant_of(&self, mono: Duration) -> Instant {
 pub fn interaction_signature(&self) -> MenuInteractionSignature {
@@ -1801,6 +1811,8 @@ pub fn is_open(&self) -> bool {
 pub fn is_spike(t: &FrameTiming) -> bool {
 pub fn is_target_valid(&self) -> bool {
 pub fn is_visible(&self) -> bool {
+pub fn key(&mut self, label: &str, key: Key, modifiers: Modifiers) {
+pub fn key_floating(&mut self, label: &str, index: usize, key: Key, modifiers: Modifiers) {
 pub fn key_id(key: &kanesumi_element::Key) -> u64 {
 pub fn key_to_text_input(key: Key) -> Option<kanesumi_controls::TextInputKey> {
 pub fn keyboard_interactivity(self) -> LayerKeyboardInteractivity {
@@ -1809,6 +1821,7 @@ pub fn kind(&self) -> &'static str {
 pub fn last_c15_stats(&self) -> Option<(bool, f32, u32)> {
 pub fn last_draws(&self) -> Option<u32> {
 pub fn last_frame_full(&self) -> bool {
+pub fn leave(&mut self, surface: Surface) {
 pub fn load() -> InteractionSettings {
 pub fn load() -> MetroTheme {
 pub fn load_backdrop() -> Backdrop {
@@ -1825,12 +1838,14 @@ pub fn msaa_samples(&self) -> u32 {
 pub fn msaa_samples() -> u32 {
 pub fn new(
 pub fn new() -> Self {
+pub fn new(app: A, width: f32, height: f32) -> Self {
 pub fn new(config: RepeatConfig) -> Self {
 pub fn new(mut app: A) -> Self {
 pub fn new(period: Duration) -> Self {
 pub fn new_with_backends(
 pub fn next_wake(
 pub fn next_wake(&self, now: f64) -> Option<f64> {
+pub fn note(&mut self, text: &str) {
 pub fn note(stage: &str) {
 pub fn note_detail(stage: &str, detail: &str) {
 pub fn note_once(stage: &'static str) {
@@ -1868,7 +1883,12 @@ pub fn poll(&mut self, now: f64) -> Option<u64> {
 pub fn position(&self) -> Option<(f32, f32)> {
 pub fn predict_next_present(&mut self, now: Instant) -> Instant {
 pub fn press(&mut self, id: u64, now: f64, repeatable: bool) {
+pub fn press(&mut self, label: &str, surface: Surface, at: Point) {
+pub fn probe(mut self, name: &str, f: impl Fn(&A, &Frames) -> String + 'static) -> Self {
+pub fn probe_fill(self, name: &str, surface: Surface, at: Point) -> Self {
 pub fn probe_stage_name(code: u8) -> &'static str {
+pub fn probe_text(self, name: &str, surface: Surface, at: Point) -> Self {
+pub fn probe_texts(self, name: &str, surface: Surface) -> Self {
 pub fn push(&mut self, c: LayerCommand) {
 pub fn push(&mut self, target: Option<usize>, event: InputEvent) {
 pub fn read_font_bytes(path: &Path) -> io::Result<FontBytes> {
@@ -1884,6 +1904,7 @@ pub fn record_phases(&mut self, t: &FrameTiming) {
 pub fn record_present(
 pub fn refresh_period_ms() -> f32 {
 pub fn release(&mut self, id: u64) {
+pub fn release(&mut self, label: &str, surface: Surface, at: Point) {
 pub fn render(
 pub fn render(&mut self, engine: &TextEngine, scene: &Scene) {
 pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
@@ -1897,9 +1918,12 @@ pub fn require(ok: bool, what: impl FnOnce() -> String) {
 pub fn require_or_log(ok: bool, what: impl FnOnce() -> String) {
 pub fn reset(&mut self) {
 pub fn resize(&mut self, width: f32, height: f32, scale: f32) {
+pub fn right_click(&mut self, label: &str, surface: Surface, at: Point) {
 pub fn route_main_event(
 pub fn run(app: &'static mut dyn App, engine: TextEngine) -> ! {
 pub fn run(app: &mut dyn App) -> ! {
+pub fn scene(&self, surface: Surface) -> &Scene {
+pub fn scroll(&mut self, label: &str, surface: Surface, dy: f32) {
 pub fn set_a11y_window_focused(&mut self, focused: bool) {
 pub fn set_config(&mut self, config: RepeatConfig) {
 pub fn set_content(&mut self, id: LayerId, scene: Scene) {
@@ -1911,6 +1935,7 @@ pub fn set_strict_for_test(on: Option<bool>) {
 pub fn set_text_tuning(&mut self, tuning: TextRenderTuning) {
 pub fn signal_name(sig: i32) -> String {
 pub fn spike_line(proc: &str, role: &str, surface: &str, t: &FrameTiming) -> String {
+pub fn start(&mut self) {
 pub fn start(app_id: &str) {
 pub fn state_log_path(name: &str) -> Option<PathBuf> {
 pub fn strict() -> bool {
@@ -1919,18 +1944,25 @@ pub fn surface_kind(self) -> SurfaceKind {
 pub fn take(&mut self) -> Vec<LayerCommand> {
 pub fn take_acquire_ms(&mut self) -> Option<f32> {
 pub fn take_frame_timing(&mut self) -> crate::perf::FrameTiming {
+pub fn text_at(scene: &Scene, p: Point) -> Option<&str> {
 pub fn text_tuning(&self) -> TextRenderTuning {
+pub fn texts(scene: &Scene) -> Vec<&str> {
 pub fn ticks_to_ms(start: u64, end: u64, period_ns: f32) -> f32 {
 pub fn timestamp_iso8601() -> String {
 pub fn timestamp_slot(frame: u64, slots: u64) -> usize {
 pub fn total(&self) -> u64 {
 pub fn total_ms(&self) -> f32 {
+pub fn transcript(&self) -> &str {
 pub fn tree(&self) -> &Tree {
+pub fn type_text(&mut self, text: &str) {
 pub fn update(&mut self, dt: f64) {
+pub fn wait(&mut self, secs: f64) {
 pub fn with_context(
+pub fn with_floating(mut self, index: usize, width: f32, height: f32) -> Self {
 pub fn write_log(path: &Path, content: &str) {
 pub fn write_pacing(line: &str) {
 pub struct AppConfig {
+pub struct AppDriver<A: App> {
 pub struct Backdrop {
 pub struct BackdropMaterial {
 pub struct CanvasV2(pub kanesumi_render::CanvasV2);
@@ -1941,6 +1973,7 @@ pub struct FloatingLayer {
 pub struct FrameClock {
 pub struct FramePacing {
 pub struct FrameTiming {
+pub struct Frames {
 pub struct ImeDoneOutcome {
 pub struct ImeReconcileGate {
 pub struct InputCoalescer {
