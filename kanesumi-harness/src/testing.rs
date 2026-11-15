@@ -58,6 +58,7 @@ impl Frames {
 }
 
 type ProbeFn<A> = Box<dyn Fn(&A, &Frames) -> String>;
+type HookFn<A> = Box<dyn FnMut(&mut A)>;
 
 /// 应用级驱动器：喂输入、出帧、读探针、记转录。
 pub struct AppDriver<A: App> {
@@ -67,6 +68,7 @@ pub struct AppDriver<A: App> {
     floating: BTreeMap<usize, Size>,
     frames: Frames,
     probes: Vec<(String, ProbeFn<A>)>,
+    hooks: Vec<HookFn<A>>,
     last: Vec<String>,
     started: bool,
     transcript: String,
@@ -83,6 +85,7 @@ impl<A: App> AppDriver<A> {
             floating: BTreeMap::new(),
             frames: Frames::default(),
             probes: Vec::new(),
+            hooks: Vec::new(),
             last: Vec::new(),
             started: false,
             transcript: String::new(),
@@ -99,6 +102,14 @@ impl<A: App> AppDriver<A> {
     pub fn probe(mut self, name: &str, f: impl Fn(&A, &Frames) -> String + 'static) -> Self {
         assert!(!self.started, "探针必须在第一次输入前登记（否则转录首行不完整）");
         self.probes.push((name.to_string(), Box::new(f)));
+        self
+    }
+
+    /// 每帧钩子：在逻辑推进之后、出帧之前调用。给带后台线程的应用把异步结果**同步收干净**
+    /// （如 librarian 的目录读取 / 文件操作：钩子里阻塞等工作线程空闲再取结果），
+    /// 否则结果哪一帧到达取决于线程调度，转录不幂等。钩子不得自己造输入。
+    pub fn each_frame(mut self, f: impl FnMut(&mut A) + 'static) -> Self {
+        self.hooks.push(Box::new(f));
         self
     }
 
@@ -313,6 +324,9 @@ impl<A: App> AppDriver<A> {
     fn frame(&mut self) {
         self.app.advance_clock(FRAME_DT);
         self.app.update(FRAME_DT);
+        for hook in &mut self.hooks {
+            hook(&mut self.app);
+        }
         self.app.render_into(&self.engine, self.size, &mut self.frames.main);
         for (&i, &size) in &self.floating {
             if self.app.floating_visible(i) {
@@ -610,6 +624,17 @@ mod tests {
             d.transcript().to_string()
         };
         assert_eq!(run(), run());
+    }
+
+    /// 每帧钩子逐帧调用（wait 0.5 s = 30 帧，外加首行与输入后的稳定帧）。
+    #[test]
+    fn each_frame_hook_runs_every_frame() {
+        let n = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let seen = n.clone();
+        let (d, _, _) = driver();
+        let mut d = d.each_frame(move |_| seen.set(seen.get() + 1));
+        d.wait(0.5);
+        assert!(n.get() >= 30, "钩子帧数 {}", n.get());
     }
 
     fn tmp(name: &str) -> std::path::PathBuf {

@@ -1775,6 +1775,7 @@ pub fn dmabuf_probe_entry() {
 pub fn double_click(&mut self, label: &str, surface: Surface, at: Point) {
 pub fn drain(&mut self) -> Vec<(Option<usize>, InputEvent)> {
 pub fn drain_gpu_samples(&mut self) -> Vec<f32> {
+pub fn each_frame(mut self, f: impl FnMut(&mut A) + 'static) -> Self {
 pub fn enable_a11y(&mut self) {
 pub fn ensure_started(app_id: &str) {
 pub fn fallback_clip_events(id: LayerId, anim: &LayerClipAnim) -> [LayerEvent; 1] {
