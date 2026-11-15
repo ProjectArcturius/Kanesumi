@@ -21,7 +21,7 @@ use kanesumi_canvas::text::TextEngine;
 use kanesumi_core::{Color, Point, Rect, Size};
 use kanesumi_element::{Key, Modifiers, PointerButton};
 
-use crate::app::{App, InputEvent};
+use crate::app::{App, InputEvent, PopupRequest};
 use crate::layers::{LayerCommand, LayerEvent, LayerId, LayerInsets, LayerParent};
 
 /// 固定帧步长（秒）。与 `snapshot::render_png` 同值。
@@ -73,6 +73,10 @@ pub struct AppDriver<A: App> {
     raw_main: Scene,
     raw_floating: BTreeMap<usize, Scene>,
     layers: LayerModel,
+    /// 分离弹层模式（`with_popups`）：上一帧申报的弹层与指针当前所在表面（None = 主表面）。
+    popups_on: bool,
+    popup_reqs: Vec<PopupRequest>,
+    pointer_on: Option<u64>,
     probes: Vec<(String, ProbeFn<A>)>,
     hooks: Vec<HookFn<A>>,
     last: Vec<String>,
@@ -93,6 +97,9 @@ impl<A: App> AppDriver<A> {
             raw_main: Scene::default(),
             raw_floating: BTreeMap::new(),
             layers: LayerModel::default(),
+            popups_on: false,
+            popup_reqs: Vec::new(),
+            pointer_on: None,
             probes: Vec::new(),
             hooks: Vec::new(),
             last: Vec::new(),
@@ -104,6 +111,18 @@ impl<A: App> AppDriver<A> {
     /// 登记一个浮层表面（只有登记过的浮层才出帧、才能当输入目标）。
     pub fn with_floating(mut self, index: usize, width: f32, height: f32) -> Self {
         self.floating.insert(index, Size::new(width, height));
+        self
+    }
+
+    /// 分离弹层模式：照外壳那样开弹层表面（`App::enable_popups(bounds)`），弹层内容拼回主表面坐标，
+    /// 指针按落点路由到最上层弹层（跨表面补发 `PointerLeft`），按键投给最上层弹层；有抓取的弹层开着时
+    /// 点它外面 = 合成器 `popup_done`（`popup_dismissed`，这一下不投给应用）。退场中的弹层立即结算
+    /// （`popup_motion_done`），与图层动画同一取舍：只看两端。
+    /// 何时要开：主表面很矮、弹层画在表面之外的应用（TopBar 30 高，面板全在条下）——不开的话
+    /// `Tree::compose` 会按表面把条下的弹层整块裁掉。`bounds` 照生产外壳给（通常是整个输出）。
+    pub fn with_popups(mut self, bounds: Rect) -> Self {
+        assert!(self.app.enable_popups(bounds), "应用不支持分离弹层（enable_popups 返回 false）");
+        self.popups_on = true;
         self
     }
 
@@ -330,11 +349,62 @@ impl<A: App> AppDriver<A> {
     fn send(&mut self, surface: Surface, event: InputEvent) {
         self.start();
         match surface {
+            Surface::Main if self.popups_on => self.route_main(event),
             Surface::Main => self.app.handle_input(event),
             Surface::Floating(i) => {
                 assert!(self.floating.contains_key(&i), "浮层 {i} 未登记：先 with_floating({i}, w, h)");
                 self.app.floating_input(i, event);
             }
+        }
+    }
+
+    /// 分离弹层模式下主表面坐标系里的输入路由（外壳 + 合成器两边的行为合在一起）。
+    fn route_main(&mut self, event: InputEvent) {
+        let live: Vec<&PopupRequest> = self.popup_reqs.iter().filter(|r| !r.closing).collect();
+        // 指针所在的弹层已经没了（关闭 / 退场）：合成器那边表面已销毁，不补发 Leave。
+        if self.pointer_on.is_some_and(|k| !live.iter().any(|r| r.key == k)) {
+            self.pointer_on = None;
+        }
+        let pos = match &event {
+            InputEvent::PointerMoved { x, y }
+            | InputEvent::PointerPressed { x, y, .. }
+            | InputEvent::PointerReleased { x, y, .. }
+            | InputEvent::DoubleClick { x, y, .. } => Some(Point::new(*x, *y)),
+            _ => None,
+        };
+        let Some(p) = pos else {
+            // 无位置的事件：滚动跟指针走；键盘 / IME 给最上层弹层（抓取弹层持键盘焦点）。
+            let target = match &event {
+                InputEvent::Scroll { .. } | InputEvent::ScrollInput(_) | InputEvent::PointerLeft => self.pointer_on,
+                _ => live.last().map(|r| r.key),
+            };
+            match target {
+                Some(k) => self.app.popup_input(k, event),
+                None => self.app.handle_input(event),
+            }
+            return;
+        };
+        let hit = live.iter().rev().find(|r| r.rect.contains(p)).map(|r| (r.key, r.rect.origin));
+        let grabbed: Vec<u64> = live.iter().filter(|r| r.grab).map(|r| r.key).collect();
+        if hit.is_none() && !grabbed.is_empty() && matches!(event, InputEvent::PointerPressed { .. }) {
+            // 抓取中点外部：合成器关掉整条弹层链，这一下不投给客户端。
+            for k in grabbed.into_iter().rev() {
+                self.app.popup_dismissed(k);
+            }
+            self.popup_reqs.clear();
+            return;
+        }
+        let target = hit.map(|h| h.0);
+        if target != self.pointer_on {
+            match self.pointer_on {
+                Some(k) => self.app.popup_input(k, InputEvent::PointerLeft),
+                None => self.app.handle_input(InputEvent::PointerLeft),
+            }
+            self.pointer_on = target;
+        }
+        match hit {
+            Some((k, o)) => self.app.popup_input(k, offset_event(event, -o.x, -o.y)),
+            None => self.app.handle_input(event),
         }
     }
 
@@ -362,6 +432,21 @@ impl<A: App> AppDriver<A> {
         }
         self.layers.apply(self.app.take_layer_commands());
         self.frames.main = self.layers.compose(&self.raw_main, LayerParent::Main);
+        if self.popups_on {
+            let reqs = self.app.popups();
+            for r in &reqs {
+                if r.closing {
+                    self.app.popup_motion_done(r.key);
+                    continue;
+                }
+                let scene = self.app.render_popup(&self.engine, r.key, r.rect.size);
+                let (dx, dy) = (r.rect.origin.x, r.rect.origin.y);
+                self.frames.main.commands.push(SceneCommand::PushClip { rect: r.rect });
+                self.frames.main.commands.extend(scene.commands.iter().map(|c| shift(c, dx, dy, 1.0)));
+                self.frames.main.commands.push(SceneCommand::PopClip);
+            }
+            self.popup_reqs = reqs;
+        }
         self.frames.floating = self
             .raw_floating
             .iter()
@@ -375,6 +460,7 @@ impl<A: App> AppDriver<A> {
         for _ in 1..SETTLE_FRAMES {
             let busy = self.app.needs_redraw()
                 || self.layers.busy()
+                || self.popup_reqs.iter().any(|r| r.closing)
                 || self
                     .floating
                     .keys()
@@ -742,6 +828,17 @@ pub fn hex(c: Color) -> String {
     format!("#{:02x}{:02x}{:02x}{:02x}", q(c.r), q(c.g), q(c.b), q(c.a))
 }
 
+/// 把带位置的指针事件平移到另一张表面的局部坐标。
+fn offset_event(event: InputEvent, dx: f32, dy: f32) -> InputEvent {
+    match event {
+        InputEvent::PointerMoved { x, y } => InputEvent::PointerMoved { x: x + dx, y: y + dy },
+        InputEvent::PointerPressed { x, y, button, modifiers } => InputEvent::PointerPressed { x: x + dx, y: y + dy, button, modifiers },
+        InputEvent::PointerReleased { x, y, button, modifiers } => InputEvent::PointerReleased { x: x + dx, y: y + dy, button, modifiers },
+        InputEvent::DoubleClick { x, y, button, modifiers } => InputEvent::DoubleClick { x: x + dx, y: y + dy, button, modifiers },
+        other => other,
+    }
+}
+
 fn pressed(at: Point, button: PointerButton) -> InputEvent {
     InputEvent::PointerPressed { x: at.x, y: at.y, button, modifiers: Modifiers::NONE }
 }
@@ -884,6 +981,62 @@ mod tests {
             d.transcript().to_string()
         };
         assert_eq!(run(), run());
+    }
+
+    /// 右键菜单的应用：菜单内容两项，选中记命令路径。
+    struct CtxDemo {
+        config: AppConfig,
+        clicks: u32,
+        commands: Vec<Vec<usize>>,
+    }
+
+    impl TreeApp for CtxDemo {
+        fn config(&self) -> &AppConfig {
+            &self.config
+        }
+        fn build(&mut self, tree: &mut Tree) {
+            let start = LayoutProps { h_align: Align::Start, ..LayoutProps::default() };
+            tree.insert_with(tree.root(), MetroButton::new("底"), start);
+        }
+        fn on_action(&mut self, _tree: &mut Tree, _from: WidgetId, action: Action) {
+            if action.is::<ButtonClicked>() {
+                self.clicks += 1;
+            }
+        }
+        fn context_menu(&mut self, _tree: &mut Tree, _x: f32, _y: f32) -> Option<Vec<kanesumi_controls::MenuItem>> {
+            Some(vec![kanesumi_controls::MenuItem::new("打开"), kanesumi_controls::MenuItem::new("删除")])
+        }
+        fn on_context_command(&mut self, _tree: &mut Tree, path: &[usize]) {
+            self.commands.push(path.to_vec());
+        }
+    }
+
+    /// 分离弹层：菜单画在主表面之外也看得见；点菜单项走弹层输入；抓取中点外部 = 关闭且不投给应用。
+    #[test]
+    fn detached_popups_are_composed_routed_and_dismissed() {
+        let host = TreeHost::new(CtxDemo {
+            config: AppConfig::new("org.ether.test", "ctx", EtherRole::Browser, 400.0, 40.0),
+            clicks: 0,
+            commands: Vec::new(),
+        });
+        // 主表面只有 40 高（像 TopBar），菜单落在表面之外。
+        let mut d = AppDriver::new(host, 400.0, 40.0)
+            .with_popups(Rect::new(0.0, 0.0, 400.0, 300.0))
+            .probe_texts("texts", Surface::Main)
+            .probe("cmds", |h: &TreeHost<CtxDemo>, _| format!("{:?}", h.app().commands))
+            .probe("clicks", |h: &TreeHost<CtxDemo>, _| h.app().clicks.to_string());
+        d.right_click("bg", Surface::Main, Point::new(200.0, 30.0));
+        assert!(d.transcript().contains("打开|删除"), "菜单应拼回主表面坐标：\n{}", d.transcript());
+        let first = d.app().popups().first().cloned().expect("菜单是分离弹层");
+        assert!(first.rect.origin.y + first.rect.size.height > 40.0, "菜单应在主表面之外");
+        // 第一项中心（面板内 20,16，同 tree_host 的右键用例）。
+        let item = Point::new(first.rect.origin.x + 20.0, first.rect.origin.y + 16.0);
+        d.click("item0", Surface::Main, item);
+        assert!(d.transcript().contains("cmds=[[0]]"), "{}", d.transcript());
+        d.right_click("bg", Surface::Main, Point::new(200.0, 30.0));
+        d.click("outside", Surface::Main, Point::new(10.0, 10.0));
+        let last = d.transcript().lines().last().unwrap().to_string();
+        assert!(last.contains("texts=底") && !last.contains("clicks="), "点外部只关菜单，不点到按钮：{last}");
     }
 
     /// 外部事件记一行 `ext(名字)`，后面跟它造成的变化。
