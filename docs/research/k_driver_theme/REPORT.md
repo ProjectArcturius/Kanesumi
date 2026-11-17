@@ -1,4 +1,4 @@
-# AppDriver 固定主题入口 —— 报告（2026-10-06）
+# AppDriver 固定主题入口 —— 报告（2026-11-17）
 
 > 任务：给 `kanesumi-harness` 的 `system_theme` 加**进程级固定主题**，并给迁移快照夹具
 > `testing::AppDriver` 一个便捷入口。由来见 Ether `docs/research/m1115_dock/REPORT.md` §二：
@@ -86,7 +86,7 @@ pub fn with_pinned_theme(self, theme: MetroTheme) -> Self {
 
 ## 四、验证
 
-命令与结果（Fedora，`export PATH=$HOME/.cargo/bin:$PATH`）：
+命令与结果（t14p/Debian，`export PATH=$HOME/.cargo/bin:$PATH`）：
 
 ```text
 cargo test -p kanesumi-harness
