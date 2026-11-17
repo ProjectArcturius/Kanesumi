@@ -761,6 +761,7 @@ pub enum DeclChange {
 pub enum DialogButton {
 pub enum DialogDefaultButton {
 pub enum DialogState {
+pub enum DockCell {
 pub enum DockChipDirection {
 pub enum DockDirection {
 pub enum DockHit {
@@ -1255,6 +1256,10 @@ pub fn popup_size(&self) -> Size {
 pub fn preedit(&self) -> &str {
 pub fn preedit_cursor(&self) -> Option<usize> {
 pub fn preedit_display(&self) -> String {
+pub fn present(input: &DockRailInput, presentation: &DockPresentation) -> DockPresentedLayout {
+pub fn present_layout(
+pub fn presentation(&self) -> Option<&DockPresentation> {
+pub fn presented_layout(&self) -> DockPresentedLayout {
 pub fn press(&mut self) -> bool {
 pub fn press(&mut self, engine: &TextEngine, rect: Rect, p: Point) -> bool {
 pub fn press(&mut self, pos: Point) -> bool {
@@ -1307,6 +1312,7 @@ pub fn render_header(
 pub fn render_overlay(theme: &MetroTheme, anim: &PopupAnim, screen: Rect, scene: &mut Scene) {
 pub fn render_panel(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
 pub fn render_panel_base(theme: &MetroTheme, rect: Rect, progress: f64, scene: &mut Scene) {
+pub fn render_slots(
 pub fn render_submenu(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
 pub fn reset(&mut self) {
 pub fn reset(&self) {
@@ -1397,6 +1403,7 @@ pub fn set_pane_expanded(&mut self, expanded: bool) {
 pub fn set_pane_progress(&mut self, progress: f32) {
 pub fn set_pin_gap(&mut self, gap: Option<usize>) {
 pub fn set_preedit(&mut self, text: &str, cursor_byte: Option<usize>) {
+pub fn set_presentation(&mut self, presentation: Option<DockPresentation>) {
 pub fn set_rows(&mut self, rows: Vec<String>, row_h: f32, viewport_h: f32) {
 pub fn set_scale(&mut self, scale: f32) {
 pub fn set_scroll(&mut self, scroll: [usize; 2]) {
@@ -1428,6 +1435,7 @@ pub fn single_line(mut self) -> Self {
 pub fn size() -> Size {
 pub fn slider(
 pub fn slider_rect(&self, rect: Rect, k: usize) -> Rect {
+pub fn slot(&self, display: usize) -> Option<&DockPresentedSlot> {
 pub fn slot(&self, display: usize) -> Option<&DockSlotLayout> {
 pub fn slot_rect(&self, index: usize) -> Option<Rect> {
 pub fn snap_edge(v: f32) -> f32 {
@@ -1533,6 +1541,7 @@ pub fn with_image_icon(label: impl Into<String>, icon: Icon) -> Self {
 pub fn with_indent(mut self, indent: u8) -> Self {
 pub fn with_label(icon: impl Into<String>, label: impl Into<String>) -> Self {
 pub fn with_label(label: impl Into<String>) -> Self {
+pub fn with_line_progress(mut self, id: impl Into<String>, progress: f32) -> Self {
 pub fn with_max(mut self, max: f64) -> Self {
 pub fn with_max_lines(mut self, max_lines: usize) -> Self {
 pub fn with_meta(rows: Vec<String>, meta: Vec<ListRowMeta>) -> Self {
@@ -1541,14 +1550,20 @@ pub fn with_name(name: impl Into<String>) -> Self {
 pub fn with_overflow(mut self, overflow: TextOverflow) -> Self {
 pub fn with_overscan(mut self, ratio: f32) -> Self {
 pub fn with_placeholder(text: impl Into<String>) -> Self {
+pub fn with_plate(mut self, width: f32, top: f32, height: f32) -> Self {
+pub fn with_plate_width(mut self, width: f32) -> Self {
 pub fn with_range(mut self, min: f64, max: f64) -> Self {
+pub fn with_scroll(mut self, scroll: [f32; 2]) -> Self {
 pub fn with_selected(mut self, date: Date) -> Self {
 pub fn with_selected(mut self, selected: bool) -> Self {
 pub fn with_shape(mut self, shape: SwitchShape) -> Self {
 pub fn with_shortcut(mut self, text: impl Into<String>) -> Self {
 pub fn with_size(mut self, size: IconButtonSize) -> Self {
+pub fn with_slot_offset(mut self, id: impl Into<String>, dx: f32) -> Self {
 pub fn with_smooth_scroll(mut self, on: bool) -> Self {
 pub fn with_sort(mut self, column: usize, ascending: bool) -> Self {
+pub fn with_source_line_progress(mut self, source: usize, progress: f32) -> Self {
+pub fn with_source_offset(mut self, source: usize, dx: f32) -> Self {
 pub fn with_state_text(mut self, on: impl Into<String>, off: impl Into<String>) -> Self {
 pub fn with_step(mut self, step: f64) -> Self {
 pub fn with_submenu(mut self, items: Vec<MenuItem>) -> Self {
@@ -1584,10 +1599,16 @@ pub struct DeclPath(pub Vec<usize>);
 pub struct DialogButtons {
 pub struct DialogResult(pub DialogButton);
 pub struct DockActivated {
+pub struct DockCellDraw {
 pub struct DockChipLayout {
 pub struct DockItem {
 pub struct DockLayout {
 pub struct DockMetrics {
+pub struct DockPresentation {
+pub struct DockPresentedChip {
+pub struct DockPresentedLayout {
+pub struct DockPresentedSlot {
+pub struct DockPresentedZone {
 pub struct DockRail;
 pub struct DockRailEntry {
 pub struct DockRailInput {

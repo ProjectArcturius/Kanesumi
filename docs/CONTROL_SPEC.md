@@ -2276,3 +2276,65 @@ C0（1280×752，两组 18+2 个 Standard）的 `margin_x = 1280×120/1366 = 112
 
 应用 C1、拖放结果类型、键盘默认行为、时间 / 动画 / GPU、从屏高自动推导度量、
 C0 图与 12 份转录均不在本件范围。
+## 54 · MetroDock 呈现几何与按槽绘制（2026-11-17）
+
+由来：`MetroDock::render` 只消费 `DockRail::layout` 的**落定几何**，而旧 launcher 的 Dock 还有
+两帧之间的中间态（`disp_x` / `start_off` 的逐槽位移、`plate_shown` 的板宽插值、`scroll_pos` 的
+分数滚动、`line_from` 的线色插值）与逐槽损伤（`DockSpot` 只把悬停底记到一格）。本层把这两类
+能力补进控件，消费方不再自己算偏移、插值或混色。
+
+### 输入形状（`navigation::dock_rail::DockPresentation`）
+
+| 字段 | 类型 | 语义 |
+|---|---|---|
+| `plate_width` | `Option<f32>` | 完整板宽（含左右各 12 内边距）。`None` = 落定板宽；`0` = 收成无板。 |
+| `plate_top` / `plate_height` | `Option<f32>` | 板顶 / 板高。`None` = 落定值；高夹到轨道高。 |
+| `slot_offsets` | `Vec<(String, f32)>` | 逐槽水平位移；键按稳定 id，找不到再按 `#<source>`，两处都命中则相加。 |
+| `scroll` | `Option<[f32; 2]>` | 每区**当前**滚动位置（单位 = 槽，可含小数）。整数目标仍由 `set_scroll([usize; 2])` 给。 |
+| `line_progress` | `Vec<(String, f32)>` | 逐槽线色进度：`0` = `Divider`、`0.5` = `Primary`、`1` = `PrimaryHover`，两段内线性插值。缺省取 `indicator_kind` 的自然端点。 |
+
+`DockPresentation::default()` 全是覆盖项缺省，套用后与落定几何一致。用
+`MetroDock::set_presentation(Some(...))` 显式启用；`set_presentation(None)` 回到落定。
+
+### 输出形状
+
+- `MetroDock::presented_layout() -> DockPresentedLayout`：板 / 入口格 / 两区视口 / 计数格 /
+  每槽 `rect`、`hit`、`icon_rect`、`indicator`、`line_progress`、`dx`。启动轻跳已并进
+  `icon_rect`，消费方不再减偏移。`DockPresentedLayout::hit(pos)` 与呈现矩形同源。
+- `MetroDock::render_slots(theme, engine, scene) -> Vec<DockCellDraw>`：按格绘制并返回
+  `cell` / `rect` / `damage` / `commands`（`Scene.commands` 的半开区间）。格分
+  `Plate` / `Entry` / `Slot { display, source }` / `Chip { zone, direction }`；槽位格包含
+  悬停 / 按下 / 激活底、定位线、紧急点、计数徽标，入口格与计数格各自一份损伤。
+  槽位损伤 x 只到本槽，徽标那 1 pt 上沿与轻跳已算进 `damage`。
+- 板宽插值从「呈现后的板左沿 + 内边距」重新排内容，槽位随板收放，不是全体平移一个常量。
+- 分数滚动的整数目标来自落定布局的 `before`；`scroll` 只给当前小数位置，偏移 =
+  `(before − scroll) × 槽宽`。因此 `set_scroll([1, 0])` + `with_scroll([0.5, 0])` 就是
+  「第 1 页目标、当前滚到半格」。
+
+### 不变量（回归钉住）
+
+1. **旧出口逐像素不变**：`render` / `set_items` / `layout()` / `indicator_rect` /
+   `try_indicator_rect` 的签名与默认输出不变；`render` 永远走落定路径，即使
+   `set_presentation(Some(...))` 也不读呈现输入。`DockRail::layout` 不改语义。
+2. **控件内不出现 `Color::new`**：线色只用 `ThemeColor` 令牌与 `Color::lerp`；
+   10% 叠色用 `Color::over`。新增通用算法才允许下沉 `kanesumi-core`。
+3. **损伤按格**：`Slot` 的 `damage` 不越过本槽 x 范围（滚出视口的槽不产出），
+   相邻槽 / 计数格 / 入口格的损伤互不重叠（板是整块背景，另行登记）。
+4. **线色端点**：进度 `0 / 0.5 / 1` 必须分别等于 `Divider / Primary / PrimaryHover` 的
+   token 解析值；`0.25` / `0.75` 是两段的中点。
+5. **状态仍由控件产出**：悬停 / 按下 / 激活底、计数徽标、计数格、入口格、关闭幽灵、
+   启动呼吸与轻跳都在控件里；消费方只给 `DockItem` 状态、`set_*` 输入与动画进度。
+
+### 与旧 `MetroDock::render` 的关系
+
+`render` 保留为「一次画完」的旧路径，供尚未接损伤的调用方原样使用；新调用方用
+`render_slots` 拿逐格命令区间与损伤。两者共用同一份落定布局与 `DockPresentation`
+缺省值，但 `render` 不消费呈现输入是有意为之：先保证迁移期间旧截图不变，再由调用方
+显式切到新入口。
+
+### 未做 / 边界
+
+- RTL 仍与 LTR 同几何（沿用 `DockDirection` 的 TODO），呈现层不做镜像。
+- 呈现 `hit` 只在 `presented_layout().hit(pos)` 上提供；`MetroDock::hit(pos)` 仍是落定命中，
+  避免过渡帧的命中抖动。需要动画期命中时由调用方显式用呈现快照。
+- 图标解码仍归调用方：`presented_layout()` 只给 `icon_rect` 与 `icon_opacity`。

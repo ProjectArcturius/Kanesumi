@@ -4,6 +4,8 @@
 // 与 `docs/INTERACTION_CANON.md`（按下外观跟随目标、松开必须在同一槽上）。
 
 use kanesumi_canvas::{Scene, SceneCommand};
+use kanesumi_controls::navigation::dock::{DockCell, DockCellDraw};
+use kanesumi_controls::navigation::dock_rail::DockPresentation;
 use kanesumi_controls::navigation::{
     DockHit, DockIndicatorKind, DockItem, DockItemState, MetroDock,
     try_indicator_rect as indicator_rect,
@@ -564,4 +566,220 @@ fn dock_state_transcript() {
         "release(out)  -> Cancelled".to_string(),
     ];
     assert_eq!(t, expect, "状态转录必须逐行相等");
+}
+
+// ── 呈现几何与按槽绘制（2026-11-17）────────────────────────────────────
+
+fn render_cells(d: &MetroDock) -> (Scene, Vec<DockCellDraw>) {
+    let theme = MetroTheme::ether_dark();
+    let engine = test_engine();
+    let mut scene = Scene::default();
+    let cells = d.render_slots(&theme, &engine, &mut scene);
+    (scene, cells)
+}
+
+fn overlap_area(a: Rect, b: Rect) -> f32 {
+    let w = (a.right().min(b.right()) - a.origin.x.max(b.origin.x)).max(0.0);
+    let h = (a.bottom().min(b.bottom()) - a.origin.y.max(b.origin.y)).max(0.0);
+    w * h
+}
+
+/// 三个槽 + 入口格的损伤互不重叠，且每个槽的损伤只盖自己的 x 范围。
+#[test]
+fn presentation_damage_is_per_cell_and_non_overlapping() {
+    let d = c0_dock();
+    let (scene, cells) = render_cells(&d);
+    let slots: Vec<&DockCellDraw> = cells
+        .iter()
+        .filter(|c| matches!(c.cell, DockCell::Slot { .. }))
+        .collect();
+    assert_eq!(slots.len(), 3, "C0 三个槽各一份绘制产物");
+    for cell in &slots {
+        assert!(!cell.commands.is_empty(), "每个槽至少画定位线");
+        assert!(
+            cell.commands.end <= scene.commands.len(),
+            "命令区间必须落在本帧 Scene 内"
+        );
+        assert!(
+            cell.damage.origin.x >= cell.rect.origin.x - 0.01
+                && cell.damage.right() <= cell.rect.right() + 0.01,
+            "损伤只盖本槽：{:?} vs {:?}",
+            cell.damage,
+            cell.rect
+        );
+        assert!(close(cell.damage.origin.y, 0.0));
+        assert!(close(cell.damage.size.height, 68.0));
+    }
+    for pair in slots.windows(2) {
+        assert_eq!(
+            overlap_area(pair[0].damage, pair[1].damage),
+            0.0,
+            "相邻槽损伤不得重叠：{:?} / {:?}",
+            pair[0].damage,
+            pair[1].damage
+        );
+    }
+    let entry = cells
+        .iter()
+        .find(|c| c.cell == DockCell::Entry)
+        .expect("入口格应有一份损伤");
+    assert!(close(entry.damage.origin.x, 648.0));
+    assert!(close(entry.damage.size.width, 60.0));
+    let plate = cells
+        .iter()
+        .find(|c| c.cell == DockCell::Plate)
+        .expect("底板应有一份损伤");
+    assert_eq!(plate.rect, Rect::new(636.0, 0.0, 264.0, 68.0));
+}
+
+/// 线色进度五个取样点：三档端点 + 两段中点，期望只来自主题令牌与 `Color::lerp`。
+#[test]
+fn presentation_line_progress_endpoints_and_midpoints() {
+    let theme = MetroTheme::ether_dark();
+    let divider = theme.colors.divider;
+    let primary = theme.colors.primary;
+    let hover = theme.colors.primary_hover;
+    let cases = [
+        (0.0, divider),
+        (0.25, divider.lerp(primary, 0.5)),
+        (0.5, primary),
+        (0.75, primary.lerp(hover, 0.5)),
+        (1.0, hover),
+    ];
+    for (progress, expected) in cases {
+        let mut d = MetroDock::new();
+        d.set_items(
+            vec![DockItem::new("only", "icon").pinned(true)],
+            Rect::new(0.0, 0.0, 800.0, 76.0),
+        );
+        d.set_presentation(Some(
+            DockPresentation::default().with_line_progress("only", progress),
+        ));
+        let line = d.presented_layout().slots[0]
+            .indicator
+            .expect("单槽应有定位线");
+        let (scene, _) = render_cells(&d);
+        let color = fills(&scene)
+            .iter()
+            .find(|(rect, _)| *rect == line)
+            .map(|(_, c)| *c)
+            .expect("定位线必须画在呈现矩形上");
+        assert!(
+            close_color(color, expected),
+            "进度 {progress} 的线色 {color:?} 应等于 {expected:?}"
+        );
+    }
+}
+
+/// 板宽插值与逐槽位移一起生效：C0 板 264 → 324，nvim / kitty 各让一格。
+#[test]
+fn presentation_plate_and_offsets_move_rendered_cells() {
+    let mut d = c0_dock();
+    d.set_presentation(Some(
+        DockPresentation::default()
+            .with_plate_width(324.0)
+            .with_slot_offset("nvim", 60.0)
+            .with_slot_offset("kitty", 60.0),
+    ));
+    let presented = d.presented_layout();
+    assert_eq!(presented.plate, Some(Rect::new(606.0, 0.0, 324.0, 68.0)));
+    let x = |id: &str| {
+        presented
+            .slots
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.rect.origin.x)
+            .unwrap()
+    };
+    assert!(close(x("org.ether.librarian"), 678.0));
+    assert!(close(x("nvim"), 798.0));
+    assert!(close(x("kitty"), 858.0));
+
+    let (_, cells) = render_cells(&d);
+    let damages: Vec<Rect> = cells
+        .iter()
+        .filter(|c| matches!(c.cell, DockCell::Slot { .. }))
+        .map(|c| c.damage)
+        .collect();
+    for pair in damages.windows(2) {
+        assert_eq!(
+            overlap_area(pair[0], pair[1]),
+            0.0,
+            "让位后的槽损伤仍不得重叠"
+        );
+    }
+}
+
+/// 旧 `render` 不消费呈现输入：启用前后逐命令相等（默认输出不变的硬约束）。
+#[test]
+fn legacy_render_ignores_presentation() {
+    let d = c0_dock();
+    let before = render(&d);
+    let mut shifted = d.clone();
+    shifted.set_presentation(Some(
+        DockPresentation::default()
+            .with_plate(234.0, 0.0, 68.0)
+            .with_scroll([0.5, 0.0])
+            .with_slot_offset("kitty", -30.0)
+            .with_line_progress("kitty", 0.25),
+    ));
+    let after = render(&shifted);
+    assert_eq!(before, after, "旧 render 不得被新入口改变");
+    assert_eq!(
+        shifted.layout().slots[2].rect.origin.x,
+        d.layout().slots[2].rect.origin.x,
+        "落定布局也不得被呈现输入改变"
+    );
+}
+
+/// 启动轻跳并进呈现后的图标位；旧 `layout()` 的图标位保持落定值。
+#[test]
+fn presented_icon_rect_includes_starting_hop() {
+    let mut d = c0_dock();
+    d.set_starting(&["kitty".to_string()]);
+    d.set_starting_motion(0.0, 0.5);
+    let presented = d.presented_layout();
+    let kitty = presented
+        .slots
+        .iter()
+        .find(|s| s.id == "kitty")
+        .expect("kitty 槽");
+    assert!(close(kitty.icon_rect.origin.y, 7.0), "半个轻跳周期抬 3 pt");
+    assert!(close(d.layout().slots[2].icon_rect.origin.y, 10.0));
+}
+
+/// 溢出时计数格也是独立损伤：只盖自己的 36 pt，不和槽位重叠。
+#[test]
+fn presentation_chip_damage_is_its_own_cell() {
+    let mut items = Vec::new();
+    for i in 0..10 {
+        items.push(DockItem::new(format!("p{i}"), "icon").pinned(true));
+    }
+    for i in 0..2 {
+        items.push(DockItem::new(format!("r{i}"), "icon").running(true));
+    }
+    let mut d = MetroDock::new();
+    d.set_show_entry(true);
+    d.set_items(items, Rect::new(0.0, 0.0, 800.0, 76.0));
+    d.set_scroll([1, 0]);
+    let (_, cells) = render_cells(&d);
+    let chips: Vec<&DockCellDraw> = cells
+        .iter()
+        .filter(|c| matches!(c.cell, DockCell::Chip { .. }))
+        .collect();
+    assert!(!chips.is_empty(), "溢出翻页应有计数格");
+    for chip in &chips {
+        assert!(close(chip.damage.origin.x, chip.rect.origin.x));
+        assert!(close(chip.damage.size.width, 36.0));
+        for slot in cells
+            .iter()
+            .filter(|c| matches!(c.cell, DockCell::Slot { .. }))
+        {
+            assert_eq!(
+                overlap_area(chip.damage, slot.damage),
+                0.0,
+                "计数格损伤不得盖到槽位"
+            );
+        }
+    }
 }

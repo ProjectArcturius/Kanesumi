@@ -348,6 +348,184 @@ impl DockLayout {
     }
 }
 
+/// 呈现输入：两帧之间的**中间态**。旧 launcher 的 `disp_x` / `start_off`（逐槽位移）、
+/// `plate_shown`（板宽插值）、`scroll_pos`（分数滚动）与 `line_from`（线色插值）都收敛到这里。
+///
+/// 所有字段都是**可选覆盖**：`None` / 空表 = 用落定几何。只有 `MetroDock::set_presentation`
+/// 显式喂入时才参与新绘制入口；旧的 `MetroDock::render` 始终走落定路径，逐像素不变。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DockPresentation {
+    /// 完整板宽（含左右内边距，逻辑 pt）。`None` = 落定板宽；`0` = 收成无板。
+    pub plate_width: Option<f32>,
+    /// 板顶 y。`None` = 落定板顶。
+    pub plate_top: Option<f32>,
+    /// 板高。`None` = 落定板高（并夹到轨道高）。
+    pub plate_height: Option<f32>,
+    /// 逐槽水平位移（正值向右）。键先按稳定 id 查，再按 `#<source>` 查；两处都命中则相加。
+    /// 覆盖让位（+一格）与换位过渡的起点偏移；轻跳是纵向，由控件按启动相位产出。
+    pub slot_offsets: Vec<(String, f32)>,
+    /// 逐区滚动位置（单位 = 槽，可含小数）。整数落定值来自 `DockRailInput.scroll`，
+    /// 这里给的是动画中的**当前**位置；`None` = 取落定值。
+    pub scroll: Option<[f32; 2]>,
+    /// 逐槽定位线颜色进度：`0` = `Divider`、`0.5` = `Primary`、`1` = `PrimaryHover`，
+    /// 两段内线性插值。键规则同 `slot_offsets`；缺省按槽的 `indicator_kind` 取端点。
+    pub line_progress: Vec<(String, f32)>,
+}
+
+impl DockPresentation {
+    /// 只改板宽（板顶 / 高沿用落定值）。
+    pub fn with_plate_width(mut self, width: f32) -> Self {
+        self.plate_width = Some(width);
+        self
+    }
+
+    /// 板宽 / 板顶 / 板高一次给全。
+    pub fn with_plate(mut self, width: f32, top: f32, height: f32) -> Self {
+        self.plate_width = Some(width);
+        self.plate_top = Some(top);
+        self.plate_height = Some(height);
+        self
+    }
+
+    /// 逐区当前滚动位置（可含小数槽）。
+    pub fn with_scroll(mut self, scroll: [f32; 2]) -> Self {
+        self.scroll = Some(scroll);
+        self
+    }
+
+    /// 逐槽水平位移。
+    pub fn with_slot_offset(mut self, id: impl Into<String>, dx: f32) -> Self {
+        self.slot_offsets.push((id.into(), dx));
+        self
+    }
+
+    /// 按模型下标给逐槽水平位移（内部键 = `#<source>`）。
+    pub fn with_source_offset(mut self, source: usize, dx: f32) -> Self {
+        self.slot_offsets.push((format!("#{source}"), dx));
+        self
+    }
+
+    /// 逐槽定位线颜色进度（0 / 0.5 / 1 = Divider / Primary / PrimaryHover）。
+    pub fn with_line_progress(mut self, id: impl Into<String>, progress: f32) -> Self {
+        self.line_progress.push((id.into(), progress));
+        self
+    }
+
+    /// 按模型下标给线色进度（内部键 = `#<source>`）。
+    pub fn with_source_line_progress(mut self, source: usize, progress: f32) -> Self {
+        self.line_progress.push((format!("#{source}"), progress));
+        self
+    }
+}
+
+/// 呈现后的一个槽：落定槽位 + 板宽插值 / 分数滚动 / 逐槽位移后的矩形。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DockPresentedSlot {
+    pub source: usize,
+    pub display: usize,
+    pub zone: DockZone,
+    pub id: String,
+    pub icon: String,
+    /// 整槽矩形（宽 = 槽宽，高 = 轨道高，含下方悬浮间隙）。
+    pub rect: Rect,
+    /// 呈现后的可点区域；溢出时按区视口裁剪，完全挡住 = `None`。
+    pub hit: Option<Rect>,
+    pub icon_rect: Rect,
+    pub visible: bool,
+    /// 呈现后的定位线段；不可见 / 完全滚出视口 = `None`。宽度只到本槽，便于按槽记损伤。
+    pub indicator: Option<Rect>,
+    pub indicator_kind: DockIndicatorKind,
+    /// 本槽线的颜色进度（0 / 0.5 / 1 = Divider / Primary / PrimaryHover）。
+    pub line_progress: f32,
+    /// 本槽实际生效的水平位移（含 id / source 两处命中之和）。
+    pub dx: f32,
+}
+
+/// 呈现后的一个计数格。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DockPresentedChip {
+    pub zone: DockZone,
+    pub direction: DockChipDirection,
+    pub count: usize,
+    pub rect: Rect,
+    pub line: Rect,
+}
+
+/// 呈现后的一个区。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DockPresentedZone {
+    pub zone: DockZone,
+    pub rect: Rect,
+    /// 槽位视口（计数格之外的可见槽区）。
+    pub viewport: Rect,
+    pub before: usize,
+    pub after: usize,
+    pub visible: usize,
+    pub chips: Vec<DockPresentedChip>,
+}
+
+/// 一次呈现的完整快照。几何真值仍以 `DockLayout` 为落定来源，本结构只描述**当前帧**。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DockPresentedLayout {
+    pub metrics: DockMetrics,
+    pub dock: Rect,
+    pub plate: Option<Rect>,
+    pub entry: Option<Rect>,
+    pub zones: [DockPresentedZone; 2],
+    pub slots: Vec<DockPresentedSlot>,
+    pub line_y: f32,
+    pub line_height: f32,
+    pub overflow: bool,
+}
+
+impl DockPresentedLayout {
+    /// 呈现几何上的命中（计数格 → 入口格 → 槽位），与 `DockLayout::hit` 同序。
+    pub fn hit(&self, pos: Point) -> Option<DockHit> {
+        for zone in &self.zones {
+            for chip in &zone.chips {
+                if chip.rect.contains(pos) {
+                    return Some(DockHit::Chip {
+                        zone: chip.zone,
+                        direction: chip.direction,
+                    });
+                }
+            }
+        }
+        if self.entry.is_some_and(|r| r.contains(pos)) {
+            return Some(DockHit::Entry);
+        }
+        self.slots
+            .iter()
+            .find(|s| s.hit.is_some_and(|r| r.contains(pos)))
+            .map(|s| DockHit::Slot(s.display))
+    }
+
+    /// 按呈现序号取槽位。
+    pub fn slot(&self, display: usize) -> Option<&DockPresentedSlot> {
+        self.slots.get(display)
+    }
+}
+
+/// 落定语义档 → 三档线色进度的自然端点。
+fn natural_line_progress(kind: DockIndicatorKind) -> f32 {
+    match kind {
+        DockIndicatorKind::Pinned => 0.0,
+        DockIndicatorKind::Running => 0.5,
+        DockIndicatorKind::Focused => 1.0,
+    }
+}
+
+/// 逐槽键查询：先按 id，再按 `#<source>`；非有限值忽略。
+fn keyed_value(table: &[(String, f32)], id: &str, source: usize) -> Option<f32> {
+    let source_key = format!("#{source}");
+    table
+        .iter()
+        .filter(|(key, _)| key == id || key == &source_key)
+        .map(|(_, value)| *value)
+        .filter(|value| value.is_finite())
+        .reduce(|a, b| a + b)
+}
+
 /// 只按水平范围裁剪（纵向整列保留）：命中区要含槽下方的悬浮间隙（§158）。
 fn clip_x(r: Rect, clip: Rect) -> Option<Rect> {
     let x0 = r.origin.x.max(clip.origin.x);
@@ -614,6 +792,197 @@ impl DockRail {
         };
         layout.hovered = input.hover.and_then(|p| layout.hit(p));
         layout
+    }
+
+    /// 在落定布局上套用呈现输入。旧 `layout` 的签名与行为不变；本函数只读它。
+    pub fn present(input: &DockRailInput, presentation: &DockPresentation) -> DockPresentedLayout {
+        Self::present_layout(&Self::layout(input), presentation)
+    }
+
+    /// 在已有落定布局上套用呈现输入。给已经自行合成条目（如让位空槽）的调用方复用。
+    pub fn present_layout(
+        layout: &DockLayout,
+        presentation: &DockPresentation,
+    ) -> DockPresentedLayout {
+        let m = layout.metrics;
+        let dock = layout.dock;
+        let landed_plate = layout.plate;
+
+        let plate_h = presentation
+            .plate_height
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .map(|h| h.min(dock.size.height))
+            .or_else(|| landed_plate.map(|p| p.size.height))
+            .unwrap_or_else(|| m.plate_height.min(dock.size.height));
+        let plate_top = presentation
+            .plate_top
+            .filter(|v| v.is_finite())
+            .or_else(|| landed_plate.map(|p| p.origin.y))
+            .unwrap_or(dock.origin.y);
+        let plate_w = presentation
+            .plate_width
+            .filter(|v| v.is_finite())
+            .or_else(|| landed_plate.map(|p| p.size.width));
+        let plate = plate_w.and_then(|w| {
+            (w > 0.0).then(|| {
+                Rect::new(
+                    dock.origin.x + (dock.size.width - w) / 2.0,
+                    plate_top,
+                    w,
+                    plate_h,
+                )
+            })
+        });
+
+        // 内容左沿从「呈现后的板左沿 + 内边距」重新起算：板宽插值时槽位随板一起收放，
+        // 不是把所有槽平移同一个常量（旧 `plate_rect` + arrange 的原始关系）。
+        let content_left = plate
+            .map(|p| p.origin.x)
+            .unwrap_or(dock.origin.x + (dock.size.width - m.plate_pad * 2.0) / 2.0)
+            + m.plate_pad;
+        let entry_w = if layout.entry.is_some() {
+            m.slot_width
+        } else {
+            0.0
+        };
+        let entry = layout
+            .entry
+            .map(|_| Rect::new(content_left, plate_top, m.slot_width, plate_h));
+        let line_y = plate_top + plate_h - m.line_height;
+
+        let mut zones = [
+            DockPresentedZone {
+                zone: DockZone::Pinned,
+                rect: Rect::new(0.0, 0.0, 0.0, 0.0),
+                viewport: Rect::new(0.0, 0.0, 0.0, 0.0),
+                before: 0,
+                after: 0,
+                visible: 0,
+                chips: Vec::new(),
+            },
+            DockPresentedZone {
+                zone: DockZone::Running,
+                rect: Rect::new(0.0, 0.0, 0.0, 0.0),
+                viewport: Rect::new(0.0, 0.0, 0.0, 0.0),
+                before: 0,
+                after: 0,
+                visible: 0,
+                chips: Vec::new(),
+            },
+        ];
+        let mut x = content_left + entry_w;
+        for (z, presented_zone) in zones.iter_mut().enumerate() {
+            let src = &layout.zones[z];
+            let zw = src.rect.size.width;
+            let vx = x + if src.before > 0 { m.chip_width } else { 0.0 };
+            let viewport = Rect::new(vx, plate_top, src.visible as f32 * m.slot_width, plate_h);
+            let mut chips = Vec::with_capacity(src.chips.len());
+            for chip in &src.chips {
+                let cx = match chip.direction {
+                    DockChipDirection::Prev => x,
+                    DockChipDirection::Next => x + zw - m.chip_width,
+                };
+                chips.push(DockPresentedChip {
+                    zone: chip.zone,
+                    direction: chip.direction,
+                    count: chip.count,
+                    rect: Rect::new(cx, plate_top, m.chip_width, plate_h),
+                    line: Rect::new(cx, line_y, m.chip_width, m.line_height),
+                });
+            }
+            *presented_zone = DockPresentedZone {
+                zone: src.zone,
+                rect: Rect::new(x, plate_top, zw, plate_h),
+                viewport,
+                before: src.before,
+                after: src.after,
+                visible: src.visible,
+                chips,
+            };
+            x += zw;
+        }
+
+        let mut slots = Vec::with_capacity(layout.slots.len());
+        for slot in &layout.slots {
+            let z = usize::from(slot.display >= layout.split);
+            let local = if z == 0 {
+                slot.display
+            } else {
+                slot.display - layout.split
+            };
+            let before = layout.zones[z].before as f32;
+            let scroll = presentation
+                .scroll
+                .map(|s| s[z])
+                .filter(|v| v.is_finite())
+                .unwrap_or(before)
+                .clamp(
+                    0.0,
+                    (layout.zones[z].before + layout.zones[z].visible) as f32,
+                );
+            let scroll_shift = (before - scroll) * m.slot_width;
+            let dx = keyed_value(&presentation.slot_offsets, &slot.id, slot.source).unwrap_or(0.0);
+            let sx = zones[z].viewport.origin.x
+                + (local as f32 - before) * m.slot_width
+                + scroll_shift
+                + dx;
+            let rect = Rect::new(sx, plate_top, m.slot_width, dock.size.height);
+            let hit = if layout.overflow {
+                clip_x(rect, zones[z].viewport)
+            } else {
+                Some(rect)
+            };
+            let icon_rect = Rect::new(
+                sx + (m.slot_width - m.icon) / 2.0,
+                plate_top + ((plate_h - m.icon) / 2.0).max(0.0),
+                m.icon,
+                m.icon,
+            );
+            let indicator = if slot.visible {
+                if layout.overflow {
+                    let vp = zones[z].viewport;
+                    let x0 = sx.max(vp.origin.x);
+                    let x1 = (sx + m.slot_width).min(vp.right());
+                    (x1 - x0 > 0.01).then(|| Rect::new(x0, line_y, x1 - x0, m.line_height))
+                } else {
+                    // 不溢出时不裁：与旧 `render` 的整排线一致，位移槽的线跟着槽走。
+                    Some(Rect::new(sx, line_y, m.slot_width, m.line_height))
+                }
+            } else {
+                None
+            };
+            let natural = natural_line_progress(slot.indicator_kind);
+            let line_progress = keyed_value(&presentation.line_progress, &slot.id, slot.source)
+                .map(|v| v.clamp(0.0, 1.0))
+                .unwrap_or(natural);
+            slots.push(DockPresentedSlot {
+                source: slot.source,
+                display: slot.display,
+                zone: slot.zone,
+                id: slot.id.clone(),
+                icon: slot.icon.clone(),
+                rect,
+                hit,
+                icon_rect,
+                visible: slot.visible,
+                indicator: if hit.is_some() { indicator } else { None },
+                indicator_kind: slot.indicator_kind,
+                line_progress,
+                dx,
+            });
+        }
+
+        DockPresentedLayout {
+            metrics: m,
+            dock,
+            plate,
+            entry,
+            zones,
+            slots,
+            line_y,
+            line_height: m.line_height,
+            overflow: layout.overflow,
+        }
     }
 }
 
@@ -1063,5 +1432,155 @@ mod tests {
         assert_eq!(rtl.zones, ltr.zones);
         assert_eq!(rtl.slots, ltr.slots);
         assert_eq!(rtl.zone_boundary, ltr.zone_boundary);
+    }
+
+    // ── 呈现几何（2026-11-17）────────────────────────────────────────────
+
+    /// C0 现场（`docs/research/m1115_dock/REPORT.md` §三）：1536 × 76、入口格开、1×，
+    /// librarian / nvim 钉选未运行、kitty 运行且激活。
+    fn c0_input() -> DockRailInput {
+        let entries = vec![
+            entry("org.ether.librarian", true, false, false),
+            entry("nvim", true, false, false),
+            entry("kitty", false, true, true),
+        ];
+        let mut input = DockRailInput::new(entries, Rect::new(0.0, 0.0, 1536.0, 76.0));
+        input.show_entry = true;
+        input
+    }
+
+    /// 落定态：期望值全部由 §158 常量与 C0 转录推出，不从 `layout()` 反推。
+    #[test]
+    fn presentation_settled_matches_c0_constants() {
+        let p = DockPresentation::default();
+        let l = DockRail::present(&c0_input(), &p);
+        // 板宽 = 入口 60 + 三槽 180 + 左右内边距 24 = 264；居中 x = (1536 − 264) / 2。
+        assert_eq!(l.plate, Some(Rect::new(636.0, 0.0, 264.0, 68.0)));
+        // 内容左沿 = 636 + 12 = 648；槽从入口格后开始，步距 60。
+        assert_eq!(l.entry, Some(Rect::new(648.0, 0.0, 60.0, 68.0)));
+        let xs: Vec<f32> = l.slots.iter().map(|s| s.rect.origin.x).collect();
+        assert_eq!(xs, [708.0, 768.0, 828.0]);
+        assert_eq!(l.slots[0].icon_rect, Rect::new(714.0, 10.0, 48.0, 48.0));
+        // 定位线贴板内底沿：y = 68 − 3 = 65，高 3；每段只到本槽宽。
+        for s in &l.slots {
+            assert_eq!(
+                s.indicator,
+                Some(Rect::new(s.rect.origin.x, 65.0, 60.0, 3.0))
+            );
+        }
+        assert_eq!(l.slots[0].line_progress, 0.0, "Pinned = Divider");
+        assert_eq!(l.slots[1].line_progress, 0.0);
+        assert_eq!(
+            l.slots[2].line_progress, 1.0,
+            "Running + active = PrimaryHover"
+        );
+        // 命中按呈现几何：738 / 858 / 678 仍是 C0 的三处。
+        assert_eq!(l.hit(Point::new(738.0, 34.0)), Some(DockHit::Slot(0)));
+        assert_eq!(l.hit(Point::new(858.0, 34.0)), Some(DockHit::Slot(2)));
+        assert_eq!(l.hit(Point::new(678.0, 34.0)), Some(DockHit::Entry));
+    }
+
+    /// 板宽插值到一半（264 → 204，取 234）：内容随板左沿重算，槽整体右移 15。
+    #[test]
+    fn presentation_plate_halfway_reflows_content() {
+        let p = DockPresentation::default().with_plate_width(234.0);
+        let l = DockRail::present(&c0_input(), &p);
+        // (1536 − 234) / 2 = 651；内容 651 + 12 = 663；首槽 663 + 60 = 723。
+        assert_eq!(l.plate, Some(Rect::new(651.0, 0.0, 234.0, 68.0)));
+        assert_eq!(l.entry, Some(Rect::new(663.0, 0.0, 60.0, 68.0)));
+        let xs: Vec<f32> = l.slots.iter().map(|s| s.rect.origin.x).collect();
+        assert_eq!(xs, [723.0, 783.0, 843.0]);
+    }
+
+    /// 让位偏移一格：板宽 +60、目标槽与右区一起右移一格（C0 值 798 / 858）。
+    /// 同时覆盖 id 键（kitty）与 `#<source>` 键（nvim，source 1）。
+    #[test]
+    fn presentation_pin_gap_offsets_by_one_slot() {
+        let p = DockPresentation::default()
+            .with_plate_width(324.0)
+            .with_source_offset(1, 60.0)
+            .with_slot_offset("kitty", 60.0);
+        let l = DockRail::present(&c0_input(), &p);
+        let x = |id: &str| {
+            l.slots
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| s.rect.origin.x)
+                .unwrap()
+        };
+        assert_eq!(x("org.ether.librarian"), 678.0, "让位前不动");
+        assert_eq!(x("nvim"), 798.0, "让出一格");
+        assert_eq!(x("kitty"), 858.0, "右区跟随板宽重算");
+    }
+
+    /// 板顶 / 板高是独立覆盖：内容与定位线一起下移、线贴新板底。
+    #[test]
+    fn presentation_plate_top_and_height_move_line() {
+        let p = DockPresentation::default().with_plate(264.0, 4.0, 60.0);
+        let l = DockRail::present(&c0_input(), &p);
+        assert_eq!(l.plate, Some(Rect::new(636.0, 4.0, 264.0, 60.0)));
+        assert_eq!(l.entry, Some(Rect::new(648.0, 4.0, 60.0, 60.0)));
+        assert_eq!(l.slots[0].rect.origin.y, 4.0);
+        // 线 y = 4 + 60 − 3 = 61。
+        assert_eq!(
+            l.slots[0].indicator,
+            Some(Rect::new(708.0, 61.0, 60.0, 3.0))
+        );
+    }
+
+    /// 滚动 0.5 槽：整数目标由 `scroll` 给（1），呈现位置 0.5 把槽右移半格。
+    #[test]
+    fn presentation_fractional_scroll_moves_half_a_slot() {
+        let mut entries = Vec::new();
+        for i in 0..10 {
+            entries.push(entry(&format!("p{i}"), true, false, false));
+        }
+        for i in 0..2 {
+            entries.push(entry(&format!("r{i}"), false, true, false));
+        }
+        let mut input = DockRailInput::new(entries, Rect::new(0.0, 0.0, 800.0, 76.0));
+        input.show_entry = true;
+        input.scroll = [1, 0];
+        let mut p = DockPresentation::default().with_scroll([0.5, 0.0]);
+        let l = DockRail::present(&input, &p);
+        // 可用宽 656；溢出后左区 6 槽 + 两枚计数格、右区 2 槽。
+        // 板宽 = 入口 60 + 左区 432 + 右区 120 + 内边距 24 = 636，左沿 (800−636)/2 = 82；
+        // 内容 94、入口 94..154、左区 154、Prev 格 154..190、视口 190。
+        assert!(l.overflow);
+        assert_eq!(l.zones[0].before, 1);
+        assert_eq!(l.zones[0].viewport.origin.x, 190.0);
+        // 落定第 0 槽 = 190 − 60 = 130；滚动 0.5 槽右移 30 → 160，第 1 槽 220。
+        assert_eq!(l.slots[0].rect.origin.x, 160.0);
+        assert_eq!(l.slots[1].rect.origin.x, 220.0);
+        // 回到整数 1.0：第 0 槽 130（被 Prev 格挡住），第 1 槽 190。
+        p.scroll = Some([1.0, 0.0]);
+        let l = DockRail::present(&input, &p);
+        assert_eq!(l.slots[0].rect.origin.x, 130.0);
+        assert_eq!(l.slots[1].rect.origin.x, 190.0);
+    }
+
+    /// 三档线色进度的端点与中点：只换进度，不改落定几何。
+    #[test]
+    fn presentation_line_progress_endpoints() {
+        let mut p = DockPresentation::default();
+        let natural = DockRail::present(&c0_input(), &p);
+        assert_eq!(natural.slots[0].line_progress, 0.0);
+        assert_eq!(natural.slots[1].line_progress, 0.0);
+        assert_eq!(natural.slots[2].line_progress, 1.0);
+        p.line_progress = vec![
+            ("org.ether.librarian".into(), 0.0),
+            ("nvim".into(), 0.25),
+            ("kitty".into(), 1.0),
+        ];
+        let l = DockRail::present(&c0_input(), &p);
+        assert_eq!(l.slots[0].line_progress, 0.0);
+        assert_eq!(l.slots[1].line_progress, 0.25);
+        assert_eq!(l.slots[2].line_progress, 1.0);
+        // 呈现几何不因线色改动。
+        assert_eq!(l.plate, natural.plate);
+        assert_eq!(
+            l.slots.iter().map(|s| s.rect).collect::<Vec<_>>(),
+            natural.slots.iter().map(|s| s.rect).collect::<Vec<_>>()
+        );
     }
 }

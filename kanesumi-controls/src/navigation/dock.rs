@@ -12,12 +12,14 @@
 // 交互（参 `docs/INTERACTION_CANON.md`）：按下时「按下」外观跟随指针是否仍在目标上，移出即恢复；
 // 松开必须在**同一槽**上才算激活（拖出去松手取消）。
 
+use std::ops::Range;
+
 use kanesumi_canvas::{Scene, TextAlign, TextEngine};
 use kanesumi_core::{Color, CornerRadius, MetroTheme, Point, Rect, ThemeColor, sizes};
 
 use crate::navigation::dock_rail::{
-    DockChipDirection, DockHit, DockLayout, DockRail, DockRailEntry, DockRailInput, DockSlotLayout,
-    DockZone,
+    DockChipDirection, DockHit, DockLayout, DockPresentation, DockPresentedLayout, DockRail,
+    DockRailEntry, DockRailInput, DockSlotLayout, DockZone,
 };
 
 /// 关闭幽灵的图标不透明度（§185：关闭应用留下的淡出空位 = 25%）。
@@ -113,6 +115,41 @@ pub struct DockActivated {
     pub source: usize,
 }
 
+/// 按格绘制的单元。`Plate` 是整块背景；其余每个单元对应一份可独立登记的损伤。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DockCell {
+    /// 底板（整块，覆盖全部槽位）。
+    Plate,
+    /// 左端入口格。
+    Entry,
+    /// 槽位（`display` = 呈现序号，`source` = 模型下标）。
+    ///
+    /// 让位空槽是 `DockRail` 的合成条目，`source == usize::MAX`；消费方回查模型前
+    /// 先按这个哨兵跳过，不能直接 `items[source]`。
+    Slot { display: usize, source: usize },
+    /// 计数格。
+    Chip {
+        zone: DockZone,
+        direction: DockChipDirection,
+    },
+}
+
+/// 一个格子的绘制产物：矩形、损伤范围与本格命令在 `Scene.commands` 里的半开区间。
+///
+/// 消费方按 `damage` 登记损伤，按 `commands` 只重放变化格的命令；悬停底只损伤一格
+/// （旧 `DockSpot` 的语义），不会把整条轨道记成脏区。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DockCellDraw {
+    pub cell: DockCell,
+    /// 本格逻辑矩形（槽位 / 入口格 / 计数格；板为整块板）。
+    pub rect: Rect,
+    /// 本格绘制覆盖的矩形。槽位格已把徽标向外的那 1 pt 与图标轻跳算进来。
+    pub damage: Rect,
+    /// 本格命令区间：`scene.commands[commands.clone()]`。
+    pub commands: Range<usize>,
+}
+
 /// Dock 控件：状态机 + 渲染。几何每帧按可用矩形重算。
 #[derive(Debug, Clone)]
 pub struct MetroDock {
@@ -137,6 +174,9 @@ pub struct MetroDock {
     starting_progress: f32,
     /// 独立轻跳相位；旧共同相位入口会同时设置两者。
     starting_jump_progress: f32,
+    /// 呈现输入（板宽插值 / 分数滚动 / 逐槽位移 / 线色进度）。`None` = 未启用；
+    /// 旧 `render` 永远走落定路径，只有 `presented_layout` / `render_slots` 读它。
+    presentation: Option<DockPresentation>,
 }
 
 impl Default for MetroDock {
@@ -165,6 +205,7 @@ impl MetroDock {
             starting: Vec::new(),
             starting_progress: 0.0,
             starting_jump_progress: 0.0,
+            presentation: None,
         }
     }
 
@@ -235,6 +276,18 @@ impl MetroDock {
         };
         self.starting_progress = phase(breathe);
         self.starting_jump_progress = phase(jump);
+    }
+
+    /// 显式启用呈现输入。`None` = 回到落定几何；旧 `render` 不受影响，新入口
+    /// `presented_layout` / `render_slots` 才读它。参 `docs/CONTROL_SPEC.md`
+    /// 「MetroDock 呈现几何与按槽绘制」。
+    pub fn set_presentation(&mut self, presentation: Option<DockPresentation>) {
+        self.presentation = presentation;
+    }
+
+    /// 当前呈现输入。
+    pub fn presentation(&self) -> Option<&DockPresentation> {
+        self.presentation.as_ref()
     }
 
     /// 指针位置（`None` = 离开轨道）。返回悬停目标是否变化。
@@ -316,8 +369,18 @@ impl MetroDock {
     /// 按可用矩形重算几何。
     pub fn relayout(&mut self, available: Rect) {
         self.available = available;
-        let entries: Vec<DockRailEntry> = self
-            .items
+        let entries = self.entries();
+        self.layout = self.composed_layout(entries, self.scroll);
+        self.refresh_hover();
+    }
+
+    fn relayout_available(&mut self) {
+        let available = self.available;
+        self.relayout(available);
+    }
+
+    fn entries(&self) -> Vec<DockRailEntry> {
+        self.items
             .iter()
             .map(|it| {
                 DockRailEntry::new(it.id.clone(), it.icon.clone())
@@ -325,8 +388,13 @@ impl MetroDock {
                     .running(it.running)
                     .activated(it.active)
             })
-            .collect();
-        let input = self.rail_input(entries.clone());
+            .collect()
+    }
+
+    /// 落定布局（含让位空槽）。`scroll` 是整数目标；呈现用的分数位置在
+    /// `DockRail::present_layout` 里再叠加，两者不混。
+    fn composed_layout(&self, entries: Vec<DockRailEntry>, scroll: [usize; 2]) -> DockLayout {
+        let input = self.rail_input_with(entries.clone(), scroll);
         let mut layout = DockRail::layout(&input);
         // 让位空槽走「合成一条条目」：`DockRail` 的排序 / 底板 / 视口全部照旧，
         // 空槽自然占一格并把左区后续槽右移。溢出时不让位（与 launcher 同判据）。
@@ -337,7 +405,7 @@ impl MetroDock {
             let insert_at = self.gap_insert_index(gap);
             let mut with_gap = entries;
             with_gap.insert(insert_at, DockRailEntry::new(PIN_GAP_ID, "").pinned(true));
-            let input = self.rail_input(with_gap);
+            let input = self.rail_input_with(with_gap, scroll);
             layout = DockRail::layout(&input);
             for slot in &mut layout.slots {
                 if slot.source == insert_at {
@@ -348,20 +416,14 @@ impl MetroDock {
                 }
             }
         }
-        self.layout = layout;
-        self.refresh_hover();
+        layout
     }
 
-    fn relayout_available(&mut self) {
-        let available = self.available;
-        self.relayout(available);
-    }
-
-    fn rail_input(&self, entries: Vec<DockRailEntry>) -> DockRailInput {
+    fn rail_input_with(&self, entries: Vec<DockRailEntry>, scroll: [usize; 2]) -> DockRailInput {
         let mut input = DockRailInput::new(entries, self.available);
         input.scale = self.scale;
         input.show_entry = self.show_entry;
-        input.scroll = self.scroll;
+        input.scroll = scroll;
         input.hover = self.hover_pos;
         input
     }
@@ -595,6 +657,239 @@ impl MetroDock {
         }
     }
 
+    /// 当前呈现几何：落定布局（含让位空槽）+ `set_presentation` 的中间态。
+    ///
+    /// 启动轻跳在这里就并进 `icon_rect`，消费方直接按图标位 blit，不再自己减偏移。
+    pub fn presented_layout(&self) -> DockPresentedLayout {
+        let entries = self.entries();
+        let layout = self.composed_layout(entries, self.scroll);
+        let presentation = self.presentation.clone().unwrap_or_default();
+        let mut presented = DockRail::present_layout(&layout, &presentation);
+        for slot in &mut presented.slots {
+            slot.icon_rect.origin.y -= self.icon_jump(&slot.id);
+        }
+        presented
+    }
+
+    /// 按槽 / 按格绘制。返回每个格子的损伤与命令区间，消费方可逐格登记损伤。
+    ///
+    /// 这是**新入口**：只有显式 `set_presentation` 后才消费中间态；旧 `render` 仍走
+    /// 「一次画完」的落定路径，输出不变。底板也算一个 `DockCell::Plate` 产物，
+    /// 其余格子互不重叠（槽位按呈现 x 排布，计数格占自己的 36 pt）。
+    pub fn render_slots(
+        &self,
+        theme: &MetroTheme,
+        engine: &TextEngine,
+        scene: &mut Scene,
+    ) -> Vec<DockCellDraw> {
+        let presented = self.presented_layout();
+        let c = &theme.colors;
+        let hover_fill = theme.indication.hover_tint.over(c.surface);
+        let plate_h = presented
+            .plate
+            .map(|p| p.size.height)
+            .unwrap_or(presented.metrics.plate_height);
+        let plate_top = presented
+            .plate
+            .map(|p| p.origin.y)
+            .unwrap_or(presented.dock.origin.y);
+        let mut out = Vec::new();
+
+        if let Some(plate) = presented.plate {
+            let start = scene.commands.len();
+            scene.fill_rect(c.surface, plate);
+            out.push(DockCellDraw {
+                cell: DockCell::Plate,
+                rect: plate,
+                damage: plate,
+                commands: start..scene.commands.len(),
+            });
+        }
+
+        if let Some(entry) = presented.entry {
+            let start = scene.commands.len();
+            if self.hovered_hit == Some(DockHit::Entry) {
+                scene.fill_rect(
+                    hover_fill,
+                    Rect::new(
+                        entry.origin.x,
+                        entry.origin.y,
+                        entry.size.width,
+                        plate_h.min(entry.size.height),
+                    ),
+                );
+            }
+            out.push(DockCellDraw {
+                cell: DockCell::Entry,
+                rect: entry,
+                damage: Rect::new(entry.origin.x, plate_top, entry.size.width, plate_h),
+                commands: start..scene.commands.len(),
+            });
+        }
+
+        for slot in &presented.slots {
+            if !slot.visible || slot.hit.is_none() {
+                continue;
+            }
+            let start = scene.commands.len();
+            let cell = slot.hit.unwrap_or(slot.rect);
+            let top = plate_top.min(slot.icon_rect.origin.y);
+            let bottom = (plate_top + plate_h).max(slot.icon_rect.bottom());
+            let damage = Rect::new(
+                cell.origin.x,
+                if slot.id == PIN_GAP_ID {
+                    plate_top
+                } else {
+                    top
+                },
+                cell.size.width,
+                if slot.id == PIN_GAP_ID {
+                    plate_h
+                } else {
+                    bottom - top
+                },
+            );
+            // 让位空槽（§188）：只占位、只画左区灰线。
+            if slot.id == PIN_GAP_ID {
+                if let Some(line) = slot.indicator {
+                    scene.fill_rect(c.divider, line);
+                }
+                out.push(DockCellDraw {
+                    cell: DockCell::Slot {
+                        display: slot.display,
+                        source: slot.source,
+                    },
+                    rect: slot.rect,
+                    damage,
+                    commands: start..scene.commands.len(),
+                });
+                continue;
+            }
+            let Some(item) = self.items.get(slot.source) else {
+                continue;
+            };
+            // 计数徽标贴图标顶边上方 1 pt；损伤要把它算进来，但仍限制在本槽 x 范围内。
+            let damage = if item.windows > 1 {
+                let top = damage.origin.y.min(slot.icon_rect.origin.y - 1.0);
+                Rect::new(
+                    damage.origin.x,
+                    top,
+                    damage.size.width,
+                    damage.bottom() - top,
+                )
+            } else {
+                damage
+            };
+            let state = self.state_of(slot.source);
+            let ghost = self.is_ghost(&item.id);
+            let highlighted = matches!(state, DockItemState::Hovered | DockItemState::Pressed)
+                || (item.running && item.active);
+            if highlighted {
+                scene.fill_rect(
+                    hover_fill,
+                    Rect::new(
+                        cell.origin.x,
+                        plate_top,
+                        cell.size.width,
+                        plate_h.min(slot.rect.size.height),
+                    ),
+                );
+            }
+            if let Some(line) = slot.indicator {
+                let color = if ghost {
+                    c.divider
+                } else if self.is_starting(&item.id) {
+                    self.breath_color(theme)
+                } else {
+                    line_color(theme, slot.line_progress)
+                };
+                scene.fill_rect(color, line);
+            }
+            if item.urgent {
+                let d = 8.0;
+                scene.fill_rect(
+                    theme.status.critical,
+                    Rect::new(slot.icon_rect.right() - d, slot.icon_rect.origin.y, d, d),
+                );
+            }
+            if item.windows > 1 {
+                self.paint_count_badge(
+                    theme,
+                    scene,
+                    slot.icon_rect,
+                    item.windows,
+                    self.icon_opacity(&item.id),
+                );
+            }
+            out.push(DockCellDraw {
+                cell: DockCell::Slot {
+                    display: slot.display,
+                    source: slot.source,
+                },
+                rect: slot.rect,
+                damage,
+                commands: start..scene.commands.len(),
+            });
+        }
+
+        for zone in &presented.zones {
+            for chip in &zone.chips {
+                let start = scene.commands.len();
+                if self.hovered_hit
+                    == Some(DockHit::Chip {
+                        zone: chip.zone,
+                        direction: chip.direction,
+                    })
+                {
+                    scene.fill_rect(
+                        hover_fill,
+                        Rect::new(
+                            chip.rect.origin.x,
+                            plate_top,
+                            chip.rect.size.width,
+                            plate_h.min(chip.rect.size.height),
+                        ),
+                    );
+                }
+                let color = match zone.zone {
+                    DockZone::Pinned => c.divider,
+                    DockZone::Running => c.primary,
+                };
+                scene.fill_rect(color, chip.line);
+                let text = match chip.direction {
+                    DockChipDirection::Prev => format!("‹ {}", chip.count),
+                    DockChipDirection::Next => format!("{} ›", chip.count),
+                };
+                let style = theme.typography.body;
+                let lh = engine.line_height(style.size);
+                let h = plate_h.min(chip.rect.size.height);
+                scene.label(
+                    text,
+                    Rect::new(
+                        chip.rect.origin.x,
+                        plate_top + ((h - lh) / 2.0).max(0.0),
+                        chip.rect.size.width,
+                        lh,
+                    ),
+                    c.on_surface,
+                    style,
+                    TextAlign::Center,
+                );
+                out.push(DockCellDraw {
+                    cell: DockCell::Chip {
+                        zone: chip.zone,
+                        direction: chip.direction,
+                    },
+                    rect: chip.rect,
+                    damage: Rect::new(chip.rect.origin.x, plate_top, chip.rect.size.width, plate_h),
+                    commands: start..scene.commands.len(),
+                });
+            }
+        }
+
+        out
+    }
+
     /// 启动呼吸色：相位 0 取运行色，半周期取灰（与 launcher 的 `breathe` 同式）。
     fn breath_color(&self, theme: &MetroTheme) -> Color {
         let t = 0.5 - 0.5 * (self.starting_progress * std::f32::consts::TAU).cos();
@@ -644,6 +939,25 @@ impl MetroDock {
             theme.typography.label,
             TextAlign::Center,
         );
+    }
+}
+
+/// 定位线三档进度 → 主题色：0 = Divider、0.5 = Primary、1 = PrimaryHover。
+///
+/// 只做令牌解析与 `Color::lerp`，不在控件里出现 `Color::new`；非有限进度按 0 处理。
+fn line_color(theme: &MetroTheme, progress: f32) -> Color {
+    let p = if progress.is_finite() {
+        progress.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let divider = ThemeColor::Divider.resolve(theme);
+    let primary = ThemeColor::Primary.resolve(theme);
+    let hover = ThemeColor::PrimaryHover.resolve(theme);
+    if p <= 0.5 {
+        divider.lerp(primary, (p * 2.0) as f64)
+    } else {
+        primary.lerp(hover, ((p - 0.5) * 2.0) as f64)
     }
 }
 
