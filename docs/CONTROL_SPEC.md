@@ -880,7 +880,13 @@ else → SinglePane（PanePriority 指定单面板）
 
 > 数据源：`microsoft-ui-xaml/dev/RatingControl/`（RatingControl.cpp + RatingControl.xaml +
 > RatingControl_themeresources.xaml）。上游用 MDL2 `E735`（实星）/`E734`（空星）；
-> Kanesumi 用标准 Unicode `★`/`☆`（思源黑体包含，V7 不依赖私有区字形）。
+> Kanesumi 用 L0 真源图形 `GlyphName::Star`（`assets/kanesumi-assets/glyphs/star.svg`），
+> 不再写字体 `★`/`☆` —— 字体缺这两枚字符时会渲染成方框（参 `docs/VISUAL_ISSUES.md` V7）。
+>
+> **Kanesumi 适配（2026-11-17，获批 C2）**：用户裁定接受 32 pt 母版几何
+> （参 Ether `docs/DECISIONS_2026-11-17.md` §265）。满星可视尺寸由旧字体星形的
+> 22×16 变为 **24×22**（1×；2× 为 46×44），这是明确的行为变更，不是等价门；
+> 旧实现与对照图保留在 `docs/research/glyph_consume_20261117/`。
 
 ### 结构与尺寸
 
@@ -890,19 +896,22 @@ else → SinglePane（PanePriority 指定单面板）
 
 | 项 | 值 |
 |---|---|
-| 控件 Height | **32**；star cell ≈ **24×24**（FontSize 32 + Margin −8 补偿） |
+| 控件 Height | **32**；star cell **24×24**；图形取 **32 pt** L0 母版（`ICON_32`）居中压入星格，墨迹 **24×22**（1×）/ **46×44**（2×） |
 | MaxRating | 默认 **5** |
 | 实星（Selected） | **强调色**（AccentFillColorDefault → `primary`） |
-| 空星（Unselected） | `on_surface_variant`（TextFillColorSecondary） |
+| 空星（Unselected） | `on_surface_variant` × `base_medium_low`（**0.4**；只读再乘非激活档） |
 | Placeholder | `on_surface` |
 | PointerOver 实/空星 | 强调色 / `on_surface` |
-| Disabled | `on_surface_variant` 低透（TextFillColorDisabled） |
+| Disabled | 空/实星均乘 `inactive_opacity`（TextFillColorDisabled）；alpha 走 `Image.opacity`，不塞 `tint.a` |
 
 ### 行为
 - `Value` 可为小数（部分星：前景星按比例裁剪）。
+- **空星**用同一枚实心星压到 0.4 表达；L0 只有一枚 `Star`，没有字体空心轮廓。
+- **半星**只对本星 `push_clip` 到 `fill_frac` 宽并复用同一份光栅，裁不到后续星。
 - **PointerOver 预览**：悬停到某星 → `hover_value`（释放时提交）。
 - **Clear**：`IsClearEnabled` 时点当前值所在星 → 值清零。
-- `IsReadOnly`：只读（无 hover/点击）。
+- `IsReadOnly`：只读（无 hover/点击），空/实星都压到非激活档。
+- 2× 走 `draw_scaled`；公开 `render` 签名不变，私有 `render_scaled` 仅供快照与测试。
 
 ### 交互
 - 点击第 k 星 → `Value = k`；`IsClearEnabled` 且点当前值星 → `Value = 0`。
