@@ -64,6 +64,25 @@ fn texts(scene: &Scene) -> Vec<(String, Rect, Color, Option<usize>, TextAlign)> 
         .collect()
 }
 
+// 关闭符号已迁为资产 glyph；从真源核对位图，避免把任意 Image 当成关闭钮。
+fn close_glyph(scene: &Scene) -> (Rect, Color) {
+    let expected = kanesumi_canvas::icon::rasterize_svg_bytes(
+        kanesumi_canvas::icons::GlyphName::Close.svg().as_bytes(), 12,
+    ).expect("关闭 glyph 资产可光栅化");
+    let glyphs: Vec<_> = scene.commands.iter().filter_map(|command| match command {
+        SceneCommand::Image { rgba, width, height, rect, tint: Some(color), opacity }
+            if *width == expected.width && *height == expected.height
+                && rgba.as_ref() == expected.rgba.as_ref() => {
+            assert_eq!(*opacity, 1.0, "关闭 glyph 必须可见");
+            assert!(rgba.chunks_exact(4).any(|pixel| pixel[3] > 0), "关闭 glyph 不得全透明");
+            Some((*rect, *color))
+        }
+        _ => None,
+    }).collect();
+    assert_eq!(glyphs.len(), 1, "关闭字形必须始终且只存在一枚（元素数稳定）");
+    glyphs[0]
+}
+
 fn labels(actions: &[&str]) -> Vec<String> {
     actions.iter().map(|s| s.to_string()).collect()
 }
@@ -150,15 +169,8 @@ fn close_glyph_always_present_and_brightens_on_hover() {
             ..CardVisual::default()
         },
     );
-    let pick = |s: &Scene| {
-        texts(s)
-            .into_iter()
-            .find(|(t, _, _, _, _)| t == "✕")
-            .map(|(_, r, color, _, _)| (r, color))
-            .expect("关闭字形必须始终存在（元素数稳定）")
-    };
-    let (r1, c1) = pick(&plain);
-    let (r2, c2) = pick(&hover);
+    let (r1, c1) = close_glyph(&plain);
+    let (r2, c2) = close_glyph(&hover);
     assert_eq!(r1, r2, "悬停不改几何");
     assert_ne!(c1, c2, "悬停应提亮关闭字形");
 }
@@ -195,8 +207,10 @@ fn no_actions_means_no_action_labels() {
     };
     let (geo, scene) = render(&c, CardVisual::default());
     assert!(geo.actions.is_empty());
-    // 应用名 + 标题 + 正文 + 关闭
-    assert_eq!(texts(&scene).len(), 4);
+    // 应用名 + 标题 + 正文仍是三条文字，关闭符号是独立 glyph，不产生动作标签。
+    assert_eq!(texts(&scene).len(), 3);
+    close_glyph(&scene);
+    assert_eq!(scene.commands.iter().filter(|c| matches!(c, SceneCommand::Image { .. })).count(), 1);
 }
 
 #[test]
