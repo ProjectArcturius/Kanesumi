@@ -1996,7 +1996,7 @@ impl Tree {
                 inner,
                 kanesumi_core::interaction::FOCUS_INNER_PX,
             );
-            scene_identity::mark(keys.as_deref_mut(), self.scene_key_owner, id, Phase::Focus, 2);
+            scene_identity::mark(keys, self.scene_key_owner, id, Phase::Focus, 2);
         }
     }
 

@@ -10,3 +10,6 @@
 - 旧入口的绘制 Scene 已逐命令相等；本件没有改变控件视觉，没有重新生成产品快照。
 - 后续先在合成器录 C0，再落输出持有的桥状态和 GPU 映射；已有 WinDraw 只持 GLES 纹理，Scene Image 持 CPU RGBA，必须先查清资产所有权，不能捏造空 Image 或绕回 CPU 整幅渲染。
 - 日志：~/.local/state/scene-identity-tests-20261117.log、scene-identity-workspace-20261117.log、scene-identity-clippy-20261117.log。
+
+复审补记：清除新增的无效再借用和 Copy 类型 clone 告警，专项 12 条复跑通过。
+最终 Clippy 日志为 `~/.local/state/scene-identity-clippy-final-20261117.log`，改动处无新增告警。

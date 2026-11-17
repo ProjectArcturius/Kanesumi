@@ -35,7 +35,7 @@ fn setup() -> (Tree, WidgetId, WidgetId) {
         height: Some(24.0),
         ..LayoutProps::default()
     };
-    let a = tree.insert_with(row, Block(false), props.clone());
+    let a = tree.insert_with(row, Block(false), props);
     let b = tree.insert_with(row, Block(false), props);
     (tree, a, b)
 }
