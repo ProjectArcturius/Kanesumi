@@ -444,6 +444,7 @@ pub fn form(label_width: f32) -> Self {
 pub fn frame(&mut self) -> &FrameOutput {
 pub fn frame(&mut self, engine: &TextEngine, size: Size, dt: f64) -> FrameOutput {
 pub fn frame_into(
+pub fn frame_keyed_into(&mut self, engine: &TextEngine, size: Size, dt: f64, out: &mut Scene) -> FrameOutput {
 pub fn frame_phases(&self) -> FramePhases {
 pub fn frame_with_layout(
 pub fn frame_with_layout(&mut self, after_layout: impl FnOnce(&mut Tree)) -> &FrameOutput {
@@ -578,6 +579,7 @@ pub fn resize(&mut self, width: f32, height: f32) {
 pub fn right_click(&mut self, id: WidgetId) {
 pub fn root(&self) -> WidgetId {
 pub fn row() -> Self {
+pub fn scene_command_keys(&self) -> &[SceneCommandKey] {
 pub fn scene_sum_ms(&self) -> f32 {
 pub fn scroll(&mut self, pos: Point, dx: f32, dy: f32, modifiers: Modifiers) {
 pub fn scroll_ex(&mut self, pos: Point, input: ScrollInput) {
@@ -649,6 +651,7 @@ pub fn wait_decodes(&mut self) {
 pub fn wait_for_decode(&mut self, id: WidgetId, key: DecodeKey) {
 pub fn wheel(&mut self, dy: f32) -> bool {
 pub fn wheel(dx: f32, dy: f32, modifiers: Modifiers) -> Self {
+pub fn widget_id(self) -> WidgetId {
 pub fn with_gap(mut self, row_gap: f32, col_gap: f32) -> Self {
 pub fn with_gaps(mut self, row_gap: f32, col_gap: f32) -> Self {
 pub fn with_spacing(mut self, spacing: f32) -> Self {
@@ -690,6 +693,7 @@ pub struct PopupDismissed;
 pub struct PopupMotionPlan {
 pub struct PopupSpec {
 pub struct RealizeCtx<'a> {
+pub struct SceneCommandKey {
 pub struct ScrollInput {
 pub struct ScrollKinetics {
 pub struct ScrollerSnapshot {

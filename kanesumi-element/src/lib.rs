@@ -20,6 +20,7 @@ pub mod layer;
 pub mod placement;
 pub mod props;
 pub mod scroll;
+pub mod scene_identity;
 pub mod testing;
 pub mod transitions;
 pub mod tree;
@@ -40,6 +41,7 @@ pub use placement::{
     OutputArea, Placement, PlacementRequest, PopupSide, output_for_anchor, place, place_on_outputs,
 };
 pub use scroll::ScrollKinetics;
+pub use scene_identity::SceneCommandKey;
 pub use tree::{composed_scroll_enabled, set_composed_scroll_enabled};
 pub use props::{Align, FocusGroupAxis, FocusGroupSpec, Insets, LayoutProps, LayoutRole};
 pub use transitions::{

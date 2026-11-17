@@ -13,6 +13,7 @@ use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, SceneCommand};
 use kanesumi_core::{MetroTheme, Point, Rect, Size};
 
+use crate::scene_identity::{self, Phase, SceneCommandKey};
 use crate::diagnostics;
 use crate::event::{Event, Key, Modifiers, PointerButton, ScrollInput};
 use crate::id::WidgetId;
@@ -562,6 +563,11 @@ pub struct Tree {
     /// 真的发生时代价是**多重组一帧**而不是画错。
     composed_len: usize,
     composed_fingerprint: u64,
+    // 身份旁表仅供新 GPU 消费入口使用；旧调用不收集，参 docs/SCENE_IDENTITY.md。
+    scene_key_owner: u64,
+    scene_keys: Vec<SceneCommandKey>,
+    scene_keys_valid: bool,
+    collect_scene_keys: bool,
     /// 转场动画序号（外壳按此回报 Done / Cancelled）。
     pub(crate) next_layer_serial: u32,
     /// compose 时允许进入的图层根：拼某图层内容时 = 该图层；拼主场景时 = None（跳过所有图层子树）。
@@ -628,6 +634,10 @@ impl Tree {
             frame_phases: FramePhases::default(),
             composed_len: 0,
             composed_fingerprint: 0,
+            scene_key_owner: scene_identity::next_owner(),
+            scene_keys: Vec::new(),
+            scene_keys_valid: false,
+            collect_scene_keys: false,
             next_layer_serial: 1,
             compose_layer: std::cell::Cell::new(None),
             full_repaint: true,
@@ -1453,6 +1463,25 @@ impl Tree {
         out
     }
 
+    /// 完整主表面 Scene 与稳定命令身份同步导出。旧 Scene 结构与出帧接口不变。
+    /// 身份由同一 compose 遍历产生；局部 damage 不得裁掉 GPU 需要保留的其他节点。
+    pub fn frame_keyed_into(&mut self, engine: &TextEngine, size: Size, dt: f64, out: &mut Scene) -> FrameOutput {
+        let collect = self.collect_scene_keys;
+        let damage_cull = self.damage_cull;
+        self.collect_scene_keys = true;
+        self.damage_cull = false;
+        let frame = self.frame_into(engine, size, dt, out);
+        self.collect_scene_keys = collect;
+        self.damage_cull = damage_cull;
+        frame
+    }
+
+    /// 最近一次 keyed 主表面的命令键，与该次 out.commands 按位置一一对应。
+    /// 旧入口若重组了场景则此表失效并返回空；弹层/独立图层不混进主表面身份。
+    pub fn scene_command_keys(&self) -> &[SceneCommandKey] {
+        if self.scene_keys_valid { &self.scene_keys } else { &[] }
+    }
+
     /// 出帧到调用方自持的 `Scene` 缓冲（外壳复用同一份缓冲，稳态帧零分配）。
     ///
     /// 约定：`out` 应当是**上一次本树写出的同一份缓冲**。稳态（无失效 / 无损伤 / 尺寸不变 /
@@ -1583,7 +1612,9 @@ impl Tree {
         let reused = self.can_reuse_scene(out, epoch0);
         if !reused {
             out.commands.clear();
-            self.compose(self.root, out, cull);
+            let mut keys = self.collect_scene_keys.then(|| std::mem::take(&mut self.scene_keys));
+            if let Some(keys) = keys.as_mut() { keys.clear(); }
+            self.compose(self.root, out, cull, keys.as_mut());
             // 遮罩：任一打开的弹层要求时，在覆盖层之前整面压暗（弹层自身画在遮罩之上）。
             // 分离模式下弹层在别的表面上，主表面不压暗也不画覆盖层。
             if !self.detached_popups && self.popups.iter().any(|(_, s)| s.scrim) {
@@ -1591,10 +1622,16 @@ impl Tree {
                     self.theme.overlay_color,
                     Rect::new(0.0, 0.0, size.width, size.height),
                 );
+                scene_identity::mark(keys.as_mut(), self.scene_key_owner, self.overlay, Phase::Scrim, 1);
             }
             if !self.detached_popups {
-                self.compose(self.overlay, out, cull);
+                self.compose(self.overlay, out, cull, keys.as_mut());
             }
+            if let Some(keys) = keys {
+                debug_assert_eq!(keys.len(), out.commands.len());
+                self.scene_keys = keys;
+            }
+            self.scene_keys_valid = self.collect_scene_keys;
             self.composed_len = out.commands.len();
             self.composed_fingerprint = rect_fingerprint(out);
         }
@@ -1639,7 +1676,8 @@ impl Tree {
     /// 判据宁可**偏保守**（少复用一帧），也不能把旧内容当新内容交出去 —— 复用的代价是
     /// 一次错误的整屏重绘，不复用的代价只是这一帧多分配几百字节。
     fn can_reuse_scene(&self, out: &Scene, epoch0: u64) -> bool {
-        !self.dirty
+        (!self.collect_scene_keys || self.scene_keys_valid)
+            && !self.dirty
             && !self.full_repaint
             && self.damage.is_none()
             && self.paint_queue.is_empty()
@@ -1870,7 +1908,7 @@ impl Tree {
     /// 节点绘制范围（`painted_bounds`，含 overflow）与 `cull` 不相交 → **整棵子树跳过**
     /// （含 `paint_after` 与焦点视觉）。进入裁剪子容器时与容器矩形求交，随深度收窄。
     /// 参 ELEMENT_TREE「compose 剔除」。
-    fn compose(&self, id: WidgetId, scene: &mut Scene, cull: Option<Rect>) {
+    fn compose(&self, id: WidgetId, scene: &mut Scene, cull: Option<Rect>, mut keys: Option<&mut Vec<SceneCommandKey>>) {
         let Some(n) = self.node(id) else { return };
         if !n.props.visible {
             return;
@@ -1895,8 +1933,8 @@ impl Tree {
             {
                 return;
             }
-            scene.commands.extend(n.paint.iter().cloned());
-            scene.commands.extend(n.paint_after.iter().cloned());
+            scene_identity::append(scene, keys.as_deref_mut(), self.scene_key_owner, id, Phase::Paint, &n.paint);
+            scene_identity::append(scene, keys.as_deref_mut(), self.scene_key_owner, id, Phase::After, &n.paint_after);
             return;
         }
         // 自身绘制范围；从未绘制过的节点退化为其矩形（容器）以避免误裁子树。
@@ -1906,7 +1944,7 @@ impl Tree {
         {
             return;
         }
-        scene.commands.extend(n.paint.iter().cloned());
+        scene_identity::append(scene, keys.as_deref_mut(), self.scene_key_owner, id, Phase::Paint, &n.paint);
         if !n.children.is_empty() {
             // 滚动器图层的根节点不裁剪：视口裁剪由合成器做（scroller viewport），
             // 若把根矩形 clip 带进内容 Scene，其表面坐标不随滚动平移相消，滑动会被
@@ -1916,6 +1954,7 @@ impl Tree {
             let clip = !is_scroller_root && n.widget.as_ref().is_none_or(|w| w.clips_children());
             if clip {
                 scene.push_clip(n.rect);
+                scene_identity::mark(keys.as_deref_mut(), self.scene_key_owner, id, Phase::ClipStart, 1);
             }
             // 裁剪子容器收窄剔除；非裁剪容器沿用当前裁剪（绘制仍受祖先约束）。
             let child_cull = if clip {
@@ -1927,13 +1966,14 @@ impl Tree {
                 cull
             };
             for &c in &n.children {
-                self.compose(c, scene, child_cull);
+                self.compose(c, scene, child_cull, keys.as_deref_mut());
             }
             if clip {
                 scene.pop_clip();
+                scene_identity::mark(keys.as_deref_mut(), self.scene_key_owner, id, Phase::ClipEnd, 1);
             }
         }
-        scene.commands.extend(n.paint_after.iter().cloned());
+        scene_identity::append(scene, keys.as_deref_mut(), self.scene_key_owner, id, Phase::After, &n.paint_after);
         // 键盘焦点视觉：框架统一绘制（外 2px 焦点色 + 内 1px 对比色，正典 §Ⅳ），
         // 画在子树之上。只在键盘交互后显示（指针点击不画，`focus_keyboard`）。
         if self.focus == Some(id)
@@ -1956,6 +1996,7 @@ impl Tree {
                 inner,
                 kanesumi_core::interaction::FOCUS_INNER_PX,
             );
+            scene_identity::mark(keys.as_deref_mut(), self.scene_key_owner, id, Phase::Focus, 2);
         }
     }
 
@@ -2411,7 +2452,7 @@ impl Tree {
         let extent = self.popup_extent(id)?;
         let mut scene = Scene::default();
         // 弹层独立表面：不按 damage 剔除（整幅都要画）。
-        self.compose(id, &mut scene, None);
+        self.compose(id, &mut scene, None, None);
         scene.translate(Point::new(-extent.origin.x, -extent.origin.y));
         Some(scene)
     }
@@ -3622,7 +3663,7 @@ impl Tree {
             let Some(rect) = self.node(id).map(|n| n.rect) else { continue };
             self.compose_layer.set(Some(id));
             let mut scene = Scene::default();
-            self.compose(id, &mut scene, None);
+            self.compose(id, &mut scene, None, None);
             self.compose_layer.set(None);
             scene.translate(Point::new(-rect.origin.x, -rect.origin.y));
             let Some(st) = self.layers.get_mut(&id) else { continue };
@@ -3721,7 +3762,7 @@ impl Tree {
             let mut scene = Scene::default();
             if let Some(children) = self.node(id).map(|n| n.children.clone()) {
                 for c in children {
-                    self.compose(c, &mut scene, None);
+                    self.compose(c, &mut scene, None, None);
                 }
             }
             self.compose_layer.set(None);
