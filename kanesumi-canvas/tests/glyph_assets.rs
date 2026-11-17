@@ -198,6 +198,19 @@ glyph_suite! {
 
 #[test]
 fn two_times_does_not_reuse_the_one_time_bitmap() {
+    // 全局缓存会被同一二进制的其他 Search 用例填入 111px。只隔离进程，
+    // 原断言与 1×/2× 输入不变；用户 2026-11-17 明确批准此隔离修复。
+    const CHILD: &str = "KANESUMI_GLYPH_SCALE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().expect("测试二进制"))
+            .args(["--exact", "two_times_does_not_reuse_the_one_time_bitmap", "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("启动独立缓存测试进程");
+        assert!(output.status.success(), "独立用例失败：\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        return;
+    }
     // 1× 与 2× 必须各存一份：拿 16px 图放大到 32px 会糊。
     let name = GlyphName::Search;
     let target = rect();
