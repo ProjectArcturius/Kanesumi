@@ -74,6 +74,7 @@ pub fn new(mut params: SnapParams, initial: f64) -> Self {
 pub fn new(params: TrackerParams) -> Self {
 pub fn normalized(self) -> Self {
 pub fn on_primary_for(self, scheme: ColorScheme) -> Color {
+pub fn over(self, dst: Color) -> Color {
 pub fn parse(hex: &str) -> Self {
 pub fn parse(s: &str) -> Option<Self> {
 pub fn relative_luminance(self) -> f32 {
@@ -921,6 +922,7 @@ pub fn effective_pane_width(&self, rect: Rect) -> f32 {
 pub fn ellipsis_rect(&self, engine: &TextEngine, rect: Rect) -> Option<Rect> {
 pub fn end_frame(&mut self) {
 pub fn ensure_selected_visible(&mut self, engine: &TextEngine, rect: Rect) {
+pub fn entry_icon_rect(&self) -> Option<Rect> {
 pub fn epoch_days(self) -> i64 {
 pub fn error(title: impl Into<String>, message: impl Into<String>) -> Self {
 pub fn estimated_velocity(&self) -> f32 {
@@ -1021,6 +1023,7 @@ pub fn hover(&mut self, rect: Rect, pos: Point) {
 pub fn hover_edge(&mut self, last: bool) {
 pub fn hovered(&self) -> Option<(usize, usize)> {
 pub fn hovered(&self) -> Option<usize> {
+pub fn hovered_hit(&self) -> Option<DockHit> {
 pub fn hovered_item(&self) -> Option<(usize, Option<usize>)> {
 pub fn hovered_path(&self) -> Option<MenuPath> {
 pub fn hovered_rects(&self) -> Vec<Rect> {
@@ -1028,11 +1031,13 @@ pub fn icon(glyph: impl Into<String>) -> Self {
 pub fn icon(mut self, icon: impl Into<String>) -> Self {
 pub fn icon_center(&self, engine: &TextEngine, viewport: Rect) -> Option<Point> {
 pub fn icon_glyph(self) -> &'static str {
+pub fn icon_jump(&self, id: &str) -> f32 {
+pub fn icon_opacity(&self, id: &str) -> f32 {
 pub fn icon_rect(&self, rect: Rect) -> Option<Rect> {
 pub fn ime_context(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> ImeContext {
 pub fn indeterminate() -> Self {
 pub fn index(&self) -> usize {
-pub fn indicator_rect(slot: &DockSlotLayout) -> Rect {
+pub fn indicator_rect(slot: &DockSlotLayout) -> Option<Rect> {
 pub fn info_item(
 pub fn initials_from_display_name(name: &str) -> String {
 pub fn initials_style(side: f32) -> TextStyle {
@@ -1211,6 +1216,7 @@ pub fn path_at(&self, pos: Point) -> Option<MenuPath> {
 pub fn path_bar_layout(input: &PathBarInput) -> PathBarLayout {
 pub fn persistent(&self) -> bool {
 pub fn picker_cell_rect(rect: Rect, idx: usize) -> Rect {
+pub fn pin_gap_rect(&self) -> Option<Rect> {
 pub fn pinned(mut self, on: bool) -> Self {
 pub fn pip_hit_size(&self) -> (f32, f32) {
 pub fn pip_rects(&self, rect: Rect) -> impl Iterator<Item = (usize, Rect)> + '_ {
@@ -1353,8 +1359,10 @@ pub fn set_delete_icon(&mut self, icon: Option<Icon>) {
 pub fn set_delete_icon(&mut self, icon: Option<kanesumi_canvas::Icon>) {
 pub fn set_expanded(&mut self, expanded: bool) {
 pub fn set_factory(&mut self, factory: impl ItemFactory) {
+pub fn set_ghosts(&mut self, ghosts: &[String]) {
 pub fn set_groups(&mut self, groups: Vec<WallGroup>, viewport: Rect) {
 pub fn set_hover(&mut self, id: Option<u64>) {
+pub fn set_hover(&mut self, pos: Option<Point>) -> bool {
 pub fn set_item_submenu(&mut self, index: usize, items: Vec<MenuItem>) {
 pub fn set_items(&mut self, items: Vec<DockItem>, available: Rect) {
 pub fn set_layout(&mut self, layout: ItemLayout) {
@@ -1362,12 +1370,18 @@ pub fn set_mask(&mut self, c: Option<char>) {
 pub fn set_meta(&mut self, meta: Vec<ListRowMeta>) {
 pub fn set_pane_expanded(&mut self, expanded: bool) {
 pub fn set_pane_progress(&mut self, progress: f32) {
+pub fn set_pin_gap(&mut self, gap: Option<usize>) {
 pub fn set_preedit(&mut self, text: &str, cursor_byte: Option<usize>) {
 pub fn set_rows(&mut self, rows: Vec<String>, row_h: f32, viewport_h: f32) {
+pub fn set_scale(&mut self, scale: f32) {
+pub fn set_scroll(&mut self, scroll: [usize; 2]) {
 pub fn set_scroll_offset(&mut self, v: f32) {
 pub fn set_selected(&mut self, date: Date) {
 pub fn set_selected(&mut self, selected: bool) {
+pub fn set_show_entry(&mut self, on: bool) {
 pub fn set_sort(&mut self, column: usize, ascending: bool) {
+pub fn set_starting(&mut self, starting: &[String]) {
+pub fn set_starting_progress(&mut self, progress: f32) {
 pub fn set_state(&mut self, on: bool) {
 pub fn set_state(&mut self, s: CheckState) {
 pub fn set_state(&mut self, state: ControlState) {
