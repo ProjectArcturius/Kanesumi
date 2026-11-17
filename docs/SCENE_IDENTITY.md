@@ -20,3 +20,10 @@ keyed 入口临时关闭 damage cull，返回完整 Scene 供保留式 GPU 消�
 
 本阶段仅覆盖主表面。分离弹层、独立图层和滚动器内容仍经既有接口输出，不假装已附带身份；后续使用同一 compose 添加兼容入口。
 桥的持久状态由每个输出持有，键必须再加表面/窗口作用域，不能让两个输出共享 GPU 纹理缓存。
+
+## 文本放置
+
+合成器桥消费 `kanesumi-canvas::glyph_layout`，其实现自 render 原样下沉，
+只调整 crate 路径。`kanesumi-render::glyph_layout` 继续再导出全部旧项，
+CPU/wgpu 与 GLES 共享相同放置、字重、越界和覆盖率口径，不复制基线算法。
+canvas 不引入 render/wgpu 依赖；此次不改变默认文本绘制行为。

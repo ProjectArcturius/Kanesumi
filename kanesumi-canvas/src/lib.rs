@@ -11,6 +11,7 @@ pub mod decode;
 pub mod font_index;
 pub mod geometry;
 pub mod glyph;
+pub mod glyph_layout;
 pub mod icon;
 pub mod icons;
 pub mod layout;

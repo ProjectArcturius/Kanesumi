@@ -111,7 +111,10 @@ pub struct TrackerParams {
 pub struct TypeLevel {
 
 ## kanesumi-canvas
+pub const fn identity() -> Self {
+pub const fn is_identity(&self) -> bool {
 pub const fn loose(max: Size) -> Self {
+pub const fn needs_glyph_tuning(&self) -> bool {
 pub const fn new(min: Size, max: Size) -> Self {
 pub const fn tight(size: Size) -> Self {
 pub const fn unbounded() -> Self {
@@ -161,6 +164,7 @@ pub fn coverage(&self, i: usize) -> Option<CoverageRanges<'_>> {
 pub fn coverage(&self, i: usize) -> Option<CoverageRanges<'a>> {
 pub fn coverage(&self, idx: &Index<'a>) -> CoverageRanges<'a> {
 pub fn coverage_builds() -> u64 {
+pub fn coverage_lut(&self, color: [f32; 4]) -> Option<[u8; 256]> {
 pub fn coverage_owned(&self, i: usize) -> Option<OwnedCoverage> {
 pub fn create_line(
 pub fn custom(tag: &'static str, source: impl Into<String>, target: (u32, u32)) -> Self {
@@ -197,6 +201,7 @@ pub fn get(&self, key: &DecodeKey) -> Option<Arc<DecodeOutput>> {
 pub fn get_or_decode(&self, key: &DecodeKey, job: impl FnOnce() -> Option<DecodeOutput>) -> Option<Arc<DecodeOutput>> {
 pub fn global() -> &'static Arc<DecodeService> {
 pub fn glyph_enabled() -> bool {
+pub fn glyph_key(engine_id: u64, font_id: u32, glyph_id: u16, size_px: f32) -> GlyphKey {
 pub fn glyph_metrics(&self, c: char, size: f32) -> GlyphMetrics {
 pub fn grapheme_char_boundaries(text: &str) -> Vec<usize> {
 pub fn has(&self, c: char) -> bool {
@@ -218,6 +223,8 @@ pub fn label(
 pub fn layout(&self, text: &str, size: f32, max_width: f32) -> Vec<Line> {
 pub fn layout<L: LayoutLeaf>(
 pub fn layout_box(&self, text: &str, size: f32, options: TextLayoutOptions) -> Arc<TextLayout> {
+pub fn layout_text_glyphs(
+pub fn layout_text_glyphs_tuned(
 pub fn layout_with_spacing(
 pub fn layout_with_spacing_weighted(
 pub fn leaf(l: L) -> Self {
@@ -242,6 +249,7 @@ pub fn nodes(&self) -> &[LaidNode<L>] {
 pub fn normalized(self) -> Self {
 pub fn open(path: &std::path::Path) -> Result<Self, OpenError> {
 pub fn optical_center_offset(&self, rect: Rect) -> f32 {
+pub fn outline_embolden_for_size(&self, size_px: f32) -> f32 {
 pub fn paragraph(
 pub fn parse(file: &'a [u8]) -> Result<Self, IndexError> {
 pub fn parse_enabled(v: Option<&str>) -> bool {
@@ -283,6 +291,7 @@ pub fn shape_line_weighted(
 pub fn size(&self) -> kanesumi_core::Size {
 pub fn spacer(grow: f32) -> Self {
 pub fn stats(&self) -> DecodeStats {
+pub fn stem_darken_for_size(&self, size_px: f32) -> f32 {
 pub fn stroke_rect(&mut self, color: Color, rect: Rect, thickness: f32) {
 pub fn stroke_rounded_rect(
 pub fn surface_scale() -> f32 {
@@ -293,12 +302,14 @@ pub fn system_font_chain() -> Vec<FontSource> {
 pub fn text(
 pub fn text_diag_flush() {
 pub fn text_diag_snapshot() -> (u64, u64) {
+pub fn text_rect_with_valign(
 pub fn text_with_options(
 pub fn translate(&mut self, offset: Point) {
 pub fn triangle(&mut self, p0: Point, p1: Point, p2: Point, color: Color) {
 pub fn triangulate_arc(
 pub fn triangulate_fill(rect: Rect, radius: f32) -> Vec<Triangle> {
 pub fn triangulate_stroke(rect: Rect, radius: f32, thickness: f32) -> Vec<Triangle> {
+pub fn tune_coverage(&self, cov: f32, color: [f32; 4]) -> f32 {
 pub fn wait_idle(&self, timeout: Duration) -> bool {
 pub fn wght_axis(bytes: &[u8], collection_index: u32) -> Option<(f32, f32)> {
 pub fn with_source(icon: Icon, width: u32, height: u32) -> Self {
@@ -317,6 +328,7 @@ pub struct DirFpSpec<'a> {
 pub struct FaceBuild {
 pub struct FontEntry<'a> {
 pub struct FontSource {
+pub struct GlyphKey {
 pub struct GlyphMetrics {
 pub struct Icon {
 pub struct Index<'a> {
@@ -328,12 +340,14 @@ pub struct Line {
 pub struct LineBox {
 pub struct OwnedCoverage {
 pub struct OwnedIndex {
+pub struct PlacedGlyph {
 pub struct Scene {
 pub struct ShapedGlyph {
 pub struct TextEngine {
 pub struct TextLayout {
 pub struct TextLayoutOptions {
 pub struct TextLineGeometry {
+pub struct TextRenderTuning {
 pub struct Triangle {
 pub trait LayoutLeaf: Clone + PartialEq {
 
