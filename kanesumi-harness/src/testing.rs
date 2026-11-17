@@ -18,7 +18,7 @@ use std::path::Path;
 use kanesumi_canvas::Scene;
 use kanesumi_canvas::scene::SceneCommand;
 use kanesumi_canvas::text::TextEngine;
-use kanesumi_core::{Color, Point, Rect, Size};
+use kanesumi_core::{Color, MetroTheme, Point, Rect, Size};
 use kanesumi_element::{Key, Modifiers, PointerButton};
 
 use crate::app::{App, InputEvent, PopupRequest};
@@ -123,6 +123,17 @@ impl<A: App> AppDriver<A> {
     pub fn with_popups(mut self, bounds: Rect) -> Self {
         assert!(self.app.enable_popups(bounds), "应用不支持分离弹层（enable_popups 返回 false）");
         self.popups_on = true;
+        self
+    }
+
+    /// 固定本进程的系统主题（内部只调 [`crate::system_theme::pin`]）：之后 `system_theme::load()`
+    /// 返回这个值，不再看宿主 `~/.config/ether/theme.toml` 与 `ETHER_THEME_CONFIG`。
+    ///
+    /// 时序：固定必须在应用**构造之前**才影响它启动时读到的主题；驱动里的 `App` 已经构造好了，
+    /// 这里 pin 只对之后的读取（含工作线程）生效。Drop 不自动 `unpin` —— 同一测试进程内多个
+    /// 驱动共用一份固定值，由测试显式 `system_theme::unpin()` 收尾。
+    pub fn with_pinned_theme(self, theme: MetroTheme) -> Self {
+        crate::system_theme::pin(theme);
         self
     }
 
