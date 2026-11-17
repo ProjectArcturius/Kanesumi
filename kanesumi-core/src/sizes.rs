@@ -49,6 +49,10 @@ pub const DOCK_HEIGHT: f32 = DOCK_PLATE_HEIGHT + DOCK_FLOAT_GAP;
 /// Dock 定位线高 3。来源：§158「定位线 3」。现值 `launcher/src/shell/dock_rail.rs:39`。
 pub const DOCK_LINE: f32 = 3.0;
 
+/// Dock 启动中图标轻跳幅度 3（§185 只定幅度，周期由调用方的启动相位给）。
+/// 现值 `launcher/src/shell/dock_rail.rs:64`（`START_HOP`）。
+pub const DOCK_START_HOP: f32 = 3.0;
+
 /// Dock 亚克力底板壁纸模糊半径 30。来源：§158「模糊30」（另参 §156）。
 /// 现值 `launcher/src/shell/dock_rail.rs:43`。与 `TOPBAR_HEIGHT` 的 30 **同值不同义**，
 /// 独立令牌，不得互相替代。
@@ -307,6 +311,7 @@ mod tests {
         assert_eq!(DOCK_FLOAT_GAP, 8.0);
         assert_eq!(DOCK_HEIGHT, 76.0);
         assert_eq!(DOCK_LINE, 3.0);
+        assert_eq!(DOCK_START_HOP, 3.0);
         assert_eq!(DOCK_ACRYLIC_BLUR, 30.0);
         assert_eq!(LIST_ROW_MIN_HEIGHT, 40.0);
         assert_eq!(ICON_12, 12.0);

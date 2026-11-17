@@ -70,6 +70,26 @@ impl Color {
     pub const BLACK: Color = Color::new(0.0, 0.0, 0.0, 1.0);
     pub const WHITE: Color = Color::new(1.0, 1.0, 1.0, 1.0);
 
+    /// source-over 合成（非预乘）：`self` 叠在 `dst` 之上，返回等效实色。
+    ///
+    /// 控件层的「10% tint 叠 surface」必须算成实色再交给 Scene：直接把半透明令牌
+    /// 当填充色，色值会随渲染器的混合口径漂移（C0 真值 #2e2e2e 就是 `hover_tint`
+    /// 叠 `surface` 的结果）。这里只做算术，不新增颜色令牌。
+    pub fn over(self, dst: Color) -> Color {
+        let a = self.a.clamp(0.0, 1.0);
+        let out_a = a + dst.a * (1.0 - a);
+        if out_a <= f32::EPSILON {
+            return Color::TRANSPARENT;
+        }
+        let mix = |s: f32, d: f32| (s * a + d * dst.a * (1.0 - a)) / out_a;
+        Color::new(
+            mix(self.r, dst.r),
+            mix(self.g, dst.g),
+            mix(self.b, dst.b),
+            out_a,
+        )
+    }
+
     /// WCAG 2.x 相对亮度（sRGB 线性化后按人眼灵敏度加权）。
     ///
     /// 用于「基色上该用黑字还是白字」的自动判定，以及令牌对比度自检 ——
@@ -138,18 +158,26 @@ impl Color {
 /// （白 3% 会被当成纯白，于是「浅底叠白」也判成合格）。令牌自检统一走这里。
 #[cfg(test)]
 pub(crate) fn over(src: Color, dst: Color) -> Color {
-    let a = src.a;
-    Color::new(
-        src.r * a + dst.r * (1.0 - a),
-        src.g * a + dst.g * (1.0 - a),
-        src.b * a + dst.b * (1.0 - a),
-        1.0,
-    )
+    src.over(dst)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn over_blends_translucent_onto_opaque() {
+        // 白 10% 叠 #171717 → #2e2e2e（C0 Dock 静置格 / 悬停格的真值）。
+        let dst = Color::from_hex(0x17_17_17);
+        let out = Color::from_hex(0xFF_FF_FF_19).over(dst);
+        assert_eq!(out.a, 1.0);
+        assert_eq!((out.r * 255.0).round() as u8, 0x2E);
+        assert_eq!((out.g * 255.0).round() as u8, 0x2E);
+        assert_eq!((out.b * 255.0).round() as u8, 0x2E);
+        // 全透明叠上 = 原色；全不透明叠上 = 覆盖色。
+        assert_eq!(Color::TRANSPARENT.over(dst), dst);
+        assert_eq!(Color::WHITE.over(dst), Color::WHITE);
+    }
 
     #[test]
     fn hex_rgb() {
