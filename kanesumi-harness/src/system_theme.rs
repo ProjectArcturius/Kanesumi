@@ -12,9 +12,46 @@
 // 浅色为系统默认（裁定 Ether docs/DECISIONS_2026-10-04.md §M-87、88）。
 
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard};
 use std::time::SystemTime;
 
 use kanesumi_core::{Accent, ColorScheme, MetroTheme};
+
+// ── 进程级固定主题（测试夹具）──
+//
+// 由来：迁移快照按宿主 `~/.config/ether/theme.toml` 出图，同一份代码在录制机上绿、
+// 在未改一行的另一台机器上整片红（Ether `docs/research/m1115_dock/REPORT.md` §二）。
+// 夹具要的是「这份测试规定主题」，不是「这台机器恰好是什么主题」。
+//
+// 为什么是进程级、不是线程局部：主题由外壳在启动时读一次推给 App，之后渲染 / 工作线程
+// 还可能各自按需读取；线程局部的固定值只在设置它的线程上生效，spawn 出去的线程仍读到
+// 宿主配置 —— 那正是要消除的不确定性。固定值只由测试显式设置与清除，生产进程不 pin。
+static PINNED: Mutex<Option<MetroTheme>> = Mutex::new(None);
+
+fn pinned_lock() -> MutexGuard<'static, Option<MetroTheme>> {
+    // 中毒不传染：某个用例 panic 不该让后续 `load()` 读到「永远拿不到锁」。
+    // 固定值本身是 `Copy`，锁内不跑用户代码，中毒只可能是外部持锁时 panic。
+    PINNED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// 固定进程主题：此后 [`load`] 直接返回它，不读盘、不看 `ETHER_THEME_CONFIG`。
+///
+/// **进程级、非线程局部**（理由见上）；**仅测试用**，生产进程不得调用。
+/// 只影响主题读取，不影响 [`load_backdrop`] / [`fingerprint`] 等其他读盘入口。
+/// 固定期间再次调用即改值；解除用 [`unpin`]。
+pub fn pin(theme: MetroTheme) {
+    *pinned_lock() = Some(theme);
+}
+
+/// 解除固定，恢复「读盘 / `ETHER_THEME_CONFIG`」的旧行为。未固定时调用无副作用。
+pub fn unpin() {
+    *pinned_lock() = None;
+}
+
+/// 当前固定值（未固定 = `None`）。给测试断言用。
+pub fn pinned() -> Option<MetroTheme> {
+    *pinned_lock()
+}
 
 /// `theme.toml` 路径。`ETHER_THEME_CONFIG` 可覆盖（测试与多实例用）。
 pub fn config_path() -> PathBuf {
@@ -86,7 +123,12 @@ pub fn parse_backdrop(raw: &str) -> Backdrop {
     b
 }
 
+/// 读取系统主题。固定期间（[`pin`]）直接返回固定值：不读盘、不看 `ETHER_THEME_CONFIG`，
+/// 也不受 `theme.toml` 变更影响 —— 夹具要的是可复现，不是跟随宿主。
 pub fn load() -> MetroTheme {
+    if let Some(theme) = pinned() {
+        return theme;
+    }
     match std::fs::read_to_string(config_path()) {
         Ok(raw) => parse(&raw),
         Err(_) => MetroTheme::light(Accent::default()),
@@ -189,5 +231,130 @@ mod tests {
         let orange = parse("accent = \"E57812\"\n");
         let teal = parse("accent = \"00897B\"\n");
         assert_ne!(orange.colors.primary, teal.colors.primary);
+    }
+
+    // ── 进程级固定主题（pin）──
+    //
+    // 固定值与 `ETHER_THEME_CONFIG` 都是进程级的：本组用例彼此串行，且用守卫在 panic 时
+    // 也还原环境变量与固定值，免得污染同进程的其他用例。
+
+    use std::sync::Mutex as StdMutex;
+
+    static PIN_TEST_LOCK: StdMutex<()> = StdMutex::new(());
+
+    const CONFIG_ENV: &str = "ETHER_THEME_CONFIG";
+
+    /// 还原固定值、环境变量与临时文件。
+    struct PinGuard {
+        saved: Option<std::ffi::OsString>,
+        files: Vec<PathBuf>,
+    }
+
+    impl PinGuard {
+        fn new() -> Self {
+            unpin();
+            Self {
+                saved: std::env::var_os(CONFIG_ENV),
+                files: Vec::new(),
+            }
+        }
+
+        /// 写一份临时 theme.toml 并把 `ETHER_THEME_CONFIG` 指过去。
+        fn point_at(&mut self, tag: &str, raw: &str) -> PathBuf {
+            let path = std::env::temp_dir()
+                .join(format!("kanesumi-theme-{}-{tag}.toml", std::process::id()));
+            std::fs::write(&path, raw).expect("写临时 theme.toml");
+            self.files.push(path.clone());
+            // SAFETY: 本组用例由 PIN_TEST_LOCK 串行，且改的键只有本模块测试读取。
+            unsafe { std::env::set_var(CONFIG_ENV, &path) };
+            path
+        }
+
+        /// 把 `ETHER_THEME_CONFIG` 指向一个**不存在**的路径。
+        fn point_at_missing(&mut self, tag: &str) -> PathBuf {
+            let path = std::env::temp_dir()
+                .join(format!("kanesumi-theme-{}-{tag}.toml", std::process::id()));
+            let _ = std::fs::remove_file(&path);
+            // SAFETY: 同上。
+            unsafe { std::env::set_var(CONFIG_ENV, &path) };
+            path
+        }
+    }
+
+    impl Drop for PinGuard {
+        fn drop(&mut self) {
+            unpin();
+            // SAFETY: 同上；守卫在用例结束时（含 panic 展开）运行。
+            unsafe {
+                match self.saved.take() {
+                    Some(v) => std::env::set_var(CONFIG_ENV, v),
+                    None => std::env::remove_var(CONFIG_ENV),
+                }
+            }
+            for f in &self.files {
+                let _ = std::fs::remove_file(f);
+            }
+        }
+    }
+
+    fn serial_lock() -> std::sync::MutexGuard<'static, ()> {
+        PIN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 固定后 `load()` 不碰配置：`ETHER_THEME_CONFIG` 指向不存在的路径也返回固定值，
+    /// 而同一路径未固定时读盘失败会回退浅色默认 —— 两者不同才证明短路生效。
+    #[test]
+    fn pin_wins_over_missing_config_path() {
+        let _serial = serial_lock();
+        let mut guard = PinGuard::new();
+        let missing = guard.point_at_missing("missing");
+        assert!(!missing.exists(), "夹具路径不该存在：{}", missing.display());
+
+        let fallback = load();
+        assert_eq!(fallback, MetroTheme::light(Accent::default()), "未固定 → 读盘失败回退浅色");
+
+        let pinned_theme = MetroTheme::dark(Accent::parse("00897B"));
+        pin(pinned_theme);
+        assert_eq!(pinned(), Some(pinned_theme));
+        assert_eq!(load(), pinned_theme, "固定期间即使配置路径不存在也返回固定值");
+    }
+
+    /// 解除固定后恢复「读 `ETHER_THEME_CONFIG` 指向的文件」的旧行为。
+    #[test]
+    fn unpin_restores_config_loading() {
+        let _serial = serial_lock();
+        let mut guard = PinGuard::new();
+        let raw = "accent = \"00897B\"\nscheme = \"dark\"\n";
+        let path = guard.point_at("restore", raw);
+        let on_disk = parse(raw);
+        assert_eq!(on_disk.scheme, ColorScheme::Dark);
+
+        pin(MetroTheme::light(Accent::default()));
+        assert_eq!(load().scheme, ColorScheme::Light, "固定期间不读盘");
+
+        unpin();
+        assert_eq!(pinned(), None);
+        assert_eq!(load(), on_disk, "unpin 后回到盘上的主题");
+        assert!(path.exists(), "夹具文件应在用例结束时才删");
+    }
+
+    /// 暗色固定主题下 `colors.surface` 必须是暗色值，不能是宿主亮色值（用断言，不打印）。
+    /// 这正是 m-dock-c1 换机整片红的那个量：宿主亮色 `surface` = 纯白。
+    #[test]
+    fn dark_pin_surface_is_not_host_light_surface() {
+        let _serial = serial_lock();
+        let mut guard = PinGuard::new();
+        guard.point_at("host-light", "scheme = \"light\"\n");
+        let host_light = load();
+        assert_eq!(host_light.scheme, ColorScheme::Light);
+
+        let dark = MetroTheme::dark(Accent::default());
+        pin(dark);
+        let got = load();
+        assert_eq!(got.colors.surface, dark.colors.surface);
+        assert_ne!(
+            got.colors.surface, host_light.colors.surface,
+            "暗色固定下 surface 不得是宿主亮色值"
+        );
     }
 }
