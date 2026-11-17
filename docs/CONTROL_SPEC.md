@@ -2202,3 +2202,11 @@ fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
 - 新调用方与渲染使用 `try_indicator_rect(&DockSlotLayout) -> Option<Rect>`，直接返回轨道的 `slot.indicator`。
   被裁掉的槽返回 `None`，禁止拿旧入口推算可见定位线；旧入口不参与新渲染。
 - 返回类型不得通过重录 API 快照原地改为 `Option`；新增入口同时保留旧入口。
+
+
+## MetroDock 启动动效输入（2026-11-17）
+
+消费方 launcher 的定位线呼吸周期为 1.0 s，图标轻跳周期为 0.9 s，必须能独立驱动。
+新增 `set_starting_motion(breathe, jump)`，两个 0..1 相位由调用方的动画时基提供；非有限值归零，越界夹紧。
+原 `set_starting_progress(progress)` 保留共同驱动两者的语义，不能让新输入悄悄改变旧调用方。
+控件不创建时钟；非启动项的轻跳恒为零。

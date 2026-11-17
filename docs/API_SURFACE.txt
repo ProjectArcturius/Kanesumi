@@ -1381,6 +1381,7 @@ pub fn set_selected(&mut self, selected: bool) {
 pub fn set_show_entry(&mut self, on: bool) {
 pub fn set_sort(&mut self, column: usize, ascending: bool) {
 pub fn set_starting(&mut self, starting: &[String]) {
+pub fn set_starting_motion(&mut self, breathe: f32, jump: f32) {
 pub fn set_starting_progress(&mut self, progress: f32) {
 pub fn set_state(&mut self, on: bool) {
 pub fn set_state(&mut self, s: CheckState) {

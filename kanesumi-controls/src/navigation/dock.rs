@@ -132,9 +132,11 @@ pub struct MetroDock {
     pin_gap: Option<usize>,
     ghosts: Vec<String>,
     starting: Vec<String>,
-    /// 启动呼吸 / 轻跳的相位（0..1 一个周期）。控件不自带时钟：由调用方用 Sokuou
+    /// 启动呼吸相位（0..1 一个周期）。控件不自带时钟：由调用方用 Sokuou
     /// 进度驱动，测试与外壳拿到的是同一份确定值。
     starting_progress: f32,
+    /// 独立轻跳相位；旧共同相位入口会同时设置两者。
+    starting_jump_progress: f32,
 }
 
 impl Default for MetroDock {
@@ -162,6 +164,7 @@ impl MetroDock {
             ghosts: Vec::new(),
             starting: Vec::new(),
             starting_progress: 0.0,
+            starting_jump_progress: 0.0,
         }
     }
 
@@ -217,11 +220,21 @@ impl MetroDock {
 
     /// 启动相位（0..1，一个呼吸周期）。非有限值按 0 处理，越界夹紧。
     pub fn set_starting_progress(&mut self, progress: f32) {
-        self.starting_progress = if progress.is_finite() {
-            progress.clamp(0.0, 1.0)
-        } else {
-            0.0
+        self.set_starting_motion(progress, progress);
+    }
+
+    /// 独立驱动定位线呼吸与图标轻跳。launcher 的两段周期不同，不能绑成同一个相位。
+    /// 输入由调用方动画时基采样，非有限值归零、越界夹紧；旧共同相位入口保持不变。
+    pub fn set_starting_motion(&mut self, breathe: f32, jump: f32) {
+        let phase = |value: f32| {
+            if value.is_finite() {
+                value.clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
         };
+        self.starting_progress = phase(breathe);
+        self.starting_jump_progress = phase(jump);
     }
 
     /// 指针位置（`None` = 离开轨道）。返回悬停目标是否变化。
@@ -291,12 +304,12 @@ impl MetroDock {
 
     /// 启动中图标的纵向轻跳偏移（pt，正值 = 上移；非启动项 = 0）。
     ///
-    /// 与定位线呼吸共用 `starting_progress`：0 / 1 落回原位，半个周期抬到 3 pt。
+    /// 轻跳相位 0 / 1 落回原位，半个周期抬到 3 pt；可与定位线呼吸独立驱动。
     pub fn icon_jump(&self, id: &str) -> f32 {
         if !self.is_starting(id) {
             return 0.0;
         }
-        let phase = self.starting_progress * std::f32::consts::TAU;
+        let phase = self.starting_jump_progress * std::f32::consts::TAU;
         sizes::DOCK_START_HOP * (0.5 - 0.5 * phase.cos())
     }
 
