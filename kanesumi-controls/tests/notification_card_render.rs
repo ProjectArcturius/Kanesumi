@@ -64,7 +64,7 @@ fn texts(scene: &Scene) -> Vec<(String, Rect, Color, Option<usize>, TextAlign)> 
         .collect()
 }
 
-// 关闭符号已迁为资产 glyph；从真源核对位图，避免把任意 Image 当成关闭钮。
+// 关闭符号已迁为资产 glyph；核对真源 alpha 轮廓与中性白蒙版，避免把任意 Image 当成关闭钮。
 fn close_glyph(scene: &Scene) -> (Rect, Color) {
     let expected = kanesumi_canvas::icon::rasterize_svg_bytes(
         kanesumi_canvas::icons::GlyphName::Close.svg().as_bytes(), 12,
@@ -72,7 +72,9 @@ fn close_glyph(scene: &Scene) -> (Rect, Color) {
     let glyphs: Vec<_> = scene.commands.iter().filter_map(|command| match command {
         SceneCommand::Image { rgba, width, height, rect, tint: Some(color), opacity }
             if *width == expected.width && *height == expected.height
-                && rgba.as_ref() == expected.rgba.as_ref() => {
+                && rgba.len() == expected.rgba.len()
+                && rgba.chunks_exact(4).zip(expected.rgba.chunks_exact(4))
+                    .all(|(mask, source)| mask[..3] == [255, 255, 255] && mask[3] == source[3]) => {
             assert_eq!(*opacity, 1.0, "关闭 glyph 必须可见");
             assert!(rgba.chunks_exact(4).any(|pixel| pixel[3] > 0), "关闭 glyph 不得全透明");
             Some((*rect, *color))

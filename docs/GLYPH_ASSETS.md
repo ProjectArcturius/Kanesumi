@@ -82,3 +82,10 @@ icons::draw_scaled(&mut scene, GlyphName::Star, rect, color, output_scale); // 2
 - `cargo test -p kanesumi-canvas --lib` 与 `--test glyph_assets` 绿（新增 48 + 6 条）；
 - `cargo run -p kanesumi-cli -- glyphs check` 在资产仓本地跑绿（**不在本仓**，本仓没有生成器）；
 - `cargo test -p kanesumi-element --test api_surface` 只增不减。
+
+## 缓存蒙版
+
+消费方 `icons::draw_scaled` 按传入前景色绘制单色 glyph；CPU/GPU 既有图像后端把白 tint
+视为保留原色，因此 glyph 缓存的 RGB 规范为中性白，alpha 逐像素保留 SVG 原结果。
+只规范本层的单色蒙版，不改变通用 Image/Icon、SVG 资产、可视边界、2× 物理尺寸或缓存键。
+原黑墨 SVG 在白前景下不得保持黑色；非白前景仍按既有 tint 着色，同一尺寸继续共享缓存。

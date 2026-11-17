@@ -15,7 +15,7 @@
 // 调用方只看 [`GlyphName`] 与 [`draw`]，不关心走哪条路。
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use kanesumi_core::{Color, Rect};
 
@@ -224,7 +224,12 @@ fn cached(name: GlyphName, px: u32) -> Option<Icon> {
     {
         return Some(icon.clone());
     }
-    let icon = rasterize_svg_bytes(name.svg().as_bytes(), px)?;
+    let mut icon = rasterize_svg_bytes(name.svg().as_bytes(), px)?;
+    // 单色 glyph 是 alpha 蒙版。后端把白 tint 视为原色，缓存必须是白蒙版；
+    // 逐像素保留 alpha，不改变资产轮廓或倍率。参 GLYPH_ASSETS.md §缓存蒙版。
+    for pixel in Arc::make_mut(&mut icon.rgba).chunks_exact_mut(4) {
+        pixel[..3].fill(255);
+    }
     if let Ok(mut map) = cache().lock() {
         map.insert((name, px), icon.clone());
     }
