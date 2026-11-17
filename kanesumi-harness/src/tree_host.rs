@@ -818,9 +818,19 @@ impl<A: TreeApp> TreeHost<A> {
 
     /// 发布已经完成的表面树；多输出锁屏由调用方选择主输出。参 A11Y_SURFACES.md。
     #[cfg(feature = "a11y")]
-    fn publish_a11y(&mut self) {
+    fn publish_a11y(&mut self, visible: bool) {
         if let Some(slot) = self.a11y_slot.as_ref() {
-            slot.publish(kanesumi_a11y::update_for_tree(&self.tree));
+            let mut update = kanesumi_a11y::update_for_tree(&self.tree);
+            if !visible {
+                // 整个候选表面已隐藏，只撤下 AT 视图；不改应用保留树与输入状态。
+                let root = self.tree.root().to_u64();
+                update.nodes.retain(|(id, _)| id.0 == root);
+                for (_, node) in &mut update.nodes {
+                    node.set_children(Vec::new());
+                }
+                update.focus = kanesumi_a11y::A11yNodeId(root);
+            }
+            slot.publish(update);
         }
         #[cfg(all(feature = "a11y", target_os = "linux"))]
         if let Some(bridge) = self.a11y_bridge.as_mut() {
@@ -1345,12 +1355,7 @@ impl<A: TreeApp> App for TreeHost<A> {
         let (w, h) = self.app.ime_engine_popup_size();
         if w <= 0.0 || h <= 0.0 {
             #[cfg(feature = "a11y")]
-            if self.a11y_slot.is_some() {
-                // 零尺寸仍让保留树收掉旧候选，再发布空表面；不产生绘制输出。
-                let dt = std::mem::take(&mut self.pending_dt);
-                self.frame_main(engine, Size::ZERO, dt);
-                self.publish_a11y();
-            }
+            self.publish_a11y(false);
             return Scene::default();
         }
         self.tree.request_full_repaint();
@@ -1358,8 +1363,13 @@ impl<A: TreeApp> App for TreeHost<A> {
         let frame = self.frame_main(engine, Size::new(w, h), dt);
         self.tree.report_content_committed(&frame.painted);
         #[cfg(feature = "a11y")]
-        self.publish_a11y();
+        self.publish_a11y(true);
         frame.scene
+    }
+
+    fn ime_engine_popup_hidden(&mut self) {
+        #[cfg(feature = "a11y")]
+        self.publish_a11y(false);
     }
 
     // ── 锁屏（session_lock 外壳）：转发给 TreeApp。参 LOCKSCREEN_DESIGN §Ⅳ ──────
@@ -1380,7 +1390,7 @@ impl<A: TreeApp> App for TreeHost<A> {
             .lock_compose(&mut self.tree, size, primary, frame.full, frame.damage, &mut scene);
         #[cfg(feature = "a11y")]
         if primary {
-            self.publish_a11y();
+            self.publish_a11y(true);
         }
         scene
     }
@@ -1489,7 +1499,7 @@ impl<A: TreeApp> App for TreeHost<A> {
         // 的结果，读屏拿到的矩形与用户看到的、鼠标点得到的完全一致（快照契约 2）。
         // 未装时只多一次 `is_none` 判断。
         #[cfg(feature = "a11y")]
-        self.publish_a11y();
+        self.publish_a11y(true);
         // 未编译进 a11y 时不取这一段：字段恒 0 表示「这段不存在」。
         #[cfg(feature = "a11y")]
         if let Some(c) = clock.as_mut() {

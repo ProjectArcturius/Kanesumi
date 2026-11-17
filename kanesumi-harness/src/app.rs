@@ -600,6 +600,10 @@ pub trait App {
         (0.0, 0.0)
     }
 
+    /// 既有平台释放候选窗表面后的维护通知。默认无动作，旧 App 实现保持兼容。
+    /// TreeHost 用于撤下无障碍候选；不改动引擎状态。参 A11Y_SURFACES.md。
+    fn ime_engine_popup_hidden(&mut self) {}
+
     /// 全局应用菜单声明。返回 `Some(tree)` = 启用 AppMenu —— 外壳（Linux）自动完成
     /// com.canonical.dbusmenu 服务 + org_kde_kwin_appmenu Wayland 绑定 +
     /// com.canonical.AppMenu.Registrar 兜底注册（参 appmenu 模块）；`None` = 无全局菜单。

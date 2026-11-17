@@ -4998,6 +4998,8 @@ impl Shell {
             if let Some(popup) = self.im_popup.take() {
                 // popup surface 无独立 destroy；wl_surface 销毁即消失。
                 popup.surface.destroy();
+                // 此分支不会再调绘制入口，释放事件本身必须撤下候选的无障碍视图。
+                let _ = guard("ime_engine_popup_hidden", || self.app.ime_engine_popup_hidden());
                 log::info!("IME 候选窗 popup 已释放");
             }
             return;

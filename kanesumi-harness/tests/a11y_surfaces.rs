@@ -98,3 +98,22 @@ fn surface_a11y_remains_off_without_optin() {
     assert!(!host.a11y_enabled());
     assert!(host.a11y_update().is_none());
 }
+
+#[test]
+fn platform_hidden_notification_clears_and_reopen_restores_candidates() {
+    let mut host = host();
+    host.enable_a11y();
+    let engine = kanesumi_harness::element::testing::test_engine();
+    host.ime_engine_popup_scene(&engine);
+    assert!(names(&host).iter().any(|name| name == "确定"));
+    host.ime_engine_popup_hidden();
+    let hidden = host.a11y_update().unwrap();
+    assert_eq!(hidden.nodes.len(), 1, "实际表面释放后只保留根");
+    assert_eq!(hidden.focus.0, host.tree().root().to_u64());
+    assert!(hidden.nodes[0].1.children().is_empty());
+    host.ime_engine_popup_scene(&engine);
+    assert!(
+        names(&host).iter().any(|name| name == "确定"),
+        "重新显示恢复真实候选"
+    );
+}
