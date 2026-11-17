@@ -66,10 +66,10 @@ icons::draw_scaled(&mut scene, GlyphName::Star, rect, color, output_scale); // 2
 |---|---|---|
 | `check_box` | 字体 `✓` / `—`（`:203-204`） | `GlyphName::Check` / `GlyphName::Minus` |
 | `info_bar` | 字体 `i` / `✓` / `!` / `✕`（`:48-51`） | `Info` / `Check` / `Warning` / `Error` |
-| `rating_control` | 字体 `★` / `☆`（`:133,152,168`） | `Star`（空星用 alpha、半星用裁剪） |
+| `rating_control` | 已迁 `Star`；C2 母版几何（参 CONTROL_SPEC §24） | 空星用 opacity、半星用裁剪 |
 | `text_box` | 字体 `✕`（`:555`） | `Close` |
 | `notification_card` | 字体 `✕`（`:398`） | `Close` |
-| `navigation_view` | 汉堡键内联三根 rect（`:459-465`） | `Hamburger` |
+| `navigation_view` | 已迁 `Hamburger`；C2 母版几何（参 CONTROL_SPEC §28） | 40×40 命中框不变 |
 | `command_bar` / `menu_flyout` | 调用方传 glyph 字符串 | 后续 `Add` / `MoreHorizontal` |
 
 本文件落地时**只建 API，不改这些控件**（`k-glyph-consume` 那件才改）——
