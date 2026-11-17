@@ -816,6 +816,18 @@ impl<A: TreeApp> TreeHost<A> {
         }
     }
 
+    /// 发布已经完成的表面树；多输出锁屏由调用方选择主输出。参 A11Y_SURFACES.md。
+    #[cfg(feature = "a11y")]
+    fn publish_a11y(&mut self) {
+        if let Some(slot) = self.a11y_slot.as_ref() {
+            slot.publish(kanesumi_a11y::update_for_tree(&self.tree));
+        }
+        #[cfg(all(feature = "a11y", target_os = "linux"))]
+        if let Some(bridge) = self.a11y_bridge.as_mut() {
+            bridge.flush();
+        }
+    }
+
     /// 无障碍是否已装上。
     #[cfg(feature = "a11y")]
     pub fn a11y_enabled(&self) -> bool {
@@ -1332,12 +1344,21 @@ impl<A: TreeApp> App for TreeHost<A> {
     fn ime_engine_popup_scene(&mut self, engine: &TextEngine) -> Scene {
         let (w, h) = self.app.ime_engine_popup_size();
         if w <= 0.0 || h <= 0.0 {
+            #[cfg(feature = "a11y")]
+            if self.a11y_slot.is_some() {
+                // 零尺寸仍让保留树收掉旧候选，再发布空表面；不产生绘制输出。
+                let dt = std::mem::take(&mut self.pending_dt);
+                self.frame_main(engine, Size::ZERO, dt);
+                self.publish_a11y();
+            }
             return Scene::default();
         }
         self.tree.request_full_repaint();
         let dt = std::mem::take(&mut self.pending_dt);
         let frame = self.frame_main(engine, Size::new(w, h), dt);
         self.tree.report_content_committed(&frame.painted);
+        #[cfg(feature = "a11y")]
+        self.publish_a11y();
         frame.scene
     }
 
@@ -1357,6 +1378,10 @@ impl<A: TreeApp> App for TreeHost<A> {
         let mut scene = frame.scene;
         self.app
             .lock_compose(&mut self.tree, size, primary, frame.full, frame.damage, &mut scene);
+        #[cfg(feature = "a11y")]
+        if primary {
+            self.publish_a11y();
+        }
         scene
     }
 
@@ -1464,13 +1489,7 @@ impl<A: TreeApp> App for TreeHost<A> {
         // 的结果，读屏拿到的矩形与用户看到的、鼠标点得到的完全一致（快照契约 2）。
         // 未装时只多一次 `is_none` 判断。
         #[cfg(feature = "a11y")]
-        if let Some(slot) = self.a11y_slot.as_ref() {
-            slot.publish(kanesumi_a11y::update_for_tree(&self.tree));
-        }
-        #[cfg(all(feature = "a11y", target_os = "linux"))]
-        if let Some(bridge) = self.a11y_bridge.as_mut() {
-            bridge.flush();
-        }
+        self.publish_a11y();
         // 未编译进 a11y 时不取这一段：字段恒 0 表示「这段不存在」。
         #[cfg(feature = "a11y")]
         if let Some(c) = clock.as_mut() {
