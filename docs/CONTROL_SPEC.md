@@ -1047,6 +1047,12 @@ else → SinglePane（PanePriority 指定单面板）
 > 动画式展开收窄暂略（Phase 3 续）。
 >
 > **无障碍（2026-11-06）**：导航项报成合成项（ListItem + selected + 展开时的子项与 xpanded）；Header 为空时控件名退回类型名级「导航」（可聚焦元素不得无名）。
+>
+> **Kanesumi 适配（2026-11-17，获批 C2）**：PaneToggle 图标改取 L0 `GlyphName::Hamburger`
+> （参 Ether `docs/DECISIONS_2026-11-17.md` §265）。旧内联三根 14×1.5 的可视为 14×14、
+> 线宽 1.5；新 32 pt 母版为 **16×14、线宽 2**（2× 为 32×28）。命中区仍 **40×40**，
+> 图形在其中居中。这是明确的行为变更，不是等价门；对照图见
+> `docs/research/glyph_consume_20261117/`。
 
 ### 结构与尺寸（Left 模式）
 
@@ -1066,7 +1072,7 @@ else → SinglePane（PanePriority 指定单面板）
 | Expanded Pane 宽 | **320**（NavigationViewExpandedPaneWidth） |
 | Compact Pane 宽 | **48**（icon 模式） |
 | Top Pane 高 | **48**（NavigationViewTopPaneHeight） |
-| PaneToggle 按钮 | **40×40**（左侧最上） |
+| PaneToggle 按钮 | **40×40** 命中区（左侧最上）；汉堡图形取 32 pt L0 母版，墨迹 **16×14**、线宽 **2**（C2 前为内联三根 14×1.5） |
 | Item | 高 **40**、icon 16、字 14、Padding 左 16 |
 | 选中指示条 | **3×16** 强调色（NavigationViewSelectionIndicator 3/16），项左侧 |
 | Header Margin | `56,44,0,0`（左缘 = **pane 当前推挤宽 + 56**，上 44、Header 高 40） |

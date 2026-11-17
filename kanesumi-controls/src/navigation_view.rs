@@ -9,9 +9,10 @@
 use kanesumi_anim::{EasingMode, MetroAnim, UwpEasing};
 use kanesumi_canvas::glyph;
 use kanesumi_canvas::icon::Icon;
+use kanesumi_canvas::icons::{self, GlyphName};
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::sizes::ICON_12;
+use kanesumi_core::sizes::{ICON_12, ICON_32};
 use kanesumi_core::typography::{MetroTypography, TextStyle};
 use kanesumi_core::{FontWeight, MetroTheme, Point, Rect};
 
@@ -264,7 +265,12 @@ impl MetroNavigationView {
         let label_w = if item.label.is_empty() {
             0.0
         } else {
-            engine.measure_with_spacing_weighted(&item.label, style.size, style.letter_spacing_em, style.weight)
+            engine.measure_with_spacing_weighted(
+                &item.label,
+                style.size,
+                style.letter_spacing_em,
+                style.weight,
+            )
         };
         let icon_w = if item.icon.is_some() {
             NAV_TOP_ICON_SLOT
@@ -315,11 +321,7 @@ impl MetroNavigationView {
     /// 算「路径 → 行矩形」（顶层项 + 展开时的子项），供 `access_items` 使用。
     ///
     /// 与 `render` 的排布同源：Left 族逐行往下推；Top 模式按量测宽横排，子项不在本模式展示。
-    fn item_geometry(
-        &self,
-        engine: &TextEngine,
-        rect: Rect,
-    ) -> Vec<(Vec<usize>, Rect)> {
+    fn item_geometry(&self, engine: &TextEngine, rect: Rect) -> Vec<(Vec<usize>, Rect)> {
         let area = self.item_area(rect);
         if matches!(self.mode, NavigationPaneMode::Top) {
             return self
@@ -332,7 +334,10 @@ impl MetroNavigationView {
         let mut out = Vec::new();
         let mut y = area.origin.y;
         for (i, item) in self.items.iter().enumerate() {
-            out.push((vec![i], Rect::new(area.origin.x, y, area.size.width, NAV_ITEM_H)));
+            out.push((
+                vec![i],
+                Rect::new(area.origin.x, y, area.size.width, NAV_ITEM_H),
+            ));
             y += NAV_ITEM_H;
             if self.pane_expanded {
                 for j in 0..item.children.len() {
@@ -441,36 +446,56 @@ impl MetroNavigationView {
 
     /// 渲染 Pane / Top 栏（Toggle + 项列表 + Footer）。
     pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
+        self.render_scaled(theme, engine, rect, scene, kanesumi_canvas::surface_scale());
+    }
+
+    /// [`render`](Self::render) 的显式倍率版本：2× 快照 / 导出走这里。
+    /// `icons::draw` 只认外壳注入的当前表面缩放，别的倍率必须显式传 `scale`。
+    fn render_scaled(
+        &self,
+        theme: &MetroTheme,
+        engine: &TextEngine,
+        rect: Rect,
+        scene: &mut Scene,
+        scale: f32,
+    ) {
         let colors = &theme.colors;
         let style = Self::item_style();
 
         scene.push_clip(rect);
-        // Toggle（☰ 自绘三横）
+        // Toggle：L0 汉堡图形（旧版是三根 14×1.5 的内联 rect）。
+        // 32 母版按 32 pt 出图：实测 alpha 包围盒 16×14（1×）、32×28（2×），
+        // 旧 e830107 是 14×14 / 28×28。用户裁定 C2 批准母版几何（参 Ether
+        // docs/DECISIONS_2026-11-17.md §265 与 docs/CONTROL_SPEC.md §28）：
+        // 可视 14×14/线宽 1.5 → 16×14/线宽 2 是明确的行为变更，不是等价门；
+        // 控件侧不靠改 rect 或乘系数把包围盒凑回 14。命中区仍是 40×40，图形居中。
         let tr = self.toggle_rect(rect);
         if self.toggle_hovered {
-            scene.fill_rounded_rect(
-                theme.indication.hover_tint,
-                tr,
-                theme.tokens.corner_radius,
-            );
+            scene.fill_rounded_rect(theme.indication.hover_tint, tr, theme.tokens.corner_radius);
         }
-        let cx = tr.center().x;
-        let cy = tr.center().y;
-        let bar_w = 14.0;
-        let t = 1.5;
-        for dy in [-6.0, 0.0, 6.0] {
-            scene.fill_rect(
-                colors.on_surface,
-                Rect::new(cx - bar_w / 2.0, cy + dy - t / 2.0, bar_w, t),
-            );
-        }
+        let hamburger = Rect::new(
+            tr.origin.x + (tr.size.width - ICON_32) / 2.0,
+            tr.origin.y + (tr.size.height - ICON_32) / 2.0,
+            ICON_32,
+            ICON_32,
+        );
+        icons::draw_scaled(
+            scene,
+            GlyphName::Hamburger,
+            hamburger,
+            colors.on_surface,
+            scale,
+        );
 
         // 项列表裁到 pane 区：LeftMinimal 收起（pane 宽 0）时不得让图标漏到内容上；
         // Top 模式裁到顶栏高。Toggle 已在此之外画好，始终可见。
         let pane_clip = match self.mode {
-            NavigationPaneMode::Top => {
-                Rect::new(rect.origin.x, rect.origin.y, rect.size.width, NAV_TOP_HEIGHT)
-            }
+            NavigationPaneMode::Top => Rect::new(
+                rect.origin.x,
+                rect.origin.y,
+                rect.size.width,
+                NAV_TOP_HEIGHT,
+            ),
             _ => Rect::new(
                 rect.origin.x,
                 rect.origin.y,
@@ -763,17 +788,34 @@ mod tree_tests {
     fn start_aligned_page_gets_its_desired_size() {
         // 回归：arrange 前未量测子节点 → 非拉伸页面期望尺寸为 0（看不见）。
         let mut h = TestHarness::new(800.0, 600.0);
-        let nav = h.tree.insert(h.root(), MetroNavigationView::new(vec![NavigationViewItem::new("一")]));
+        let nav = h.tree.insert(
+            h.root(),
+            MetroNavigationView::new(vec![NavigationViewItem::new("一")]),
+        );
         let page = h.tree.insert_with(
             nav,
             Label::new("页面内容"),
-            LayoutProps { h_align: Align::Start, v_align: Align::Start, ..LayoutProps::default() },
+            LayoutProps {
+                h_align: Align::Start,
+                v_align: Align::Start,
+                ..LayoutProps::default()
+            },
         );
         h.frame();
         let r = h.rect(page);
-        assert!(r.size.width > 0.0 && r.size.height > 0.0, "页面应有内容尺寸 {r:?}");
-        let content = h.tree.get::<MetroNavigationView>(nav).unwrap().content_rect(h.rect(nav));
-        assert_eq!((r.origin.x, r.origin.y), (content.origin.x, content.origin.y));
+        assert!(
+            r.size.width > 0.0 && r.size.height > 0.0,
+            "页面应有内容尺寸 {r:?}"
+        );
+        let content = h
+            .tree
+            .get::<MetroNavigationView>(nav)
+            .unwrap()
+            .content_rect(h.rect(nav));
+        assert_eq!(
+            (r.origin.x, r.origin.y),
+            (content.origin.x, content.origin.y)
+        );
     }
     use kanesumi_element::testing::TestHarness;
     use kanesumi_element::widgets::Label;
@@ -997,6 +1039,8 @@ mod tree_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kanesumi_render::CpuRenderer;
+    use kanesumi_render::glyph_layout::TextRenderTuning;
 
     fn find_engine() -> Option<TextEngine> {
         if let Ok(p) = std::env::var("KANESUMI_TEST_FONT") {
@@ -1254,5 +1298,123 @@ mod tests {
             .count();
         // Compact：只留 icon 文本（2 个带图标项），无 label（"关于" 无图标 → 无文本）
         assert_eq!(texts, 2, "Compact 只显示图标，实际 {texts}");
+    }
+
+    /// 状态转录：汉堡键画的是 L0 位图（32 pt 落格、居中于 40×40 命中区、取 on_surface），
+    /// 不再是三根内联 rect。
+    #[test]
+    fn toggle_renders_hamburger_glyph() {
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
+        let n = nav();
+        let mut scene = Scene::default();
+        n.render_scaled(&theme, &engine, area(), &mut scene, 1.0);
+        use kanesumi_canvas::SceneCommand;
+
+        let image = scene.commands.iter().find_map(|c| match c {
+            SceneCommand::Image {
+                rect,
+                tint,
+                width,
+                height,
+                ..
+            } => Some((*rect, *tint, *width, *height)),
+            _ => None,
+        });
+        let (rect, tint, width, height) = image.expect("汉堡键应画出一张位图");
+        assert_eq!((rect.size.width, rect.size.height), (ICON_32, ICON_32));
+        assert_eq!((width, height), (32, 32), "1× 按 32 px 光栅");
+        assert_eq!(tint, Some(theme.colors.on_surface), "取 on_surface 染色");
+
+        let tr = n.toggle_rect(area());
+        assert!((rect.center().x - tr.center().x).abs() < 1e-4, "水平居中");
+        assert!((rect.center().y - tr.center().y).abs() < 1e-4, "垂直居中");
+
+        // 旧实现的三根 14×1.5 不得再出现。
+        let old_bars = scene.commands.iter().filter(|c| {
+            matches!(
+                c,
+                SceneCommand::FillRect { rect, .. }
+                    if (rect.size.width - 14.0).abs() < 1e-4
+                        && (rect.size.height - 1.5).abs() < 1e-4
+            )
+        });
+        assert_eq!(old_bars.count(), 0, "内联三根 rect 已删除");
+    }
+
+    /// 2× 输出：逻辑落格 32 pt 不变，位图按 64 px 出（draw_scaled，不是 1× 放大）。
+    #[test]
+    fn toggle_glyph_scales_at_two_x() {
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
+        let n = nav();
+        let mut scene = Scene::default();
+        n.render_scaled(&theme, &engine, area(), &mut scene, 2.0);
+        use kanesumi_canvas::SceneCommand;
+        let (rect, width, height) = scene
+            .commands
+            .iter()
+            .find_map(|c| match c {
+                SceneCommand::Image {
+                    rect,
+                    width,
+                    height,
+                    ..
+                } => Some((*rect, *width, *height)),
+                _ => None,
+            })
+            .expect("汉堡键应画出一张位图");
+        assert_eq!(rect.size.width, ICON_32, "逻辑尺寸不随倍率变");
+        assert_eq!((width, height), (64, 64), "2× 出 64 px 位图");
+    }
+
+    /// alpha ≥ 16 的墨迹包围盒（物理像素，闭区间）。
+    fn ink_bbox(bytes: &[u8], pw: u32, ph: u32) -> Option<(u32, u32, u32, u32)> {
+        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+        let mut any = false;
+        for y in 0..ph {
+            for x in 0..pw {
+                if bytes[((y * pw + x) * 4 + 3) as usize] >= 16 {
+                    any = true;
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x);
+                    y1 = y1.max(y);
+                }
+            }
+        }
+        any.then_some((x0, y0, x1, y1))
+    }
+
+    /// 真实像素门：1×/2× 的汉堡墨迹包围盒。
+    ///
+    /// 旧 e830107 是 14×14（1×）/ 28×28（2×）；当前 32 pt 母版是 16×14 / 32×28。
+    /// 用户裁定 C2 批准母版几何（参 Ether `docs/DECISIONS_2026-11-17.md` §265 与
+    /// `docs/CONTROL_SPEC.md` §28），故此处锁的是**获批的新消费结果**，
+    /// 旧尺寸作为行为变更记在 `docs/research/glyph_consume_20261117/REPORT.md`。
+    #[test]
+    fn toggle_glyph_pixels_match_measured_32pt_box() {
+        let Some(engine) = find_engine() else { return };
+        let theme = MetroTheme::ether_dark();
+        for (scale, expected) in [(1.0, (12, 13, 27, 26)), (2.0, (24, 26, 55, 53))] {
+            let n = MetroNavigationView::new(Vec::new());
+            let mut scene = Scene::default();
+            n.render_scaled(
+                &theme,
+                &engine,
+                Rect::new(0.0, 0.0, 40.0, 40.0),
+                &mut scene,
+                scale,
+            );
+            let mut cpu = CpuRenderer::new(40.0, 40.0, scale);
+            cpu.set_text_tuning(TextRenderTuning::identity());
+            let (pw, ph) = cpu.physical_size();
+            let bytes = cpu.render(&engine, &scene, None).to_vec();
+            assert_eq!(
+                ink_bbox(&bytes, pw, ph),
+                Some(expected),
+                "{scale}× 汉堡墨迹包围盒"
+            );
+        }
     }
 }
