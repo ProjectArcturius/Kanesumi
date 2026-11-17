@@ -890,6 +890,8 @@ pub fn column_at(columns: &ColumnSet, rect: Rect, x: f32) -> usize {
 pub fn column_rects(columns: &ColumnSet, area: Rect) -> Vec<Rect> {
 pub fn commands(&self) -> &[SceneCommand] {
 pub fn commit_ime(&mut self, s: &str) -> bool {
+pub fn compat_title_band(&self, group: usize) -> Option<Rect> {
+pub fn compat_title_rect(&self, group: usize, line_height: f32) -> Option<Rect> {
 pub fn compute_visible_rows(&self) -> Vec<TreeRow> {
 pub fn contains(&self, index: usize) -> bool {
 pub fn content_area(&self, box_rect: Rect) -> Rect {
@@ -964,6 +966,7 @@ pub fn for_tree(owner: WidgetId, items: Vec<MenuItem>) -> Self {
 pub fn foreground(&self, theme: &MetroTheme) -> kanesumi_core::Color {
 pub fn fraction(&self) -> f32 {
 pub fn from_epoch_days(days: i64) -> Self {
+pub fn from_provider(
 pub fn from_text(text: impl Into<String>) -> Self {
 pub fn gap(mut self) -> Self {
 pub fn get(&self) -> usize {
@@ -1137,6 +1140,7 @@ pub fn measure(engine: &TextEngine, row: &PanelRow, origin: Point, width: f32) -
 pub fn measure_window(&self, row_h: f32, viewport_h: f32) -> Option<ListWindow> {
 pub fn measures_last_frame(&self) -> usize {
 pub fn meta(&self) -> &[ListRowMeta] {
+pub fn metrics(&self) -> TileWallMetrics {
 pub fn missing_brush_fallbacks() -> u64 {
 pub fn mode(&self, rect: Rect) -> TwoPaneMode {
 pub fn month_at(rect: Rect, pos: Point) -> Option<u8> {
@@ -1295,8 +1299,10 @@ pub fn render(&self, theme: &MetroTheme, rect: Rect, scene: &mut Scene) {
 pub fn render_card(
 pub fn render_chrome(
 pub fn render_chrome(&self, theme: &MetroTheme, rect: Rect, scene: &mut Scene) {
+pub fn render_compat(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
 pub fn render_content(&self, theme: &MetroTheme, rect: Rect, scene: &mut Scene) {
 pub fn render_decl(
+pub fn render_group_title(&self, theme: &MetroTheme, scene: &mut Scene, group: usize) -> bool {
 pub fn render_header(
 pub fn render_overlay(theme: &MetroTheme, anim: &PopupAnim, screen: Rect, scene: &mut Scene) {
 pub fn render_panel(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
@@ -1370,6 +1376,7 @@ pub fn set(&mut self, name: &str, properties: StateProperties) -> bool {
 pub fn set_anchor_if_none(&mut self, anchor: usize) {
 pub fn set_checked(&mut self, checked: bool) {
 pub fn set_cluster_boundaries_override(&mut self, boundaries: Option<Vec<usize>>) {
+pub fn set_compat_metrics(&mut self, metrics: Option<TileWallMetrics>) {
 pub fn set_composed_scroll(&mut self, on: bool) {
 pub fn set_cursor(&mut self, pos: usize) {
 pub fn set_cursor_byte(&mut self, byte: usize) {

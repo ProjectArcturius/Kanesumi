@@ -2225,3 +2225,54 @@ fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
 新增 `set_starting_motion(breathe, jump)`，两个 0..1 相位由调用方的动画时基提供；非有限值归零，越界夹紧。
 原 `set_starting_progress(progress)` 保留共同驱动两者的语义，不能让新输入悄悄改变旧调用方。
 控件不创建时钟；非启动项的轻跳恒为零。
+
+
+## 53 · 磁贴墙提供方兼容（tile wall provider profile）
+
+> 缺口与 C0 真值：Ether `docs/research/m1115_tilewall/PROVIDER_REVIEW.md`。
+> 完整契约与本件边界：`docs/research/tilewall_profile_20261117/SPEC.md`。
+> 实现：`kanesumi-controls/src/navigation/tile_wall.rs`、`tile_wall_control.rs`。
+
+### 启用方式与默认
+
+- 旧 `layout` / `MetroTileWall::render` / `cycle_size` / 公开签名与默认值不变。
+- 兼容档必须显式启用：`MetroTileWall::set_compat_metrics(Some(metrics))`。
+  未启用时控制器继续用 `TileWallMetrics::BASE`（`cell=70`、`gap=10`、`group_gap=70`、
+  `title_band=72`、`margin_x=120`）。
+- 不用给既有公开结构体加字段：4×2 只加 `TileWallSize` 变体（枚举已 `#[non_exhaustive]`）。
+
+### 响应式度量
+
+`TileWallMetrics::from_provider(cell, gap, group_gap, title_band, margin_x)` 接收应用
+`tile_metrics::Metrics` 的五个字段；`columns` / `min_rows` / `bottom_band` 仍取本库缺省。
+控制器在重排时把它传给 `TileWallInput.metrics`，应用不再在 launcher 侧补偏移或重写矩形。
+C0（1280×752，两组 18+2 个 Standard）的 `margin_x = 1280×120/1366 = 112.4451`，
+首格 `(112.4451, 201, 150, 150)`，第二组首格 `x = 1132.4451`。
+
+### 兼容组头
+
+- `TILE_TITLE_H = 40`、`TILE_TITLE_GAP = 8`（对应应用 `TITLE_H` / `TITLE_GAP`）。
+- 标题带顶 = 组内最上磁贴顶 − 40 − 8；无磁贴组回落到组块顶。
+- 文本用 `theme.typography.caption`、`theme.colors.on_surface_variant`，左对齐、单行省略，
+  在 40 高带内垂直居中。C0 首组 caption 文本框 `y = 164`、高 18；`(200,170)` 读到「常用」。
+- 按组入口：`compat_title_band` / `compat_title_rect` / `render_group_title`；
+  `render_compat` 画兼容组头与磁贴底。组名只来自模型，空标题不画。
+- 旧 `render` 继续画 15/20、`base_weight()`、`on_surface`、框高 20 的旧组头。
+
+### 尺寸映射
+
+| 应用 `TileSize` | 墙尺寸 | 单元 |
+|---|---|---|
+| `Mini` | `Small` | 1×1 |
+| `Standard` | `Large` | 2×2 |
+| `Large` | `ExtraLarge` | 4×2 |
+| —（库内旧档） | `Wide` | 2×1 |
+
+`Large` 仍是 2×2，`Wide` 仍是 2×1。`ExtraLarge` 宽 `4×cell + 3×gap`、高 `2×cell + gap`，
+按应用 `find_large` 找横向相邻两个空闲宏单元放置。缺省循环仍是
+`Small → Wide → Large → Small`；`ExtraLarge` 不进循环，循环落到它时回 `Small`。
+
+### 本件不做
+
+应用 C1、拖放结果类型、键盘默认行为、时间 / 动画 / GPU、从屏高自动推导度量、
+C0 图与 12 份转录均不在本件范围。

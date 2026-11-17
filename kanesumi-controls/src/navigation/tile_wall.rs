@@ -10,6 +10,7 @@
 // 形状冻结（参 Kanesumi docs/API_STABILITY.md §三）：现有字段不改名、不改语义；新增
 // 字段必须带 `Default`，枚举只许加变体（`TileWallSize` 已标 `#[non_exhaustive]`）。
 
+use kanesumi_core::metrics::{SPACE_32, SPACE_8};
 use kanesumi_core::{Point, Rect};
 
 /// 组宽（1×1 单元列数）：12 = 6 个标准方 = Win8.1 实测组宽 950。
@@ -19,11 +20,20 @@ pub const TILE_COLUMNS: usize = 12;
 /// 组块至少占的单元行数：6 = 3 行标准方（磁贴少时组块不缩，参 `tile_metrics::STD_ROWS`）。
 pub const TILE_MIN_ROWS: usize = 6;
 
+/// 兼容组头文字矩形高（逻辑像素），对应应用 `tile_wall.rs::TITLE_H`。
+///
+/// 40 = `SPACE_32 + SPACE_8`：引用既有间距令牌，避免在尺寸表外另立裸常量
+/// （`kanesumi-controls/tests/size_discipline.rs` 守门）。
+pub const TILE_TITLE_H: f32 = SPACE_32 + SPACE_8;
+
+/// 兼容组头与首行磁贴的固定间距，对应应用 `tile_wall.rs::TITLE_GAP`。
+pub const TILE_TITLE_GAP: f32 = SPACE_8;
+
 /// 磁贴尺寸档：只表达跨几个 1×1 单元，不携带任何应用状态。
 ///
-/// `Small` = 1×1、`Wide` = 2×1、`Large` = 2×2。launcher 的 `TileSize::Mini` →
-/// `Small`、`Standard` → `Large`（launcher 没有 2×1 档）；4×2 的时钟磁贴尚未纳入
-/// 本形状（见 docs/supply/TILE_WALL_FILE_VIEWS.md §Ⅳ）。
+/// `Small` = 1×1、`Wide` = 2×1、`Large` = 2×2、`ExtraLarge` = 4×2。应用
+/// `TileSize::Mini` → `Small`、`Standard` → `Large`、`Large` → `ExtraLarge`。
+/// 2×1 是库内旧档，应用没有对应尺寸；旧三档含义与缺省循环不变。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TileWallSize {
@@ -33,6 +43,8 @@ pub enum TileWallSize {
     Wide,
     /// 2×2。
     Large,
+    /// 4×2（横跨四列、两行）。对应应用 `TileSize::Large`；不是把旧 `Wide` 改义。
+    ExtraLarge,
 }
 
 impl TileWallSize {
@@ -42,6 +54,7 @@ impl TileWallSize {
             TileWallSize::Small => (1, 1),
             TileWallSize::Wide => (2, 1),
             TileWallSize::Large => (2, 2),
+            TileWallSize::ExtraLarge => (4, 2),
         }
     }
 }
@@ -132,6 +145,28 @@ impl TileWallMetrics {
             columns: (self.columns.max(2)) & !1,
             min_rows: self.min_rows.max(1),
             bottom_band: len(self.bottom_band),
+        }
+    }
+
+    /// 从应用响应式度量构造：参数逐项对应 `launcher/src/shell/tile_metrics.rs` 的
+    /// `Metrics`（`cell` / `gap` / `group_gap` / `title_band` / `margin_x`）。
+    ///
+    /// 只搬运字段，不复制 `metrics_for` 的屏高缩放算术 —— 那是应用侧策略，控件只消费结果。
+    /// 列数、最小行数、底部让位带应用不掌握，仍取 [`TileWallMetrics::BASE`]。
+    pub fn from_provider(
+        cell: f32,
+        gap: f32,
+        group_gap: f32,
+        title_band: f32,
+        margin_x: f32,
+    ) -> Self {
+        Self {
+            cell,
+            gap,
+            group_gap,
+            title_band,
+            margin_x,
+            ..Self::BASE
         }
     }
 }
@@ -434,6 +469,12 @@ fn find_slot(
                     let free = (0..2).all(|dy| (0..2).all(|dx| is_free(occ, x + dx, y + dy)));
                     free.then_some((0, 0))
                 }
+                // 应用 `find_large`：4×2 必须占横向相邻两个完整宏单元，起点偶数。
+                (4, 2) => {
+                    let free = mc + 1 < macro_cols
+                        && (0..2).all(|dy| (0..4).all(|dx| is_free(occ, x + dx, y + dy)));
+                    free.then_some((0, 0))
+                }
                 _ => first_fit(occ, cols, y, w, h),
             };
             if let Some((dx, dy)) = found {
@@ -569,6 +610,45 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn compat_title_constants_match_provider() {
+        assert_eq!(TILE_TITLE_H, 40.0, "应用 TITLE_H");
+        assert_eq!(TILE_TITLE_GAP, 8.0, "应用 TITLE_GAP");
+    }
+
+    #[test]
+    fn extra_large_tiles_take_four_by_two_macro_slots() {
+        let l = layout(&TileWallInput::new(
+            vec![one_group(vec![
+                tile("a", TileWallSize::ExtraLarge),
+                tile("b", TileWallSize::ExtraLarge),
+                tile("c", TileWallSize::ExtraLarge),
+            ])],
+            Rect::new(0.0, 0.0, 2000.0, 800.0),
+        ));
+        let m = TileWallMetrics::BASE;
+        let group_x = m.margin_x;
+        let a = l.slots.iter().find(|s| s.id == "a").unwrap();
+        let b = l.slots.iter().find(|s| s.id == "b").unwrap();
+        let c = l.slots.iter().find(|s| s.id == "c").unwrap();
+        // 4×2：宽 310、高 150，正好三枚铺满 950 宽的组。
+        for s in [a, b, c] {
+            assert!(close(s.rect.size.width, 4.0 * m.cell + 3.0 * m.gap));
+            assert!(close(s.rect.size.height, 2.0 * m.cell + m.gap));
+        }
+        assert!(close(a.rect.origin.x, group_x));
+        assert!(close(b.rect.origin.x, group_x + 4.0 * (m.cell + m.gap)));
+        assert!(close(c.rect.origin.x, group_x + 8.0 * (m.cell + m.gap)));
+        assert_eq!(l.rows, TILE_MIN_ROWS, "4×2 只占两行内容，组块仍保底 6 行");
+        assert_eq!(
+            TileWallSize::ExtraLarge.units(),
+            (4, 2),
+            "4×2 不得占用旧的 Wide/Large 含义"
+        );
+        assert_eq!(TileWallSize::Wide.units(), (2, 1));
+        assert_eq!(TileWallSize::Large.units(), (2, 2));
     }
 
     #[test]
