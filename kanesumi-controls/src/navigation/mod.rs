@@ -11,7 +11,9 @@ pub mod file_views;
 pub mod tile_wall;
 pub mod tile_wall_control;
 
-pub use dock::{DockActivated, DockItem, DockItemState, MetroDock, indicator_rect};
+// 重导出保留的兼容入口；新实现不再调用废弃查询。
+#[allow(deprecated)]
+pub use dock::{DockActivated, DockItem, DockItemState, MetroDock, indicator_rect, try_indicator_rect};
 pub use dock_rail::{
     DockChipDirection, DockChipLayout, DockDirection, DockHit, DockIndicatorKind, DockLayout,
     DockMetrics, DockRail, DockRailEntry, DockRailInput, DockSlotLayout, DockZone, DockZoneLayout,

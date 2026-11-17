@@ -5,7 +5,8 @@
 
 use kanesumi_canvas::{Scene, SceneCommand};
 use kanesumi_controls::navigation::{
-    DockHit, DockIndicatorKind, DockItem, DockItemState, MetroDock, indicator_rect,
+    DockHit, DockIndicatorKind, DockItem, DockItemState, MetroDock,
+    try_indicator_rect as indicator_rect,
 };
 use kanesumi_core::{Color, MetroTheme, Point, Rect, ThemeColor};
 use kanesumi_element::testing::test_engine;

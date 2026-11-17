@@ -2193,3 +2193,12 @@ fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
 
 **未实现。** 在 `MetroNotificationCard` 落地前，通知中心面板继续用现有自绘实现；**不要**把它塞进
 `Form::row_button`（会丢「卡片可点但关闭不可点」这条分工，且正文两行截断与时间行都没有位置）。
+
+
+## MetroDock 定位线查询的兼容契约（2026-11-17）
+
+- `indicator_rect(&DockSlotLayout) -> Rect` 保留旧签名与旧几何：图标左沿、图标底加 2、图标宽、`DOCK_LINE` 高。
+  这是旧调用方的兼容入口，标记废弃但至少保留一个发布周期，参 `docs/API_STABILITY.md` §三。
+- 新调用方与渲染使用 `try_indicator_rect(&DockSlotLayout) -> Option<Rect>`，直接返回轨道的 `slot.indicator`。
+  被裁掉的槽返回 `None`，禁止拿旧入口推算可见定位线；旧入口不参与新渲染。
+- 返回类型不得通过重录 API 快照原地改为 `Option`；新增入口同时保留旧入口。

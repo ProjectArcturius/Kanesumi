@@ -1037,7 +1037,7 @@ pub fn icon_rect(&self, rect: Rect) -> Option<Rect> {
 pub fn ime_context(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> ImeContext {
 pub fn indeterminate() -> Self {
 pub fn index(&self) -> usize {
-pub fn indicator_rect(slot: &DockSlotLayout) -> Option<Rect> {
+pub fn indicator_rect(slot: &DockSlotLayout) -> Rect {
 pub fn info_item(
 pub fn initials_from_display_name(name: &str) -> String {
 pub fn initials_style(side: f32) -> TextStyle {
@@ -1461,6 +1461,7 @@ pub fn top_item_rects(&self, engine: &TextEngine, rect: Rect) -> Vec<Rect> {
 pub fn total_width(&self, avail_w: f32) -> f32 {
 pub fn total_width(&self, engine: &TextEngine) -> f32 {
 pub fn track_rect(&self, rect: Rect, theme: &MetroTheme) -> Rect {
+pub fn try_indicator_rect(slot: &DockSlotLayout) -> Option<Rect> {
 pub fn try_path_at(&self, pos: Point) -> Option<MenuPath> {
 pub fn undo(&mut self) -> bool {
 pub fn unknown_state_fallbacks() -> u64 {

@@ -479,7 +479,7 @@ impl MetroDock {
         for slot in &self.layout.slots {
             // 让位空槽（§188）：只占位、只画左区灰线，不画图标 / 底 / 徽标。
             if slot.id == PIN_GAP_ID {
-                if let Some(line) = indicator_rect(slot) {
+                if let Some(line) = try_indicator_rect(slot) {
                     scene.fill_rect(c.divider, line);
                 }
                 continue;
@@ -505,7 +505,7 @@ impl MetroDock {
                     ),
                 );
             }
-            if let Some(line) = indicator_rect(slot) {
+            if let Some(line) = try_indicator_rect(slot) {
                 let color = if ghost {
                     c.divider
                 } else if self.is_starting(&item.id) {
@@ -634,7 +634,19 @@ impl MetroDock {
     }
 }
 
-/// 某个槽位的定位线矩形（渲染与断言同源）。溢出时被完全挡住的槽没有线 = `None`。
-pub fn indicator_rect(slot: &DockSlotLayout) -> Option<Rect> {
+/// 旧定位线几何查询。保留返回类型与历史算术，避免已落地的调用方编译失败。
+/// 新渲染只消费轨道的可见定位线，参 `docs/CONTROL_SPEC.md`「MetroDock 定位线查询的兼容契约」。
+#[deprecated(note = "请改用 try_indicator_rect，读取轨道生成的可见定位线")]
+pub fn indicator_rect(slot: &DockSlotLayout) -> Rect {
+    Rect::new(
+        slot.icon_rect.origin.x,
+        slot.icon_rect.bottom() + 2.0,
+        slot.icon_rect.size.width,
+        sizes::DOCK_LINE,
+    )
+}
+
+/// 轨道生成的可见定位线。被完全裁掉的槽没有线。
+pub fn try_indicator_rect(slot: &DockSlotLayout) -> Option<Rect> {
     slot.indicator
 }
