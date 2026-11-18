@@ -10,8 +10,8 @@
 // 只留本实现；删因与证据见 `docs/research/m1115_cleanup/REPORT.md` §一。
 
 use kanesumi_canvas::icons::{self, GlyphName};
-use kanesumi_canvas::{Scene, TextAlign};
-use kanesumi_core::typography::TextVAlign;
+use kanesumi_canvas::{Scene, TextAlign, TextOverflow};
+use kanesumi_core::typography::{TextStyle, TextVAlign};
 use kanesumi_core::{Color, MetroTheme, Point, Rect, ThemeColor};
 
 fn contains(r: Rect, p: Point) -> bool {
