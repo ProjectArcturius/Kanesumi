@@ -2680,3 +2680,16 @@ MetroSsdChrome::new() / ::with_metrics(m)
 - `SsdGeometry` 手写 `Default`（`Rect` 无 `Default`，本卡不改 core）：零矩形 = 未提交首帧。
 - 12 条用例把旧 `wm/ssd.rs` 的六条数值期望原样搬来（同输入同输出），另加 6 条边界 / 叠色 /
   metrics 覆写用例；`#[ignore]` 未新增。
+
+## 58 · 顶栏屏幕提示（MetroOsdOverlay）
+
+参 Ether `docs/OSD_DESIGN.md` §Ⅲ–Ⅳ 与 `1044d8d0:settings/src/topbar/osd.rs`。
+应用给控件已格式化的标题、数值、进度、媒体文字、图标与入场进度。左上锚点、sysstate 订阅、
+图标解码和计时由宿主保留。`MetroOsd` 原入口继续提供独立的贴底提示。
+
+- 卡片宽 320，基本态高 74、无进度高 58，媒体态沿用原媒体行高度公式。深浅主题沿用
+  `Surface`、`Divider`、`OnSurface` 与 `Primary`。静音保持轨道填充长度，以次级前景色置淡。
+- 媒体行保留封面、两行文字和三个 32 pt 按钮。控件按同一几何绘制和命中。左键按下记录动作，
+  抬起发出原动作，指针离开取消。媒体能力沿用原图标置淡，命令仍由消费方的系统端口处理。
+- 控件按宿主提供的进度绘制透明度与入场位移。宿主保留 1.5 s 停留、悬停保持、
+  200 ms 入场与 150 ms 淡出。

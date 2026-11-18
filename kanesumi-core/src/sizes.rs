@@ -22,6 +22,19 @@ pub const TOPBAR_HEIGHT: f32 = 30.0;
 /// 在 K3 / `rf1-i18n-topbar` 合入之后）。
 pub const TOPBAR_EXCLUSIVE_ZONE: f32 = TOPBAR_HEIGHT;
 
+/// 顶栏 OSD 旧卡片宽。参 Ether `docs/OSD_DESIGN.md` §Ⅲ。
+pub const OSD_OVERLAY_WIDTH: f32 = 320.0;
+/// 顶栏 OSD 标题行之前的内距。参 Ether `docs/OSD_DESIGN.md` §Ⅲ。
+pub const OSD_OVERLAY_PAD_TOP: f32 = 14.0;
+/// 顶栏 OSD 标题行高。参 Ether `1044d8d0:settings/src/topbar/osd.rs` 的 `HEADER_H`。
+pub const OSD_OVERLAY_HEADER_HEIGHT: f32 = 28.0;
+/// 顶栏 OSD 数值列宽。参 Ether 同文件 `VALUE_W`。
+pub const OSD_OVERLAY_VALUE_WIDTH: f32 = 100.0;
+/// 顶栏 OSD 媒体封面宽高。参 Ether `docs/OSD_DESIGN.md` §Ⅲ。
+pub const OSD_OVERLAY_ART_SIZE: f32 = 40.0;
+/// 顶栏 OSD 媒体文字与相邻控件的间距。参 Ether 同文件 `media_text_rect`。
+pub const OSD_OVERLAY_MEDIA_TEXT_GAP: f32 = 10.0;
+
 /// Dock 图标 48。来源：§158「悬浮，图标48，模糊30」；§159 明确 48 是 **200% 输出下的
 /// 最终值，不随 Ether 尺寸系数二次放大**。现值 `launcher/src/shell/dock_rail.rs:31`。
 pub const DOCK_ICON: f32 = 48.0;

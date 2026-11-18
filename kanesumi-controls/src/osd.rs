@@ -14,6 +14,8 @@ use kanesumi_canvas::{Scene, TextAlign, TextEngine};
 use kanesumi_core::typography::{MetroTypography, TextStyle};
 use kanesumi_core::{MetroTheme, Point, Rect, sizes};
 
+pub mod overlay;
+
 /// OSD 显示时长（毫秒）。参 `docs/OSD_DESIGN.md`。
 pub const OSD_DURATION_MS: f64 = 2000.0;
 

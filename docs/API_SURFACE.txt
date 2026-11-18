@@ -784,6 +784,7 @@ pub enum NotificationEvent {
 pub enum NotificationState {
 pub enum NotifyHit {
 pub enum OsdKind {
+pub enum OsdMediaButton {
 pub enum PagerAction {
 pub enum PagerHover {
 pub enum PagerItem {
@@ -962,6 +963,7 @@ pub fn entry_icon_rect(&self) -> Option<Rect> {
 pub fn epoch_days(self) -> i64 {
 pub fn error(title: impl Into<String>, message: impl Into<String>) -> Self {
 pub fn estimated_velocity(&self) -> f32 {
+pub fn event(&mut self, ctx: &mut EventCtx, event: &Event, has_media: bool) {
 pub fn expandable(mut self, on: bool) -> Self {
 pub fn expander(
 pub fn factory(&self) -> Option<&dyn ItemFactory> {
@@ -1066,6 +1068,7 @@ pub fn hover(&mut self, rect: Rect, pos: Point) {
 pub fn hover_edge(&mut self, last: bool) {
 pub fn hovered(&self) -> Option<(usize, usize)> {
 pub fn hovered(&self) -> Option<usize> {
+pub fn hovered(&self) -> bool {
 pub fn hovered_hit(&self) -> Option<DockHit> {
 pub fn hovered_item(&self) -> Option<(usize, Option<usize>)> {
 pub fn hovered_path(&self) -> Option<MenuPath> {
@@ -1078,6 +1081,7 @@ pub fn icon_jump(&self, id: &str) -> f32 {
 pub fn icon_opacity(&self, id: &str) -> f32 {
 pub fn icon_rect(&self, cell: Rect) -> Rect {
 pub fn icon_rect(&self, rect: Rect) -> Option<Rect> {
+pub fn icon_rect(basic: Rect) -> Rect {
 pub fn ime_context(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> ImeContext {
 pub fn indeterminate() -> Self {
 pub fn index(&self) -> usize {
@@ -1144,6 +1148,7 @@ pub fn left_width(&self) -> f32 {
 pub fn len(&self) -> usize {
 pub fn level(&self) -> f32 {
 pub fn line_rect(&self, theme: &MetroTheme, body: Rect) -> Rect {
+pub fn line_rect(area: Rect, line_height: f32) -> Rect {
 pub fn link(&mut self, tree: &mut Tree, text: &str, target: &str) -> WidgetId {
 pub fn list_item(
 pub fn list_window(
@@ -1202,6 +1207,7 @@ pub fn new(groups: Vec<TileWallGroup>, viewport: Rect) -> Self {
 pub fn new(header: &str, width: ColumnWidth) -> Self {
 pub fn new(header: impl Into<String>) -> Self {
 pub fn new(icon: impl Into<String>) -> Self {
+pub fn new(icons: OsdOverlayIcons) -> Self {
 pub fn new(id: impl Into<String>, icon: impl Into<String>) -> Self {
 pub fn new(id: impl Into<String>, label: impl Into<String>, size: TileWallSize) -> Self {
 pub fn new(id: impl Into<String>, size: TileWallSize) -> Self {
@@ -1490,6 +1496,7 @@ pub fn sidebar_layout(input: &SidebarInput) -> SidebarLayout {
 pub fn single_line(mut self) -> Self {
 pub fn size(&self) -> f32 {
 pub fn size() -> Size {
+pub fn size(has_media: bool, has_progress: bool) -> Size {
 pub fn slider(
 pub fn slider_rect(&self, rect: Rect, k: usize) -> Rect {
 pub fn slot(&self, display: usize) -> Option<&DockPresentedSlot> {
@@ -1571,6 +1578,7 @@ pub fn urgent(mut self, on: bool) -> Self {
 pub fn value(
 pub fn value(&self) -> Option<f64> {
 pub fn value(value: i32) -> Self {
+pub fn value_rect(basic: Rect) -> Rect {
 pub fn value_style() -> TextStyle {
 pub fn virtualizer(&self, theme: &MetroTheme) -> MetroRepeater {
 pub fn visible(&self) -> bool {
@@ -1744,6 +1752,7 @@ pub struct MetroNoticeRow {
 pub struct MetroNotificationCard {
 pub struct MetroNumberBox {
 pub struct MetroOsd {
+pub struct MetroOsdOverlay {
 pub struct MetroPagerControl {
 pub struct MetroPanelRow {
 pub struct MetroParallaxView {
@@ -1789,6 +1798,11 @@ pub struct NotificationTextStyles {
 pub struct NotifyCardGeometry {
 pub struct NumberValueChanged(pub f64);
 pub struct OsdGeometry {
+pub struct OsdHoverChanged(pub bool);
+pub struct OsdMediaClicked(pub OsdMediaButton);
+pub struct OsdOverlayContent<'a> {
+pub struct OsdOverlayIcons {
+pub struct OsdOverlayMedia<'a> {
 pub struct PagerPageChanged(pub usize);
 pub struct Paint {
 pub struct PanelRow {
