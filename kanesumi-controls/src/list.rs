@@ -620,6 +620,67 @@ impl kanesumi_element::Widget for MetroList {
     }
 }
 
+// ── 行模型扩展（2026-11-13，只增不改）────────────────────────────────────────
+//
+// 供应门 §Ⅰ「文件列表 / 侧栏」两格的缺口：`MetroList` 的行只有 `Vec<String>`，没有图标、
+// 没有次要文字、没有多列 —— 于是 librarian 只能自己画列表。这里补一层**并行**的行元数据：
+// `rows: Vec<String>` 原样保留（旧 App 不受影响），`rows_meta` 按需提供图标与次要文字；
+// 两者长度不一致时渲染侧按 `min` 截断，不 panic。
+
+/// 一行的附加信息（可选）。缺省全空 = 与旧行为逐像素一致。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ListRowMeta {
+    /// 图标名（主题图标名；渲染侧只留出图标位并填底，取图归外壳）。
+    pub icon: Option<String>,
+    /// 次要文字（右侧弱化色；空 = 不画）。
+    pub secondary: String,
+    /// 多列文字（文件列表的大小 / 时间等；空 = 不画）。
+    pub cells: Vec<String>,
+}
+
+impl ListRowMeta {
+    /// 带图标。
+    pub fn icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    /// 带次要文字。
+    pub fn secondary(mut self, text: impl Into<String>) -> Self {
+        self.secondary = text.into();
+        self
+    }
+
+    /// 带多列。
+    pub fn cells(mut self, cells: Vec<String>) -> Self {
+        self.cells = cells;
+        self
+    }
+}
+
+impl MetroList {
+    /// 行元数据（与 `rows` 并行；长度不齐时缺的当空）。
+    pub fn meta(&self) -> &[ListRowMeta] {
+        &self.rows_meta
+    }
+
+    /// 设置行元数据；长度不齐时渲染侧截断。
+    pub fn set_meta(&mut self, meta: Vec<ListRowMeta>) {
+        self.rows_meta = meta;
+    }
+
+    /// 带元数据构造。
+    pub fn with_meta(rows: Vec<String>, meta: Vec<ListRowMeta>) -> Self {
+        let mut list = Self::new(rows);
+        list.rows_meta = meta;
+        list
+    }
+
+    /// 某行的元数据。
+    pub fn row_meta(&self, index: usize) -> Option<&ListRowMeta> {
+        self.rows_meta.get(index)
+    }
+}
 #[cfg(test)]
 mod tree_tests {
     use super::*;
@@ -1290,64 +1351,3 @@ mod tests {
     }
 }
 
-// ── 行模型扩展（2026-11-13，只增不改）────────────────────────────────────────
-//
-// 供应门 §Ⅰ「文件列表 / 侧栏」两格的缺口：`MetroList` 的行只有 `Vec<String>`，没有图标、
-// 没有次要文字、没有多列 —— 于是 librarian 只能自己画列表。这里补一层**并行**的行元数据：
-// `rows: Vec<String>` 原样保留（旧 App 不受影响），`rows_meta` 按需提供图标与次要文字；
-// 两者长度不一致时渲染侧按 `min` 截断，不 panic。
-
-/// 一行的附加信息（可选）。缺省全空 = 与旧行为逐像素一致。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ListRowMeta {
-    /// 图标名（主题图标名；渲染侧只留出图标位并填底，取图归外壳）。
-    pub icon: Option<String>,
-    /// 次要文字（右侧弱化色；空 = 不画）。
-    pub secondary: String,
-    /// 多列文字（文件列表的大小 / 时间等；空 = 不画）。
-    pub cells: Vec<String>,
-}
-
-impl ListRowMeta {
-    /// 带图标。
-    pub fn icon(mut self, icon: impl Into<String>) -> Self {
-        self.icon = Some(icon.into());
-        self
-    }
-
-    /// 带次要文字。
-    pub fn secondary(mut self, text: impl Into<String>) -> Self {
-        self.secondary = text.into();
-        self
-    }
-
-    /// 带多列。
-    pub fn cells(mut self, cells: Vec<String>) -> Self {
-        self.cells = cells;
-        self
-    }
-}
-
-impl MetroList {
-    /// 行元数据（与 `rows` 并行；长度不齐时缺的当空）。
-    pub fn meta(&self) -> &[ListRowMeta] {
-        &self.rows_meta
-    }
-
-    /// 设置行元数据；长度不齐时渲染侧截断。
-    pub fn set_meta(&mut self, meta: Vec<ListRowMeta>) {
-        self.rows_meta = meta;
-    }
-
-    /// 带元数据构造。
-    pub fn with_meta(rows: Vec<String>, meta: Vec<ListRowMeta>) -> Self {
-        let mut list = Self::new(rows);
-        list.rows_meta = meta;
-        list
-    }
-
-    /// 某行的元数据。
-    pub fn row_meta(&self, index: usize) -> Option<&ListRowMeta> {
-        self.rows_meta.get(index)
-    }
-}

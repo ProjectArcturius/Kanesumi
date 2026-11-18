@@ -1071,52 +1071,6 @@ delegate_shm!(LockShell);
 delegate_session_lock!(LockShell);
 delegate_registry!(LockShell);
 
-// ── 单测：锁确认状态机（不变量 1/2/3，无需真实合成器） ─────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::LockGate;
-
-    /// 不变量 1：收到 `locked` 前不得渲染。
-    #[test]
-    fn no_render_before_locked() {
-        let mut gate = LockGate::default();
-        assert!(!gate.may_render(), "未确认前不得画任何内容");
-        gate.on_locked();
-        assert!(gate.may_render(), "确认后方可画");
-    }
-
-    /// 不变量 2：`finished` → 退出且**不**解锁。
-    #[test]
-    fn finished_exits_without_unlock() {
-        let mut gate = LockGate::default();
-        gate.on_finished();
-        assert!(gate.should_exit(), "finished 必须立即退出");
-        assert!(!gate.may_unlock(true), "finished 后即使应用请求也不得解锁");
-        // 锁未确认即 finished（合成器拒绝）也不得解锁 / 不得渲染。
-        assert!(!gate.may_render());
-    }
-
-    /// 不变量 3：仅「应用请求 + 已确认 + 未 finished + 未发过」才解锁，且只发一次。
-    #[test]
-    fn unlock_only_after_locked_and_request() {
-        let mut gate = LockGate::default();
-        assert!(!gate.may_unlock(true), "未确认前不得解锁");
-        gate.on_locked();
-        assert!(!gate.may_unlock(false), "应用未请求不得解锁");
-        assert!(gate.may_unlock(true), "应用请求后允许解锁");
-        gate.unlock_sent = true;
-        assert!(!gate.may_unlock(true), "不得重复发 unlock");
-    }
-
-    /// 锁未确认前不主动退出（不变量 4）：默认门即不退出。
-    #[test]
-    fn no_exit_before_locked() {
-        let gate = LockGate::default();
-        assert!(!gate.should_exit());
-    }
-}
-
 // ── 合成图层协议（与 platform/layers.rs 同一份 ether_composition_v1）────────────
 
 impl wayland_client::Dispatch<crate::platform::layers::proto::ether_backdrop_v1::EtherBackdropV1, BackdropTarget> for LockShell {
@@ -1178,3 +1132,50 @@ impl wayland_client::Dispatch<wayland_client::protocol::wl_region::WlRegion, ()>
 }
 
 smithay_client_toolkit::delegate_subcompositor!(LockShell);
+
+// ── 单测：锁确认状态机（不变量 1/2/3，无需真实合成器） ─────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::LockGate;
+
+    /// 不变量 1：收到 `locked` 前不得渲染。
+    #[test]
+    fn no_render_before_locked() {
+        let mut gate = LockGate::default();
+        assert!(!gate.may_render(), "未确认前不得画任何内容");
+        gate.on_locked();
+        assert!(gate.may_render(), "确认后方可画");
+    }
+
+    /// 不变量 2：`finished` → 退出且**不**解锁。
+    #[test]
+    fn finished_exits_without_unlock() {
+        let mut gate = LockGate::default();
+        gate.on_finished();
+        assert!(gate.should_exit(), "finished 必须立即退出");
+        assert!(!gate.may_unlock(true), "finished 后即使应用请求也不得解锁");
+        // 锁未确认即 finished（合成器拒绝）也不得解锁 / 不得渲染。
+        assert!(!gate.may_render());
+    }
+
+    /// 不变量 3：仅「应用请求 + 已确认 + 未 finished + 未发过」才解锁，且只发一次。
+    #[test]
+    fn unlock_only_after_locked_and_request() {
+        let mut gate = LockGate::default();
+        assert!(!gate.may_unlock(true), "未确认前不得解锁");
+        gate.on_locked();
+        assert!(!gate.may_unlock(false), "应用未请求不得解锁");
+        assert!(gate.may_unlock(true), "应用请求后允许解锁");
+        gate.unlock_sent = true;
+        assert!(!gate.may_unlock(true), "不得重复发 unlock");
+    }
+
+    /// 锁未确认前不主动退出（不变量 4）：默认门即不退出。
+    #[test]
+    fn no_exit_before_locked() {
+        let gate = LockGate::default();
+        assert!(!gate.should_exit());
+    }
+}
+

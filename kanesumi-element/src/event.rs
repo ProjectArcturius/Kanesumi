@@ -37,28 +37,6 @@ impl PointerButton {
     }
 }
 
-#[cfg(test)]
-mod pointer_button_tests {
-    use super::PointerButton;
-
-    #[test]
-    fn evdev_buttons_preserve_navigation_and_unknown_identity() {
-        for (code, expected) in [
-            (0x110, PointerButton::Left),
-            (0x111, PointerButton::Right),
-            (0x112, PointerButton::Middle),
-            (0x113, PointerButton::Back),
-            (0x116, PointerButton::Back),
-            (0x114, PointerButton::Forward),
-            (0x115, PointerButton::Forward),
-            (0x117, PointerButton::Other(0x117)),
-            (0xffff, PointerButton::Other(0xffff)),
-        ] {
-            assert_eq!(PointerButton::from_evdev(code), expected);
-        }
-    }
-}
-
 /// 逻辑键。可打印字符 → `Char`；控制键 → 具名变体；未分类 → `Unknown`（原始 keysym）。
 ///
 /// 具名变体是应用与控件的稳定语义面：应用不应再比 X11 keysym 原始码
@@ -283,5 +261,27 @@ mod tests {
         assert_eq!(e.phase, ScrollPhase::End);
         assert_eq!((e.dx, e.dy), (0.0, 0.0));
         assert_eq!(e.source, ScrollSource::Finger);
+    }
+}
+
+#[cfg(test)]
+mod pointer_button_tests {
+    use super::PointerButton;
+
+    #[test]
+    fn evdev_buttons_preserve_navigation_and_unknown_identity() {
+        for (code, expected) in [
+            (0x110, PointerButton::Left),
+            (0x111, PointerButton::Right),
+            (0x112, PointerButton::Middle),
+            (0x113, PointerButton::Back),
+            (0x116, PointerButton::Back),
+            (0x114, PointerButton::Forward),
+            (0x115, PointerButton::Forward),
+            (0x117, PointerButton::Other(0x117)),
+            (0xffff, PointerButton::Other(0xffff)),
+        ] {
+            assert_eq!(PointerButton::from_evdev(code), expected);
+        }
     }
 }
