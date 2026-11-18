@@ -15,7 +15,7 @@ use std::sync::Arc;
 use kanesumi_canvas::icons::{self, GlyphName};
 use kanesumi_canvas::{Scene, TextAlign, TextEngine, TextLayout, TextLayoutOptions, TextOverflow};
 use kanesumi_core::sizes::{ICON_12, ICON_16, ICON_32};
-use kanesumi_core::typography::{MetroTypography, TextStyle, base_weight};
+use kanesumi_core::typography::{MetroTypography, TextStyle, TextVAlign, base_weight};
 use kanesumi_core::{Color, MetroTheme, Point, Rect, ThemeColor};
 
 /// 正文最多两行（Win10 通知卡；超出截断加省略号）。
@@ -457,7 +457,8 @@ impl MetroNotificationCard {
                     (*label).to_string(),
                     *rect,
                     text,
-                    theme.typography.body_small,
+                    // 28 高的按钮盒里文字只有 16 高：源是垂直居中，这里显式声明。
+                    theme.typography.body_small.with_v_align(TextVAlign::Center),
                     TextAlign::Center,
                 );
             }

@@ -94,12 +94,12 @@
 
 ```text
 $ cargo test --offline -p kanesumi-controls --lib
-test result: ok. 1030 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 36.02s
+test result: ok. 1030 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 18.26s
 
 $ cargo test --offline -p kanesumi-element --test api_surface
 running 1 test
 test public_api_surface_matches_snapshot ... ok
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
 ```
 
 - 新增 6 条：`migrate_geometry_matches_source_without_and_with_image`、
@@ -132,8 +132,8 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 4. **critical 竖条没迁**：`NotificationContent` 没有 urgency；源 `URGENCY_BAR_W:61` 与
    `render` 的 `urgency >= 2` 分支（`:2032-2039`）留在合成器。
 5. **文字样式是控件选择，不是抄来的**：应用名 `body_small`、标题 `base`、正文 `body`、按钮
-   `body_small`。源用 `TextStyle::bold` + 纹理缩放（0.8 / 0.85），控件不量测，样式只影响
-   Scene 的文字命令，不改矩形。步骤 2 会整体重定，故未按源逐值复刻。
+   `body_small`（28 高盒内垂直居中）。源用 `TextStyle::bold` + 纹理缩放（0.8 / 0.85），
+   控件不量测，样式只影响 Scene 的文字命令，不改矩形。步骤 2 会整体重定，故未按源逐值复刻。
 6. **常量用 f64**：与源同精度；`size_discipline` 只拦 `const X: f32 = <整值>`，所以这些常量
    不会被它拦下。它们不是新的设计尺寸，是迁移契约（步骤 2/3 删除），已在 §56.5 与这里登记，
    是否要补进 `CANON_VS_TEMPORARY.md` 由调度者裁定。
