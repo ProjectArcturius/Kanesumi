@@ -2520,9 +2520,10 @@ C0 图与 12 份转录均不在本件范围（2026-11-18 补的三件也不含�
 **本卡不改像素**：同一输入（宽 320、同样的应用名 / 标题 / 正文行数 / 按钮数）给出同一组矩形
 与同一命中结果。正文换行与省略仍在合成器（步骤 2 才迁 canvas），本卡只按调用方切好的行排矩形。
 
-> 与 §55.3 的 `MetroNoticeRow`、以及同文件里量测版 `CardGeometry` / `render_card`
-> **不是同一个东西**：量测版把换行与省略交给 `TextEngine`；本卡是迁移契约，不量测。
-> 步骤 2 把换行交给 canvas 后两代合流。实现见 `kanesumi-controls/src/notification_card.rs`。
+> 与 §55.3 的 `MetroNoticeRow` **不是同一个东西**：本卡是迁移契约，不量测。
+> 同文件里原有的量测版（`CardGeometry` / `render_card`，把换行与省略交给 `TextEngine`）
+> 已在 m1115_cleanup 整块删除 —— 两份通知卡实现不可并存，删因与证据见
+> `docs/research/m1115_cleanup/REPORT.md` §一。实现见 `kanesumi-controls/src/notification_card.rs`。
 
 ### 56.1 常量（全部抄自 notifications.rs，不按 WinUI 规格重定）
 

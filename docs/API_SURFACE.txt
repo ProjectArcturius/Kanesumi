@@ -827,7 +827,6 @@ pub enum WallRelease {
 pub fn accent(label: impl Into<String>) -> Self {
 pub fn accent_button(label: impl Into<String>, action: DeclAction) -> Self {
 pub fn action(id: impl Into<String>, title: impl Into<String>) -> Self {
-pub fn action_at(&self, pos: Point) -> Option<usize> {
 pub fn action_rect(&self) -> Option<Rect> {
 pub fn actions(&mut self, tree: &mut Tree, labels: &[&str]) -> Vec<WidgetId> {
 pub fn activate_at(&mut self, ctx: &mut kanesumi_element::EventCtx, path: MenuPath) {
@@ -1030,7 +1029,6 @@ pub fn header_style() -> TextStyle {
 pub fn header_text(&self) -> String {
 pub fn header_width(&self, engine: &TextEngine, index: usize) -> f32 {
 pub fn height(&self) -> f32 {
-pub fn height_for(
 pub fn hex(&self) -> String {
 pub fn hide(&mut self) {
 pub fn hit(&self, engine: &TextEngine, rect: Rect, pos: Point) -> BreadcrumbClick {
@@ -1060,7 +1058,6 @@ pub fn hit_test(&self, rect: Rect, _theme: &MetroTheme, pos: Point) -> bool {
 pub fn hit_test(&self, rect: Rect, pos: Point) -> bool {
 pub fn hit_test(&self, rect: Rect, pos: kanesumi_core::Point) -> bool {
 pub fn hits(&self) -> &[crate::decl::DeclHit] {
-pub fn hits_close(&self, pos: Point) -> bool {
 pub fn hover(&mut self, engine: &TextEngine, rect: Rect, pos: Point) {
 pub fn hover(&mut self, engine: &TextEngine, rect: Rect, screen: Rect, p: Point) {
 pub fn hover(&mut self, engine: &TextEngine, screen: Rect, pos: Point) -> bool {
@@ -1136,7 +1133,6 @@ pub fn label(&self, index: usize) -> Option<&str> {
 pub fn label_rect(&self, cell: Rect) -> Rect {
 pub fn labeled(
 pub fn last_page(&self) -> usize {
-pub fn layout(
 pub fn layout(&self) -> &DockLayout {
 pub fn layout(&self) -> &TileWallLayout {
 pub fn layout(&self, area: Rect) -> TileGridGeometry {
@@ -1360,7 +1356,6 @@ pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, screen: Rect, scen
 pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, viewport: Rect, scene: &mut Scene) {
 pub fn render(&self, theme: &MetroTheme, geo: &NoticeRowGeometry, scene: &mut Scene) {
 pub fn render(&self, theme: &MetroTheme, rect: Rect, scene: &mut Scene) {
-pub fn render_card(
 pub fn render_chrome(
 pub fn render_chrome(&self, theme: &MetroTheme, rect: Rect, scene: &mut Scene) {
 pub fn render_compat(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
@@ -1676,9 +1671,6 @@ pub struct ButtonClicked;
 pub struct CalendarFlyoutContent<'a> {
 pub struct CalendarFlyoutLayout {
 pub struct CandidateChosen(pub usize);
-pub struct CardContent<'a> {
-pub struct CardGeometry {
-pub struct CardVisual {
 pub struct CheckToggled(pub CheckState);
 pub struct ColorChanged(pub Color);
 pub struct Column {
