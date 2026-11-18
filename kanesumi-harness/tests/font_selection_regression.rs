@@ -22,6 +22,10 @@
 //! `platform.rs` 单测的 env 持久化操作（`KANESUMI_FONT_INDEX` 等全局量）
 //! 无进程内并发竞争；本文件唯一 `#[test]` 顺序执行三场景，结束恢复环境。
 //! 既有测试与其断言一律未改动。
+//!
+//! **本文件全部 6 处 `unsafe` 只是 `std::env::{set_var, remove_var}`（Rust 2024
+//! 标为 unsafe）**：唯一 `#[test]` 单线程顺序执行、进程内无并发 env 访问，且每处
+//! 改动都在测试末尾按保存值恢复；故逐处只标「同上」级别的 SAFETY，不重复展开。
 
 use std::io;
 use std::path::{Path, PathBuf};

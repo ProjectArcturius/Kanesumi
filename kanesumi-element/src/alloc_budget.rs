@@ -21,28 +21,57 @@ thread_local! {
 /// 计数分配器：只数次数，不改变分配行为。
 struct CountingAlloc;
 
+// SAFETY: `GlobalAlloc` 要求实现者满足分配 / 重分配 / 释放契约。本类型只把分配动作
+// 原样转发给 `System`，只在线程局部计数器上加一，不改指针 / 尺寸 / 对齐，故契约由
+// `System` 原样满足（逐方法的依据见各方法上方）。
 unsafe impl GlobalAlloc for CountingAlloc {
+    // 方法体不改变入参、不构造布局；`layout` 由调用方按 trait 契约传入，这里只加一次
+    // 线程局部计数再原样转发给 `System.alloc`（契约见方法体内的 SAFETY）。
+    // SAFETY: 本方法满足 `GlobalAlloc::alloc` 的前置条件：参数原样转发给同一契约的
+    // `System.alloc`，本方法不改变指针 / 尺寸 / 对齐。
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // `try_with`：线程销毁期间 TLS 可能已不可用，那时刻的分配不该 panic。
         let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
+        // SAFETY: `layout` 已由调用方按 `GlobalAlloc::alloc` 契约保证合法；`System.alloc`
+        // 满足同一契约（失败返回空指针、按 `layout.align()` 对齐、转移所有权）。
         unsafe { System.alloc(layout) }
     }
 
+    // `System.alloc_zeroed` 在 `alloc` 的基础上额外保证返回块内容全零。
+    // SAFETY: 本方法满足 `GlobalAlloc::alloc_zeroed` 的前置条件：参数原样转发给同一
+    // 契约的 `System.alloc_zeroed`，不改变指针 / 尺寸 / 对齐。
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
+        // SAFETY: 同 `alloc`；`System.alloc_zeroed` 的零填充语义与 trait 契约一致。
         unsafe { System.alloc_zeroed(layout) }
     }
 
+    // `ptr` / `layout` 由调用方按 trait 契约保证来自本分配器（实际即 `System`）且仍有效；
+    // 本方法不改变这些参数就转交，`new_size` 由调用方给出。
+    // SAFETY: 本方法满足 `GlobalAlloc::realloc` 的前置条件：参数原样转发给同一契约的
+    // `System.realloc`，不改变指针 / 布局 / 新尺寸。
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
+        // SAFETY: 调用方按 `GlobalAlloc::realloc` 契约保证 `ptr` 是此前由本分配器
+        // （实际即 `System`）按 `layout` 分配、尚未释放的块；`System.realloc` 保留
+        // `min(layout.size(), new_size)` 字节内容，失败返回空指针且旧块仍有效。
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 
+    // `ptr` 由调用方按 trait 契约保证来自本分配器（实际即 `System`）的同 `layout`
+    // 分配且只释放一次；本方法只做转发。
+    // SAFETY: 本方法满足 `GlobalAlloc::dealloc` 的前置条件：参数原样转发给同一契约的
+    // `System.dealloc`，本方法只归还该块。
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: 调用方按 `GlobalAlloc::dealloc` 契约保证 `ptr` 来自本分配器（实际即
+        // `System`）的同 `layout` 分配且只释放一次；`System.dealloc` 只归还该块。
         unsafe { System.dealloc(ptr, layout) }
     }
 }
 
+// SAFETY: 把 `CountingAlloc` 装为全局分配器是安全的：它对每个分配动作原样转发给
+// `System`（进程真实分配器），只在线程局部计数器上加一；不改变任何指针 / 尺寸 /
+// 对齐，也不缓存分配结果。计数器的唯一读者是测试断言（`allocations()`）。
 #[global_allocator]
 static GLOBAL: CountingAlloc = CountingAlloc;
 

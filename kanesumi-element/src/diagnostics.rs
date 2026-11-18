@@ -10,6 +10,9 @@
 // 严格模式下违例一律 **panic**（外壳的 `catch_unwind` 会把它连同上下文写进错误日志，
 // 参 kanesumi-harness `errors.rs`），这样「静默回退」在夜班里会变成一条可查的崩溃记录。
 
+// SAFETY（本模块没有需要标注的代码，此注说明为何不需要）：测试开关走
+// `STRICT_OVERRIDE` 原子量而不是 `env::set_var`，故没有「多线程改 environ」的风险；
+// 生产路径只读一次环境变量并缓存进 `OnceLock`。
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -21,8 +24,9 @@ pub const STRICT_ENV: &str = "KANESUMI_STRICT";
 
 /// 测试用覆盖：0 = 跟随环境变量，1 = 强制开，2 = 强制关。
 ///
-/// 为什么要有它：`std::env::set_var` 在 Rust 2024 是 `unsafe`（多线程下改环境不安全），
-/// 测试并行跑时更不能用。单测走这个原子量，生产走环境变量，两条路互不干扰。
+/// 为什么要有它：`std::env::set_var` 在 Rust 2024 是 `unsafe`（多线程下改 environ 是
+/// 数据竞争），测试并行跑时更不能用。单测走这个原子量，生产走环境变量，两条路互不干扰
+/// —— 本 crate 没有一处测试需要改环境变量。
 static STRICT_OVERRIDE: AtomicU8 = AtomicU8::new(0);
 
 /// 环境变量只读一次：指针事件热路径上不得每次 `env::var`（会分配一个 String）。

@@ -384,12 +384,18 @@ impl Shell {
 
 pub fn run(app: &mut dyn App) -> ! {
     // `run` 永不返回（`-> !`）：`&mut dyn App` 借用可安全提升为 'static。
+    // SAFETY: `run` 的返回值类型是 `!`，调用方一旦进入就不可能再观察到原借用的结束；
+    // `&mut dyn App` 的胖指针（数据指针 + vtable）在进程剩余生命周期内始终有效
+    // （App 由调用方在 `main` 栈上持有并跨 `run` 存活），故延长到 'static 不会被悬垂引用。
     let app: &'static mut dyn App = unsafe { std::mem::transmute(app) };
     // 会话内无日志 UI：panic / Err 都写文件供排查（Ether 下客户端启动失败定位）。
-    // 用裸指针穿透闭包生命周期（app 已在 run 入口 unsafe 提升为 'static）。
+    // 用裸指针穿透闭包生命周期（app 已在 run 入口提升为 'static）。
     let app_ptr = app as *mut dyn App;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
         move || -> Result<(), String> {
+            // SAFETY: `app_ptr` 来自上一行已提升为 'static 的 `&mut dyn App`，在
+            // `run` 永不返回的前提下进程内唯一且始终有效；闭包由 `run` 同步调用，
+            // 不跨线程、不与其它 `&mut App` 别名并存，故解引用得到唯一可变借用。
             let app: &'static mut dyn App = unsafe { &mut *app_ptr };
             run_inner(app)
         },
@@ -1214,6 +1220,11 @@ struct ImXkb {
 impl ImXkb {
     fn from_keymap(fd: std::os::fd::OwnedFd, size: usize) -> Result<Self, String> {
         let context = xkbcommon::xkb::Context::new(xkbcommon::xkb::CONTEXT_NO_FLAGS);
+        // `fd` / `size` 直接取自合成器 `zwp_input_method_keyboard_grab_v2::keymap` 事件：
+        // wl_keyboard 协议契约保证 fd 是只读 mmap 用的临时文件、size 是含结尾 NUL 的
+        // 字节数。`new_from_fd` 内部按 `size` 做 `map_copy_read_only`，fd 长度不足返回
+        // `Err` 而非越界读；`fd` 由本函数按值接管，映射生命周期归 keymap 所有。
+        // SAFETY: 满足 `new_from_fd` 的「fd 有效 + mmap 安全前提」，见上方四行。
         let keymap = unsafe {
             xkbcommon::xkb::Keymap::new_from_fd(
                 &context,
@@ -5363,6 +5374,11 @@ fn commit_shm_buffers(
         state.needs_full = [true, true];
         state.untouched = [true, true];
         state.partial = [None, None];
+        // `fd` 由 `shm_open(expected * 2)` 新建并 `set_len` 到恰好 `expected * 2` 字节
+        // （`map_mut` 映射整个文件长度）；文件创建后立即 unlink，只有本进程持有句柄，
+        // 映射期间无其它写者。`MmapMut` 不取得文件所有权，`fd` 在此后交给
+        // `create_pool`（`as_fd` 只借用）仍保持打开，映射有效。
+        // SAFETY: 文件长度 = 映射长度、创建后无外部写者，满足 `map_mut` 的安全性契约。
         let mmap = unsafe { memmap2::MmapMut::map_mut(&fd) }.ok();
         let pool = shm.create_pool(fd.as_fd(), (expected * 2) as i32, qh, ());
         for i in 0..2 {
@@ -5914,7 +5930,14 @@ mod tests {
             std::env::var("XDG_RUNTIME_DIR").ok(),
             std::env::var("KANESUMI_TEST_FONT").ok(),
         );
+        // 测试专用，本函数内六处环境改动同此依据：用例在单线程内先存旧值、末尾恢复。
+        // **并发前提不成立**：`cargo test` 默认多线程，同进程的
+        // `context_menu::tests::engine` 会读 `env::var("KANESUMI_TEST_FONT")`，与这里的
+        // set/remove 并发即 libc environ 数据竞争。属已知疑点，见 docs/UNSAFE_AUDIT.md
+        // §疑点-1（建议加进程级 env 锁，本卡只记录不改逻辑）。
+        // SAFETY: 单线程内改动并在函数末尾恢复；libc 级并发前提未满足，已记疑点。
         unsafe { std::env::remove_var("KANESUMI_TEST_FONT") };
+        // SAFETY: 同上；`XDG_RUNTIME_DIR` 无同键并发读者，但 libc 级竞争同疑点-1。
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", &tmp) };
         let baseline_primary = system_font_chain().first().cloned()
             .expect("本机须有回退链字体（DejaVu 等）");
@@ -5936,6 +5959,7 @@ mod tests {
                 Some(b) => std::fs::write(&idx_path, b).unwrap(),
                 None => { let _ = std::fs::remove_file(&idx_path); }
             }
+            // SAFETY: 同上；仍在同一测试函数、同一线程内，键只被本测试读取。
             unsafe { std::env::set_var("KANESUMI_FONT_INDEX", "1") };
             let primary = find_font_source().expect("主字面必须存在");
             assert_eq!(primary.path, baseline_primary.path, "{name}: 主字面被索引改变");
@@ -5945,12 +5969,15 @@ mod tests {
                 .collect();
             assert_eq!(stack, baseline_stack, "{name}: 字体栈被索引改变");
             // env 关与 env 开必须同一主字面、同一栈。
+            // SAFETY: 同上。
             unsafe { std::env::remove_var("KANESUMI_FONT_INDEX") };
             assert_eq!(find_font_source().map(|s| s.path), Some(primary.path.clone()),
                 "{name}: env 关与开结果不同");
+            // SAFETY: 同上；下一轮循环开头会再设，保持「索引开」的分支状态。
             unsafe { std::env::set_var("KANESUMI_FONT_INDEX", "1") };
         }
 
+        // SAFETY: 同上；这是收尾恢复段，把三个键还原为进入用例时的值。
         unsafe {
             std::env::remove_var("KANESUMI_FONT_INDEX");
             if let Some(v) = saved.0 { std::env::set_var("KANESUMI_FONT_INDEX", v); }

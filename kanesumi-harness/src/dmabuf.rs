@@ -826,6 +826,9 @@ fn mesa_version() -> String {
 /// /var/crash 灌 core。
 pub(crate) fn probe_gbm_raw(recipe: ProbeRecipe, main_device: Option<libc::dev_t>) -> u8 {
     use gbm::BufferObjectFlags;
+    // SAFETY: `lim` 是栈上已初始化的 `libc::rlimit`（两个 `rlim_t` 字段均为 0，位模式
+    // 对 C 结构体合法）；`RLIMIT_CORE` 是 `setrlimit` 接受的资源常量，指针指向本帧栈帧、
+    // 调用期间有效。只把 core dump 上限设 0，不改其它资源；失败返回值忽略（尽力而为）。
     unsafe {
         let lim = libc::rlimit {
             rlim_cur: 0,
@@ -948,14 +951,19 @@ pub fn dmabuf_probe_entry() {
 /// 生产环境不设此变量。
 fn fault_die_if_armed(stage: &str) {
     match std::env::var(ENV_PROBE_FAULT).as_deref() {
+        // Rust 运行时的 SIGSEGV 处理器会吞掉非栈溢出的一次性 `raise`（实测入口注入被
+        // 吞、下一阶段才死）→ 先恢复默认处置，保证死点精确落在注入阶段。
+        // SAFETY: `libc::sigaction` 的 C 结构体允许全零位模式（`mem::zeroed` 合法）；
+        // `sa_sigaction` 改写为 `SIG_DFL`（glibc 保证可赋给该字段的处置值）；第三参数
+        // `null_mut()` 表示「不要旧处置」，内核允许；`&act` 指向本帧栈上有效结构体。
         Ok(s) if s == stage => unsafe {
-            // Rust 运行时的 SIGSEGV 处理器会吞掉非栈溢出的一次性 `raise`（实测入口注入被
-            // 吞、下一阶段才死）→ 先恢复默认处置，保证死点精确落在注入阶段。
             let mut act: libc::sigaction = std::mem::zeroed();
             act.sa_sigaction = libc::SIG_DFL;
             libc::sigaction(libc::SIGSEGV, &act, std::ptr::null_mut());
             libc::raise(libc::SIGSEGV);
         },
+        // SAFETY: `abort` 不取任何参数、无前置条件；它保证不返回，因此此后没有可观察
+        // 的副作用需要清理（本分支只用于验证 SIGABRT 解码）。
         Ok("abort") => unsafe {
             libc::abort();
         },

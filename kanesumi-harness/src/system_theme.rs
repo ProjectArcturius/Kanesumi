@@ -265,7 +265,11 @@ mod tests {
                 .join(format!("kanesumi-theme-{}-{tag}.toml", std::process::id()));
             std::fs::write(&path, raw).expect("写临时 theme.toml");
             self.files.push(path.clone());
-            // SAFETY: 本组用例由 PIN_TEST_LOCK 串行，且改的键只有本模块测试读取。
+            // 本组用例由 PIN_TEST_LOCK 串行；改的键 ETHER_THEME_CONFIG 只有本模块测试
+            // 读取（生产路径按默认配置源读，不读该键）。**残余前提**：PIN_TEST_LOCK 只
+            // 串行本模块三个用例，挡不住同进程其它测试线程的 `env::var`（任意键）；
+            // libc environ 级别仍有竞争，见 docs/UNSAFE_AUDIT.md §疑点-4。
+            // SAFETY: 键只被本模块测试读、用例被锁串行；libc 级并发前提未满足，已记疑点。
             unsafe { std::env::set_var(CONFIG_ENV, &path) };
             path
         }
@@ -275,7 +279,7 @@ mod tests {
             let path = std::env::temp_dir()
                 .join(format!("kanesumi-theme-{}-{tag}.toml", std::process::id()));
             let _ = std::fs::remove_file(&path);
-            // SAFETY: 同上。
+            // SAFETY: 同上；仍持有 PIN_TEST_LOCK，键无并发读者。
             unsafe { std::env::set_var(CONFIG_ENV, &path) };
             path
         }
@@ -284,7 +288,8 @@ mod tests {
     impl Drop for PinGuard {
         fn drop(&mut self) {
             unpin();
-            // SAFETY: 同上；守卫在用例结束时（含 panic 展开）运行。
+            // SAFETY: 同上；PIN_TEST_LOCK 仍由本用例持有，守卫在用例结束时
+            // （含 panic 展开）把键恢复为保存值，期间无并发读者。
             unsafe {
                 match self.saved.take() {
                     Some(v) => std::env::set_var(CONFIG_ENV, v),

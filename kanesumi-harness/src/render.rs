@@ -383,6 +383,12 @@ pub(crate) fn create_wl_surface(
     let raw_window_handle = RawWindowHandle::Wayland(WaylandWindowHandle::new(
         NonNull::new(surface_ptr).expect("wl_surface 指针为空"),
     ));
+    // 两个 raw handle 分别包着 `conn.backend().display_ptr()`（调用方持有的 wl_display）
+    // 与 `wl_surface.id().as_ptr()`（同一连接上的 wl_surface），均已判非空。返回的
+    // `Surface<'static>` 生命期由调用方保证：`conn` / `wl_surface` 必须比使用该表面的
+    // `Renderer` 活得久（本 crate 里 `Shell` 持有连接与表面，`Renderer` 只在 Shell
+    // 存活期内使用；`create_wl_surface` 不单独泄漏表面）。
+    // SAFETY: 两个指针非空且来自同一有效连接，`'static` 由调用方的生命周期约束兜底。
     unsafe {
         instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
             raw_display_handle,

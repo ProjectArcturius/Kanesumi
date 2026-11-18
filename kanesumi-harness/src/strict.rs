@@ -19,13 +19,17 @@
 //   5. 命令里出现非有限浮点     —— `kanesumi-element`（拼接处，同一开关）。
 // 3~5 在元素树里实现（产生点才有元素路径），开关同名同义，两边读同一个环境变量。
 
+// SAFETY（本模块没有需要标注的代码，此注说明为何不需要）：测试开关走
+// `STRICT_OVERRIDE` 原子量而不是 `env::set_var`，故没有「多线程改 environ」的风险；
+// 生产路径只读一次环境变量并缓存进 `OnceLock`。
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 /// 严格模式环境变量名（与 `kanesumi-element` 侧一致）。
 pub const STRICT_ENV: &str = "KANESUMI_STRICT";
 
-/// 测试用覆盖：0 = 跟随环境，1 = 强制开，2 = 强制关（`env::set_var` 在 Rust 2024 是 unsafe）。
+/// 测试用覆盖：0 = 跟随环境，1 = 强制开，2 = 强制关（环境改动在 Rust 2024 需 `unsafe`，
+/// 本模块只改原子量；生产路径只读一次环境变量 `STRICT_ENV_CACHE`）。
 static STRICT_OVERRIDE: AtomicU8 = AtomicU8::new(0);
 static STRICT_ENV_CACHE: OnceLock<bool> = OnceLock::new();
 

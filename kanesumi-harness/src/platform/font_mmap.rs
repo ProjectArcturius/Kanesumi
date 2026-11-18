@@ -60,12 +60,11 @@ fn read_font_bytes_traced(path: &Path, enabled: bool) -> io::Result<(FontBytes, 
         && mmap_eligible(&canon, meta.is_file(), meta.uid(), meta.mode())
     {
         // 用已打开句柄的属性证明资格，避免路径检查与打开对应不同文件。
-        // SAFETY：只读映射一个符合 mmap_eligible 的系统字体文件。
-        // 不变式：映射对象是 root 拥有、组/其他无写位的
-        // 系统字体白名单目录下普通文件，普通进程无法原地改写；
-        // Debian 字体包升级走「写临时文件 + rename() 原子替换」，
+        // 不变式：映射对象是 root 拥有、组/其他无写位的系统字体白名单目录下普通文件，
+        // 普通进程无法原地改写；Debian 字体包升级走「写临时文件 + rename() 原子替换」，
         // rename 只换目录项，旧 inode 与既有只读映射不受影响。
-        // 故映射生命周期内文件内容不会被改写，只读映射安全。
+        // SAFETY: 映射对象符合 `mmap_eligible`，且映射生命周期内文件内容不会被改写，
+        // 故只读映射安全。
         match unsafe { memmap2::Mmap::map(&file) } {
             Ok(mmap) => return Ok((Arc::new(mmap), true)),
             Err(e) => {

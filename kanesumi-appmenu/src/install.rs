@@ -60,6 +60,11 @@ pub fn install(
 /// `display` / `surface` 必须为窗口生命周期内有效的 `wl_display` / `wl_surface`
 /// 指针，且属于同一 Wayland 连接。调用方从 `eframe::CreationContext`
 /// `display_handle()` / `window_handle()` 提取（raw-window-handle）。
+///
+/// 函数体只用这两个指针做**借用式**包装，不取得所有权、不延长生命周期；两个
+/// `unsafe` 块各自的 SAFETY 依据见块上方。
+// SAFETY: 这是一个「契约由调用方兑现」的 `unsafe fn`：两个入参来自 eframe 的
+// raw-window-handle，函数本身无法验证其有效性与同连接性，故把要求写进 `# Safety`。
 pub unsafe fn install_from_foreign_handles(
     display: *mut core::ffi::c_void,
     surface: *mut core::ffi::c_void,

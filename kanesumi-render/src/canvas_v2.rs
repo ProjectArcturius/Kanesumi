@@ -912,6 +912,11 @@ fn load_pipeline_cache(
     }
     // 安全性：`data` 只可能是本进程此前 `get_data()` 写出的 wgpu 缓存；文件被篡改时
     // `fallback: true` 让 wgpu 自行丢弃重建。适配器名 + 驱动 hash 进文件名防串用。
+    // `data` 只可能是本文件配对的 `save_pipeline_cache` 用 `PipelineCache::get_data()`
+    // 写出的同一格式字节；文件名含适配器名 + 驱动 hash，跨适配器不会串用；即使文件被
+    // 篡改，`fallback: true` 让 wgpu 在数据不可用时丢弃重建而不是 UB。
+    // SAFETY: 满足 wgpu `create_pipeline_cache` 的「data 来自 get_data」契约；最坏情况
+    // 退化为首次编译，不产生 UB。
     let cache = unsafe {
         ctx.device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
             label: Some("kanesumi-c2-pcache"),
@@ -2579,14 +2584,21 @@ mod tests {
     #[test]
     fn c15_开关环境变量识别() {
         let old = std::env::var_os("KANESUMI_CANVAS_FULL");
+        // 测试专用：本用例在单线程内先存旧值、末尾恢复；键 `KANESUMI_CANVAS_FULL`
+        // 只被 `canvas_full_forced()` 读取（本 crate 内无其它读取点）。**并发前提**：
+        // `cargo test` 默认多线程，同进程其它用例仍可能调用 `env::var`（任何键），
+        // libc environ 的读写即数据竞争；属已知疑点，见 docs/UNSAFE_AUDIT.md §疑点-2。
+        // SAFETY: 单线程内改动并在末尾恢复；libc 级并发前提未满足，已记疑点。
         unsafe {
             std::env::set_var("KANESUMI_CANVAS_FULL", "1");
         }
         assert!(canvas_full_forced());
+        // SAFETY: 同上；仍在本用例同一线程内，键无并发读者。
         unsafe {
             std::env::set_var("KANESUMI_CANVAS_FULL", "0");
         }
         assert!(!canvas_full_forced());
+        // SAFETY: 同上；把键恢复为进入用例时的值（None = 删除）。
         unsafe {
             match old {
                 Some(v) => std::env::set_var("KANESUMI_CANVAS_FULL", v),

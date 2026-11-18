@@ -192,14 +192,22 @@ mod tests {
 
     #[test]
     fn from_env_falls_back_to_browser() {
+        // 测试专用，下同：`ETHER_ROLE` 在本 crate 内只有 `EtherRole::from_env` 一处读取，
+        // 本文件内没有第二个用例改它；三次改动都在本 `#[test]` 的同一线程内顺序发生。
+        // **并发前提不成立**：`cargo test` 默认多线程，同进程其它用例可能同时调用
+        // `env::var`（任何键），libc environ 的读与这里的写构成数据竞争。属已知疑点，
+        // 见 docs/UNSAFE_AUDIT.md §疑点-3。
+        // SAFETY: 单线程内改动；libc 级并发前提未满足，已记疑点。
         unsafe {
             std::env::remove_var("ETHER_ROLE");
         }
         assert_eq!(EtherRole::from_env(), EtherRole::Browser);
+        // SAFETY: 同上。
         unsafe {
             std::env::set_var("ETHER_ROLE", "topbar");
         }
         assert_eq!(EtherRole::from_env(), EtherRole::TopBar);
+        // SAFETY: 同上。
         unsafe {
             std::env::set_var("ETHER_ROLE", "nonsense");
         }
