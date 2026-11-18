@@ -804,6 +804,7 @@ pub enum SpinButton {
 pub enum SpinPlacement {
 pub enum SplitButtonClick {
 pub enum SplitButtonPart {
+pub enum StripSlot {
 pub enum SwipeAction {
 pub enum SwipeItemAction {
 pub enum SwipeMode {
@@ -843,6 +844,7 @@ pub fn align(mut self, align: ColumnAlign) -> Self {
 pub fn alpha(&self) -> f32 {
 pub fn anchor(&self) -> Option<usize> {
 pub fn apply_move(&mut self, m: &WallRelease, viewport: Rect) -> bool {
+pub fn at(&self, point: Point) -> Option<StripSlot> {
 pub fn back_rect(&self, rect: Rect) -> Option<Rect> {
 pub fn background(&self, theme: &MetroTheme) -> kanesumi_core::Color {
 pub fn backspace(&mut self) -> bool {
@@ -1196,6 +1198,7 @@ pub fn new() -> Self {
 pub fn new(area: Rect, entries: Vec<SidebarEntry>) -> Self {
 pub fn new(area: Rect, items: Vec<FileListItem>) -> Self {
 pub fn new(area: Rect, segments: Vec<PathBarSegment>) -> Self {
+pub fn new(bounds: Rect, leading: Option<f32>, widths: [f32; N], trailing: f32) -> Self {
 pub fn new(columns: ColumnSet) -> Self {
 pub fn new(columns: impl IntoIterator<Item = Column>) -> Self {
 pub fn new(commands: Vec<CommandButton>) -> Self {
@@ -1508,7 +1511,9 @@ pub fn slider(
 pub fn slider_rect(&self, rect: Rect, k: usize) -> Rect {
 pub fn slot(&self, display: usize) -> Option<&DockPresentedSlot> {
 pub fn slot(&self, display: usize) -> Option<&DockSlotLayout> {
+pub fn slot(&self, slot: StripSlot) -> Option<Rect> {
 pub fn slot_rect(&self, index: usize) -> Option<Rect> {
+pub fn slots(&self) -> impl Iterator<Item = (StripSlot, Rect)> + '_ {
 pub fn snap_edge(v: f32) -> f32 {
 pub fn spacer(grow: f32) -> Self {
 pub fn span(&self) -> RangeInclusive<usize> {
@@ -1776,6 +1781,7 @@ pub struct MetroScrollView {
 pub struct MetroSectionHeader {
 pub struct MetroSelectorFlyout {
 pub struct MetroSlider {
+pub struct MetroSlotStrip<const N: usize> {
 pub struct MetroSplitButton {
 pub struct MetroSsdChrome {
 pub struct MetroSurface {

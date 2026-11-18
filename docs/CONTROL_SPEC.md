@@ -2437,6 +2437,10 @@ C0 图与 12 份转录均不在本件范围（2026-11-18 补的三件也不含�
 - `MetroIconSlot::new()`（20）/ `with_size(pt)`（非有限值回落 20，负值夹 0）；`rect(slot)` 给居中方框。
 - `render(theme, slot, icon: Option<&Icon>, scene) -> Option<Rect>`：无图返回 `None`、零命令；
   有图在 `rect(slot)` 上 `scene.image` 并返回该矩形。**控件不解码**：`Icon` 由调用方光栅化。
+
+`MetroSlotStrip` 为顶栏状态簇提供变宽槽位。前置槽可省略，中间槽由调用方按图标墨迹宽
+传入，末槽贴住右缘。旧行为要求在窄条发生重叠时，前置槽优先，其次是末槽和中间槽。
+整条之外无命中，槽之间的余量归最后一个中间槽。绘制、悬停与事件从同一份布局取槽位。
 - 边长 0 或槽面积为 0 时 `rect` 为零矩形，`render` 恒 `None`（不产出一个 0×0 的图像命令）。
 
 ### 55.3 MetroNoticeRow（`notice_row.rs`）

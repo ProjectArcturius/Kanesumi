@@ -9,7 +9,7 @@
 
 use kanesumi_canvas::Scene;
 use kanesumi_canvas::icon::Icon;
-use kanesumi_core::{MetroTheme, Rect, sizes};
+use kanesumi_core::{MetroTheme, Point, Rect, sizes};
 
 /// 行首图标位：给定槽矩形，算出居中的正方形（损伤盒与 blit 目标同一份）。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -88,6 +88,88 @@ impl MetroIconSlot {
     }
 }
 
+/// 状态簇的前置、中间与贴右槽位。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StripSlot {
+    Leading,
+    Item(usize),
+    Trailing,
+}
+
+/// 固定数量、允许不同宽度的槽位条。参 CONTROL_SPEC §55.2。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MetroSlotStrip<const N: usize> {
+    bounds: Rect,
+    pub leading: Option<Rect>,
+    pub items: [Rect; N],
+    pub trailing: Rect,
+}
+
+impl<const N: usize> MetroSlotStrip<N> {
+    pub fn new(bounds: Rect, leading: Option<f32>, widths: [f32; N], trailing: f32) -> Self {
+        let leading = leading
+            .map(|width| Rect::new(bounds.origin.x, bounds.origin.y, width, bounds.size.height));
+        let mut x = leading.map_or(bounds.origin.x, Rect::right);
+        let items = widths.map(|width| {
+            let cell = Rect::new(x, bounds.origin.y, width, bounds.size.height);
+            x = cell.right();
+            cell
+        });
+        let trailing = Rect::new(
+            bounds.right() - trailing,
+            bounds.origin.y,
+            trailing,
+            bounds.size.height,
+        );
+        Self {
+            bounds,
+            leading,
+            items,
+            trailing,
+        }
+    }
+
+    pub fn slot(&self, slot: StripSlot) -> Option<Rect> {
+        match slot {
+            StripSlot::Leading => self.leading,
+            StripSlot::Item(index) => self.items.get(index).copied(),
+            StripSlot::Trailing => Some(self.trailing),
+        }
+    }
+
+    pub fn slots(&self) -> impl Iterator<Item = (StripSlot, Rect)> + '_ {
+        self.leading
+            .map(|rect| (StripSlot::Leading, rect))
+            .into_iter()
+            .chain(
+                self.items
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(i, rect)| (StripSlot::Item(i), rect)),
+            )
+            .chain(std::iter::once((StripSlot::Trailing, self.trailing)))
+    }
+
+    /// 空间不足导致槽位重叠时，先判前置槽与贴右槽。
+    pub fn at(&self, point: Point) -> Option<StripSlot> {
+        if !self.bounds.contains(point) {
+            return None;
+        }
+        if self.leading.is_some_and(|r| r.contains(point)) {
+            return Some(StripSlot::Leading);
+        }
+        if self.trailing.contains(point) {
+            return Some(StripSlot::Trailing);
+        }
+        self.items
+            .iter()
+            .position(|r| r.contains(point))
+            .or_else(|| N.checked_sub(1))
+            .map(StripSlot::Item)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,6 +182,20 @@ mod tests {
             width: 20,
             height: 20,
         }
+    }
+
+    #[test]
+    fn strip_preserves_edge_priority_when_items_overlap() {
+        let bounds = Rect::new(100.0, 20.0, 80.0, 30.0);
+        let strip = MetroSlotStrip::new(bounds, Some(30.0), [26.0; 4], 34.0);
+        assert_eq!(strip.at(Point::new(129.0, 25.0)), Some(StripSlot::Leading));
+        assert_eq!(strip.at(Point::new(140.0, 25.0)), Some(StripSlot::Item(0)));
+        assert_eq!(strip.at(Point::new(150.0, 25.0)), Some(StripSlot::Trailing));
+        assert_eq!(strip.at(Point::new(180.0, 25.0)), None);
+
+        let narrow = Rect::new(100.0, 20.0, 20.0, 30.0);
+        let both = MetroSlotStrip::new(narrow, Some(30.0), [26.0; 4], 34.0);
+        assert_eq!(both.at(Point::new(110.0, 25.0)), Some(StripSlot::Leading));
     }
 
     #[test]
