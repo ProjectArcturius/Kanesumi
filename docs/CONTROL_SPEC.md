@@ -2232,6 +2232,8 @@ fn paint(&mut self, ctx: &mut PaintCtx, scene: &mut Scene) {
 > 缺口与 C0 真值：Ether `docs/research/m1115_tilewall/PROVIDER_REVIEW.md`。
 > 完整契约与本件边界：`docs/research/tilewall_profile_20261117/SPEC.md`。
 > 实现：`kanesumi-controls/src/navigation/tile_wall.rs`、`tile_wall_control.rs`。
+> 2026-11-18 补滚动偏移 / 视口外预取 / 拖动基准，契约见
+> `docs/research/tilewall_scroll_drag_20261118/REPORT.md`。
 
 ### 启用方式与默认
 
@@ -2272,10 +2274,43 @@ C0（1280×752，两组 18+2 个 Standard）的 `margin_x = 1280×120/1366 = 112
 按应用 `find_large` 找横向相邻两个空闲宏单元放置。缺省循环仍是
 `Small → Wide → Large → Small`；`ExtraLarge` 不进循环，循环落到它时回 `Small`。
 
+### 滚动偏移
+
+- 输入：`MetroTileWall::set_scroll(f32)`，读数 `scroll()`；夹到 `[0, layout.max_scroll]`，
+  非有限值归零。每次 `relayout` 后把夹紧值写回，`set_groups` / `cycle_size` / `apply_move`
+  不会悄悄丢滚动。
+- 命中与绘制消费同一份 `layout`：磁贴 `rect` / `clip` / `hit` 一起按 `-scroll` 平移，
+  控件不做「按指针平移去模拟滚动」的补偿。
+- 不调用时 `scroll = 0`，旧 `relayout` / `layout` / `render` 逐命令不变。
+
+### 视口外预取
+
+- 输入：`MetroTileWall::set_overscan_cols(usize)`，读数 `overscan_cols()`；几何层入口
+  `tile_wall::layout_with_overscan(input, cols)`。默认 0 = 旧输出逐字段不变。
+- 1 列 = 组列步距（`group_width + group_gap`），视口左右各扩 `cols` 列。C0 的 20 枚在
+  `cols = 2` 时全在（`app20` 的 `clip` / `hit` 为空矩形）；12 组 @1366 回 ≥ 3 组，
+  含视口左右各一组。
+- 预取槽位不参与命中；`render` / `render_compat` / `render_group_title` 跳过空裁剪，
+  不为屏外几何发绘制命令。
+
+### 拖动基准与落点
+
+- `tile_wall::layout_without(input, group, index)`：摘除一枚后的**全量**布局（组索引不变，
+  摘空的组保留 —— 删组是应用策略，与 launcher `remove_tile` 的唯一差别）。
+- 控件入口 `layout_without(group, index)` / `drag_baseline()`（未拖动为 `None`）/
+  `drop_target_at(pos)`（未拖动为 `None`）。
+- `WallDropTarget` 三态：`InGroup { group, index }`（基准布局插入位）、`NewGroup { at }`、
+  `Activated(String)`（落点即原位，按点击处理）。
+- 判定照 launcher `tiles.rs::drop_target`：指针 x 落在某组 x 区间时，命中磁贴按左右半
+  插前 / 后；组内空白（含标题带、组块底部）追加组尾；组间缝隙与墙两侧空白 → `NewGroup`。
+- 旧 `release` 语义不变（仍按「被拖项还在原位」的静息布局判落点，墙外仍为 `Cancelled`）；
+  需要旧 launcher 落点的调用方改用 `drop_target_at`。既有 `drop_target()` 无参、回
+  `Option<(usize, usize)>`，故新入口加 `_at` 后缀。
+
 ### 本件不做
 
 应用 C1、拖放结果类型、键盘默认行为、时间 / 动画 / GPU、从屏高自动推导度量、
-C0 图与 12 份转录均不在本件范围。
+C0 图与 12 份转录均不在本件范围（2026-11-18 补的三件也不含应用侧接线）。
 ## 54 · MetroDock 呈现几何与按槽绘制（2026-11-17）
 
 由来：`MetroDock::render` 只消费 `DockRail::layout` 的**落定几何**，而旧 launcher 的 Dock 还有
