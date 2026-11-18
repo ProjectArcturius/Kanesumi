@@ -10,7 +10,7 @@
 
 use kanesumi_canvas::{Scene, TextAlign};
 use kanesumi_core::typography::MetroTypography;
-use kanesumi_core::{MetroTheme, Point, Rect, sizes};
+use kanesumi_core::{Color, MetroTheme, Point, Rect, sizes};
 
 // 缺省几何来自 Ether `action_center.rs::TilesGrid` 的实测值：间隔 2（`.tiles` 的 `gap`）、
 // 格高 56（`.tile` 的 56）、标签内距 8 / 6（`.tile` 的 `padding: 6px 8px`）、图标位 8 / 8 / 20
@@ -291,6 +291,48 @@ impl MetroTileGrid {
             });
         }
         out
+    }
+
+    /// 绘制档位选择行，沿用电源面板样式。参 CONTROL_SPEC §55.4。
+    pub fn render_segments(&self, theme: &MetroTheme, geo: &TileGridGeometry, scene: &mut Scene) {
+        let colors = &theme.colors;
+        let caption = theme.typography.caption;
+        for (index, cell) in geo.cells.iter().copied().enumerate() {
+            if cell.is_empty() {
+                continue;
+            }
+            let selected = self.is_on(index);
+            let (bg, fg) = if selected {
+                (colors.primary, Color::WHITE)
+            } else {
+                (colors.surface_variant, colors.on_surface)
+            };
+            let disabled = self.is_disabled(index);
+            let alpha = if disabled {
+                theme.indication.disabled_opacity
+            } else {
+                1.0
+            };
+            scene.fill_rect(bg.with_alpha(bg.a * alpha), cell);
+            if !selected && !disabled && self.hovered == Some(index) {
+                scene.fill_rect(theme.indication.hover_tint, cell);
+            }
+            if let Some(label) = self.label(index) {
+                let bounds = Rect::new(
+                    cell.origin.x,
+                    cell.origin.y + (cell.size.height - caption.line_height) / 2.0,
+                    cell.size.width,
+                    caption.line_height,
+                );
+                scene.text(
+                    label.to_owned(),
+                    bounds,
+                    fg.with_alpha(fg.a * alpha),
+                    caption,
+                    TextAlign::Center,
+                );
+            }
+        }
     }
 }
 

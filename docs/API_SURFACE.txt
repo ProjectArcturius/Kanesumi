@@ -1371,6 +1371,7 @@ pub fn render_header(
 pub fn render_overlay(theme: &MetroTheme, anim: &PopupAnim, screen: Rect, scene: &mut Scene) {
 pub fn render_panel(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
 pub fn render_panel_base(theme: &MetroTheme, rect: Rect, progress: f64, scene: &mut Scene) {
+pub fn render_segments(&self, theme: &MetroTheme, geo: &TileGridGeometry, scene: &mut Scene) {
 pub fn render_slots(
 pub fn render_submenu(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
 pub fn render_with_text_styles(

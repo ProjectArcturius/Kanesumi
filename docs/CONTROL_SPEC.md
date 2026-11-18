@@ -2499,6 +2499,11 @@ C0 图与 12 份转录均不在本件范围（2026-11-18 补的三件也不含�
 - **不画图标**：只给 `icon_rect(cell)`，图像命令由调用方 blit；本控件不接 `Icon`、不解码。
 - **空输入**：`rows = 0` 或 `cols = 0` → `rects()` 空、`render` 空、零命令。
 
+`render_segments(theme, &layout, scene)` 是单行档位选择的呈现入口，沿用 Ether
+`settings/src/topbar/power_panel.rs::ProfileSegments` 的预览契约。其几何和命中仍来自
+`layout` 和 `hit`。当前档用强调底配白字，其余档用次级表面色与常规字色。只有非当前档
+且可用的格叠悬停色，文字用 `caption` 在格内居中。
+
 ### 55.5 回归与边界
 
 - 四件各带 `#[cfg(test)] mod tests`，期望值按上表常量手算成字面量（不调被测函数生成 expected）。
