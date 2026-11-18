@@ -818,6 +818,7 @@ pub enum TwoPaneMode {
 pub enum TwoPanePriority {
 pub enum TwoPaneTallConfig {
 pub enum TwoPaneWideConfig {
+pub enum WallDropTarget {
 pub enum WallRelease {
 pub fn accent(label: impl Into<String>) -> Self {
 pub fn accent_button(label: impl Into<String>, action: DeclAction) -> Self {
@@ -933,12 +934,14 @@ pub fn dock_height(self) -> f32 {
 pub fn dot() -> Self {
 pub fn down_button_rect(&self, theme: &MetroTheme, rect: Rect) -> Rect {
 pub fn drag(&mut self, pos: Point) -> bool {
+pub fn drag_baseline(&self) -> Option<TileWallLayout> {
 pub fn drag_to(&mut self, pos: Point) {
 pub fn drag_to(&mut self, rect: Rect, pos: Point) -> Option<f64> {
 pub fn drag_to(&mut self, rect: Rect, pos: Point) {
 pub fn dragging(&self) -> bool {
 pub fn draw_focus_ring(
 pub fn drop_target(&self) -> Option<(usize, usize)> {
+pub fn drop_target_at(&self, pos: Point) -> Option<WallDropTarget> {
 pub fn effective_pane_width(&self, rect: Rect) -> f32 {
 pub fn ellipsis_rect(&self, engine: &TextEngine, rect: Rect) -> Option<Rect> {
 pub fn end_frame(&mut self) {
@@ -1110,6 +1113,9 @@ pub fn layout(&self, engine: &TextEngine, rect: Rect) -> BreadcrumbLayout {
 pub fn layout(&self, rect: Rect) -> (Size, Vec<Rect>) {
 pub fn layout(input: &DockRailInput) -> DockLayout {
 pub fn layout(input: &TileWallInput) -> TileWallLayout {
+pub fn layout_with_overscan(input: &TileWallInput, cols: usize) -> TileWallLayout {
+pub fn layout_without(&self, group: usize, index: usize) -> TileWallLayout {
+pub fn layout_without(input: &TileWallInput, group: usize, index: usize) -> TileWallLayout {
 pub fn left_width(&self) -> f32 {
 pub fn len(&self) -> usize {
 pub fn level(&self) -> f32 {
@@ -1216,6 +1222,7 @@ pub fn osd_text_style() -> TextStyle {
 pub fn overflow_buttons(&self, engine: &TextEngine, rect: Rect) -> Option<(Rect, Rect)> {
 pub fn overflowing(&self, engine: &TextEngine, rect: Rect) -> bool {
 pub fn overlay_alpha(&self) -> f32 {
+pub fn overscan_cols(&self) -> usize {
 pub fn page_of(&self, scroll: f32) -> usize {
 pub fn page_rows(row_h: f32, viewport_h: f32) -> usize {
 pub fn page_title(&mut self, tree: &mut Tree, text: &str) -> WidgetId {
@@ -1336,6 +1343,7 @@ pub fn s_section() -> TextStyle {
 pub fn scale_value(&self) -> f64 {
 pub fn scaled(scale: f32) -> Self {
 pub fn scroll(&mut self, dy: f32) -> CalendarResponse {
+pub fn scroll(&self) -> f32 {
 pub fn scroll_by(&mut self, delta: f32) {
 pub fn scroll_by(&mut self, delta: f32, avail_w: f32) {
 pub fn scroll_by(&mut self, dy: f32) -> bool {
@@ -1399,6 +1407,7 @@ pub fn set_items(&mut self, items: Vec<DockItem>, available: Rect) {
 pub fn set_layout(&mut self, layout: ItemLayout) {
 pub fn set_mask(&mut self, c: Option<char>) {
 pub fn set_meta(&mut self, meta: Vec<ListRowMeta>) {
+pub fn set_overscan_cols(&mut self, cols: usize) {
 pub fn set_pane_expanded(&mut self, expanded: bool) {
 pub fn set_pane_progress(&mut self, progress: f32) {
 pub fn set_pin_gap(&mut self, gap: Option<usize>) {
@@ -1407,6 +1416,7 @@ pub fn set_presentation(&mut self, presentation: Option<DockPresentation>) {
 pub fn set_rows(&mut self, rows: Vec<String>, row_h: f32, viewport_h: f32) {
 pub fn set_scale(&mut self, scale: f32) {
 pub fn set_scroll(&mut self, scroll: [usize; 2]) {
+pub fn set_scroll(&mut self, scroll: f32) {
 pub fn set_scroll_offset(&mut self, v: f32) {
 pub fn set_selected(&mut self, date: Date) {
 pub fn set_selected(&mut self, selected: bool) {

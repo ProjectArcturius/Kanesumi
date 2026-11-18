@@ -239,9 +239,10 @@ pub struct TileWallGroupLayout {
 /// 磁贴墙一次布局的产物。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TileWallLayout {
-    /// 只含可见磁贴，按 (组, 组内下标) 有序。
+    /// 可见磁贴（[`layout_with_overscan`] 开启时另含视口外预取的列），按
+    /// (组, 组内下标) 有序；视口外预取的槽位 `clip` / `hit` 为空矩形。
     pub slots: Vec<TileWallSlot>,
-    /// 只含可见组。
+    /// 可见组（预取开启时另含视口外两侧的组；拖动基准为全量组）。
     pub groups: Vec<TileWallGroupLayout>,
     /// 全墙内容宽（不含左右留白）。
     pub content_width: f32,
@@ -295,12 +296,57 @@ impl TileWallLayout {
 /// 组内放置结果：`(列, 行, 跨列, 跨行)`，单位 = 1×1 单元。
 type Placement = (usize, usize, usize, usize);
 
+/// 布局的可见性策略。
+#[derive(Clone, Copy)]
+enum Visibility {
+    /// 只回与视口相交的组与磁贴（旧行为，缺省）。
+    Viewport,
+    /// 额外回视口左右各 `n` 个组列的几何（列 = 组块宽 + 组间距）。
+    Overscan(usize),
+    /// 全量几何：不按视口过滤，拖动基准用（落点判定要全部组矩形）。
+    All,
+}
+
 /// 由分组 + 度量 + 视口 + 滚动偏移算出一次布局。纯函数，无副作用。
 ///
 /// 放置规则与 launcher 的宏单元装箱一致（参 `launcher/src/shell/tiles.rs::place_cells`）：
 /// 组宽固定 `columns` 个单元，以 2×2 宏单元行优先扫描；1×1 填宏单元内的四个子格，
 /// 2×2 占一个整宏单元，2×1 占宏单元的一整行（先上后下，尽量填洞）。
 pub fn layout(input: &TileWallInput) -> TileWallLayout {
+    layout_with_visibility(input, Visibility::Viewport)
+}
+
+/// 视口外预取：左右各多回 `cols` 个**组列**的几何，供列图层虚拟化预渲染。
+///
+/// 1 列 = 一个组列步距（`group_width + group_gap`）。launcher 的 `PREFETCH_COLS = 2`
+/// 是 2 个宏单元列（≈ 320 px @cell70，参 Ether `docs/research/n1109_tiles/REPORT.md`
+/// §3.1）；本卡要求「12 组 @1366 回 ≥ 3 组」，320 px 的窗口只装得下 2 组，故这里按
+/// 组列计步距（`cols = 2` 回 4 组、`cols = 1` 回 3 组）。步距大的代价是替更多列付
+/// 图层缓冲，调用方可用更小的 `cols` 换。
+/// `cols = 0` 与 [`layout`] 逐字段相同；预取槽位 `clip` / `hit` 为空矩形，不会命中。
+pub fn layout_with_overscan(input: &TileWallInput, cols: usize) -> TileWallLayout {
+    if cols == 0 {
+        return layout(input);
+    }
+    layout_with_visibility(input, Visibility::Overscan(cols))
+}
+
+/// 拖动基准布局：摘除 `(group, index)` 那一枚后的**全量**布局（不按视口过滤）。
+///
+/// 对照 launcher `shell/tiles.rs::drop_target` 的基准几何：落点判定要所有组矩形，
+/// 视口外的组与磁贴也得在场。组索引与输入一致 —— 摘空的组保留，删组是应用策略，
+/// 控件模型没有「空组即删」的约定（这也是与 launcher `remove_tile` 的唯一差别）。
+pub fn layout_without(input: &TileWallInput, group: usize, index: usize) -> TileWallLayout {
+    let mut trimmed = input.clone();
+    if let Some(g) = trimmed.groups.get_mut(group)
+        && index < g.tiles.len()
+    {
+        g.tiles.remove(index);
+    }
+    layout_with_visibility(&trimmed, Visibility::All)
+}
+
+fn layout_with_visibility(input: &TileWallInput, vis: Visibility) -> TileWallLayout {
     let m = input.metrics.normalized();
     let viewport = input.viewport.normalized();
     let placements: Vec<Vec<Placement>> = input
@@ -343,18 +389,42 @@ pub fn layout(input: &TileWallInput) -> TileWallLayout {
     let grid_y = y0 + m.title_band;
     let x0 = viewport.origin.x + m.margin_x - scroll;
 
+    // 预取把视口按组列步距向左右扩；全量策略不参与过滤。`Viewport` 分支与旧代码
+    // 同一条判据（`rect.intersect(viewport)`），保证未开启时输出逐字段不变。
+    let visible = match vis {
+        Visibility::Viewport | Visibility::All => viewport,
+        Visibility::Overscan(pad_cols) => {
+            let pad = pad_cols as f32 * (group_width + m.group_gap);
+            Rect::new(
+                viewport.origin.x - pad,
+                viewport.origin.y,
+                viewport.size.width + 2.0 * pad,
+                viewport.size.height,
+            )
+        }
+    };
+    let include = |r: Rect| match vis {
+        Visibility::All => true,
+        _ => r.intersect(visible).is_some(),
+    };
+    // 裁剪与命中始终只认视口：预取回来的视口外几何不参与命中，绘制矩形为空。
+    let clip_of = |r: Rect| {
+        r.intersect(viewport)
+            .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0))
+    };
+
     let mut slots = Vec::new();
     let mut groups = Vec::new();
     for (g, group) in input.groups.iter().enumerate() {
         let gx = x0 + g as f32 * (group_width + m.group_gap);
         let group_rect = Rect::new(gx, y0, group_width, group_height);
-        if let Some(clip) = group_rect.intersect(viewport) {
+        if include(group_rect) {
             groups.push(TileWallGroupLayout {
                 index: g,
                 title: group.title.clone(),
                 rect: group_rect,
                 title_rect: Rect::new(gx, y0, group_width, m.title_band),
-                clip,
+                clip: clip_of(group_rect),
             });
         }
         for (t, (col, row, cols, col_rows)) in placements[g].iter().enumerate() {
@@ -364,9 +434,10 @@ pub fn layout(input: &TileWallInput) -> TileWallLayout {
                 *cols as f32 * m.cell + cols.saturating_sub(1) as f32 * m.gap,
                 *col_rows as f32 * m.cell + col_rows.saturating_sub(1) as f32 * m.gap,
             );
-            let Some(clip) = rect.intersect(viewport) else {
+            if !include(rect) {
                 continue;
-            };
+            }
+            let clip = clip_of(rect);
             let tile = &group.tiles[t];
             slots.push(TileWallSlot {
                 group: g,
@@ -376,7 +447,8 @@ pub fn layout(input: &TileWallInput) -> TileWallLayout {
                 rect,
                 clip,
                 hit: clip,
-                partial: clip != rect,
+                // 完全在视口外的预取槽位不是「被切掉一部分」。
+                partial: !clip.is_empty() && clip != rect,
             });
         }
     }
@@ -765,5 +837,131 @@ mod tests {
             assert!(!s.clip.is_empty());
             assert!(s.clip.intersect(l.viewport).is_some());
         }
+    }
+
+    // ── 视口外预取（B3）与拖动基准（B1）的几何回归 ──────────────────────────
+
+    /// C0 夹具：两组 18+2 枚 `Large`，视口 1280×752，提供方度量。
+    fn c0_like_input() -> TileWallInput {
+        let first = (1..=18)
+            .map(|n| tile(&format!("app{n:02}"), TileWallSize::Large))
+            .collect();
+        let second = (19..=20)
+            .map(|n| tile(&format!("app{n:02}"), TileWallSize::Large))
+            .collect();
+        let mut input = TileWallInput::new(
+            vec![
+                TileWallGroup::new("常用").with_tiles(first),
+                TileWallGroup::new("").with_tiles(second),
+            ],
+            Rect::new(0.0, 0.0, 1280.0, 752.0),
+        );
+        input.metrics = TileWallMetrics::from_provider(70.0, 10.0, 70.0, 72.0, 112.4451);
+        input
+    }
+
+    fn twelve_groups() -> Vec<TileWallGroup> {
+        (0..12)
+            .map(|g| {
+                TileWallGroup::new(format!("组{g}"))
+                    .with_tiles(vec![tile(&format!("g{g}"), TileWallSize::Small)])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn overscan_zero_is_field_by_field_identical() {
+        let c0 = c0_like_input();
+        assert_eq!(layout_with_overscan(&c0, 0), layout(&c0));
+
+        let wide = TileWallInput::new(twelve_groups(), Rect::new(0.0, 0.0, 1366.0, 768.0));
+        assert_eq!(layout_with_overscan(&wide, 0), layout(&wide));
+    }
+
+    #[test]
+    fn overscan_returns_twentieth_tile_beyond_right_edge() {
+        let input = c0_like_input();
+        let base = layout(&input);
+        assert_eq!(base.slots.len(), 19, "旧行为丢掉视口外的 app20");
+        assert!(!base.slots.iter().any(|s| s.id == "app20"));
+
+        let wide = layout_with_overscan(&input, 2);
+        assert_eq!(wide.slots.len(), 20, "C0 的 20 枚应全部在场");
+        let app20 = wide
+            .slots
+            .iter()
+            .find(|s| s.id == "app20")
+            .expect("app20 在预取列里");
+        assert!(close(app20.rect.origin.x, 1292.4451), "app20 的几何不变");
+        assert!(app20.clip.is_empty(), "视口外预取槽位没有裁剪矩形");
+        assert!(app20.hit.is_empty());
+        assert!(!app20.partial, "完全在视口外不算被切掉一部分");
+        // 命中仍只认视口：预取回来的槽位不能被点到。
+        assert!(wide.hit(Point::new(1300.0, 276.0)).is_none());
+    }
+
+    #[test]
+    fn overscan_two_sides_include_whole_group_columns() {
+        let input = TileWallInput::new(twelve_groups(), Rect::new(0.0, 0.0, 1366.0, 768.0));
+        let base = layout(&input);
+        assert_eq!(base.groups.len(), 2, "旧行为只回与视口相交的两组");
+
+        let wide = layout_with_overscan(&input, 2);
+        assert_eq!(
+            wide.groups.len(),
+            4,
+            "两侧各 2 个组列：视口内 2 组 + 右侧 2 组（组 0..3）"
+        );
+        assert!(
+            wide.groups
+                .iter()
+                .any(|g| g.rect.origin.x >= 1366.0 && g.clip.is_empty()),
+            "右侧应有一组完全在视口外"
+        );
+
+        // 滚动到中段后，预取集合同时越过视口左右两侧。
+        let mut scrolled = input.clone();
+        scrolled.scroll = 500.0;
+        let mid = layout_with_overscan(&scrolled, 2);
+        assert!(mid.groups.iter().any(|g| g.rect.origin.x < 0.0), "左侧组列");
+        assert!(
+            mid.groups.iter().any(|g| g.rect.origin.x >= 1366.0),
+            "右侧组列"
+        );
+    }
+
+    #[test]
+    fn layout_without_drops_source_tile_and_keeps_group_indices() {
+        let input = c0_like_input();
+        let base = layout_without(&input, 0, 0);
+        assert_eq!(base.slots.len(), 19);
+        assert_eq!(base.groups.len(), 2);
+        assert_eq!(base.slots[0].id, "app02", "基准布局首格是被拖项的后一枚");
+        assert!(
+            close(base.slots[0].rect.origin.x, 112.4451),
+            "摘除后被拖项的格子由后一枚补上"
+        );
+        assert_eq!(base.slots.iter().filter(|s| s.group == 0).count(), 17);
+        let second = base
+            .slots
+            .iter()
+            .find(|s| s.id == "app19")
+            .expect("第二组仍在场");
+        assert!(
+            close(second.rect.origin.x, 1132.4451),
+            "组索引不因摘除而漂移"
+        );
+        // 越界下标不 panic，也不改布局。
+        assert_eq!(layout_without(&input, 9, 9).slots.len(), 20);
+    }
+
+    #[test]
+    fn layout_without_returns_all_groups_for_drop_targets() {
+        let input = TileWallInput::new(twelve_groups(), Rect::new(0.0, 0.0, 1366.0, 768.0));
+        let base = layout_without(&input, 0, 0);
+        assert_eq!(base.groups.len(), 12, "落点判定需要全部组矩形");
+        assert!(base.groups.iter().skip(2).all(|g| g.clip.is_empty()));
+        // 摘空的组保留（删组是应用策略）。
+        assert!(base.slots.iter().all(|s| s.group != 0));
     }
 }

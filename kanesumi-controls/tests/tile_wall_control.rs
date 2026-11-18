@@ -2,6 +2,7 @@
 
 use kanesumi_canvas::Scene;
 use kanesumi_controls::navigation::tile_wall::TileWallSize;
+use kanesumi_controls::navigation::tile_wall_control::WallDropTarget;
 use kanesumi_controls::navigation::{
     MetroTileWall, WallGroup, WallRelease, WallTile, group_layout,
 };
@@ -166,4 +167,79 @@ fn empty_wall_renders_nothing() {
     let mut scene = Scene::default();
     w.render(&theme, &engine, &mut scene);
     assert!(scene.commands.is_empty());
+}
+
+// ── 提供方补丁（2026-11-18）：滚动偏移 / 视口外预取 / 拖动基准 ──────────────
+
+#[test]
+fn scroll_offsets_hit_and_layout_public_api() {
+    let mut w = wall();
+    assert_eq!(w.scroll(), 0.0);
+    let before = center(&w, 0, 0);
+    assert_eq!(
+        w.layout().hit(before).map(|s| (s.group, s.index)),
+        Some((0, 0))
+    );
+
+    w.set_scroll(60.0);
+    assert!((w.layout().scroll - 60.0).abs() < 0.01, "滚动写回布局");
+    // 内容左移 60：指针同点不再命中原来的格，左移 60 才命中同一块磁贴。
+    assert_eq!(
+        w.layout()
+            .hit(Point::new(before.x - 60.0, before.y))
+            .map(|s| (s.group, s.index)),
+        Some((0, 0))
+    );
+}
+
+#[test]
+fn overscan_adds_offscreen_group_public_api() {
+    let mut w = MetroTileWall::new();
+    let vp = Rect::new(0.0, 0.0, 1000.0, 600.0);
+    w.set_groups(
+        vec![
+            WallGroup::new(
+                "A",
+                vec![
+                    WallTile::new("a1", "A1", TileWallSize::Small),
+                    WallTile::new("a2", "A2", TileWallSize::Small),
+                ],
+            ),
+            WallGroup::new("B", vec![WallTile::new("b1", "B1", TileWallSize::Small)]),
+        ],
+        vp,
+    );
+    assert_eq!(w.layout().groups.len(), 1, "B 组在视口外，旧行为不返回");
+    assert!(!w.layout().slots.iter().any(|s| s.id == "b1"));
+
+    w.set_overscan_cols(1);
+    assert!(w.layout().groups.len() >= 2, "预取左右各 1 列");
+    assert!(w.layout().slots.iter().any(|s| s.id == "b1"));
+
+    w.set_overscan_cols(0);
+    assert!(
+        !w.layout().slots.iter().any(|s| s.id == "b1"),
+        "关掉即回旧输出"
+    );
+}
+
+#[test]
+fn drop_target_at_uses_baseline_without_dragged_tile() {
+    let mut w = wall();
+    let from = center(&w, 0, 0);
+    w.press(from);
+    w.drag(Point::new(from.x + 20.0, from.y));
+    assert!(w.dragging());
+
+    // 基准布局里 a2 补到首格；点它左半 = 插回原位 → 按点击回报。
+    let a2 = center(&w, 0, 1);
+    assert_eq!(
+        w.drop_target_at(Point::new(130.0, a2.y)),
+        Some(WallDropTarget::Activated("a1".to_string()))
+    );
+    // 组内空白（a2 右缘之外）= 追加组尾 → 插到第 1 位。
+    assert_eq!(
+        w.drop_target_at(Point::new(a2.x + 100.0, a2.y)),
+        Some(WallDropTarget::InGroup { group: 0, index: 1 })
+    );
 }
