@@ -9,6 +9,8 @@
 // 控件不读系统时钟（便于测试）。三级 DisplayMode 与 UWP 相同：Month（日格）→ Year（12 月）
 // → Decade（12 年），选中逐级返回。
 
+pub mod flyout;
+
 use kanesumi_canvas::glyph;
 use kanesumi_canvas::text::TextEngine;
 use kanesumi_canvas::{Scene, TextAlign};

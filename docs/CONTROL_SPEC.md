@@ -1790,6 +1790,17 @@ MetroCalendarView {
 
 ---
 
+### 时钟弹层（MetroCalendarFlyout）
+
+供时钟入口使用的单层月视图，沿用 Ether 时钟预览 `pClock()` 与裁定 §182、§183。
+它复用 `MetroCalendarView` 的公历、显示月和选中状态。调用方供给时间、日期、今天、
+设置链接文案和悬停状态，并负责定时、弹层锚点和设置动作。
+
+- 弹层 360 × 446，头部 20，星期行 28，网格为 7 列 × 6 行，每格 48 × 40。
+- 周一开头，月外格为空。今日整格用强调色填充并沿用白字，其他选中日用次级表面色。悬停日格保持原样。
+- 左右三角按钮按下并在同一按钮上释放才翻月。点月标题不切换显示层级。
+- `MetroCalendarView` 与 `MetroCalendarDatePicker` 的原入口继续使用 UWP 模板。
+
 ## 46 · CalendarDatePicker（MetroCalendarDatePicker）
 
 > 数据源：**OS UWP 一手源**（Windows SDK 10.0.26100.0）。

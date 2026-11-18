@@ -35,6 +35,25 @@ pub const OSD_OVERLAY_ART_SIZE: f32 = 40.0;
 /// 顶栏 OSD 媒体文字与相邻控件的间距。参 Ether 同文件 `media_text_rect`。
 pub const OSD_OVERLAY_MEDIA_TEXT_GAP: f32 = 10.0;
 
+/// 时钟弹层几何，来源为 Ether `1044d8d0:settings/src/topbar/calendar.rs` 的原尺寸。
+/// 参 Ether 裁定 §182、§183 及 Kanesumi CONTROL_SPEC §45。
+pub mod calendar_flyout {
+    pub const WIDTH: f32 = 360.0;
+    pub const PAD: f32 = 16.0;
+    pub const CLOCK_TOP: f32 = 16.0;
+    pub const DATE_GAP: f32 = 4.0;
+    pub const DATE_H: f32 = 18.0;
+    pub const MONTH_TOP: f32 = 16.0;
+    pub const MONTH_H: f32 = 20.0;
+    pub const MONTH_BOTTOM: f32 = 4.0;
+    pub const WEEK_H: f32 = 28.0;
+    pub const NAV_W: f32 = 28.0;
+    pub const GRID_PAD: f32 = 12.0;
+    pub const CELL_H: f32 = 40.0;
+    pub const GRID_BOTTOM: f32 = 8.0;
+    pub const LINK_H: f32 = 44.0;
+}
+
 /// Dock 图标 48。来源：§158「悬浮，图标48，模糊30」；§159 明确 48 是 **200% 输出下的
 /// 最终值，不随 Ether 尺寸系数二次放大**。现值 `launcher/src/shell/dock_rail.rs:31`。
 pub const DOCK_ICON: f32 = 48.0;

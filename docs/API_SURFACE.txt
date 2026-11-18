@@ -866,6 +866,7 @@ pub fn button(
 pub fn button(label: impl Into<String>, action: DeclAction) -> Self {
 pub fn can_undo(&self) -> bool {
 pub fn cancel(&mut self) {
+pub fn cancel_press(&mut self) {
 pub fn capture_anchor(&self, row_h: f32) -> ScrollAnchor {
 pub fn caret_rect_absolute(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> Rect {
 pub fn caret_visible(&self) -> bool {
@@ -927,7 +928,9 @@ pub fn cursor_byte(&self) -> usize {
 pub fn cycle_size(&mut self, group: usize, index: usize, viewport: Rect) -> Option<TileWallSize> {
 pub fn damage(&self) -> Vec<Rect> {
 pub fn damage(&self, index: usize) -> Option<Rect> {
+pub fn day_at(&self, layout: CalendarFlyoutLayout, pos: Point) -> Option<Date> {
 pub fn day_at(&self, rect: Rect, pos: Point) -> Option<Date> {
+pub fn day_rect(&self, layout: CalendarFlyoutLayout, date: Date) -> Option<Rect> {
 pub fn day_rect(&self, rect: Rect, date: Date) -> Option<Rect> {
 pub fn decade_base(&self) -> i32 {
 pub fn default_button(mut self, is_default: bool) -> Self {
@@ -943,6 +946,7 @@ pub fn display_chars(&self) -> Vec<char> {
 pub fn display_text(&self) -> Option<String> {
 pub fn display_text(&self) -> String {
 pub fn display_value(&self) -> f32 {
+pub fn displayed(&self) -> Date {
 pub fn dock_height(self) -> f32 {
 pub fn dot() -> Self {
 pub fn down_button_rect(&self, theme: &MetroTheme, rect: Rect) -> Rect {
@@ -1189,6 +1193,7 @@ pub fn move_home(&mut self, select: bool) {
 pub fn move_left(&mut self, select: bool) {
 pub fn move_right(&mut self, select: bool) {
 pub fn nav_rects(&self, rect: Rect) -> (Rect, Rect, Rect) {
+pub fn nav_rects(self) -> (Rect, Rect) {
 pub fn nested(&self, parent: WidgetId) -> Self {
 pub fn new(
 pub fn new() -> Self {
@@ -1201,6 +1206,7 @@ pub fn new(commands: Vec<CommandButton>) -> Self {
 pub fn new(content: NotificationContent<'_>) -> Self {
 pub fn new(content: Size, viewport: Size) -> Self {
 pub fn new(content: impl Into<String>, style: TextStyle, color: Color) -> Self {
+pub fn new(displayed: Date) -> Self {
 pub fn new(entries: Vec<DockRailEntry>, available: Rect) -> Self {
 pub fn new(glyph: impl Into<String>, name: impl Into<String>, action: CommandBarAction) -> Self {
 pub fn new(groups: Vec<TileWallGroup>, viewport: Rect) -> Self {
@@ -1243,6 +1249,7 @@ pub fn next_cluster_boundary(&self, cursor: usize) -> usize {
 pub fn next_rect(&self, rect: Rect) -> Option<Rect> {
 pub fn normalized(self) -> Self {
 pub fn note(&mut self, tree: &mut Tree, text: &str) -> WidgetId {
+pub fn of(rect: Rect) -> Self {
 pub fn offset(&self) -> f32 {
 pub fn open(&mut self) {
 pub fn open(&mut self, anchor: Rect, screen: Rect) {
@@ -1312,6 +1319,7 @@ pub fn press(&mut self, pos: Point) {
 pub fn press(&mut self, rect: Rect, pos: Point) -> Option<f64> {
 pub fn press(&mut self, rect: Rect, pos: Point) -> bool {
 pub fn press(&mut self, rect: Rect, theme: &MetroTheme, pos: Point) {
+pub fn press_month(&mut self, layout: CalendarFlyoutLayout, pos: Point) -> bool {
 pub fn prev_cluster_boundary(&self, cursor: usize) -> usize {
 pub fn prev_rect(&self, rect: Rect) -> Option<Rect> {
 pub fn preview_rect(&self, rect: Rect) -> Rect {
@@ -1335,6 +1343,7 @@ pub fn release(&mut self) {
 pub fn release(&mut self, hit: Option<PanelRowHit>) -> Option<bool> {
 pub fn release(&mut self, pos: Point) -> Option<DockActivated> {
 pub fn release(&mut self, pos: Point) -> WallRelease {
+pub fn release_month(&mut self, layout: CalendarFlyoutLayout, pos: Point) -> Option<Date> {
 pub fn remaining_ms(&self) -> f64 {
 pub fn remove(&mut self, id: u64) -> bool {
 pub fn render(
@@ -1420,10 +1429,12 @@ pub fn select(&mut self, index: usize) {
 pub fn select(&mut self, path: MenuPath) -> bool {
 pub fn select_all(&mut self) {
 pub fn select_all(&mut self, len: usize) {
+pub fn select_at(&mut self, layout: CalendarFlyoutLayout, pos: Point) -> bool {
 pub fn select_item(&mut self, index: usize) -> Option<String> {
 pub fn select_only(&mut self, index: usize) {
 pub fn select_range(&mut self, from: usize, to: usize) {
 pub fn select_submenu(&mut self, path: MenuPath) -> bool {
+pub fn selected(&self) -> Option<Date> {
 pub fn selected_indices(&self) -> &[usize] {
 pub fn selected_item_index(&self) -> Option<usize> {
 pub fn selection(&self) -> Option<(usize, usize)> {
@@ -1661,6 +1672,8 @@ pub fn zone_at(&self, pos: Point) -> Option<DockZone> {
 pub struct BreadcrumbClicked {
 pub struct BreadcrumbLayout {
 pub struct ButtonClicked;
+pub struct CalendarFlyoutContent<'a> {
+pub struct CalendarFlyoutLayout {
 pub struct CandidateChosen(pub usize);
 pub struct CardContent<'a> {
 pub struct CardGeometry {
@@ -1728,6 +1741,7 @@ pub struct MetroAutoSuggestBox {
 pub struct MetroBreadcrumbBar {
 pub struct MetroButton {
 pub struct MetroCalendarDatePicker {
+pub struct MetroCalendarFlyout {
 pub struct MetroCalendarView {
 pub struct MetroCandidateWindow {
 pub struct MetroCheckBox {
