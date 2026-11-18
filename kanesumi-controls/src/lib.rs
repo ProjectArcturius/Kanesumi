@@ -80,6 +80,7 @@ pub(crate) fn scroll_meter_line(kind: &str, off: f32, extra: &str) {
 pub mod selector_flyout;
 pub mod slider;
 pub mod split_button;
+pub mod ssd_chrome;
 pub mod state;
 pub mod style;
 pub mod surface;
@@ -179,6 +180,7 @@ pub use scroll_view::{
 pub use selector_flyout::{MetroSelectorFlyout, SelectorSelectionChanged};
 pub use slider::{MetroSlider, SliderValueChanged, SLIDER_HEADER_MARGIN, SLIDER_MIN_H, SLIDER_MIN_W, SLIDER_THUMB_H, SLIDER_THUMB_W, SLIDER_TRACK_ALPHA, SLIDER_TRACK_H, SLIDER_TRACK_HOVER_ALPHA};
 pub use split_button::{MetroSplitButton, SplitButtonInvoked, SplitButtonClick, SplitButtonPart};
+pub use ssd_chrome::{MetroSsdChrome, SsdChromeMetrics, SsdGeometry, SsdTitleRow};
 pub use state::{ButtonState, ControlState, control_state};
 pub use style::{
     BrushSlot, ControlStyle, Paint, STATE_DISABLED, STATE_FOCUSED, STATE_NORMAL, STATE_POINTER_OVER,

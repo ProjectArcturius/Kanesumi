@@ -854,6 +854,7 @@ pub fn body(&self) -> &str {
 pub fn body(content: impl Into<String>, color: Color) -> Self {
 pub fn body_rect(&self) -> Option<Rect> {
 pub fn border_thickness(&self) -> f32 {
+pub fn border_thickness(&self, scale: f64) -> (f64, f64) {
 pub fn box_rect(&self, rect: Rect) -> Rect {
 pub fn box_rect(&self, screen: Rect) -> Rect {
 pub fn bring_into_view_index(&mut self, index: usize) {
@@ -984,6 +985,7 @@ pub fn from_provider(
 pub fn from_text(text: impl Into<String>) -> Self {
 pub fn gap(&self) -> f32 {
 pub fn gap(mut self) -> Self {
+pub fn geometry(&self, loc: Point, geo_offset_x: f64, content: Size) -> SsdGeometry {
 pub fn geometry(&self, width: f64) -> NotifyCardGeometry {
 pub fn get(&self) -> usize {
 pub fn get(&self, id: u64) -> Option<&Notification> {
@@ -1247,6 +1249,7 @@ pub fn open_at(ctx: &mut EventCtx, items: Vec<MenuItem>, at: Point, keyboard: bo
 pub fn open_below(
 pub fn open_submenu(&mut self, engine: &TextEngine, screen: Rect, idx: usize) {
 pub fn osd_text_style() -> TextStyle {
+pub fn over(&self, base: Color, top: Color, a: f32) -> Color {
 pub fn overflow_buttons(&self, engine: &TextEngine, rect: Rect) -> Option<(Rect, Rect)> {
 pub fn overflowing(&self, engine: &TextEngine, rect: Rect) -> bool {
 pub fn overlay_alpha(&self) -> f32 {
@@ -1535,6 +1538,7 @@ pub fn tile_height(&self) -> f32 {
 pub fn title(&self) -> &str {
 pub fn title_rect(&self) -> Rect {
 pub fn title_rect(&self, rect: Rect) -> Rect {
+pub fn title_row(&self, titlebar: Rect, btn_w: f64, scale: f64, icon_w: f64, name_w: f64, has_title: bool) -> SsdTitleRow {
 pub fn title_style() -> TextStyle {
 pub fn toggle(
 pub fn toggle(&mut self) -> CheckState {
@@ -1607,6 +1611,7 @@ pub fn with_max(mut self, max: f64) -> Self {
 pub fn with_max_lines(mut self, lines: usize) -> Self {
 pub fn with_max_lines(mut self, max_lines: usize) -> Self {
 pub fn with_meta(rows: Vec<String>, meta: Vec<ListRowMeta>) -> Self {
+pub fn with_metrics(m: SsdChromeMetrics) -> Self {
 pub fn with_min(mut self, min: f64) -> Self {
 pub fn with_name(name: impl Into<String>) -> Self {
 pub fn with_on(mut self, index: usize, on: bool) -> Self {
@@ -1753,6 +1758,7 @@ pub struct MetroSectionHeader {
 pub struct MetroSelectorFlyout {
 pub struct MetroSlider {
 pub struct MetroSplitButton {
+pub struct MetroSsdChrome {
 pub struct MetroSurface {
 pub struct MetroSwipeControl {
 pub struct MetroSwitch {
@@ -1809,6 +1815,9 @@ pub struct SidebarSlot {
 pub struct SliderValueChanged(pub f64);
 pub struct SortRequested {
 pub struct SplitButtonInvoked;
+pub struct SsdChromeMetrics {
+pub struct SsdGeometry {
+pub struct SsdTitleRow {
 pub struct StateProperties {
 pub struct StyleBrush {
 pub struct SubmenuState {
