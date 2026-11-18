@@ -2373,3 +2373,126 @@ C0 图与 12 份转录均不在本件范围（2026-11-18 补的三件也不含�
 - 呈现 `hit` 只在 `presented_layout().hit(pos)` 上提供；`MetroDock::hit(pos)` 仍是落定命中，
   避免过渡帧的命中抖动。需要动画期命中时由调用方显式用呈现快照。
 - 图标解码仍归调用方：`presented_layout()` 只给 `icon_rect` 与 `icon_opacity`。
+
+---
+
+## 55 · 面板部件四件（节头 / 图标位 / 通知行 / 方块网格 · 2026-11-18）
+
+> 缺口来源：Ether `docs/research/m1115_panels/REPORT.md` §四-2（通知行是四段卡片，
+> `PanelRowGeometry` 表示不了）、§四-4（`MetroPanelGroupHeader` 从不存在）、§五（组头 /
+> 图标位 / 方块网格都没有对应控件）。实现：`kanesumi-controls/src/{section_header,icon_slot,
+> notice_row,tile_grid}.rs`。逐条真值的取证命令与现有用例变更表见
+> `docs/research/panels_parts_20261118/REPORT.md`。
+
+### 共同约定
+
+- **旧出口不动**：`PanelRow` / `MetroPanelRow`（`panel_row.rs`）一行未改；应用侧 `SliderRow`
+  不在本库，也未改。四件都是**新增**模块，不改任何既有 `Metro*` 标识符。
+- **几何与绘制分离**：`measure` / `layout` 产出几何值对象（`*Geometry`），`render` 只消费它；
+  命中在几何对象上（与 `PanelRowGeometry::hit` 同构）。绘制、命中、逐段损伤同源。
+- **颜色只取主题令牌**，四件生产段无 `Color::new`（`token_discipline` 守门）。
+- **尺寸**只取两处：`kanesumi_core::sizes`（如 `ICON_20`）与控件自身的**字段缺省**（可配的
+  内距 / 间隔 / 格高）；与面板规格同源的**固定布局数**写在 `measure` 里的具名局部量，出处标在
+  紧邻注释里。**不新增 `const f32`**：`kanesumi-controls/tests/size_discipline.rs` 的裸尺寸
+  白名单只减不增，而尺寸的定义归 `kanesumi_core::sizes`（本卡不改 core）。
+- **未启用 / 空输入不出像素**：不产出绘制命令、不改元素数目（`TileGridGeometry::rects()` 的格数
+  只由 rows×cols 决定，哪怕面积为 0）。这样损伤矩形不会在两帧之间抖动。
+
+### 55.1 MetroSectionHeader（`section_header.rs`）
+
+| 项 | 值 | 依据 |
+|---|---|---|
+| 文本样式 | `theme.typography.caption`（13 pt / 行高 18） | 卡 §一；`action_center.rs` 组头同档 |
+| 文本色 | `theme.colors.on_surface_variant` | 同上 |
+| 上 / 下内距 | 缺省 10 / 4（`with_padding` 可改，负值夹 0） | `action_center.rs:49-50` 的 `GRP_TOP` / `GRP_BOTTOM` |
+| 行高 | `18 + 10 + 4 = 32` | 与 `action_center::GROUP_ROW_H` / `net_panel::HD_H` / `panel_rows::HD_H` 三个 32 同值 |
+| 文本矩形 | `(origin.x, origin.y + 10, width, 18)`，左对齐 | `.grp` 的 `padding: 10px 16px 4px`（左右内距归容器） |
+
+- 输入：文本、可选上下内距（`with_padding`，负值夹 0）。输出：`SectionHeaderGeometry`（`rect` = 整行、
+  `text` = 文本行盒）。
+- `height()` 不需要字体引擎（样式固定）；`measure(origin, width)` 给它一个原点与可用宽。
+- `render(...) -> Option<Rect>`：有文本返回损伤矩形（整行盒），空 / 全空白文本返回 `None` 且
+  **不产出任何命令**。
+
+### 55.2 MetroIconSlot（`icon_slot.rs`）
+
+| 项 | 值 | 依据 |
+|---|---|---|
+| 缺省边长 | `sizes::ICON_20`（20 pt） | `panel_rows.rs:27` `ICON_PT = 20`、`net_panel.rs:72` `ROW_ICON = 20` |
+| 居中规则 | 在给定槽矩形内水平 / 垂直居中；槽小于边长时**夹到槽的短边**再居中 | `panel_rows::IconSlot::paint` 的 `(w - pt)/2` |
+| 染色 | `theme.colors.on_surface` | 同上 |
+| 命中性 | 恒 `rect()` 一个方框（损伤盒与 blit 目标同一份） | 卡 §一「提供 rect() 供损伤」 |
+
+- `MetroIconSlot::new()`（20）/ `with_size(pt)`（非有限值回落 20，负值夹 0）；`rect(slot)` 给居中方框。
+- `render(theme, slot, icon: Option<&Icon>, scene) -> Option<Rect>`：无图返回 `None`、零命令；
+  有图在 `rect(slot)` 上 `scene.image` 并返回该矩形。**控件不解码**：`Icon` 由调用方光栅化。
+- 边长 0 或槽面积为 0 时 `rect` 为零矩形，`render` 恒 `None`（不产出一个 0×0 的图像命令）。
+
+### 55.3 MetroNoticeRow（`notice_row.rs`）
+
+来源 `settings/src/topbar/action_center.rs::NoteRow`（`:635-816`）。**四段结构**：整行底 +
+标题一行 + 正文换行 + 关闭叉；旧 `MetroPanelRow` 只有「单行主文字 + 同行右对齐次文字 + 右侧控件」，
+表示不了正文换行与独立的关闭命中（m1115 REPORT §四-2）。
+
+| 项 | 值 | 依据 |
+|---|---|---|
+| 上 / 下内距 | 8 / 10 | `.nt` 的 `padding: 8px 16px 10px`（`:56-57`） |
+| 左右内距 | 16 | `PAD`（`:42`） |
+| 标题行高 | 20（`body_medium`） | `NOTE_TITLE_H`（`:59`） |
+| 标题 / 正文间隔 | 2 | `NOTE_GAP`（`:61`） |
+| 正文行高 | 18（`caption`） | `NOTE_BODY_H`（`:63`） |
+| 正文行数上限 | `NOTICE_MAX_LINES = 2`（可配，0 = 只有标题） | `NOTE_BODY_LINES`（`:64`） |
+| 关闭叉命中边长 | 24，图形 12 | `NOTE_CLOSE`（`:66`） |
+| 关闭叉上距 | 上内距 − 2 = 6 | `NoteRow::close_rect`（`:661-668`） |
+| 标题与叉的间隔 | 8 | `NoteRow::paint` 的 `time.origin.x - 8 - title_x`（`:728`） |
+
+行高由内容算出（**不写死**）：`上 8 + 标题 20 + （有正文时 间隔 2 + 正文 18 × 行数）+ 下 10`
+→ 两行 76、一行 58、只有标题 38（与 C0 转录里
+「展开 58 / 收起 38」同源，两行 76 由公式推出）。
+
+- **正文换行与省略由控件做**：`measure` 用 `TextEngine::layout` 数行（按实际字形量测，不在应用里
+  估 `body_lines`），`render` 走 `scene.text_with_options(wrap=true, max_lines, Ellipsis)`。
+- **逐段几何**：`NoticeRowGeometry { row, title, body: Option<Rect>, close: Option<Rect> }`，
+  `segments()` 给非空的段矩形（行底 / 标题 / 正文 / 叉），`damage()` 同源 —— 按段损伤用。
+- **关闭叉不占位**：`with_close(false)` 时 `close = None`，标题宽度从 `close.x - 8` 扩到
+  `row.right() - 16`（360 宽的行：296 → 328）。
+- **命中独立**：`NoticeHit::{Row, Close}`，`hit(pos)` **Close 优先**；叉隐藏时永不给 `Close`。
+- **状态**：`set_hovered` / `set_pressed` / `set_close_hovered`，`state()` 走 `ControlState`
+  （按下 > 悬停 > 常态）。行底：悬停 `indication.hover_tint`、按下 `indication.press_tint`；
+  叉在悬停于叉上时从 `on_surface_variant` 提到 `on_surface`（旧 `NoteRow::hover_close`）。
+- **空输入**：标题与正文都为空 → `render` 不产出命令（连悬停底也不画），行高仍是 38，元素数目不变。
+
+### 55.4 MetroTileGrid（`tile_grid.rs`）
+
+来源 `settings/src/topbar/action_center.rs::TilesGrid::tile_rects`（`:908-924`）：4 列等宽、两行、
+间隔 2、格高 56、标签 `body_small` 左下、图标位由调用方 blit。
+
+| 项 | 值 | 依据 |
+|---|---|---|
+| 缺省间隔 | 2（`with_gap` 可改） | `TILE_GAP`（`:77`） |
+| 缺省格高 | 56（`with_tile_height` 可改） | `TILE_H`（`:74`） |
+| 格宽 | `(area.width − (cols−1) × gap) / cols`，夹 ≥ 0 | `tile_rects`（`:909-911`） |
+| 网格高 | `rows × tile_h + (rows−1) × gap` | 同上（`:917-921`） |
+| 标签 | `body_small`，左对齐；矩形 `(cell.x+8, cell.bottom−6−16, cell.w−16, 16)` | `TILE_PAD` / `TILE_PAD_Y`（`:82-83`、`:973-978`） |
+| 开 / 关底色 | 开 = `colors.primary`、关 = `colors.surface_variant`（C0 转录 `tile_on_bg` / 首行 `#171717` 面板底） | `tile_bg`（`:284-290`） |
+| 开 / 关前景 | 开 = `colors.on_primary`、关 = `colors.on_surface` | `tile_fg`（`:292-299`） |
+| 禁用 | 底色与前景乘 `indication.disabled_opacity`，不画悬停描边 | `TilesGrid::paint`（`:944-949`） |
+| 悬停 | 2 pt 内描边 `on_surface.with_alpha(indication.base_medium)`，**只换描边不换底** | 同上（`:950-959`） |
+| 图标位 | 缺省 `(cell.x+8, cell.y+8, 20, 20)`；`with_icon_box(size, pad_x, pad_y)` 可改（action_center 用 18 / 8 / 6） | `TILE_ICON`（`:84`）与 `net_panel::ROW_ICON` |
+
+- 几何入口 `layout(area) -> TileGridGeometry`（`rect()` / `rects()` / `cell(i)` / `hit(pos)` /
+  `damage(i)`）。`rects()` 的格数恒为 `rows × cols`；**面积为 0 时格矩形为零矩形**，数目不变。
+- `render(theme, engine, &layout, scene) -> Vec<TileCellDraw>`：逐格 `{ index, rect, damage,
+  commands }`，`commands` 是该格命令在 `scene.commands` 里的半开区间，`damage` **只盖本格**。
+  零宽 / 零高的格不产出（命令与 draw 条目都不加）。
+- **不画图标**：只给 `icon_rect(cell)`，图像命令由调用方 blit；本控件不接 `Icon`、不解码。
+- **空输入**：`rows = 0` 或 `cols = 0` → `rects()` 空、`render` 空、零命令。
+
+### 55.5 回归与边界
+
+- 四件各带 `#[cfg(test)] mod tests`，期望值按上表常量手算成字面量（不调被测函数生成 expected）。
+- 既有 `panel_row.rs` / `table.rs` / `tab_view.rs` 的用例与输出未改；`#[ignore]` 未新增。
+- **未做**：应用迁移（`m-panels-c1`）、图标解码、时间列（C0 的时间列归应用或另件：本控件只按
+  「标题 + 正文 + 叉」四段，卡面未列时间）、RTL、键盘焦点、无障碍树角色。
+- 已知会让 C0 转录变的一行：`action_row_pointer.txt` 的 `press(note_row)` 段。旧 `NoteRow` 没有
+  按下态，本控件按下铺 `press_tint` —— 这条属行为变更，迁移时须由 C2 裁定放行。

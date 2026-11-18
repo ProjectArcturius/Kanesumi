@@ -778,6 +778,7 @@ pub enum InfoBarSeverity {
 pub enum ItemLayout {
 pub enum NavigationAction {
 pub enum NavigationPaneMode {
+pub enum NoticeHit {
 pub enum NotificationEvent {
 pub enum NotificationState {
 pub enum OsdKind {
@@ -848,7 +849,9 @@ pub fn badge_text(&self) -> Option<String> {
 pub fn begin_frame(&mut self) {
 pub fn block(&mut self, tree: &mut Tree, my_mt: f32, my_mb: f32) -> WidgetId {
 pub fn blur(&mut self) {
+pub fn body(&self) -> &str {
 pub fn body(content: impl Into<String>, color: Color) -> Self {
+pub fn body_rect(&self) -> Option<Rect> {
 pub fn border_thickness(&self) -> f32 {
 pub fn box_rect(&self, rect: Rect) -> Rect {
 pub fn box_rect(&self, screen: Rect) -> Rect {
@@ -863,6 +866,7 @@ pub fn capture_anchor(&self, row_h: f32) -> ScrollAnchor {
 pub fn caret_rect_absolute(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> Rect {
 pub fn caret_visible(&self) -> bool {
 pub fn caret_x(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> f32 {
+pub fn cell(&self, index: usize) -> Option<Rect> {
 pub fn cells(mut self, cells: Vec<String>) -> Self {
 pub fn check_gutter(&self) -> f32 {
 pub fn chevron_progress(&self) -> f32 {
@@ -884,9 +888,11 @@ pub fn close_rect(&self) -> Option<Rect> {
 pub fn close_rect(&self, rect: Rect, k: usize) -> Option<Rect> {
 pub fn close_rect(rect: Rect) -> Rect {
 pub fn close_submenu(&mut self) {
+pub fn close_visible(&self) -> bool {
 pub fn cluster_boundaries(&self) -> Vec<usize> {
 pub fn collect_hits(
 pub fn color(self, theme: &MetroTheme) -> Color {
+pub fn cols(&self) -> usize {
 pub fn column(children: Vec<Decl>) -> Self {
 pub fn column_at(columns: &ColumnSet, rect: Rect, x: f32) -> usize {
 pub fn column_rects(columns: &ColumnSet, area: Rect) -> Vec<Rect> {
@@ -910,10 +916,13 @@ pub fn content_rect(&self, theme: &MetroTheme, body: Rect) -> Rect {
 pub fn content_rect(rect: Rect) -> Rect {
 pub fn content_size(&self, viewport: Size) -> Size {
 pub fn control_state(s: kanesumi_element::ControlStates) -> ControlState {
+pub fn count(&self) -> usize {
 pub fn current_mode(&self) -> TwoPaneMode {
 pub fn cursor(&self) -> usize {
 pub fn cursor_byte(&self) -> usize {
 pub fn cycle_size(&mut self, group: usize, index: usize, viewport: Rect) -> Option<TileWallSize> {
+pub fn damage(&self) -> Vec<Rect> {
+pub fn damage(&self, index: usize) -> Option<Rect> {
 pub fn day_at(&self, rect: Rect, pos: Point) -> Option<Date> {
 pub fn day_rect(&self, rect: Rect, date: Date) -> Option<Rect> {
 pub fn decade_base(&self) -> i32 {
@@ -972,6 +981,7 @@ pub fn fraction(&self) -> f32 {
 pub fn from_epoch_days(days: i64) -> Self {
 pub fn from_provider(
 pub fn from_text(text: impl Into<String>) -> Self {
+pub fn gap(&self) -> f32 {
 pub fn gap(mut self) -> Self {
 pub fn get(&self) -> usize {
 pub fn get(&self, id: u64) -> Option<&Notification> {
@@ -1019,7 +1029,9 @@ pub fn hit(&self, engine: &TextEngine, rect: Rect, pos: Point) -> Option<usize> 
 pub fn hit(&self, engine: &TextEngine, rect: Rect, pos: Point) -> PagerAction {
 pub fn hit(&self, pos: Point) -> Option<&TileWallSlot> {
 pub fn hit(&self, pos: Point) -> Option<DockHit> {
+pub fn hit(&self, pos: Point) -> Option<NoticeHit> {
 pub fn hit(&self, pos: Point) -> Option<PanelRowHit> {
+pub fn hit(&self, pos: Point) -> Option<usize> {
 pub fn hit(&self, pos: Point) -> TeachingTipClick {
 pub fn hit(&self, rect: Rect, pos: Point) -> SplitButtonPart {
 pub fn hit(&self, rect: Rect, pos: Point) -> SwipeAction {
@@ -1058,6 +1070,7 @@ pub fn icon_center(&self, engine: &TextEngine, viewport: Rect) -> Option<Point> 
 pub fn icon_glyph(self) -> &'static str {
 pub fn icon_jump(&self, id: &str) -> f32 {
 pub fn icon_opacity(&self, id: &str) -> f32 {
+pub fn icon_rect(&self, cell: Rect) -> Rect {
 pub fn icon_rect(&self, rect: Rect) -> Option<Rect> {
 pub fn ime_context(&self, theme: &MetroTheme, engine: &TextEngine, body: Rect) -> ImeContext {
 pub fn indeterminate() -> Self {
@@ -1071,12 +1084,14 @@ pub fn insert_str(&mut self, s: &str) -> bool {
 pub fn interaction_signature(&self) -> MenuInteractionSignature {
 pub fn invalidate_layout(&self) {
 pub fn is_animating(&self) -> bool {
+pub fn is_disabled(&self, index: usize) -> bool {
 pub fn is_dot(&self) -> bool {
 pub fn is_empty(&self) -> bool {
 pub fn is_flyout_open(&self) -> bool {
 pub fn is_flyout_visible(&self) -> bool {
 pub fn is_focused(&self, id: FocusId) -> bool {
 pub fn is_left(self) -> bool {
+pub fn is_on(&self, index: usize) -> bool {
 pub fn is_open(&self) -> bool {
 pub fn is_realized(&self, index: usize) -> bool {
 pub fn is_registered(&self, id: FocusId) -> bool {
@@ -1103,11 +1118,14 @@ pub fn key(&mut self, key: kanesumi_element::Key) -> CalendarResponse {
 pub fn kind(&self) -> Option<&OsdKind> {
 pub fn knob_rect(&self, rect: Rect, theme: &MetroTheme) -> Rect {
 pub fn label(&self) -> String {
+pub fn label(&self, index: usize) -> Option<&str> {
+pub fn label_rect(&self, cell: Rect) -> Rect {
 pub fn labeled(
 pub fn last_page(&self) -> usize {
 pub fn layout(
 pub fn layout(&self) -> &DockLayout {
 pub fn layout(&self) -> &TileWallLayout {
+pub fn layout(&self, area: Rect) -> TileGridGeometry {
 pub fn layout(&self, engine: &TextEngine, rect: Rect) -> (Size, Vec<Rect>) {
 pub fn layout(&self, engine: &TextEngine, rect: Rect) -> BreadcrumbLayout {
 pub fn layout(&self, rect: Rect) -> (Size, Vec<Rect>) {
@@ -1125,6 +1143,7 @@ pub fn list_item(
 pub fn list_window(
 pub fn mask(&self) -> Option<char> {
 pub fn matching(&self, rows: &[String], after: Option<usize>) -> Option<usize> {
+pub fn max_lines(&self) -> usize {
 pub fn max_offset(&self) -> f32 {
 pub fn max_scroll(&self) -> f32 {
 pub fn max_scroll(&self, avail_w: f32) -> f32 {
@@ -1139,8 +1158,10 @@ pub fn measure(&self) -> kanesumi_core::Size {
 pub fn measure(&self, _engine: &TextEngine) -> Size {
 pub fn measure(&self, engine: &TextEngine) -> Size {
 pub fn measure(&self, engine: &TextEngine, max_width: f32) -> Size {
+pub fn measure(&self, engine: &TextEngine, origin: Point, width: f32) -> NoticeRowGeometry {
 pub fn measure(&self, engine: &TextEngine, style: TextStyle) -> Size {
 pub fn measure(&self, engine: &TextEngine, style: TextStyle) -> kanesumi_core::Size {
+pub fn measure(&self, origin: Point, width: f32) -> SectionHeaderGeometry {
 pub fn measure(&self, width: f32) -> Size {
 pub fn measure(engine: &TextEngine, kind: &OsdKind, viewport: Rect) -> Self {
 pub fn measure(engine: &TextEngine, row: &PanelRow, origin: Point, width: f32) -> Self {
@@ -1193,11 +1214,14 @@ pub fn new(parent: WidgetId) -> Self {
 pub fn new(root: TreeViewNode) -> Self {
 pub fn new(row: PanelRow) -> Self {
 pub fn new(rows: Vec<String>) -> Self {
+pub fn new(rows: usize, cols: usize) -> Self {
 pub fn new(slot: DialogButton, label: impl Into<String>) -> Self {
 pub fn new(tabs: Vec<MetroTab>) -> Self {
 pub fn new(tabs: Vec<String>) -> Self {
 pub fn new(text: &str, target: &str) -> Self {
+pub fn new(text: impl Into<String>) -> Self {
 pub fn new(title: impl Into<String>) -> Self {
+pub fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
 pub fn new(title: impl Into<String>, content: impl Into<String>) -> Self {
 pub fn new(title: impl Into<String>, tiles: Vec<WallTile>) -> Self {
 pub fn new(today: Date) -> Self {
@@ -1284,6 +1308,9 @@ pub fn push(&mut self, ch: char, now_ms: u64) -> &str {
 pub fn radio(mut self, group: impl Into<String>) -> Self {
 pub fn realized_count(&self) -> usize {
 pub fn realized_node(&self, index: usize) -> Option<WidgetId> {
+pub fn rect(&self) -> Rect {
+pub fn rect(&self, slot: Rect) -> Rect {
+pub fn rects(&self) -> &[Rect] {
 pub fn register(&mut self, id: FocusId, tab_stop: bool, enabled: bool) {
 pub fn related(
 pub fn relayout(&mut self, available: Rect) {
@@ -1307,6 +1334,7 @@ pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene:
 pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
 pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, screen: Rect, scene: &mut Scene) {
 pub fn render(&self, theme: &MetroTheme, engine: &TextEngine, viewport: Rect, scene: &mut Scene) {
+pub fn render(&self, theme: &MetroTheme, geo: &NoticeRowGeometry, scene: &mut Scene) {
 pub fn render(&self, theme: &MetroTheme, rect: Rect, scene: &mut Scene) {
 pub fn render_card(
 pub fn render_chrome(
@@ -1389,6 +1417,7 @@ pub fn separator_rect(&self, rect: Rect) -> Rect {
 pub fn set(&mut self, name: &str, properties: StateProperties) -> bool {
 pub fn set_anchor_if_none(&mut self, anchor: usize) {
 pub fn set_checked(&mut self, checked: bool) {
+pub fn set_close_hovered(&mut self, on: bool) {
 pub fn set_cluster_boundaries_override(&mut self, boundaries: Option<Vec<usize>>) {
 pub fn set_compat_metrics(&mut self, metrics: Option<TileWallMetrics>) {
 pub fn set_composed_scroll(&mut self, on: bool) {
@@ -1396,23 +1425,28 @@ pub fn set_cursor(&mut self, pos: usize) {
 pub fn set_cursor_byte(&mut self, byte: usize) {
 pub fn set_delete_icon(&mut self, icon: Option<Icon>) {
 pub fn set_delete_icon(&mut self, icon: Option<kanesumi_canvas::Icon>) {
+pub fn set_disabled(&mut self, index: usize, disabled: bool) {
 pub fn set_expanded(&mut self, expanded: bool) {
 pub fn set_factory(&mut self, factory: impl ItemFactory) {
 pub fn set_ghosts(&mut self, ghosts: &[String]) {
 pub fn set_groups(&mut self, groups: Vec<WallGroup>, viewport: Rect) {
 pub fn set_hover(&mut self, id: Option<u64>) {
 pub fn set_hover(&mut self, pos: Option<Point>) -> bool {
+pub fn set_hovered(&mut self, index: Option<usize>) {
+pub fn set_hovered(&mut self, on: bool) {
 pub fn set_item_submenu(&mut self, index: usize, items: Vec<MenuItem>) {
 pub fn set_items(&mut self, items: Vec<DockItem>, available: Rect) {
 pub fn set_layout(&mut self, layout: ItemLayout) {
 pub fn set_mask(&mut self, c: Option<char>) {
 pub fn set_meta(&mut self, meta: Vec<ListRowMeta>) {
+pub fn set_on(&mut self, index: usize, on: bool) {
 pub fn set_overscan_cols(&mut self, cols: usize) {
 pub fn set_pane_expanded(&mut self, expanded: bool) {
 pub fn set_pane_progress(&mut self, progress: f32) {
 pub fn set_pin_gap(&mut self, gap: Option<usize>) {
 pub fn set_preedit(&mut self, text: &str, cursor_byte: Option<usize>) {
 pub fn set_presentation(&mut self, presentation: Option<DockPresentation>) {
+pub fn set_pressed(&mut self, on: bool) {
 pub fn set_rows(&mut self, rows: Vec<String>, row_h: f32, viewport_h: f32) {
 pub fn set_scale(&mut self, scale: f32) {
 pub fn set_scroll(&mut self, scroll: [usize; 2]) {
@@ -1442,6 +1476,7 @@ pub fn shown(&mut self, id: u64) {
 pub fn side(rect: Rect) -> f32 {
 pub fn sidebar_layout(input: &SidebarInput) -> SidebarLayout {
 pub fn single_line(mut self) -> Self {
+pub fn size(&self) -> f32 {
 pub fn size() -> Size {
 pub fn slider(
 pub fn slider_rect(&self, rect: Rect, k: usize) -> Rect {
@@ -1477,6 +1512,7 @@ pub fn tab_at(&self, engine: &TextEngine, rect: Rect, pos: Point) -> Option<usiz
 pub fn tab_rect(&self, rect: Rect, k: usize) -> Rect {
 pub fn tab_width(&self, avail_w: f32) -> f32 {
 pub fn take_composed_request(&mut self) -> Option<ScrollerRequest> {
+pub fn text(&self) -> &str {
 pub fn text(&self) -> String {
 pub fn text(content: impl Into<String>) -> Self {
 pub fn text_command(idx: usize) -> Self {
@@ -1485,9 +1521,13 @@ pub fn text_commands() -> Self {
 pub fn text_input_content_rect(body: Rect, border: f32) -> Rect {
 pub fn text_input_inner_rect(body: Rect, border: f32) -> Rect {
 pub fn text_input_line_rect(content: Rect, inner: Rect, line_height: f32) -> Rect {
+pub fn text_rect(&self) -> Rect {
 pub fn text_rect(&self, theme: &MetroTheme, rect: Rect) -> Rect {
 pub fn tick(&mut self, dt_ms: f64) -> Vec<NotificationEvent> {
 pub fn tick(&mut self, dt_ms: f64) -> bool {
+pub fn tile_height(&self) -> f32 {
+pub fn title(&self) -> &str {
+pub fn title_rect(&self) -> Rect {
 pub fn title_rect(&self, rect: Rect) -> Rect {
 pub fn title_style() -> TextStyle {
 pub fn toggle(
@@ -1537,28 +1577,36 @@ pub fn with_action(label: impl Into<String>, action: SwipeItemAction) -> Self {
 pub fn with_align(mut self, align: TextAlign) -> Self {
 pub fn with_checked(mut self, checked: bool) -> Self {
 pub fn with_children(label: impl Into<String>, children: Vec<TreeViewNode>) -> Self {
+pub fn with_close(mut self, visible: bool) -> Self {
 pub fn with_compact(mut self, compact: bool) -> Self {
 pub fn with_delete_icon(mut self, icon: Option<Icon>) -> Self {
 pub fn with_delete_icon(mut self, icon: Option<kanesumi_canvas::Icon>) -> Self {
+pub fn with_disabled(mut self, index: usize, disabled: bool) -> Self {
 pub fn with_expandable(mut self, expanded: bool) -> Self {
 pub fn with_expanded(mut self, expanded: bool) -> Self {
+pub fn with_gap(mut self, gap: f32) -> Self {
 pub fn with_header(header: impl Into<String>) -> Self {
 pub fn with_header(mut self, header: impl Into<String>) -> Self {
 pub fn with_header(text: impl Into<String>) -> Self {
 pub fn with_icon(label: impl Into<String>, icon: impl Into<String>) -> Self {
 pub fn with_icon(mut self, icon: Icon) -> Self {
+pub fn with_icon_box(mut self, size: f32, pad_x: f32, pad_y: f32) -> Self {
 pub fn with_image_icon(label: impl Into<String>, icon: Icon) -> Self {
 pub fn with_indent(mut self, indent: u8) -> Self {
 pub fn with_label(icon: impl Into<String>, label: impl Into<String>) -> Self {
 pub fn with_label(label: impl Into<String>) -> Self {
+pub fn with_labels(mut self, labels: impl IntoIterator<Item = impl Into<String>>) -> Self {
 pub fn with_line_progress(mut self, id: impl Into<String>, progress: f32) -> Self {
 pub fn with_max(mut self, max: f64) -> Self {
+pub fn with_max_lines(mut self, lines: usize) -> Self {
 pub fn with_max_lines(mut self, max_lines: usize) -> Self {
 pub fn with_meta(rows: Vec<String>, meta: Vec<ListRowMeta>) -> Self {
 pub fn with_min(mut self, min: f64) -> Self {
 pub fn with_name(name: impl Into<String>) -> Self {
+pub fn with_on(mut self, index: usize, on: bool) -> Self {
 pub fn with_overflow(mut self, overflow: TextOverflow) -> Self {
 pub fn with_overscan(mut self, ratio: f32) -> Self {
+pub fn with_padding(mut self, top: f32, bottom: f32) -> Self {
 pub fn with_placeholder(text: impl Into<String>) -> Self {
 pub fn with_plate(mut self, width: f32, top: f32, height: f32) -> Self {
 pub fn with_plate_width(mut self, width: f32) -> Self {
@@ -1568,6 +1616,7 @@ pub fn with_selected(mut self, date: Date) -> Self {
 pub fn with_selected(mut self, selected: bool) -> Self {
 pub fn with_shape(mut self, shape: SwitchShape) -> Self {
 pub fn with_shortcut(mut self, text: impl Into<String>) -> Self {
+pub fn with_size(mut self, pt: f32) -> Self {
 pub fn with_size(mut self, size: IconButtonSize) -> Self {
 pub fn with_slot_offset(mut self, id: impl Into<String>, dx: f32) -> Self {
 pub fn with_smooth_scroll(mut self, on: bool) -> Self {
@@ -1582,6 +1631,7 @@ pub fn with_svg(
 pub fn with_svg(mut self, path: impl AsRef<std::path::Path>, target: u32) -> Self {
 pub fn with_text(mut self, text: impl Into<String>) -> Self {
 pub fn with_text(text: impl Into<String>) -> Self {
+pub fn with_tile_height(mut self, h: f32) -> Self {
 pub fn with_tiles(mut self, tiles: Vec<TileWallTile>) -> Self {
 pub fn with_week_start(mut self, start: u8) -> Self {
 pub fn year_at(&self, rect: Rect, pos: Point) -> Option<i32> {
@@ -1670,11 +1720,13 @@ pub struct MetroDropdownMenu {
 pub struct MetroExpander {
 pub struct MetroFormLink {
 pub struct MetroIconButton {
+pub struct MetroIconSlot {
 pub struct MetroInfoBadge {
 pub struct MetroInfoBar {
 pub struct MetroList {
 pub struct MetroMenuBar {
 pub struct MetroNavigationView {
+pub struct MetroNoticeRow {
 pub struct MetroNumberBox {
 pub struct MetroOsd {
 pub struct MetroPagerControl {
@@ -1690,6 +1742,7 @@ pub struct MetroRatingControl {
 pub struct MetroRepeater {
 pub struct MetroRowButton {
 pub struct MetroScrollView {
+pub struct MetroSectionHeader {
 pub struct MetroSelectorFlyout {
 pub struct MetroSlider {
 pub struct MetroSplitButton {
@@ -1705,12 +1758,14 @@ pub struct MetroTeachingTip {
 pub struct MetroText {
 pub struct MetroTextBox {
 pub struct MetroTile {
+pub struct MetroTileGrid {
 pub struct MetroTileWall {
 pub struct MetroTitleBar {
 pub struct MetroTreeView {
 pub struct MetroTwoPaneView {
 pub struct NavigationItemInvoked(pub usize);
 pub struct NavigationViewItem {
+pub struct NoticeRowGeometry {
 pub struct Notification {
 pub struct NotificationStack {
 pub struct NumberValueChanged(pub f64);
@@ -1735,6 +1790,7 @@ pub struct RowButtonClicked(pub usize);
 pub struct RowLook<'a> {
 pub struct ScrollAnchor {
 pub struct ScrollOffsetChanged(pub f32);
+pub struct SectionHeaderGeometry {
 pub struct SelectorSelectionChanged(pub usize);
 pub struct SidebarEntry {
 pub struct SidebarInput {
@@ -1767,7 +1823,9 @@ pub struct TeachingTipPlacement {
 pub struct TextChanged(pub String);
 pub struct TextField {
 pub struct TextSubmitted(pub String);
+pub struct TileCellDraw {
 pub struct TileClicked;
+pub struct TileGridGeometry {
 pub struct TileWallGroup {
 pub struct TileWallGroupLayout {
 pub struct TileWallInput {

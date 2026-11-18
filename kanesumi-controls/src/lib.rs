@@ -28,6 +28,7 @@ pub mod expander;
 pub mod focus;
 pub mod form;
 pub mod icon_button;
+pub mod icon_slot;
 pub mod ime;
 pub mod info_badge;
 pub mod info_bar;
@@ -39,6 +40,7 @@ pub mod menu_flyout;
 pub mod metro_tile;
 pub mod navigation;
 pub mod navigation_view;
+pub mod notice_row;
 pub mod notification;
 pub mod notification_card;
 pub mod number_box;
@@ -56,6 +58,7 @@ pub mod rating_control;
 pub mod repeater;
 pub mod retained;
 pub mod scroll_view;
+pub mod section_header;
 
 /// fp4b 手感量尺（验收专用）：`KANESUMI_SCROLL_METER=1` 时滚动路径向 stderr 打
 /// `client-scroll …` 行（轴事件 / 松手 / 每帧 offset），供 `tools/perf/fp4b_scroll.sh`
@@ -89,6 +92,7 @@ pub mod teaching_tip;
 pub mod text;
 pub mod text_box;
 pub mod text_field;
+pub mod tile_grid;
 pub mod title_bar;
 pub mod tooltip;
 pub mod tree_view;
