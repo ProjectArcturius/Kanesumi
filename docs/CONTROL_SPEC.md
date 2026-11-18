@@ -2529,6 +2529,7 @@ C0 图与 12 份转录均不在本件范围（2026-11-18 补的三件也不含�
 | `NOTIFY_BG_ALPHA` | 0.97 | `theme.rs:191` | 卡片底 `surface_variant @ 0.97` |
 | `NOTIFY_BTN_TINT` | 0.06 | `:2062-2064` | 按钮常态底：文字色叠 6% |
 | `NOTIFY_BTN_TINT_HOVER` | 0.12 | `:2062-2064` | 按钮悬停底：文字色叠 12% |
+| `NOTIFY_BTN_TINT_PRESS` | 0.18 | `:2062-2064` | 按下且仍悬停在同一按钮：文字色叠 18% |
 | `NOTIFY_CLOSE_TINT` | 0.12 | `:2072-2076` | 关闭叉悬停底：文字色叠 12% |
 
 卡宽不在常量表里：源 `CARD_W = config::NOTIFICATION_WIDTH`（`config.rs:67`，值 320）由
@@ -2547,6 +2548,9 @@ C0 图与 12 份转录均不在本件范围（2026-11-18 补的三件也不含�
 `NotificationContent` 只在 `new(content)` 时借一次：控件把五个字段复制进 `MetroNotificationCard`
 （卡片要活过调用方的借期，外壳按通知 id 缓存一张、内容变时重建），所以 `MetroNotificationCard`
 本身没有生命周期参数。
+
+`set_pressed_action` 接收当前按下的动作序号。仅同一按钮同时悬停和按下时使用按下底色；
+指针移出按钮立即回到常态。状态变化保持几何和命令数量。
 
 几何输出 `NotifyCardGeometry` 的字段：`card` / `icon: Option` / `app: Option` / `title` /
 `body` / `body_lines` / `close` / `buttons`。坐标**以卡左上为原点**；`title` 为空标题时高 0；
@@ -2588,15 +2592,20 @@ C0 图与 12 份转录均不在本件范围（2026-11-18 补的三件也不含�
   每个按钮 1 底 + 4 边 + 1 标签、关闭叉 1 底 + 1 字形。悬停只换颜色，命令数不变。
 - 颜色全部经 `ThemeColor`：卡底 `SurfaceVariant`（α 0.97）、描边 / 按钮边 `Divider`、
   标题 / 正文 / 按钮字 `OnSurface`、应用名与关闭叉 `OnSurfaceVariant`；按钮底与关闭叉底
-  是 `blend(卡底, OnSurface, 0.06 | 0.12)`（源 `blend:1628-1635`，α 取较大值）。
+  是 `blend(卡底, OnSurface, 0.06 | 0.12 | 0.18)`（源 `blend:1628-1635`，α 取较大值）。
   关闭叉在卡片无悬停时画 `Color::TRANSPARENT`（源按 alpha 0 常驻），有悬停即点亮。
 - 文字样式（渲染选择，不参与几何）：应用名 `body_small`、标题 `base`、正文 `body`、
   按钮 `body_small`（28 高盒内垂直居中）；本卡**不量测**，样式不改矩形。
+- 合成器通过 `render_with_text_styles` 继续使用迁移前的字号：基准 16pt，
+  标题 16pt Bold，正文 16pt Regular，应用名和按钮分别为基准的 0.8 和 0.85。
+  `kanesumi_canvas::wrap_words_with_width` 消费相同倍率和单字宽度，保留中文字符边界、
+  完整西文单词、三行上限及末行省略号。已切好的正文在 Scene 中保持单行裁剪。
+  参 Ether `docs/DECISIONS_2026-11-18.md` §268。
 
 ### 56.5 边界与未做
 
 - 不画图片、不画 critical 竖条（`NotificationContent` 没有 urgency 字段；源 `URGENCY_BAR_W`
-  未迁）、无按下态、无退出态、无键盘焦点 / 无障碍角色。
+  未迁）、无退出态、无键盘焦点 / 无障碍角色。
 - 正文行超过 3 行、按钮超过 3 个：多出的不进几何也不渲染；调用方要保内容就自己先裁。
 - 坐标相对卡左上；`geometry` 没有原点入参，`Scene` 也没有平移命令 —— 调用方需自行把命令
   矩形平移到卡片位置（步骤 3 走 SceneBridge 时再定）。
@@ -2604,74 +2613,9 @@ C0 图与 12 份转录均不在本件范围（2026-11-18 补的三件也不含�
   已在 `docs/research/m1115_notify/REPORT.md` 记录，等步骤 2/3 整块删除。
 - **缺令牌项（如实登记）**：`surface_variant` 的 0.97 不透明度没有独立 `ThemeColor` 令牌
   （源是 `theme.rs:191` 的合成配方），按具名常量 `NOTIFY_BG_ALPHA` 保留；按钮 / 关闭叉的
-  0.06 / 0.12 叠色同理，由令牌色 + 常量算出，控件内没有硬写 RGBA。关闭叉未悬停时用
+  0.06 / 0.12 / 0.18 叠色同理，由令牌色 + 常量算出，控件内没有硬写 RGBA。关闭叉未悬停时用
   `Color::TRANSPARENT`（无墨迹，不是色值）。
-=======
-## 56 · SSD 几何（MetroSsdChrome · 2026-11-18）
 
-> 缺口来源：判据 2「合成器三块自绘走同一元件层」的最后一块。Ether `compositor/src/wm/ssd.rs`
-> 里五处自造算术（`ssd_rects_logical` / `ssd_rects` / `title_row` / `border_thickness` / `over`）
-> 只长在合成器里，控件库没有对应件。实现：`kanesumi-controls/src/ssd_chrome.rs`；逐条真值的
-> 取证行与旧→新对照见 `docs/research/m1115_ssd_chrome/REPORT.md`。**本件只做 Kanesumi 侧控件，
-> `compositor/` 一行未改**（合成器接线由调度者做）。
-
-### 56.1 形状
-
-```rust
-pub struct SsdChromeMetrics { /* 11 个 f32 字段，缺省 = config.rs:31-46 与两处 px(8.0) */ }
-pub struct SsdGeometry { pub titlebar: Rect, pub minimize: Rect, pub maximize: Rect,
-                         pub close: Rect, pub outer: Rect }   // 逻辑 pt
-pub struct SsdTitleRow { pub icon_x: f64, pub name_x: f64, pub sep_x: Option<f64>,
-                         pub title_x: f64, pub title_avail: f64 }   // 物理 px
-
-MetroSsdChrome::new() / ::with_metrics(m)
-  .geometry(loc: Point, geo_offset_x: f64, content: Size) -> SsdGeometry
-  .title_row(titlebar: Rect, btn_w: f64, scale: f64, icon_w: f64, name_w: f64,
-             has_title: bool) -> SsdTitleRow
-  .border_thickness(scale: f64) -> (f64, f64)
-  .over(base: Color, top: Color, a: f32) -> Color
-```
-
-### 56.2 数值（全部来自 `compositor/src/config.rs`）
-
-| 字段 | 值 | 出处行 |
-|---|---|---|
-| `titlebar_h` | 28 | `config.rs:31` `WIN_TITLEBAR_HEIGHT` |
-| `btn_w` | 44 | `config.rs:33` `WIN_BTN_WIDTH` |
-| `btn_h` | 28 | `config.rs:34` `WIN_BTN_HEIGHT` |
-| `title_pad_left` | 12 | `config.rs:36` `WIN_TITLE_PAD_LEFT` |
-| `app_icon_gap` | 8 | `config.rs:40` `WIN_APP_ICON_GAP` |
-| `app_name_gap` | 12 | `config.rs:42` `WIN_APP_NAME_GAP` |
-| `sep_w` | 1 | `config.rs:46` `WIN_DIVIDER`（`ssd.rs:216` 以 `px(1).max(1)` 用） |
-| `sep_gap` | 8 | `ssd.rs:216` 的 `px(8.0)` |
-| `right_pad` | 8 | `ssd.rs:205` 的 `px(8.0)` |
-| `divider` | 1 | `config.rs:46` `WIN_DIVIDER` |
-| `position_line` | 2 | `config.rs:44` `WIN_POSITION_LINE` |
-
-尺寸只住字段缺省，**不立 `const f32`**：`kanesumi-controls/tests/size_discipline.rs` 的白名单
-只减不增，本卡不改 `kanesumi_core::sizes`（与 §55 的 `section_header` / `tile_grid` 同做法）。
-
-### 56.3 算法
-
-- `geometry`：`x0 = loc.x + geo_offset_x`、`y0 = loc.y − titlebar_h`、`right = x0 + content_w`；
-  三按钮 44×28 相邻贴右缘（关闭最右 → 最大化 → 最小化）；`outer` = `(x0, y0, content_w,
-  titlebar_h + content_h)`，逻辑坐标（物理外框由调用方按 `display::scale_rect` 的两端点取整得出）。
-  content 宽或高 ≤ 0、或任一分量非有限 → 全 `default`（窗口未提交首帧）。
-- `title_row`：`px(pt) = (pt*scale).round()`；左起 `px(title_pad_left)`，图标 `icon_w + px(8)`，
-  名称 `name_w + px(12)`，分隔只在 `name_w > 0 && has_title` 时占 `px(1).max(1) + px(8)`；
-  右界 = 右缘 − `3*btn_w` − `px(8)`；`title_avail = right − title_x`（≤ 0 = 不画标题）。
-- `border_thickness`：`(divider*scale).round().max(1)` 与 `(position_line*scale).round().max(1)`。
-- `over`：逐通道 `base + (top − base) * a`，alpha 恒 `1.0`；输入可为预乘值（本式不看 input alpha）。
-
-### 56.4 边界
-
-- **不画**：本件无 `render`，不产 `Scene` 命令；颜色 / 命中 / 渲染由合成器接线。
-- `Rect` 是 `kanesumi_core` 的 f32 类型：逻辑坐标落进 f32 的精确整数范围，分数倍率只在 `px`
-  里取整；`title_row` / `border_thickness` 出参是 f64，与 `ssd.rs` 的 i32 落位由调用方决定。
-- `SsdGeometry` 手写 `Default`（`Rect` 无 `Default`，本卡不改 core）：零矩形 = 未提交首帧。
-- 12 条用例把旧 `wm/ssd.rs` 的六条数值期望原样搬来（同输入同输出），另加 6 条边界 / 叠色 /
-  metrics 覆写用例；`#[ignore]` 未新增。
->>>>>>> d04597a4 (feat(controls): 新增 SSD 几何控件 MetroSsdChrome。)
 ## 57 · SSD 几何（MetroSsdChrome · 2026-11-18）
 
 > 缺口来源：判据 2「合成器三块自绘走同一元件层」的最后一块。Ether `compositor/src/wm/ssd.rs`

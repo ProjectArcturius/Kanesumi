@@ -224,6 +224,7 @@ const NOTIFY_BG_ALPHA: f32 = 0.97;
 const NOTIFY_BTN_TINT: f32 = 0.06;
 /// 按钮悬停底：文字色叠 12% —— 参 notifications.rs:2062-2064。
 const NOTIFY_BTN_TINT_HOVER: f32 = 0.12;
+const NOTIFY_BTN_TINT_PRESS: f32 = 0.18;
 /// 关闭叉悬停底：文字色叠 12% —— 参 notifications.rs:2072-2076。
 const NOTIFY_CLOSE_TINT: f32 = 0.12;
 
@@ -273,6 +274,15 @@ pub struct NotifyCardGeometry {
     pub buttons: Vec<Rect>,
 }
 
+/// 通知卡四个文字槽的样式。几何沿用卡片原来的行盒。
+#[derive(Clone, Copy)]
+pub struct NotificationTextStyles {
+    pub app: TextStyle,
+    pub title: TextStyle,
+    pub body: TextStyle,
+    pub action: TextStyle,
+}
+
 /// 一张通知卡：内容 + 悬停态。几何与命中是纯函数，渲染只消费几何。
 ///
 /// 内容在 `new` 时复制进控件：卡片要活过调用方的借期（外壳按通知 id 缓存一张卡，
@@ -284,6 +294,7 @@ pub struct MetroNotificationCard {
     buttons: Vec<String>,
     has_image: bool,
     hover: Option<NotifyHit>,
+    pressed_action: Option<usize>,
 }
 
 impl MetroNotificationCard {
@@ -296,6 +307,7 @@ impl MetroNotificationCard {
             buttons: content.buttons.iter().map(|s| (*s).to_string()).collect(),
             has_image: content.has_image,
             hover: None,
+            pressed_action: None,
         }
     }
 
@@ -391,6 +403,11 @@ impl MetroNotificationCard {
         self.hover = hit;
     }
 
+    /// 按下的动作序号。只有指针仍在同一按钮上时才显示按下反馈。
+    pub fn set_pressed_action(&mut self, index: Option<usize>) {
+        self.pressed_action = index;
+    }
+
     /// 命中：关闭叉 > 动作按钮 > 卡体；卡外一律 `None`（源 hit :2146-2163 同序）。
     pub fn hit(&self, g: &NotifyCardGeometry, p: Point) -> Option<NotifyHit> {
         if !contains(g.card, p) {
@@ -408,8 +425,41 @@ impl MetroNotificationCard {
     /// 卡底 / 描边 / 应用名 / 标题 / 正文逐行 / 按钮底与标签 / 关闭叉。
     ///
     /// 每个槽位**恒定发命令**（空标题也发空文字），悬停只换颜色不增删 —— 与 SSD 按钮底同款。
-    /// 颜色全部经 `ThemeColor` 令牌；卡片底色 0.97 与按钮叠色 0.06 / 0.12 是源配方常量。
+    /// 颜色全部经 `ThemeColor` 令牌；卡片底色 0.97 与按钮叠色 0.06 / 0.12 / 0.18 是源配方常量。
     pub fn render(&self, g: &NotifyCardGeometry, theme: &MetroTheme, scene: &mut Scene) {
+        self.render_card(
+            g,
+            theme,
+            scene,
+            NotificationTextStyles {
+                app: theme.typography.body_small,
+                title: theme.typography.base,
+                body: theme.typography.body,
+                action: theme.typography.body_small.with_v_align(TextVAlign::Center),
+            },
+            TextOverflow::Ellipsis,
+        );
+    }
+
+    /// 使用调用方的字号。正文已经按目标字体折行，按原行裁剪，避免再次加省略号。
+    pub fn render_with_text_styles(
+        &self,
+        g: &NotifyCardGeometry,
+        theme: &MetroTheme,
+        scene: &mut Scene,
+        styles: NotificationTextStyles,
+    ) {
+        self.render_card(g, theme, scene, styles, TextOverflow::Clip);
+    }
+
+    fn render_card(
+        &self,
+        g: &NotifyCardGeometry,
+        theme: &MetroTheme,
+        scene: &mut Scene,
+        styles: NotificationTextStyles,
+        body_overflow: TextOverflow,
+    ) {
         let bg = ThemeColor::SurfaceVariant
             .resolve(theme)
             .with_alpha(NOTIFY_BG_ALPHA);
@@ -424,7 +474,7 @@ impl MetroNotificationCard {
                 self.app_name.clone(),
                 app,
                 secondary,
-                theme.typography.body_small,
+                styles.app,
                 TextAlign::Left,
             );
         }
@@ -432,23 +482,26 @@ impl MetroNotificationCard {
             self.summary.clone(),
             g.title,
             text,
-            theme.typography.base,
+            styles.title,
             TextAlign::Left,
         );
         for (rect, line) in g.body_lines.iter().zip(self.body_lines.iter()) {
-            scene.label(
+            scene.text_with_options(
                 line.clone(),
                 *rect,
                 text,
-                theme.typography.body,
+                styles.body,
                 TextAlign::Left,
+                false,
+                Some(1),
+                body_overflow,
             );
         }
         for (i, rect) in g.buttons.iter().enumerate() {
-            let tint = if self.hover == Some(NotifyHit::Action(i)) {
-                NOTIFY_BTN_TINT_HOVER
-            } else {
-                NOTIFY_BTN_TINT
+            let tint = match (self.hover == Some(NotifyHit::Action(i)), self.pressed_action == Some(i)) {
+                (true, true) => NOTIFY_BTN_TINT_PRESS,
+                (true, false) => NOTIFY_BTN_TINT_HOVER,
+                (false, _) => NOTIFY_BTN_TINT,
             };
             scene.fill_rect(blend(bg, text, tint), *rect);
             draw_border(scene, *rect, divider);
@@ -458,7 +511,7 @@ impl MetroNotificationCard {
                     *rect,
                     text,
                     // 28 高的按钮盒里文字只有 16 高：源是垂直居中，这里显式声明。
-                    theme.typography.body_small.with_v_align(TextVAlign::Center),
+                    styles.action,
                     TextAlign::Center,
                 );
             }
@@ -876,6 +929,37 @@ mod tests {
             )
         );
         assert_eq!(fill_color(&hot_button, g.close), bg, "按钮悬停不点亮叉底");
+    }
+
+    #[test]
+    fn pressed_action_keeps_old_feedback_until_pointer_leaves() {
+        let mut card = MetroNotificationCard::new(NotificationContent {
+            app_name: "系统",
+            summary: "更新",
+            body_lines: &[],
+            buttons: &["打开", "稍后"],
+            has_image: false,
+        });
+        let geometry = card.geometry(320.0);
+        let theme = MetroTheme::ether_dark();
+        let bg = ThemeColor::SurfaceVariant.resolve(&theme).with_alpha(NOTIFY_BG_ALPHA);
+        let fg = ThemeColor::OnSurface.resolve(&theme);
+        let mut plain = Scene::default();
+        card.render(&geometry, &theme, &mut plain);
+
+        card.set_hover(Some(NotifyHit::Action(0)));
+        card.set_pressed_action(Some(0));
+        let mut pressed = Scene::default();
+        card.render(&geometry, &theme, &mut pressed);
+        assert_eq!(fill_color(&pressed, geometry.buttons[0]), blend(bg, fg, 0.18));
+        assert_eq!(pressed.commands.len(), plain.commands.len());
+
+        card.set_hover(Some(NotifyHit::Action(1)));
+        let mut moved = Scene::default();
+        card.render(&geometry, &theme, &mut moved);
+        assert_eq!(fill_color(&moved, geometry.buttons[0]), blend(bg, fg, 0.06));
+        assert_eq!(fill_color(&moved, geometry.buttons[1]), blend(bg, fg, 0.12));
+        assert_eq!(moved.commands.len(), plain.commands.len());
     }
 
     #[test]

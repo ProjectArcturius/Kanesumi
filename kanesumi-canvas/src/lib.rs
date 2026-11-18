@@ -18,6 +18,9 @@ pub mod layout;
 pub mod scale;
 pub mod scene;
 pub mod text;
+mod word_wrap;
+
+pub use word_wrap::wrap_words_with_width;
 
 pub use geometry::{
     ROUNDED_SEGS, Triangle, rounded_rect_polygon, triangulate_arc, triangulate_fill,

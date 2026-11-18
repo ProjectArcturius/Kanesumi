@@ -313,6 +313,7 @@ pub fn tune_coverage(&self, cov: f32, color: [f32; 4]) -> f32 {
 pub fn wait_idle(&self, timeout: Duration) -> bool {
 pub fn wght_axis(bytes: &[u8], collection_index: u32) -> Option<(f32, f32)> {
 pub fn with_source(icon: Icon, width: u32, height: u32) -> Self {
+pub fn wrap_words_with_width(
 pub fn wrapped(max_width: f32, max_height: f32, line_height: f32) -> Self {
 pub fn write_index(
 pub struct Acrylic {
@@ -1357,6 +1358,7 @@ pub fn render_panel(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut 
 pub fn render_panel_base(theme: &MetroTheme, rect: Rect, progress: f64, scene: &mut Scene) {
 pub fn render_slots(
 pub fn render_submenu(&self, theme: &MetroTheme, engine: &TextEngine, scene: &mut Scene) {
+pub fn render_with_text_styles(
 pub fn reset(&mut self) {
 pub fn reset(&self) {
 pub fn resolve(style: &ControlStyle, state: &str) -> Paint {
@@ -1456,6 +1458,7 @@ pub fn set_pin_gap(&mut self, gap: Option<usize>) {
 pub fn set_preedit(&mut self, text: &str, cursor_byte: Option<usize>) {
 pub fn set_presentation(&mut self, presentation: Option<DockPresentation>) {
 pub fn set_pressed(&mut self, on: bool) {
+pub fn set_pressed_action(&mut self, index: Option<usize>) {
 pub fn set_rows(&mut self, rows: Vec<String>, row_h: f32, viewport_h: f32) {
 pub fn set_scale(&mut self, scale: f32) {
 pub fn set_scroll(&mut self, scroll: [usize; 2]) {
@@ -1782,6 +1785,7 @@ pub struct NoticeRowGeometry {
 pub struct Notification {
 pub struct NotificationContent<'a> {
 pub struct NotificationStack {
+pub struct NotificationTextStyles {
 pub struct NotifyCardGeometry {
 pub struct NumberValueChanged(pub f64);
 pub struct OsdGeometry {
