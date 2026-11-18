@@ -2664,6 +2664,9 @@ MetroSsdChrome::new() / ::with_metrics(m)
 
 ### 57.2 数值（全部来自 `compositor/src/config.rs`）
 
+物理外框可交给 `border_rects(outer, scale)` 取得顶、底、左、右四条分隔以及顶边激活线，
+顺序与窗口绘制一致。线宽在物理像素中取整，普通描边与激活定位线各自保持原厚度。
+
 | 字段 | 值 | 出处行 |
 |---|---|---|
 | `titlebar_h` | 28 | `config.rs:31` `WIN_TITLEBAR_HEIGHT` |

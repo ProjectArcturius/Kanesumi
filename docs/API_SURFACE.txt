@@ -856,6 +856,7 @@ pub fn blur(&mut self) {
 pub fn body(&self) -> &str {
 pub fn body(content: impl Into<String>, color: Color) -> Self {
 pub fn body_rect(&self) -> Option<Rect> {
+pub fn border_rects(&self, outer: Rect, scale: f64) -> [Rect; 5] {
 pub fn border_thickness(&self) -> f32 {
 pub fn border_thickness(&self, scale: f64) -> (f64, f64) {
 pub fn box_rect(&self, rect: Rect) -> Rect {

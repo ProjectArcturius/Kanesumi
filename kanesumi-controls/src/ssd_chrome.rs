@@ -186,6 +186,21 @@ impl MetroSsdChrome {
     /// 因为叠的前提就是底不透明（`ssd.rs` 的调用方传的是非预乘 RGBA，两种都吃得下）。
     /// 用结构体字面量而非 `Color::new`：`token_discipline` 禁止控件生产段构造颜色令牌，
     /// 而这里是消费调用方给的两个颜色，不是定义新令牌。
+    /// 物理坐标下的顶、底、左、右分隔线及激活定位线。参 CONTROL_SPEC §57。
+    pub fn border_rects(&self, outer: Rect, scale: f64) -> [Rect; 5] {
+        let (border, line) = self.border_thickness(scale);
+        let (border, line) = (border.round() as f32, line.round() as f32);
+        let (x, y) = (outer.origin.x, outer.origin.y);
+        let (w, h) = (outer.size.width, outer.size.height);
+        [
+            Rect::new(x, y, w, border),
+            Rect::new(x, outer.bottom() - border, w, border),
+            Rect::new(x, y, border, h),
+            Rect::new(outer.right() - border, y, border, h),
+            Rect::new(x, y, w, line),
+        ]
+    }
+
     pub fn over(&self, base: Color, top: Color, a: f32) -> Color {
         Color {
             r: base.r + (top.r - base.r) * a,
