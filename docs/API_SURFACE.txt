@@ -781,6 +781,7 @@ pub enum NavigationPaneMode {
 pub enum NoticeHit {
 pub enum NotificationEvent {
 pub enum NotificationState {
+pub enum NotifyHit {
 pub enum OsdKind {
 pub enum PagerAction {
 pub enum PagerHover {
@@ -983,6 +984,7 @@ pub fn from_provider(
 pub fn from_text(text: impl Into<String>) -> Self {
 pub fn gap(&self) -> f32 {
 pub fn gap(mut self) -> Self {
+pub fn geometry(&self, width: f64) -> NotifyCardGeometry {
 pub fn get(&self) -> usize {
 pub fn get(&self, id: u64) -> Option<&Notification> {
 pub fn get(&self, index: usize) -> Option<&Column> {
@@ -1027,6 +1029,7 @@ pub fn hit(&self, engine: &TextEngine, rect: Rect, pos: Point) -> InfoBarClick {
 pub fn hit(&self, engine: &TextEngine, rect: Rect, pos: Point) -> NavigationAction {
 pub fn hit(&self, engine: &TextEngine, rect: Rect, pos: Point) -> Option<usize> {
 pub fn hit(&self, engine: &TextEngine, rect: Rect, pos: Point) -> PagerAction {
+pub fn hit(&self, g: &NotifyCardGeometry, p: Point) -> Option<NotifyHit> {
 pub fn hit(&self, pos: Point) -> Option<&TileWallSlot> {
 pub fn hit(&self, pos: Point) -> Option<DockHit> {
 pub fn hit(&self, pos: Point) -> Option<NoticeHit> {
@@ -1187,6 +1190,7 @@ pub fn new(area: Rect, segments: Vec<PathBarSegment>) -> Self {
 pub fn new(columns: ColumnSet) -> Self {
 pub fn new(columns: impl IntoIterator<Item = Column>) -> Self {
 pub fn new(commands: Vec<CommandButton>) -> Self {
+pub fn new(content: NotificationContent<'_>) -> Self {
 pub fn new(content: Size, viewport: Size) -> Self {
 pub fn new(content: impl Into<String>, style: TextStyle, color: Color) -> Self {
 pub fn new(entries: Vec<DockRailEntry>, available: Rect) -> Self {
@@ -1326,6 +1330,7 @@ pub fn remove(&mut self, id: u64) -> bool {
 pub fn render(
 pub fn render(&mut self, theme: &MetroTheme, engine: &TextEngine, rect: Rect, scene: &mut Scene) {
 pub fn render(&self, _engine: &TextEngine, block: Rect, scene: &mut Scene) {
+pub fn render(&self, g: &NotifyCardGeometry, theme: &MetroTheme, scene: &mut Scene) {
 pub fn render(&self, rect: Rect, scene: &mut Scene) {
 pub fn render(&self, theme: &MetroTheme, _engine: &TextEngine, rect: Rect, scene: &mut Scene) {
 pub fn render(&self, theme: &MetroTheme, _engine: &TextEngine, scene: &mut Scene) {
@@ -1430,6 +1435,7 @@ pub fn set_expanded(&mut self, expanded: bool) {
 pub fn set_factory(&mut self, factory: impl ItemFactory) {
 pub fn set_ghosts(&mut self, ghosts: &[String]) {
 pub fn set_groups(&mut self, groups: Vec<WallGroup>, viewport: Rect) {
+pub fn set_hover(&mut self, hit: Option<NotifyHit>) {
 pub fn set_hover(&mut self, id: Option<u64>) {
 pub fn set_hover(&mut self, pos: Option<Point>) -> bool {
 pub fn set_hovered(&mut self, index: Option<usize>) {
@@ -1727,6 +1733,7 @@ pub struct MetroList {
 pub struct MetroMenuBar {
 pub struct MetroNavigationView {
 pub struct MetroNoticeRow {
+pub struct MetroNotificationCard {
 pub struct MetroNumberBox {
 pub struct MetroOsd {
 pub struct MetroPagerControl {
@@ -1767,7 +1774,9 @@ pub struct NavigationItemInvoked(pub usize);
 pub struct NavigationViewItem {
 pub struct NoticeRowGeometry {
 pub struct Notification {
+pub struct NotificationContent<'a> {
 pub struct NotificationStack {
+pub struct NotifyCardGeometry {
 pub struct NumberValueChanged(pub f64);
 pub struct OsdGeometry {
 pub struct PagerPageChanged(pub usize);

@@ -2496,3 +2496,109 @@ C0 图与 12 份转录均不在本件范围（2026-11-18 补的三件也不含�
   「标题 + 正文 + 叉」四段，卡面未列时间）、RTL、键盘焦点、无障碍树角色。
 - 已知会让 C0 转录变的一行：`action_row_pointer.txt` 的 `press(note_row)` 段。旧 `NoteRow` 没有
   按下态，本控件按下铺 `press_tint` —— 这条属行为变更，迁移时须由 C2 裁定放行。
+
+## 56 · 通知卡（MetroNotificationCard · 2026-11-18）
+
+迁移版通知卡：把 Ether 合成器 `compositor/src/shell/notifications.rs` 的几何 / 命中 / 悬停
+逐值搬进 Kanesumi，作为 `docs/research/n1112_element_bridge/NOTIFY_PLAN.md` §二 步骤 1 的控件。
+**本卡不改像素**：同一输入（宽 320、同样的应用名 / 标题 / 正文行数 / 按钮数）给出同一组矩形
+与同一命中结果。正文换行与省略仍在合成器（步骤 2 才迁 canvas），本卡只按调用方切好的行排矩形。
+
+> 与 §55.3 的 `MetroNoticeRow`、以及同文件里量测版 `CardGeometry` / `render_card`
+> **不是同一个东西**：量测版把换行与省略交给 `TextEngine`；本卡是迁移契约，不量测。
+> 步骤 2 把换行交给 canvas 后两代合流。实现见 `kanesumi-controls/src/notification_card.rs`。
+
+### 56.1 常量（全部抄自 notifications.rs，不按 WinUI 规格重定）
+
+| 常量 | 值 | 来源行 | 用途 |
+|---|---|---|---|
+| `NOTIFY_PAD` | 12 | `notifications.rs:42` | 卡内边距（四边同值） |
+| `NOTIFY_IMAGE_SIZE` | 48 | `:44` | 左侧图片边长 |
+| `NOTIFY_IMAGE_GAP` | 12 | `:45` | 图片列与文字间距 |
+| `NOTIFY_LINE_H` | 22 | `:48` | 标题 / 正文行高 |
+| `NOTIFY_APP_LINE_H` | 16 | `:49` | 应用名行高 |
+| `NOTIFY_BODY_MAX_LINES` | 3 | `:52` | 正文最多行数 |
+| `NOTIFY_BTN_H` | 28 | `:53` | 按钮高度 |
+| `NOTIFY_BTN_GAP` | 8 | `:54` | 按钮间距 |
+| `NOTIFY_BTN_TOP_GAP` | 10 | `:55` | 正文末行到按钮行的间距 |
+| `NOTIFY_BTN_MAX` | 3 | `:56` | 按钮最多个数 |
+| `NOTIFY_CLOSE_SIZE` | 18 | `:58` | 关闭叉命中边长 |
+| `NOTIFY_CLOSE_INSET` | 6 | `:59` | 关闭叉距右上角的内缩 |
+| `NOTIFY_BORDER` | 1 | `:1928-1940` | 描边宽度（四边细矩形） |
+| `NOTIFY_MIN_EXTENT` | 1 | `:1613-1618` | 源 `rect_from` 的宽 / 高下限 |
+| `NOTIFY_BG_ALPHA` | 0.97 | `theme.rs:191` | 卡片底 `surface_variant @ 0.97` |
+| `NOTIFY_BTN_TINT` | 0.06 | `:2062-2064` | 按钮常态底：文字色叠 6% |
+| `NOTIFY_BTN_TINT_HOVER` | 0.12 | `:2062-2064` | 按钮悬停底：文字色叠 12% |
+| `NOTIFY_CLOSE_TINT` | 0.12 | `:2072-2076` | 关闭叉悬停底：文字色叠 12% |
+
+卡宽不在常量表里：源 `CARD_W = config::NOTIFICATION_WIDTH`（`config.rs:67`，值 320）由
+`geometry(width)` 的入参取代；步骤 1 的调用方传 320。
+
+### 56.2 输入字段与取值范围
+
+| 字段 | 类型 / 取值 | 语义与来源 |
+|---|---|---|
+| `app_name` | `&str`，可空 | 空串 = 无应用名行（`layout_card:1870-1876` 的 `Option`），不占 16 pt |
+| `summary` | `&str`，可空 | 空串 = 无标题行（`:1877-1883`），不占 22 pt；`title` 退化为零高矩形 |
+| `body_lines` | `&[String]`，已切好 | 只排前 `min(len, 3)` 行（`:52`、`:1884-1888`）；本卡不换行、不加省略号 |
+| `buttons` | `&[&str]`，0..n | 只排前 `min(len, 3)` 个（`:56`）；有按钮就加 `10 + 28` 的行高（`:1787-1789`） |
+| `has_image` | `bool` | 只把文字列左移 `48 + 12`，不画图（图片由调用方 blit） |
+
+`NotificationContent` 只在 `new(content)` 时借一次：控件把五个字段复制进 `MetroNotificationCard`
+（卡片要活过调用方的借期，外壳按通知 id 缓存一张、内容变时重建），所以 `MetroNotificationCard`
+本身没有生命周期参数。
+
+几何输出 `NotifyCardGeometry` 的字段：`card` / `icon: Option` / `app: Option` / `title` /
+`body` / `body_lines` / `close` / `buttons`。坐标**以卡左上为原点**；`title` 为空标题时高 0；
+`body` 是正文整体盒（0 行时高 0，源文件没有这个盒，仅作裁剪 / 损伤用），逐行以 `body_lines` 为准。
+
+### 56.3 卡高与子矩形公式（源 `card_height:1778-1792`、`layout_card:1859-1917`）
+
+```text
+卡高 = 12
+     + (app_name 非空 ? 16 : 0)
+     + (summary  非空 ? 22 : 0)
+     + 22 × min(body_lines.len(), 3)
+     + (buttons  非空 ? 10 + 28 : 0)
+     + 12
+     下限 72（= 12×2 + 48）
+
+文字列 x = 12 + (has_image ? 48 + 12 : 0)
+文字列宽 = 卡宽 − 12 − (has_image ? 60 : 0) − 12
+应用名 / 标题 / 正文行：x = 文字列 x，y 从 12 起逐行 + 行高
+按钮：区域 x = 12，宽 = 卡宽 − 24；等分宽 = (区域宽 − 8×(n−1)) / n
+      贴卡底：y = 卡高 − 12 − 28；x_k = 12 + (等分宽 + 8) × k
+关闭叉：(卡宽 − 6 − 18, 6, 18, 18)
+```
+
+坐标按源 `rect_from:1613-1618` 四舍五入成整数逻辑像素、宽 / 高夹到至少 1；宽 320 时
+上面的值本身就是整数。按钮等分出现小数时逐边四舍五入（3 个按钮：宽 93，x = 12 / 113 / 215）。
+
+**已核对样例**（宽 320，应用名 + 标题 + 两行正文、无按钮）：卡高 106；应用名
+`(12,12,296,16)`；标题 `(12,28,296,22)`；正文行 `(12,50,296,22)`、`(12,72,296,22)`；
+关闭叉 `(296,6,18,18)`。有图时文字列 x = 72、宽 236。单按钮卡高 100、按钮 `(12,60,296,28)`；
+两按钮各 144、第二枚 x = 164。
+
+### 56.4 命中与悬停
+
+- 命中优先级照 `hit:2146-2163`：**关闭叉 > 动作按钮 > 卡体**；卡外一律 `None`
+  （半开区间，源 `rect_contains:1620-1626`）。
+- `set_hover(...)` 只存悬停目标，不改几何；`pointer_move` 的「变化才重绘」由调用方比较前后命中。
+- `render` 每个槽位**恒定发命令**：卡底 1 条、描边 4 条、应用名 / 标题 / 正文逐行各 1 条、
+  每个按钮 1 底 + 4 边 + 1 标签、关闭叉 1 底 + 1 字形。悬停只换颜色，命令数不变。
+- 颜色全部经 `ThemeColor`：卡底 `SurfaceVariant`（α 0.97）、描边 / 按钮边 `Divider`、
+  标题 / 正文 / 按钮字 `OnSurface`、应用名与关闭叉 `OnSurfaceVariant`；按钮底与关闭叉底
+  是 `blend(卡底, OnSurface, 0.06 | 0.12)`（源 `blend:1628-1635`，α 取较大值）。
+  关闭叉在卡片无悬停时画 `Color::TRANSPARENT`（源按 alpha 0 常驻），有悬停即点亮。
+- 文字样式（渲染选择，不参与几何）：应用名 `body_small`、标题 `base`、正文 `body`、
+  按钮 `body_small`；本卡**不量测**，样式不改矩形。
+
+### 56.5 边界与未做
+
+- 不画图片、不画 critical 竖条（`NotificationContent` 没有 urgency 字段；源 `URGENCY_BAR_W`
+  未迁）、无按下态、无退出态、无键盘焦点 / 无障碍角色。
+- 正文行超过 3 行、按钮超过 3 个：多出的不进几何也不渲染；调用方要保内容就自己先裁。
+- 坐标相对卡左上；`geometry` 没有原点入参，`Scene` 也没有平移命令 —— 调用方需自行把命令
+  矩形平移到卡片位置（步骤 3 走 SceneBridge 时再定）。
+- 常量用 f64 与源同精度；它们不是 Kanesumi 设计尺寸，`size_discipline` 的 f32 规则不覆盖，
+  已在 `docs/research/m1115_notify/REPORT.md` 记录，等步骤 2/3 整块删除。

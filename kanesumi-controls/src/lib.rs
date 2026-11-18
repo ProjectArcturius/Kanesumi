@@ -154,6 +154,9 @@ pub use navigation_view::{
     MetroNavigationView, NavigationAction, NavigationItemInvoked, NavigationPaneMode,
     NavigationViewItem,
 };
+pub use notification_card::{
+    MetroNotificationCard, NotificationContent, NotifyCardGeometry, NotifyHit,
+};
 pub use number_box::{MetroNumberBox, NumberValueChanged, SpinButton, SpinPlacement};
 pub use pager_control::{MetroPagerControl, PagerPageChanged, PagerAction, PagerHover, PagerItem};
 pub use parallax_view::MetroParallaxView;
