@@ -2667,6 +2667,10 @@ MetroSsdChrome::new() / ::with_metrics(m)
 物理外框可交给 `border_rects(outer, scale)` 取得顶、底、左、右四条分隔以及顶边激活线，
 顺序与窗口绘制一致。线宽在物理像素中取整，普通描边与激活定位线各自保持原厚度。
 
+标题、应用名和应用图标使用 `title_part_rect` 按物理像素居中并裁到标题区右边界。
+`title_separator_rect` 和 `symbol_rect` 分别给出竖分隔及三按钮图形的旧落点。
+`fit_ssd_title` 用调用方实际光栅尺寸决定整串或带省略号的前缀。
+
 | 字段 | 值 | 出处行 |
 |---|---|---|
 | `titlebar_h` | 28 | `config.rs:31` `WIN_TITLEBAR_HEIGHT` |

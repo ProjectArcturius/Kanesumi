@@ -180,12 +180,6 @@ impl MetroSsdChrome {
         (divider, position)
     }
 
-    /// 不透明底叠上色（按钮悬停 / 按下硬切），alpha 强制 1.0 —— 与 `ssd.rs:386-393` 同式。
-    ///
-    /// 输入可以是预乘值：本式只做逐通道线性插值，不看 input alpha；输出恒不透明，
-    /// 因为叠的前提就是底不透明（`ssd.rs` 的调用方传的是非预乘 RGBA，两种都吃得下）。
-    /// 用结构体字面量而非 `Color::new`：`token_discipline` 禁止控件生产段构造颜色令牌，
-    /// 而这里是消费调用方给的两个颜色，不是定义新令牌。
     /// 物理坐标下的顶、底、左、右分隔线及激活定位线。参 CONTROL_SPEC §57。
     pub fn border_rects(&self, outer: Rect, scale: f64) -> [Rect; 5] {
         let (border, line) = self.border_thickness(scale);
@@ -201,6 +195,36 @@ impl MetroSsdChrome {
         ]
     }
 
+    /// 已光栅化的按钮符号在物理按钮框内居中，半像素按旧整数除法截断。
+    pub fn symbol_rect(&self, button: Rect, raster: Size) -> Option<Rect> {
+        if raster.is_empty() {
+            return None;
+        }
+        Some(Rect::new(
+            button.origin.x + ((button.size.width - raster.width) / 2.0).trunc(),
+            center_y(button, raster.height),
+            raster.width,
+            raster.height,
+        ))
+    }
+
+    /// 已光栅化的身份或标题纹理，右边界之前最多保留可见的物理像素。
+    pub fn title_part_rect(&self, titlebar: Rect, raster: Size, x: i32, right: i32, dy: i32) -> Option<Rect> {
+        let width = raster.width.min((right - x) as f32);
+        if raster.is_empty() || width <= 0.0 {
+            return None;
+        }
+        Some(Rect::new(x as f32, center_y(titlebar, raster.height) + dy as f32, width, raster.height))
+    }
+
+    /// 应用名与窗口标题之间的竖分隔线。参 Ether SSD_DESIGN §Ⅱ-2。
+    pub fn title_separator_rect(&self, titlebar: Rect, x: i32, scale: f64) -> Rect {
+        let h = (12.0 * scale).round() as f32;
+        let w = (self.metrics.sep_w as f64 * scale).round().max(1.0) as f32;
+        Rect::new(x as f32, center_y(titlebar, h), w, h)
+    }
+
+    /// 不透明底叠上色（按钮悬停 / 按下硬切），alpha 强制 1.0。
     pub fn over(&self, base: Color, top: Color, a: f32) -> Color {
         Color {
             r: base.r + (top.r - base.r) * a,
@@ -209,6 +233,56 @@ impl MetroSsdChrome {
             a: 1.0,
         }
     }
+}
+
+fn center_y(rect: Rect, height: f32) -> f32 {
+    rect.origin.y + ((rect.size.height - height) / 2.0).trunc()
+}
+
+/// 单行标题：放得下就原样，放不下按**字符**从尾部收、末尾补省略号；连省略号都放不下
+/// （`avail` ≤ 0，或空串）就返回 None —— 不画，而不是画半个字。
+///
+/// `measure` 给出候选串的光栅尺寸（生产上与上传纹理使用同一文字引擎；
+/// 单测里是假测量），故「空串不画」「超宽加省略号」能在无 GPU、无字体的单测里锁住。
+/// 取前缀而非裁位图：位图硬裁会把最后一个汉字切成半笔，读起来像「没有字」。
+pub fn fit_ssd_title(
+    text: &str,
+    avail: i32,
+    measure: &mut dyn FnMut(&str) -> (u32, u32),
+) -> Option<(String, u32, u32)> {
+    if text.is_empty() || avail <= 0 {
+        return None;
+    }
+    let (w, h) = measure(text);
+    if w == 0 || h == 0 {
+        return None;
+    }
+    if w as i32 <= avail {
+        return Some((text.to_string(), w, h));
+    }
+    // 二分最大可放下的前缀。宽度对前缀长度单调不减（字距调整最多 ±1 px，不影响判据）。
+    let chars: Vec<char> = text.chars().collect();
+    let (mut lo, mut hi) = (0usize, chars.len());
+    let mut best: Option<(String, u32, u32)> = None;
+    while lo <= hi {
+        let mid = lo + (hi - lo) / 2;
+        let mut cand: String = chars[..mid].iter().collect();
+        cand.truncate(cand.trim_end().len());
+        cand.push('…');
+        let (cw, ch) = measure(&cand);
+        if cw == 0 || ch == 0 {
+            break;
+        }
+        if cw as i32 <= avail {
+            best = Some((cand, cw, ch));
+            lo = mid + 1;
+        } else if mid == 0 {
+            break;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    best
 }
 
 /// f64 逻辑坐标 → `Rect`（`kanesumi_core::Rect` 的字段是 f32）。逻辑空间里的坐标是像素级

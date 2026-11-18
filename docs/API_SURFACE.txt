@@ -977,6 +977,7 @@ pub fn field(&self) -> &TextField {
 pub fn field_mut(&mut self) -> &mut TextField {
 pub fn file_list_layout(input: &FileListInput) -> FileListLayout {
 pub fn find_anchor(rows: &[String], label: &str, near: usize) -> Option<usize> {
+pub fn fit_ssd_title(
 pub fn flyout_height(&self, engine: &TextEngine) -> f32 {
 pub fn flyout_panel_rect(&self) -> Option<Rect> {
 pub fn focus(&mut self) {
@@ -1540,6 +1541,7 @@ pub fn submenu_hovered(&self) -> Option<usize> {
 pub fn submenu_state(&self) -> Option<&SubmenuState> {
 pub fn submenu_state(&self) -> Option<&crate::dropdown_menu::SubmenuState> {
 pub fn surrounding_text(&self, max_bytes: usize) -> (String, String, usize, usize) {
+pub fn symbol_rect(&self, button: Rect, raster: Size) -> Option<Rect> {
 pub fn tab_at(&self, engine: &TextEngine, rect: Rect, pos: Point) -> Option<usize> {
 pub fn tab_rect(&self, rect: Rect, k: usize) -> Rect {
 pub fn tab_width(&self, avail_w: f32) -> f32 {
@@ -1559,9 +1561,11 @@ pub fn tick(&mut self, dt_ms: f64) -> Vec<NotificationEvent> {
 pub fn tick(&mut self, dt_ms: f64) -> bool {
 pub fn tile_height(&self) -> f32 {
 pub fn title(&self) -> &str {
+pub fn title_part_rect(&self, titlebar: Rect, raster: Size, x: i32, right: i32, dy: i32) -> Option<Rect> {
 pub fn title_rect(&self) -> Rect {
 pub fn title_rect(&self, rect: Rect) -> Rect {
 pub fn title_row(&self, titlebar: Rect, btn_w: f64, scale: f64, icon_w: f64, name_w: f64, has_title: bool) -> SsdTitleRow {
+pub fn title_separator_rect(&self, titlebar: Rect, x: i32, scale: f64) -> Rect {
 pub fn title_style() -> TextStyle {
 pub fn toggle(
 pub fn toggle(&mut self) -> CheckState {
