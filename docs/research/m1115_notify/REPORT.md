@@ -142,6 +142,10 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 8. **关闭叉图形**：用 `icons::draw(GlyphName::Close)`（18×18 命中盒、图形铺满），源是 SVG
    栅格化后居中；两者都用同一枚 `close.svg` 资产，但控件侧图形尺寸由 18×18 盒决定，未按源
    纹理的实际宽高比复刻。无悬停时画 `Color::TRANSPARENT`（源 alpha 0），命令仍在。
+9. **缺令牌项（按要求登记）**：`surface_variant` 的 0.97 不透明度没有独立 `ThemeColor` 令牌
+   （源 `theme.rs:191` 的合成配方），按具名常量 `NOTIFY_BG_ALPHA` 保留；按钮 / 关闭叉的
+   0.06 / 0.12 叠色同理，由令牌色 + 常量算出，控件内没有硬写 RGBA。关闭叉未悬停时的
+   `Color::TRANSPARENT` 是「无墨迹」，不是色值。
 
 ## 六 · 范围外发现
 
