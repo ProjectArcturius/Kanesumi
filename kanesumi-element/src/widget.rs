@@ -335,6 +335,13 @@ impl ArrangeCtx<'_> {
     pub fn arrange_child(&mut self, child: WidgetId, slot: Rect) {
         self.tree.arrange_node(child, slot, self.engine);
     }
+    /// 将本轮布局的绘制数据交给直接子节点。闭包返回是否变化，仅影响本帧绘制。
+    pub fn edit_child_paint<T: Widget>(&mut self, child: WidgetId, edit: impl FnOnce(&mut T) -> bool) {
+        if self.tree.parent(child) == Some(self.id) {
+            self.tree.edit_paint_in_layout(child, edit);
+        }
+    }
+
     /// 覆盖层专用：按弹层规格与锚点求槽位。
     pub(crate) fn popup_slot(&self, child: WidgetId, desired: Size, bounds: Rect) -> Rect {
         self.tree.popup_slot(child, desired, bounds)

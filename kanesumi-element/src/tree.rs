@@ -1023,6 +1023,19 @@ impl Tree {
         any.downcast_ref::<T>()
     }
 
+    fn get_mut<T: Widget>(&mut self, id: WidgetId) -> Option<&mut T> {
+        let w: &mut dyn Widget = self.node_mut(id)?.widget.as_deref_mut()?;
+        let any: &mut dyn Any = w;
+        any.downcast_mut::<T>()
+    }
+
+    /// 布局期写入绘制数据，本帧绘制即消费。
+    pub(crate) fn edit_paint_in_layout<T: Widget>(&mut self, id: WidgetId, edit: impl FnOnce(&mut T) -> bool) {
+        if self.get_mut::<T>(id).is_some_and(edit) {
+            self.invalidate_paint_quiet(id);
+        }
+    }
+
     /// App 修改控件的唯一入口。闭包内经 `EditCtx` 声明影响面；未声明按量测失效。
     pub fn edit<T: Widget, R>(
         &mut self,
@@ -1030,12 +1043,7 @@ impl Tree {
         f: impl FnOnce(&mut T, &mut EditCtx) -> R,
     ) -> Option<R> {
         let mut ctx = EditCtx::default();
-        let r = {
-            let w: &mut dyn Widget = self.node_mut(id)?.widget.as_deref_mut()?;
-            let any: &mut dyn Any = w;
-            let t = any.downcast_mut::<T>()?;
-            f(t, &mut ctx)
-        };
+        let r = f(self.get_mut::<T>(id)?, &mut ctx);
         if ctx.measure || !(ctx.arrange || ctx.paint) {
             self.invalidate_measure(id);
         } else if ctx.arrange {

@@ -438,6 +438,7 @@ pub fn dismiss_popups(&mut self) {
 pub fn double_click_at(&mut self, pos: Point) {
 pub fn drive(&mut self, on: bool, ctx: &mut PaintCtx) -> f32 {
 pub fn edit<T: Widget, R>(
+pub fn edit_child_paint<T: Widget>(&mut self, child: WidgetId, edit: impl FnOnce(&mut T) -> bool) {
 pub fn emit<A: Any>(&mut self, action: A) {
 pub fn end(source: ScrollSource, modifiers: Modifiers) -> Self {
 pub fn engine(&self) -> &TextEngine {
