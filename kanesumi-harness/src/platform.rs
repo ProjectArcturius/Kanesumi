@@ -622,6 +622,9 @@ fn run_inner(app: &'static mut dyn App) -> Result<(), String> {
         event_loop
             .dispatch(timeout, &mut shell)
             .map_err(|e| format!("事件循环 dispatch 失败：{e}"))?;
+        if std::mem::take(&mut shell.pending_keyboard_focus_loss) {
+            shell.notify_focus_changed(false);
+        }
         crate::timeline::note_once("dispatch_done");
         // 按键重复：到点发一次重复按下（不积压；参 crate::key_repeat）。
         if shell.poll_key_repeat(&qh) {
@@ -922,6 +925,10 @@ pub(crate) struct Shell {
     ime_focus_surface: bool,
     /// 当前持键盘焦点的浮层；None 表示主表面。
     keyboard_floating: Option<usize>,
+    /// 合并同批次的 Wayland 键盘 leave / enter；本进程表面之间切换不关闭菜单。
+    pending_keyboard_focus_loss: bool,
+    /// 最近获焦的弹层。主动销毁后到达的 leave 由关闭路径结算。
+    keyboard_popup: Option<u64>,
     /// 单调 commit 计数；done 匹配决定上下文回灌，文字不因 serial 不匹配而丢弃。
     commit_serial: u32,
     /// done 到达前累积的事件批。
@@ -1692,6 +1699,8 @@ impl Shell {
             ime_enabled: false,
             ime_focus_surface: false,
             keyboard_floating: None,
+            pending_keyboard_focus_loss: false,
+            keyboard_popup: None,
             commit_serial: 0,
             pending_ime: PendingImeBatch::default(),
             ime_reconcile_gate: ImeReconcileGate::default(),
@@ -4133,6 +4142,8 @@ impl KeyboardHandler for Shell {
         _raw: &[u32],
         _keysyms: &[Keysym],
     ) {
+        self.pending_keyboard_focus_loss = false;
+        self.keyboard_popup = self.popup_key(surface);
         self.keyboard_floating = self.floating_idx(surface);
         // 表面获得键盘焦点 → text-input 焦点标记 + 幂等 reconcile。
         self.ime_focus_surface = true;
@@ -4147,7 +4158,7 @@ impl KeyboardHandler for Shell {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
-        surface: &wl_surface::WlSurface,
+        _surface: &wl_surface::WlSurface,
         _serial: u32,
     ) {
         self.keyboard_floating = None;
@@ -4156,13 +4167,11 @@ impl KeyboardHandler for Shell {
         // 键盘焦点离开 → 停止按键重复（任务 k-key-repeat §设计 2）。
         self.key_repeat.cancel();
         self.reconcile_ime();
-        // 键盘焦点移进本进程的抓取弹层（合成器在 grab 时转移焦点）→ 不是失焦，弹层不能因此关闭。
-        if *surface == self.surface && self.has_grabbing_popup() {
-            self.dirty = true;
-            return;
-        }
-        // App 通知：失焦 → 关闭右键菜单 / 弹窗（失焦残留修复）。
-        self.notify_focus_changed(false);
+        // 主动销毁的旧弹层可能先收到 leave，新弹层的 enter 要等下一批。控件已结算旧菜单，
+        // 此时再通知整棵树失焦会把刚切换出的菜单也关掉。
+        let popup = self.keyboard_popup.take();
+        let destroyed_here = popup.is_some_and(|key| self.popups.iter().all(|p| p.key != key));
+        self.pending_keyboard_focus_loss = !destroyed_here;
         self.dirty = true;
     }
 

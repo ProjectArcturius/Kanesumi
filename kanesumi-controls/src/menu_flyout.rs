@@ -14,7 +14,7 @@
 use kanesumi_canvas::Scene;
 use kanesumi_core::{Point, Rect, Size};
 use kanesumi_element::{
-    ArrangeCtx, Event, EventCtx, Insets, MeasureCtx, PaintCtx, PopupSpec, UpdateCtx, Widget,
+    ArrangeCtx, Event, EventCtx, Insets, MeasureCtx, PaintCtx, PopupMotion, PopupSpec, UpdateCtx, Widget,
     WidgetId,
 };
 
@@ -70,6 +70,16 @@ impl MenuFlyout {
 
     /// 右键菜单：在指针位置打开（点锚定，右 / 下放不下时翻转）。`owner` 仍是本控件。
     pub fn open_at(ctx: &mut EventCtx, items: Vec<MenuItem>, at: Point, keyboard: bool) -> WidgetId {
+        Self::open_at_with_motion(ctx, items, at, keyboard, PopupMotion::Default)
+    }
+
+    pub(crate) fn open_at_with_motion(
+        ctx: &mut EventCtx,
+        items: Vec<MenuItem>,
+        at: Point,
+        keyboard: bool,
+        motion: PopupMotion,
+    ) -> WidgetId {
         let owner = ctx.id();
         let mut flyout = MenuFlyout::new(owner, items);
         if keyboard && !flyout.menu.items.is_empty() {
@@ -80,6 +90,7 @@ impl MenuFlyout {
             PopupSpec {
                 anchor: Some(owner),
                 at: Some(at),
+                motion,
                 ..PopupSpec::default()
             },
         );

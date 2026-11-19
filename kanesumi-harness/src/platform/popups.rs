@@ -229,11 +229,6 @@ impl Shell {
             .map(|p| p.key)
     }
 
-    /// 是否有本进程的抓取弹层开着（键盘焦点移进弹层时，主表面的 leave 不算「失焦」）。
-    pub(super) fn has_grabbing_popup(&self) -> bool {
-        self.popups.iter().any(|p| p.grab)
-    }
-
     /// 放置区（主表面局部坐标）= 锚点所在输出的 **workarea**：输出整块减去本条自己占的
     /// 排他区（TopBar 30pt / Dock 76pt，取自身高度，不写死）。弹层的定位规则见
     /// `kanesumi_element::placement`（参 ELEMENT_TREE §Ⅴ.2-bis）：面板一律夹进这个矩形。

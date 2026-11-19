@@ -411,6 +411,7 @@ pub fn click(&mut self, id: WidgetId) {
 pub fn click_at(&mut self, pos: Point) {
 pub fn close_popup(&mut self, id: WidgetId) {
 pub fn close_popup(&mut self, popup: WidgetId) {
+pub fn close_popup_immediately(&mut self, popup: WidgetId) {
 pub fn closing(&self) -> bool {
 pub fn color(mut self, color: impl Into<Brush>) -> Self {
 pub fn column() -> Self {

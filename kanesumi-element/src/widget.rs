@@ -492,6 +492,14 @@ impl EventCtx<'_> {
         self.tree.close_popup(popup);
     }
 
+    /// 替换同级弹层时立即完成退场，避免新弹层挂到旧表面上。
+    pub fn close_popup_immediately(&mut self, popup: WidgetId) {
+        self.tree.close_popup(popup);
+        if self.tree.popup_closing(popup) {
+            self.tree.on_popup_motion_done(popup);
+        }
+    }
+
     /// 在**任意节点**下挂子节点（典型：刚 `open_popup` 打开的对话框里塞内容）。
     ///
     /// 有了它，「打开弹层 + 填内容」可以一次写完，不必回到外壳层去拿可变引用 ——

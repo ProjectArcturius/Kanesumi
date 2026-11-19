@@ -582,8 +582,9 @@ impl MetroMenuBar {
         if idx >= self.items.len() {
             return;
         }
-        if let Some(p) = self.tree_popup.take() {
-            ctx.close_popup(p);
+        let previous = self.tree_popup.take();
+        if let Some(p) = previous {
+            ctx.close_popup_immediately(p);
         }
         self.tree_open = Some(idx);
         let items = self.items[idx].items.clone();
@@ -592,7 +593,14 @@ impl MetroMenuBar {
             .get(idx)
             .map(|r| Point::new(r.origin.x, r.bottom()));
         let id = match at {
-            Some(pt) => crate::menu_flyout::MenuFlyout::open_at(ctx, items, pt, keyboard),
+            Some(pt) => {
+                let motion = if previous.is_some() {
+                    kanesumi_element::PopupMotion::None
+                } else {
+                    kanesumi_element::PopupMotion::Default
+                };
+                crate::menu_flyout::MenuFlyout::open_at_with_motion(ctx, items, pt, keyboard, motion)
+            }
             None => crate::menu_flyout::MenuFlyout::open(ctx, items, keyboard),
         };
         self.tree_popup = Some(id);
@@ -694,6 +702,23 @@ mod tree_tests {
         let new = only_popup(&h);
         assert_ne!(old, new, "hover 切换应换一个弹层");
         assert_eq!(h.tree.get::<MetroMenuBar>(id).unwrap().tree_open, Some(1));
+    }
+
+    #[test]
+    fn detached_menu_hover_drops_previous_surface_before_opening_next() {
+        let (mut h, id) = harness();
+        h.tree.set_detached_popups(true);
+        h.click_at(header_center(&h, id, 0));
+        let old = only_popup(&h);
+        assert!(h.tree.popup_motion(old).is_some());
+
+        h.move_to(header_center(&h, id, 1));
+        h.frame();
+        let new = only_popup(&h);
+        assert_ne!(old, new);
+        assert!(!h.tree.contains(old));
+        assert!(h.tree.popup_motion(new).is_none());
+        assert_eq!(h.tree.focused(), Some(new));
     }
 
     #[test]
