@@ -1442,7 +1442,7 @@ clamp 到 [−MaxShift, +MaxShift]，MaxShift = MaxShiftRatio × 视口主轴
 
 ### MenuFlyoutSubItem（二级级联）
 
-- 顶层项带 `submenu: Vec<MenuItem>` → **悬停自动展开**二级面板（hover-swap：悬停其它项收起）；
+- 顶层项带 `submenu: Vec<MenuItem>` → **悬停自动展开**二级面板（悬停其它项或离开两个面板时收起，穿过面板间隙时保持展开）；
 - 子菜单面板 = **父项右侧 + 2px gap、垂直对齐**父项上缘；
 - 子菜单项命中返回 `(parent, child)` 路径（`MenuPath`）；
 - 渲染：父项右侧 chevron-right 指示；子菜单项同 MenuFlyout 规格（项高 32、悬停中性高亮）。

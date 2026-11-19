@@ -250,6 +250,10 @@ impl Widget for MetroContextMenu {
         Widget::hit_test(&self.menu, rect, pos)
     }
 
+    fn hover_hit_test(&self, rect: Rect, pos: Point) -> bool {
+        Widget::hover_hit_test(&self.menu, rect, pos)
+    }
+
     fn paint_overflow(&self) -> kanesumi_element::Insets {
         Widget::paint_overflow(&self.menu)
     }
@@ -604,6 +608,34 @@ mod tree_tests {
         h.assert_paint_within(p, ov);
         h.assert_no_hit_outside(p);
         h.assert_contained();
+    }
+
+    #[test]
+    fn submenu_yields_to_sibling_and_closes_when_pointer_leaves() {
+        let (mut h, target) = harness();
+        right_click(&mut h, target);
+        let id = popup(&h);
+        let menu = |h: &TestHarness| {
+            h.tree.get::<MetroContextMenu>(id).unwrap().submenu_state().is_some()
+        };
+        let r = h.rect(id);
+        let parent = Point::new(r.origin.x + 20.0, r.origin.y + 48.0);
+        let sibling = Point::new(parent.x, parent.y + 32.0);
+
+        h.move_to(parent);
+        assert!(menu(&h));
+        h.move_to(sibling);
+        assert!(!menu(&h), "悬停下方的普通项应关闭子菜单");
+
+        h.move_to(parent);
+        let child = h.tree.get::<MetroContextMenu>(id).unwrap().submenu_state().unwrap().panel;
+        h.move_to(Point::new((r.right() + child.origin.x) / 2.0, parent.y));
+        assert!(menu(&h), "穿过间隙时保留子菜单");
+        h.move_to(child.center());
+        assert!(menu(&h));
+        h.move_to(Point::new(r.origin.x - 10.0, r.bottom() + 10.0));
+        assert!(!menu(&h), "离开两个面板时应关闭子菜单");
+        assert_eq!(popup(&h), id, "保留右键菜单本身");
     }
 
     /// 无障碍（E6）：右键菜单入快照后报告 `Menu` 角色与非空名字，打开态契约成立。

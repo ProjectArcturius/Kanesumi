@@ -190,6 +190,11 @@ pub trait Widget: Any {
         rect.contains(pos)
     }
 
+    /// 悬停区域默认与点击相同。级联菜单可让面板间隙保持悬停。
+    fn hover_hit_test(&self, rect: Rect, pos: Point) -> bool {
+        self.hit_test(rect, pos)
+    }
+
     /// 子树绘制与命中是否裁到自身矩形（容器裁剪，参 §Ⅳ.3）。
     fn clips_children(&self) -> bool {
         true

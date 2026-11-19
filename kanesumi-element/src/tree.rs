@@ -2031,11 +2031,21 @@ impl Tree {
 
     /// 命中测试：覆盖层优先，其次内容；后画者优先；沿祖先裁剪链。
     pub fn hit(&self, pos: Point) -> Option<WidgetId> {
-        self.hit_rec(self.overlay, pos, None)
-            .or_else(|| self.hit_rec(self.root, pos, None))
+        self.hit_at(pos, false)
     }
 
-    fn hit_rec(&self, id: WidgetId, pos: Point, clip: Option<Rect>) -> Option<WidgetId> {
+    fn hit_at(&self, pos: Point, for_hover: bool) -> Option<WidgetId> {
+        self.hit_rec(self.overlay, pos, None, for_hover)
+            .or_else(|| self.hit_rec(self.root, pos, None, for_hover))
+    }
+
+    fn hit_rec(
+        &self,
+        id: WidgetId,
+        pos: Point,
+        clip: Option<Rect>,
+        for_hover: bool,
+    ) -> Option<WidgetId> {
         // 退场中的弹层不参与命中：它在视觉上正在消失，不能再接点击（参 FEEL_PLAN §Ⅰ-4）。
         // 外层判断避免命中热路径为空表时也走一次线性查找。
         if !self.popup_motions.is_empty() && self.popup_closing(id) {
@@ -2060,11 +2070,16 @@ impl Tree {
             clip
         };
         for &c in n.children.iter().rev() {
-            if let Some(h) = self.hit_rec(c, pos, child_clip) {
+            if let Some(h) = self.hit_rec(c, pos, child_clip, for_hover) {
                 return Some(h);
             }
         }
-        w.hit_test(n.rect, pos).then_some(id)
+        let hit = if for_hover {
+            w.hover_hit_test(n.rect, pos)
+        } else {
+            w.hit_test(n.rect, pos)
+        };
+        hit.then_some(id)
     }
 
     /// 投递事件（冒泡事件沿祖先链，禁用节点跳过）。返回是否被处理。
@@ -2120,7 +2135,7 @@ impl Tree {
     /// 容差内的抖动不重置提示计时，超出则视为「动了」。
     fn update_hover(&mut self, pos: Option<Point>, beyond: bool) {
         let mut chain = pos
-            .and_then(|p| self.hit(p))
+            .and_then(|p| self.hit_at(p, true))
             .map(|t| self.ancestors_inclusive(t))
             .unwrap_or_default();
         chain.reverse(); // 根 → 叶
@@ -2179,7 +2194,7 @@ impl Tree {
         // 覆盖层有弹层时：点在所有弹层之外 → LightDismiss（模态则只吞不关）。
         // 提示层是 passthrough 弹层，不参与顶层判定（否则会把点击吞掉）。
         if self.top_popup().is_some() {
-            let inside = self.hit_rec(self.overlay, pos, None).is_some();
+            let inside = self.hit_rec(self.overlay, pos, None, false).is_some();
             if !inside {
                 self.dismiss_top_popup(DismissCause::OutsideClick);
                 // 外点整次点击（按下 + 释放）都不传给下层：菜单项在释放时激活，

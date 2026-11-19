@@ -135,6 +135,19 @@ pub struct SubmenuState {
     pub menu: Box<MetroDropdownMenu>,
 }
 
+impl SubmenuState {
+    /// 仅保留两个面板之间的横向间隙。翻到左侧时同样可穿过。
+    fn bridge_contains(&self, parent: Rect, pos: Point) -> bool {
+        let (left, right) = if self.panel.origin.x >= parent.right() {
+            (parent.right(), self.panel.origin.x)
+        } else {
+            (self.panel.right(), parent.origin.x)
+        };
+        pos.x >= left && pos.x < right
+            && pos.y >= self.panel.origin.y && pos.y < self.panel.bottom()
+    }
+}
+
 impl PartialEq for SubmenuState {
     fn eq(&self, other: &Self) -> bool {
         self.parent == other.parent
@@ -426,13 +439,7 @@ impl MetroDropdownMenu {
                 self.submenu.as_mut().map(|m| m.menu.hover(engine, screen, pos));
                 return;
             }
-            let bridge = Rect::new(
-                self.panel_rect.origin.x,
-                s.panel.origin.y,
-                s.panel.right() - self.panel_rect.origin.x,
-                s.panel.size.height,
-            );
-            if bridge.contains(pos) {
+            if s.bridge_contains(self.panel_rect, pos) {
                 return;
             }
         }
@@ -1046,6 +1053,14 @@ impl Widget for MetroDropdownMenu {
                     ctx.invalidate_paint();
                 }
             }
+            Event::PointerLeave => {
+                self.last_pointer = None;
+                let hovered = self.hovered.take();
+                let submenu = self.submenu.take();
+                if hovered.is_some() || submenu.is_some() {
+                    ctx.invalidate_paint();
+                }
+            }
             // 滚轮 / 触控板：面板封顶后靠它看后面的项。指针在面板内或菜单有焦点时才吃。
             Event::Scroll { dy, dx, .. } if *dx == 0.0 => {
                 // 滚轮事件不带坐标：用最近指针位置判断「指针在面板上」；菜单有焦点时也吃。
@@ -1198,6 +1213,11 @@ impl Widget for MetroDropdownMenu {
             || self
                 .submenu_state()
                 .is_some_and(|s| s.panel.contains(pos))
+    }
+
+    fn hover_hit_test(&self, rect: Rect, pos: Point) -> bool {
+        self.hit_test(rect, pos)
+            || self.submenu_state().is_some_and(|s| s.bridge_contains(rect, pos))
     }
 
     /// 级联子菜单画在面板之外：声明外扩，框架据此计入损伤。

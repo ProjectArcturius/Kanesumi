@@ -149,6 +149,10 @@ impl Widget for MenuFlyout {
         Widget::hit_test(&self.menu, rect, pos)
     }
 
+    fn hover_hit_test(&self, rect: Rect, pos: Point) -> bool {
+        Widget::hover_hit_test(&self.menu, rect, pos)
+    }
+
     fn paint_overflow(&self) -> Insets {
         Widget::paint_overflow(&self.menu)
     }
