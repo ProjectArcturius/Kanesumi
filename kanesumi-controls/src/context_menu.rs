@@ -34,8 +34,14 @@ pub struct MetroContextMenu {
 
 impl MetroContextMenu {
     pub fn new() -> Self {
+        Self::with_items(Vec::new())
+    }
+
+    fn with_items(items: Vec<MenuItem>) -> Self {
+        let mut menu = MetroDropdownMenu::new(items);
+        menu.submenu_gap = 0.0;
         Self {
-            menu: MetroDropdownMenu::new(Vec::new()),
+            menu,
             anchor: Point::new(0.0, 0.0),
         }
     }
@@ -43,13 +49,10 @@ impl MetroContextMenu {
     /// 元素树弹层构造：`owner` = 打开菜单的锚点控件（选中动作的 `MenuInvoked.owner`、
     /// 关闭通知与焦点交还对象）。面板即刻为展开态（入场动画由弹层表面承担）。
     pub fn for_tree(owner: WidgetId, items: Vec<MenuItem>) -> Self {
-        let mut menu = MetroDropdownMenu::new(items);
-        menu.anim.open();
-        menu.owner = Some(owner);
-        Self {
-            menu,
-            anchor: Point::new(0.0, 0.0),
-        }
+        let mut popup = Self::with_items(items);
+        popup.menu.anim.open();
+        popup.menu.owner = Some(owner);
+        popup
     }
 
     /// 在指针位置打开右键菜单（元素树路径，参 CONTEXT_MENU_SPEC §Ⅲ / ELEMENT_MIGRATION §8）。
@@ -588,6 +591,8 @@ mod tree_tests {
         let (mut h, target) = harness();
         right_click(&mut h, target);
         let p = popup(&h);
+        // 这条保险断言中的边外 1px 仍落在显式留出的缝内。
+        h.tree.edit::<MetroContextMenu, _>(p, |m, _| m.menu.submenu_gap = 2.0);
         let pr = h.rect(p);
         // 悬停「排序」（第 2 项：一项 32 + 分隔线 2 之后）展开子菜单。
         h.move_to(Point::new(pr.origin.x + 20.0, pr.origin.y + 32.0 + 16.0));
@@ -618,6 +623,8 @@ mod tree_tests {
         let menu = |h: &TestHarness| {
             h.tree.get::<MetroContextMenu>(id).unwrap().submenu_state().is_some()
         };
+        // 显式留缝的菜单仍需覆盖跨缝行为。
+        h.tree.edit::<MetroContextMenu, _>(id, |m, _| m.menu.submenu_gap = 2.0);
         let r = h.rect(id);
         let parent = Point::new(r.origin.x + 20.0, r.origin.y + 48.0);
         let sibling = Point::new(parent.x, parent.y + 32.0);
@@ -636,6 +643,25 @@ mod tree_tests {
         h.move_to(Point::new(r.origin.x - 10.0, r.bottom() + 10.0));
         assert!(!menu(&h), "离开两个面板时应关闭子菜单");
         assert_eq!(popup(&h), id, "保留右键菜单本身");
+    }
+
+    #[test]
+    fn context_submenu_touches_parent_in_both_directions() {
+        let (mut h, target) = harness();
+        right_click(&mut h, target);
+        let id = popup(&h);
+        let r = h.rect(id);
+        h.move_to(Point::new(r.origin.x + 20.0, r.origin.y + 48.0));
+        let child = h.tree.get::<MetroContextMenu>(id).unwrap().submenu_state().unwrap();
+        assert_eq!(child.panel.origin.x, r.right());
+
+        let screen = Rect::new(0.0, 0.0, 600.0, 400.0);
+        let mut menu = MetroContextMenu::new();
+        menu.open_at(&h.engine, Point::new(470.0, 80.0), items(), screen);
+        let parent = menu.panel_rect();
+        menu.hover(&h.engine, screen, Point::new(parent.origin.x + 20.0, parent.origin.y + 48.0));
+        let child = menu.submenu_state().unwrap();
+        assert_eq!(child.panel.right(), parent.origin.x);
     }
 
     /// 无障碍（E6）：右键菜单入快照后报告 `Menu` 角色与非空名字，打开态契约成立。

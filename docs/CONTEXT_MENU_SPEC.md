@@ -155,6 +155,8 @@ pub fn place_context_menu(anchor: Point, panel_size: Size, screen: Rect) -> Rect
 
 ## 3. 级联（§39 复用）
 
+悬停父项展开的子面板与主面板共用水平边界，默认贴右，空间不足时贴左。
+
 - 悬停/→ 展开二级；子面板定位 `place_submenu`（父项右侧 → 越屏翻左）。
 - 点击子菜单项返回 `(parent, child)` 路径。
 

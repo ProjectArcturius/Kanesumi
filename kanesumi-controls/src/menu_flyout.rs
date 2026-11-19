@@ -70,7 +70,7 @@ impl MenuFlyout {
 
     /// 右键菜单：在指针位置打开（点锚定，右 / 下放不下时翻转）。`owner` 仍是本控件。
     pub fn open_at(ctx: &mut EventCtx, items: Vec<MenuItem>, at: Point, keyboard: bool) -> WidgetId {
-        Self::open_at_with_motion(ctx, items, at, keyboard, PopupMotion::Default)
+        crate::context_menu::MetroContextMenu::open(ctx, items, at, keyboard)
     }
 
     pub(crate) fn open_at_with_motion(

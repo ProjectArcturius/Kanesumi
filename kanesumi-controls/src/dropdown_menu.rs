@@ -10,7 +10,7 @@ use kanesumi_element::{
     PointerButton, UpdateCtx, Widget,
 };
 
-use crate::popup::{PopupAnim, PopupState, place_submenu, popup_gap, render_overlay, snap_edge};
+use crate::popup::{PopupAnim, PopupState, place_submenu, render_overlay, snap_edge};
 
 /// 菜单面板的无障碍名字（菜单自身没有标题，AT 需要**类型名级**的落点）。
 ///
@@ -188,7 +188,7 @@ pub struct MetroDropdownMenu {
     last_pointer: Option<Point>,
     /// 面板高度上限（默认 [MENU_MAX_HEIGHT]；子菜单 / 测试可改小）。
     pub max_height: f32,
-    /// 级联子菜单与父面板的水平间距（逻辑 pt；UWP 为 2，可配）。
+    /// 级联子菜单与父面板的水平间距（逻辑 pt；下拉默认 2，0 为贴边）。
     pub submenu_gap: f32,
     /// 正在拖动右侧滚动指示条（拖动期间不改悬停项、不触发项激活）。
     hint_drag: bool,
@@ -475,13 +475,7 @@ impl MetroDropdownMenu {
         menu.item_height = self.item_height;
         menu.max_height = self.max_height;
         let sub_size = menu.panel_size(engine);
-        // 间距可配（默认 2，UWP 值）；配 0 时退回随缩放取整的通用间距。
-        let gap = if self.submenu_gap > 0.0 {
-            self.submenu_gap
-        } else {
-            popup_gap().min(2.0)
-        };
-        let panel = place_submenu(parent_rect, sub_size, screen, gap);
+        let panel = place_submenu(parent_rect, sub_size, screen, self.submenu_gap.max(0.0));
         menu.panel_rect = panel;
         menu.anim.open();
         self.submenu = Some(SubmenuState {

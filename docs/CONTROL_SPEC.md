@@ -313,7 +313,7 @@
 | 弹出动画 | `PopupThemeAnimation`（OS，~200ms 位移+淡入 ease-out；**未在快照**，用 `sheet_appear`/`sheet_dismiss` 对齐） |
 | 面板高度上限 | **504**（`MENU_MAX_HEIGHT`；**推断值** —— 模板里没有 `MaxHeight`，取自同族 ComboBox 的 `MaxDropDownHeight`，登记 `CANON_VS_TEMPORARY` T26）。超过封顶后内容**内部滚动**，右侧 3pt 胶囊滚动指示（2026-11-06） |
 | 滚动 | 滚轮 / 触控板（指针在面板内或菜单有焦点时生效）、↑↓ 与 Home/End 自动把选项滚进视口、**拖拽右侧指示条**（命中区左扩 8pt；拖动期不改悬停项、松手不激活下面的项）；偏移夹在 `[0, 内容高 − 面板高]`，面板变矮或项变少时自动夹回 |
-| 子菜单间距 | `submenu_gap`（默认 **2**，UWP 值；可配，配 0 退回随缩放取整的通用间距） |
+| 子菜单间距 | `submenu_gap`（下拉默认 **2**，右键菜单为 **0**；0 表示面板贴边） |
 | 禁用项（`MenuFlyoutItem.IsEnabled=false`） | 文字与图标按 `MetroIndication::disabled_opacity`（0.38）降透明度；**不出现悬停底**；点击/回车无动作且菜单不关；键盘 ↑↓ / Home / End 跳过（2026-11-06 实装） |
 | 勾选列 | 菜单存在可勾选项（`checked` 或 `radio_group`）时，左缘固定留 **16pt 勾选列**，勾用自绘折线（非字体字形），标签起点不随勾选变化（2026-11-06 实装；旧做法是标签拼「✓」前缀，勾行文字右移一格） |
 
@@ -1443,7 +1443,7 @@ clamp 到 [−MaxShift, +MaxShift]，MaxShift = MaxShiftRatio × 视口主轴
 ### MenuFlyoutSubItem（二级级联）
 
 - 顶层项带 `submenu: Vec<MenuItem>` → **悬停自动展开**二级面板（悬停其它项或离开两个面板时收起，穿过面板间隙时保持展开）；
-- 子菜单面板 = **父项右侧 + 2px gap、垂直对齐**父项上缘；
+- 子菜单面板默认在父项右侧、与父项上缘对齐，右边空间不足时翻左。下拉菜单留 2 pt，右键菜单贴住父面板。
 - 子菜单项命中返回 `(parent, child)` 路径（`MenuPath`）；
 - 渲染：父项右侧 chevron-right 指示；子菜单项同 MenuFlyout 规格（项高 32、悬停中性高亮）。
 
